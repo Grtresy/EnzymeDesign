@@ -45,6 +45,24 @@ rule all:
             variant_id=VARIANTS,
         ),
         f"runs/{TARGET_ID}/batch/outputs/scores/leaderboard.csv",
+        "evidence/lit_hits.json",
+        "constraints/key_residues_from_lit.yaml",
+        "constraints/fixed_mask_regions.yaml",
+        "constraints/pocket_key_residues.yaml",
+        "constraints/tunnel_lining_residues.yaml",
+        "constraints/tunnel_geometry.json",
+        "prompts/prompt_pack.json",
+        "prompts/esm3_request.yaml",
+        "candidates/candidates.fasta",
+        "candidates/metadata.json",
+        "eval/fast_fold_scores.csv",
+        "eval/af3_metrics.csv",
+        "eval/docking_scores.csv",
+        "eval/tunnel_check.csv",
+        "rank/metrics_merged.csv",
+        "rank/top_candidates.csv",
+        "constraints/fixed_mask_regions_updated.yaml",
+        "prompts/prompt_pack_updated.json",
 
 
 rule init_variant_inputs:
@@ -70,6 +88,303 @@ rule init_variant_inputs:
             "--input {input.hitl_decisions} "
             "--input inputs/variants/{{wildcards.variant_id}}.fasta "
             "--output {output} "
+            "--mode {params.mode}"
+        )
+
+
+rule evidence_lit:
+    input:
+        fasta="inputs/target.fasta",
+        reference_structure="inputs/reference_structure.pdb",
+    output:
+        "evidence/lit_hits.json",
+        "constraints/key_residues_from_lit.yaml",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py evidence_lit "
+            "--input {input.fasta} "
+            "--input {input.reference_structure} "
+            "--output {output[0]} "
+            "--output {output[1]} "
+            "--mode {params.mode}"
+        )
+
+
+rule target_msa:
+    input:
+        fasta="inputs/target.fasta",
+    output:
+        "evidence/msa.a3m",
+    conda:
+        "envs/hhblits.yml",
+    params:
+        mode=MODE,
+    shell:
+        "python scripts/run_tool.py hhblits --input {input.fasta} --output {output} --mode {params.mode}"
+
+
+rule target_conservation:
+    input:
+        msa="evidence/msa.a3m",
+        pdb="inputs/reference_structure.pdb",
+    output:
+        "evidence/conservation.json",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py conservation --input {input.msa} "
+            "--input {input.pdb} --output {output} --mode {params.mode}"
+        )
+
+
+rule fixed_mask_regions:
+    input:
+        "evidence/conservation.json",
+    output:
+        "constraints/fixed_mask_regions.yaml",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py fixed_mask_regions "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule reference_pockets:
+    input:
+        pdb="inputs/reference_structure.pdb",
+    output:
+        "evidence/pockets.json",
+    conda:
+        "envs/fpocket.yml",
+    params:
+        mode=MODE,
+    shell:
+        "python scripts/run_tool.py fpocket --input {input.pdb} --output {output} --mode {params.mode}"
+
+
+rule reference_tunnels:
+    input:
+        pdb="inputs/reference_structure.pdb",
+        pockets="evidence/pockets.json",
+    output:
+        "evidence/tunnels.json",
+    conda:
+        "envs/caver.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py caver --input {input.pdb} "
+            "--input {input.pockets} --output {output} --mode {params.mode}"
+        )
+
+
+rule pocket_key_residues:
+    input:
+        "evidence/pockets.json",
+    output:
+        "constraints/pocket_key_residues.yaml",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py pocket_key_residues "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule tunnel_constraints:
+    input:
+        "evidence/tunnels.json",
+    output:
+        "constraints/tunnel_lining_residues.yaml",
+        "constraints/tunnel_geometry.json",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py tunnel_constraints "
+            "--input {input} --output {output[0]} --output {output[1]} --mode {params.mode}"
+        )
+
+
+rule prompt_builder:
+    input:
+        fasta="inputs/target.fasta",
+        pdb="inputs/reference_structure.pdb",
+        fixed_mask="constraints/fixed_mask_regions.yaml",
+        key_lit="constraints/key_residues_from_lit.yaml",
+        pocket_keys="constraints/pocket_key_residues.yaml",
+        tunnel_keys="constraints/tunnel_lining_residues.yaml",
+        tunnel_geom="constraints/tunnel_geometry.json",
+    output:
+        "prompts/prompt_pack.json",
+        "prompts/esm3_request.yaml",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py prompt_builder "
+            "--input {input.fasta} "
+            "--input {input.pdb} "
+            "--input {input.fixed_mask} "
+            "--input {input.key_lit} "
+            "--input {input.pocket_keys} "
+            "--input {input.tunnel_keys} "
+            "--input {input.tunnel_geom} "
+            "--output {output[0]} "
+            "--output {output[1]} "
+            "--mode {params.mode}"
+        )
+
+
+rule generate_candidates:
+    input:
+        "prompts/prompt_pack.json",
+        "prompts/esm3_request.yaml",
+    output:
+        "candidates/candidates.fasta",
+        "candidates/metadata.json",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py esm3_generate "
+            "--input {input[0]} --input {input[1]} "
+            "--output {output[0]} --output {output[1]} "
+            "--mode {params.mode}"
+        )
+
+
+rule fast_fold_eval:
+    input:
+        "candidates/candidates.fasta",
+    output:
+        "eval/fast_fold_scores.csv",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py fast_fold_eval "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule af3_eval:
+    input:
+        "candidates/candidates.fasta",
+    output:
+        "eval/af3_metrics.csv",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py af3_eval "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule docking_eval:
+    input:
+        "candidates/candidates.fasta",
+    output:
+        "eval/docking_scores.csv",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py docking_eval "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule tunnel_eval:
+    input:
+        "candidates/candidates.fasta",
+    output:
+        "eval/tunnel_check.csv",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py tunnel_eval "
+            "--input {input} --output {output} --mode {params.mode}"
+        )
+
+
+rule rank_candidates:
+    input:
+        fast="eval/fast_fold_scores.csv",
+        af3="eval/af3_metrics.csv",
+        docking="eval/docking_scores.csv",
+        tunnel="eval/tunnel_check.csv",
+    output:
+        "rank/metrics_merged.csv",
+        "rank/top_candidates.csv",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py rank_merge "
+            "--input {input.fast} "
+            "--input {input.af3} "
+            "--input {input.docking} "
+            "--input {input.tunnel} "
+            "--output {output[0]} "
+            "--output {output[1]} "
+            "--mode {params.mode}"
+        )
+
+
+rule update_constraints:
+    input:
+        fixed_mask="constraints/fixed_mask_regions.yaml",
+        prompt_pack="prompts/prompt_pack.json",
+        tunnel_check="eval/tunnel_check.csv",
+    output:
+        "constraints/fixed_mask_regions_updated.yaml",
+        "prompts/prompt_pack_updated.json",
+    conda:
+        "envs/python.yml",
+    params:
+        mode=MODE,
+    shell:
+        (
+            "python scripts/run_tool.py update_constraints "
+            "--input {input.fixed_mask} "
+            "--input {input.prompt_pack} "
+            "--input {input.tunnel_check} "
+            "--output {output[0]} "
+            "--output {output[1]} "
             "--mode {params.mode}"
         )
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Candidate Metadata",
+  "type": "object",
+  "required": ["schema_version", "num_candidates", "candidates"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "prompt_pack_id": {"type": "string"},
+    "num_candidates": {"type": "number"},
+    "seed": {"type": "number"},
+    "mask_positions": {"type": "array", "items": {"type": "number"}},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "sequence"],
+        "properties": {
+          "candidate_id": {"type": "string"},
+          "sequence": {"type": "string"}
+        }
+      }
+    }
+  }
+}

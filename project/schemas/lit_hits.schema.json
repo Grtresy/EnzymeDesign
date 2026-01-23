@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Literature Evidence Hits",
+  "type": "object",
+  "required": ["schema_version", "hits"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "query": {"type": "object"},
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["hit_id", "title", "source", "residues"],
+        "properties": {
+          "hit_id": {"type": "string"},
+          "title": {"type": "string"},
+          "source": {"type": "string"},
+          "residues": {"type": "array", "items": {"type": "string"}},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  }
+}

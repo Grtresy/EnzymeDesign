@@ -54,3 +54,12 @@ scoring:
   keep_bonus: 0.02
   drop_score: -1.0
   missing_penalty: 0.08
+
+conservation_thresholds:
+  fixed: 0.8
+  masked: 0.3
+
+esm3:
+  num_samples: 50
+  temperature: 0.7
+  max_length_delta: 20

@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tunnel Geometry",
+  "type": "object",
+  "required": ["schema_version", "tunnel_id", "bottleneck_radius", "centerline"],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "tunnel_id": {"type": ["string", "null"]},
+    "bottleneck_radius": {"type": ["number", "null"]},
+    "length": {"type": ["number", "null"]},
+    "centerline": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 3,
+        "maxItems": 3
+      }
+    },
+    "radius_profile": {"type": "array", "items": {"type": "number"}}
+  }
+}

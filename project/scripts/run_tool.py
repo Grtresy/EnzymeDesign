@@ -19,6 +19,7 @@ from utils.schema import load_schema, validate_json
 
 
 SCHEMA_MAP = {
+    "lit_hits": "lit_hits.schema.json",
     "snapshot": "snapshot.schema.json",
     "residue_map": "residue_map.schema.json",
     "conservation": "conservation.schema.json",
@@ -28,6 +29,9 @@ SCHEMA_MAP = {
     "docking": "docking_any.schema.json",
     "structure_confidence": "structure_confidence.schema.json",
     "score_breakdown": "score_breakdown.schema.json",
+    "tunnel_geometry": "tunnel_geometry.schema.json",
+    "prompt_pack": "prompt_pack.schema.json",
+    "metadata": "candidates_metadata.schema.json",
 }
 TOOL_META_SCHEMA = "tool_meta.schema.json"
 SCHEMA_VERSION = "1.0"
