@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Docking results",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "default": "1.0"
+    },
+    "method": {
+      "type": "string"
+    },
+    "receptor_id": {
+      "type": "string"
+    },
+    "ligand_id": {
+      "type": "string"
+    },
+    "poses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pose_id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "binding_energy": {
+            "type": "number"
+          },
+          "rmsd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "interactions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["pose_id", "score", "binding_energy", "rmsd", "interactions"]
+      }
+    }
+  },
+  "required": ["schema_version", "method", "receptor_id", "ligand_id", "poses"]
+}
