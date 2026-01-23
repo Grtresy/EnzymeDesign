@@ -1,0 +1,10 @@
+name: enzyme-hhblits
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - hh-suite
+  - numpy
+  - pyyaml
+  - jsonschema

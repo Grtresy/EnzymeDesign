@@ -55,6 +55,8 @@ rule init_variant_inputs:
         hitl_decisions="inputs/hitl_decisions.csv",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/inputs/snapshot.json",
+    conda:
+        "envs/python.yml",
     shell:
         (
             "python scripts/run_tool.py init_variant_inputs "
@@ -75,6 +77,8 @@ rule fold_structure:
     output:
         pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
         conf=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/structure_confidence.json",
+    conda:
+        "envs/python.yml",
     shell:
         (
             "python scripts/run_tool.py fold_structure "
@@ -92,6 +96,8 @@ rule residue_map:
         fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/residue_map.json",
+    conda:
+        "envs/python.yml",
     shell:
         "python scripts/run_tool.py residue_map --input {input.pdb} --input {input.fasta} --output {output}"
 
@@ -101,6 +107,8 @@ rule msa:
         fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/msa.a3m",
+    conda:
+        "envs/hhblits.yml",
     shell:
         "python scripts/run_tool.py hhblits --input {input.fasta} --output {output}"
 
@@ -111,6 +119,8 @@ rule conservation:
         pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/conservation.json",
+    conda:
+        "envs/python.yml",
     shell:
         "python scripts/run_tool.py conservation --input {input.msa} --input {input.pdb} --output {output}"
 
@@ -123,6 +133,8 @@ rule volume_metrics:
         variant_fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/metrics/geometry_metrics.json",
+    conda:
+        "envs/python.yml",
     shell:
         (
             "python scripts/run_tool.py volume_metrics "
@@ -139,6 +151,8 @@ rule pockets:
         pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/fpocket/pockets.json",
+    conda:
+        "envs/fpocket.yml",
     shell:
         "python scripts/run_tool.py fpocket --input {input.pdb} --output {output}"
 
@@ -149,6 +163,8 @@ rule tunnels:
         pockets=rules.pockets.output,
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/tunnels/caver/tunnels.json",
+    conda:
+        "envs/caver.yml",
     shell:
         "python scripts/run_tool.py caver --input {input.pdb} --input {input.pockets} --output {output}"
 
@@ -158,6 +174,8 @@ rule docking:
         pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/docking/docking.json",
+    conda:
+        "envs/docking.yml",
     shell:
         "python scripts/run_tool.py docking --input {input.pdb} --output {output}"
 
@@ -187,6 +205,8 @@ rule score:
         ),
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/scores/score_breakdown.json",
+    conda:
+        "envs/python.yml",
     shell:
         (
             "python scripts/score_variants.py "
@@ -211,6 +231,8 @@ rule leaderboard:
         ),
     output:
         f"runs/{TARGET_ID}/batch/outputs/scores/leaderboard.csv",
+    conda:
+        "envs/python.yml",
     shell:
         "python scripts/build_leaderboard.py --inputs {input} --output {output}"
 
@@ -222,4 +244,3 @@ if ENABLE_POCKETS:
                 f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/fpocket/pockets.json",
                 variant_id=VARIANTS,
             )
-
