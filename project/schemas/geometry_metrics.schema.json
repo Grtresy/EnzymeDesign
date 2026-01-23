@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Geometry metrics",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "variant_id": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bond_length_rmsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bond_angle_rmsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "clashscore": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ramachandran_outliers": {
+          "type": "number",
+          "minimum": 0
+        },
+        "rotamer_outliers": {
+          "type": "number",
+          "minimum": 0
+        },
+        "packing_density": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "bond_length_rmsd",
+        "bond_angle_rmsd",
+        "clashscore",
+        "ramachandran_outliers",
+        "rotamer_outliers",
+        "packing_density"
+      ]
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bond_length_rmsd": {
+          "type": "string",
+          "default": "angstrom"
+        },
+        "bond_angle_rmsd": {
+          "type": "string",
+          "default": "degree"
+        }
+      }
+    }
+  },
+  "required": ["schema_version", "variant_id", "metrics"]
+}

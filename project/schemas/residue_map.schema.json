@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Residue mapping",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "default": "1.0"
+    },
+    "source_sequence": {
+      "type": "string"
+    },
+    "target_sequence": {
+      "type": "string"
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "target_index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "source_residue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_residue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mapping_type": {
+            "type": "string",
+            "enum": ["aligned", "gap", "insertion", "deletion"]
+          }
+        },
+        "required": [
+          "source_index",
+          "target_index",
+          "source_residue",
+          "target_residue",
+          "mapping_type"
+        ]
+      }
+    }
+  },
+  "required": ["schema_version", "mappings"]
+}

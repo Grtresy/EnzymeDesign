@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Structure confidence",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "default": "1.0"
+    },
+    "model": {
+      "type": "string"
+    },
+    "global_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "residues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "position": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "residue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "metric": {
+            "type": "string",
+            "enum": ["plddt", "pae", "custom"]
+          }
+        },
+        "required": ["position", "residue", "confidence", "metric"]
+      }
+    }
+  },
+  "required": ["schema_version", "model", "global_confidence", "residues"]
+}

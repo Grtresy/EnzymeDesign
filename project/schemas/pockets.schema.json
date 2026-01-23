@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pocket detection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "default": "1.0"
+    },
+    "pockets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pocket_id": {
+            "type": "string"
+          },
+          "volume": {
+            "type": "number",
+            "minimum": 0
+          },
+          "score": {
+            "type": "number"
+          },
+          "center": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "residues": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "required": ["pocket_id", "volume", "score", "center", "residues"]
+      }
+    }
+  },
+  "required": ["schema_version", "pockets"]
+}

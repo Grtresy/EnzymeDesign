@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Score breakdown",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "variant_id": {
+      "type": "string"
+    },
+    "total_score": {
+      "type": "number"
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          },
+          "weight": {
+            "type": "number"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["stability", "activity", "binding", "geometry", "other"]
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": ["name", "score", "weight", "category", "description"]
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "required": ["schema_version", "variant_id", "total_score", "components"]
+}
