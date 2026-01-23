@@ -1,85 +1,34 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Score breakdown",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Score Breakdown",
   "type": "object",
-  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "variant_id",
+    "checks",
+    "subscores",
+    "missing_penalties",
+    "final_score",
+    "needs_review",
+    "top_reasons"
+  ],
   "properties": {
-    "schema_version": {
-      "const": "1.0"
-    },
-    "variant_id": {
-      "type": "string"
-    },
-    "total_score": {
-      "type": "number"
-    },
-    "components": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "score": {
-            "type": ["number", "null"]
-          },
-          "weight": {
-            "type": "number"
-          },
-          "category": {
-            "type": "string",
-            "enum": ["stability", "activity", "binding", "geometry", "other"]
-          },
-          "description": {
-            "type": "string"
-          }
-        },
-        "required": ["name", "score", "weight", "category", "description"]
-      }
-    },
-    "missing_penalties": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "module": {
-            "type": "string"
-          },
-          "penalty": {
-            "type": "number"
-          },
-          "reason": {
-            "type": "string"
-          }
-        },
-        "required": ["module", "penalty", "reason"]
-      }
-    },
-    "needs_review": {
-      "type": "boolean"
-    },
-    "metadata": {
+    "schema_version": {"type": "string"},
+    "variant_id": {"type": "string"},
+    "checks": {"type": "object"},
+    "subscores": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "tool": {
-          "type": "string"
-        },
-        "generated_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "inputs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
+        "S_shrink": {"type": ["number", "null"]},
+        "S_struct": {"type": ["number", "null"]},
+        "S_mut_risk": {"type": ["number", "null"]},
+        "S_cons": {"type": ["number", "null"]},
+        "S_function_guard": {"type": ["number", "null"]}
       }
-    }
-  },
-  "required": ["schema_version", "variant_id", "total_score", "components"]
+    },
+    "missing_penalties": {"type": "object"},
+    "final_score": {"type": "number"},
+    "needs_review": {"type": "boolean"},
+    "top_reasons": {"type": "array", "items": {"type": "string"}}
+  }
 }

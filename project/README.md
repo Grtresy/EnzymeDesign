@@ -1,16 +1,38 @@
-# Snakemake Enzyme Design Pipeline
+# Enzyme Shrinkage Closed-Loop Pipeline (Snakemake)
 
-该目录提供一个基于 Snakemake 的酶设计打分流程脚手架，用于读取
-`config/config.yaml` 和 `config/target_spec.yaml`，解析 `inputs/variants.txt`
-中的变体列表，并产出每个变体的打分细节以及批量排行榜。
+本项目提供一个“可复现、可缓存、可回退”的酶体积缩小闭环流水线，
+支持 **mock** 与 **real** 两种模式。mock 模式无需外部工具即可跑通；
+real 模式会尝试调用本地已安装的工具并解析输出。
 
 ## 目录结构
-- `config/`: 管线配置与目标信息。
-- `inputs/`: 输入数据（目标序列、参考结构、变体列表等）。
-- `runs/`: 输出目录（本地运行生成）。
-- `cache/`: 中间缓存目录。
-- `schemas/`: JSON schema 定义。
-- `scripts/`: 工具模拟器与辅助脚本。
+```
+project/
+  Snakefile
+  config/
+    config.yaml
+    target_spec.yaml
+  inputs/
+    target.fasta
+    reference_structure.pdb
+    variants.txt
+    variants/
+      <variant_id>.fasta
+    ligands/
+      cellobiose.sdf
+    key_residues.json
+    hitl_decisions.csv
+  schemas/
+  scripts/
+    run_tool.py
+    score_variants.py
+    build_leaderboard.py
+    utils/
+    tools/
+  runs/
+  cache/
+  requirements.txt
+  README.md
+```
 
 ## 安装
 ```bash
@@ -20,38 +42,41 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 运行命令
-### Mock 运行（默认 stub 工具）
+## 一键运行
+### Mock 模式（默认）
 ```bash
 cd project
-snakemake -j 1
+snakemake -j 4 --config mode=mock
 ```
 
-### Real 运行（替换真实工具）
-本仓库默认通过 `scripts/run_tool.py` 生成 mock 输出。若需真实后端，
-请将 `scripts/run_tool.py` 替换为实际工具封装（或在 Snakemake
-规则中调用真实二进制/容器），然后执行相同命令：
+### Real 模式
 ```bash
 cd project
-snakemake -j 1
+snakemake -j 16 --config mode=real
 ```
+
+## 输入说明
+- `inputs/variants.txt`：变体列表（header 包含 `variant_id`）。
+- `inputs/variants/<variant_id>.fasta`：变体序列（允许长度变化）。
+- `inputs/reference_structure.pdb`：WT 参考结构（至少包含 CA 坐标）。
+- `inputs/key_residues.json`：关键位点约束示例。
+- `inputs/hitl_decisions.csv`：人工审阅决策示例。
+- `inputs/ligands/*.sdf`：可选配体文件。
 
 ## 输出说明
-- 单变体产物：`runs/<target_id>/<variant_id>/outputs/` 下包含结构、map、
-  conservation、volume、可选 pockets/tunnels/docking 以及 `scores/score_breakdown.json`。
+- 单变体输出：`runs/<target_id>/<variant_id>/outputs/` 下包含
+  `structures/`, `metrics/`, `scores/` 等。
+- `geometry_metrics.json`：体积缩小核心指标。
+- `score_breakdown.json`：综合评分与排名依据。
+- `*.meta.json`：每个 JSON 输出的元数据（缓存、版本、hash 等）。
 - 批量排行榜：`runs/<target_id>/batch/outputs/scores/leaderboard.csv`。
-- 每个 JSON 输出会同时生成 `.meta.json` 元数据文件，记录 run id、参数和输入输出。
 
 ## 配置开关说明
-`config/config.yaml` 中的 `features` 字段控制可选模块：
-- `features.pockets: true/false` 以启用或关闭 pockets 工具。
-- `features.tunnels: true/false` 以启用或关闭 tunnels 工具。
-- `features.docking: true/false` 以启用或关闭 docking 工具。
+- `config/target_spec.yaml` 中 `shrink_mode` 与 `allow_*` 决定体积缩小策略。
+- `config/config.yaml` 中 `features.*` 控制 pockets/tunnels/docking 可选模块。
 
-目标 ID 可在 `config/config.yaml` 的 `target_id` 或 `config/target_spec.yaml`
-中指定，输出路径将基于该 ID。
+## 常见失败排查
+- 查看 `runs/<target_id>/<variant_id>/work/<tool>/stdout.log` 与 `stderr.log`。
+- Schema 校验错误会记录在 meta 的 `errors` 字段中。
+- 若需要验证回退/重试，可加 `--config fail_tool=fpocket`。
 
-## 故障排查
-- 每个工具执行时会写入 `work/<tool>/stdout.log` 与 `work/<tool>/stderr.log`。
-- 解析失败或 schema 校验失败会记录在 `work/<tool>/meta.errors`。
-- 若需要清理缓存，可删除 `.cache/run_tool` 或 `runs/` 目录后重试。

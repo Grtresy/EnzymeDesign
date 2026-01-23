@@ -1,6 +1,11 @@
 {
-  "target_id": "demo_target",
-  "active_site": [12, 45, 87],
-  "binding_pocket": [30, 31, 55, 78],
-  "notes": "Demo residue indices for validation"
+  "schema_version": "1.0",
+  "protected_residues": [
+    {"uid": "A:5", "description": "core stability"},
+    {"uid": "A:12", "description": "active site scaffold"}
+  ],
+  "active_site_residues": [
+    {"uid": "A:8", "description": "catalytic"},
+    {"uid": "A:15", "description": "binding"}
+  ]
 }

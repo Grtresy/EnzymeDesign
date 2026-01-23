@@ -1,42 +1,39 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Dict, List
 
-from ._common import TOOL_VERSION, ToolRunResult, require_executable
+from utils.errors import DeterministicToolError
 
 
-def get_version() -> str:
-    return TOOL_VERSION
+def get_version(mode: str) -> str:
+    return "mock-hhblits-1.0" if mode == "mock" else "real-hhblits-1.0"
 
 
 def run(
-    sequence: str,
-    output_dir: str | Path,
-    mode: str = "mock",
-    database: str = "uniclust30",
-) -> ToolRunResult:
-    output_path = Path(output_dir)
-    msa_path = output_path / "alignment.a3m"
+    inputs: List[Path],
+    outputs: Dict[str, Path],
+    params: dict,
+    workdir: Path,
+    mode: str,
+) -> None:
+    fasta_path = next(p for p in inputs if p.suffix == ".fasta")
+    output_path = outputs["msa"]
+    sequence = "".join(
+        line.strip()
+        for line in fasta_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(">")
+    )
 
     if mode == "mock":
-        output_path.mkdir(parents=True, exist_ok=True)
-        msa_path.write_text(
-            f">query\n{sequence}\n>mock_hit\n{sequence}\n"
-        )
-        return ToolRunResult(outputs={"msa": str(msa_path)}, command=None)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(">query\n" + sequence + "\n>mock1\n" + sequence + "\n", encoding="utf-8")
+        return
 
-    executable = require_executable("hhblits")
-    command = [
-        executable,
-        "-i",
-        "input.fasta",
-        "-d",
-        database,
-        "-oa3m",
-        str(msa_path),
-    ]
-    if not msa_path.exists():
-        raise RuntimeError(
-            "Expected hhblits output not found. Ensure hhblits ran successfully."
-        )
-    return ToolRunResult(outputs={"msa": str(msa_path)}, command=command)
+    if shutil.which("hhblits") is None:
+        raise DeterministicToolError("hhblits executable not found")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(">query\n" + sequence + "\n", encoding="utf-8")
+

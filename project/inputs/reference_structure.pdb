@@ -1,8 +1,23 @@
-HEADER    DEMO STRUCTURE
-ATOM      1  N   MET A   1      11.104  13.207   9.147  1.00 20.00           N
-ATOM      2  CA  MET A   1      12.560  13.289   9.258  1.00 20.00           C
-ATOM      3  C   MET A   1      13.046  14.726   9.605  1.00 20.00           C
-ATOM      4  O   MET A   1      12.331  15.676   9.318  1.00 20.00           O
-ATOM      5  CB  MET A   1      13.137  12.346  10.342  1.00 20.00           C
+HEADER    MOCK WT STRUCTURE
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 20.00           C
+ATOM      2  CA  ALA A   2       1.500   0.200   0.100  1.00 20.00           C
+ATOM      3  CA  ALA A   3       3.000   0.400   0.200  1.00 20.00           C
+ATOM      4  CA  ALA A   4       4.500   0.600   0.300  1.00 20.00           C
+ATOM      5  CA  ALA A   5       6.000   0.800   0.400  1.00 20.00           C
+ATOM      6  CA  ALA A   6       7.500   1.000   0.500  1.00 20.00           C
+ATOM      7  CA  ALA A   7       9.000   1.200   0.600  1.00 20.00           C
+ATOM      8  CA  ALA A   8      10.500   1.400   0.700  1.00 20.00           C
+ATOM      9  CA  ALA A   9      12.000   1.600   0.800  1.00 20.00           C
+ATOM     10  CA  ALA A  10      13.500   1.800   0.900  1.00 20.00           C
+ATOM     11  CA  ALA A  11      15.000   2.000   1.000  1.00 20.00           C
+ATOM     12  CA  ALA A  12      16.500   2.200   1.100  1.00 20.00           C
+ATOM     13  CA  ALA A  13      18.000   2.400   1.200  1.00 20.00           C
+ATOM     14  CA  ALA A  14      19.500   2.600   1.300  1.00 20.00           C
+ATOM     15  CA  ALA A  15      21.000   2.800   1.400  1.00 20.00           C
+ATOM     16  CA  ALA A  16      22.500   3.000   1.500  1.00 20.00           C
+ATOM     17  CA  ALA A  17      24.000   3.200   1.600  1.00 20.00           C
+ATOM     18  CA  ALA A  18      25.500   3.400   1.700  1.00 20.00           C
+ATOM     19  CA  ALA A  19      27.000   3.600   1.800  1.00 20.00           C
+ATOM     20  CA  ALA A  20      28.500   3.800   1.900  1.00 20.00           C
 TER
 END

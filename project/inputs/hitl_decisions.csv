@@ -1,4 +1,4 @@
-variant_id,reviewer,decision,notes
-variant_001,team_member_a,approved,Looks promising
-variant_002,team_member_b,needs_review,Check docking pose
-variant_003,team_member_c,rejected,Low stability score
+variant_id,decision,reason
+var_short,keep,shortening looks acceptable
+var_same,review,needs manual inspection
+var_long,drop,too long and unstable

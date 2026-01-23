@@ -1,3 +1,18 @@
-target_id: demo_target
-sequence: MSEQUENCEPLACEHOLDER
-reference_structure: inputs/reference.pdb
+target_id: enzyme_shrink_demo
+
+shrink_mode: both
+allow_shrink_by_length: true
+allow_shrink_by_compactness: true
+
+volume_method: monte_carlo_vdw_union
+
+features:
+  pockets: true
+  tunnels: true
+  docking: true
+
+function_guard:
+  docking_affinity_threshold: -6.5
+  tunnel_bottleneck_min: 1.0
+  pocket_volume_min: 80.0
+
