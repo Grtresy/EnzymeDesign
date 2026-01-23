@@ -223,9 +223,3 @@ if ENABLE_POCKETS:
                 variant_id=VARIANTS,
             )
 
-if ENABLE_TUNNELS:
-    use rule tunnels as tunnels_rule
-
-if ENABLE_DOCKING:
-    use rule docking as docking_rule
-
