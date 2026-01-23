@@ -1,0 +1,3 @@
+target_id: demo_target
+sequence: MSEQUENCEPLACEHOLDER
+reference_structure: inputs/reference.pdb
