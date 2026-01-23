@@ -1,5 +1,6 @@
 mode: mock
 fail_tool: null
+conda_frontend: mamba
 
 target_id: enzyme_shrink_demo
 
@@ -21,6 +22,19 @@ structure_backends:
   - omegafold
   - openfold
 structure_primary_backend: esmfold
+structure_backend_configs:
+  esmfold:
+    executable: /path/to/esmfold
+    model_weights: /path/to/esmfold_weights.pt
+    args: []
+  omegafold:
+    executable: /path/to/omegafold
+    model_weights: /path/to/omegafold_weights.pt
+    args: []
+  openfold:
+    executable: /path/to/openfold
+    model_weights: /path/to/openfold_weights.pt
+    args: []
 
 scoring:
   weights:
@@ -32,4 +46,3 @@ scoring:
   keep_bonus: 0.02
   drop_score: -1.0
   missing_penalty: 0.08
-
