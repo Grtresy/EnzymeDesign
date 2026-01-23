@@ -1,0 +1,6 @@
+{
+  "target_id": "demo_target",
+  "active_site": [12, 45, 87],
+  "binding_pocket": [30, 31, 55, 78],
+  "notes": "Demo residue indices for validation"
+}

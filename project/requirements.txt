@@ -1,3 +1,5 @@
 snakemake
 pyyaml
 jsonschema
+pandas
+numpy
