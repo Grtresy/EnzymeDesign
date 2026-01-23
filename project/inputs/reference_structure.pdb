@@ -1,0 +1,8 @@
+HEADER    DEMO STRUCTURE
+ATOM      1  N   MET A   1      11.104  13.207   9.147  1.00 20.00           N
+ATOM      2  CA  MET A   1      12.560  13.289   9.258  1.00 20.00           C
+ATOM      3  C   MET A   1      13.046  14.726   9.605  1.00 20.00           C
+ATOM      4  O   MET A   1      12.331  15.676   9.318  1.00 20.00           O
+ATOM      5  CB  MET A   1      13.137  12.346  10.342  1.00 20.00           C
+TER
+END

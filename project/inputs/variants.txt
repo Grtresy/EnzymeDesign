@@ -1,3 +1,4 @@
 variant_id
-demo_variant_001
-demo_variant_002
+variant_001
+variant_002
+variant_003
