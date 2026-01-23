@@ -1,0 +1,163 @@
+import yaml
+
+configfile: "config/config.yaml"
+
+TARGET_SPEC_PATH = "config/target_spec.yaml"
+
+with open(TARGET_SPEC_PATH, "r", encoding="utf-8") as handle:
+    TARGET_SPEC = yaml.safe_load(handle) or {}
+
+TARGET_ID = TARGET_SPEC.get("target_id", "target")
+FEATURES = config.get("features", {})
+ENABLE_POCKETS = FEATURES.get("pockets", False)
+ENABLE_TUNNELS = FEATURES.get("tunnels", False)
+ENABLE_DOCKING = FEATURES.get("docking", False)
+
+
+def read_variants(path: str):
+    with open(path, newline="", encoding="utf-8") as handle:
+        header = handle.readline().strip()
+        if not header:
+            return []
+        delimiter = "," if "," in header else "\t" if "\t" in header else None
+        columns = header.split(delimiter) if delimiter else header.split()
+        variant_idx = columns.index("variant_id") if "variant_id" in columns else 0
+        variants = []
+        for row in handle:
+            row = row.strip()
+            if not row:
+                continue
+            parts = row.split(delimiter) if delimiter else row.split()
+            variants.append(parts[variant_idx])
+    return variants
+
+
+VARIANTS = read_variants("inputs/variants.txt")
+
+wildcard_constraints:
+    target_id = TARGET_ID
+
+
+def optional_feature_inputs(wildcards):
+    inputs = []
+    if ENABLE_POCKETS:
+        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/pockets/pockets.json")
+    if ENABLE_TUNNELS:
+        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/tunnels/tunnels.json")
+    if ENABLE_DOCKING:
+        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/docking/docking.json")
+    return inputs
+
+
+def format_inputs(inputs):
+    return " ".join(f"--input {path}" for path in inputs)
+
+
+rule all:
+    input:
+        expand(
+            f"runs/{TARGET_ID}/{{variant_id}}/outputs/scores/score_breakdown.json",
+            variant_id=VARIANTS,
+        ),
+        f"runs/{TARGET_ID}/batch/outputs/scores/leaderboard.csv",
+
+
+rule init_variant_inputs:
+    input:
+        "inputs/variants.txt",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/inputs/variant.json",
+    shell:
+        "python scripts/run_tool.py init_variant_inputs --input {input} --output {output}"
+
+
+rule fold_structure:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/inputs/variant.json",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    shell:
+        "python scripts/run_tool.py fold_structure --input {input} --output {output}"
+
+
+rule residue_map:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/maps/residue_map.json",
+    shell:
+        "python scripts/run_tool.py residue_map --input {input} --output {output}"
+
+
+rule msa_conservation:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/msa/conservation.json",
+    shell:
+        "python scripts/run_tool.py msa_conservation --input {input} --output {output}"
+
+
+rule volume_metrics:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/volume/volume_metrics.json",
+    shell:
+        "python scripts/run_tool.py volume_metrics --input {input} --output {output}"
+
+
+rule pockets:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/pockets.json",
+    shell:
+        "python scripts/run_tool.py pockets --input {input} --output {output}"
+
+
+rule tunnels:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/tunnels/tunnels.json",
+    shell:
+        "python scripts/run_tool.py tunnels --input {input} --output {output}"
+
+
+rule docking:
+    input:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/docking/docking.json",
+    shell:
+        "python scripts/run_tool.py docking --input {input} --output {output}"
+
+
+rule score:
+    input:
+        structure=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        residue_map=f"runs/{TARGET_ID}/{{variant_id}}/outputs/maps/residue_map.json",
+        conservation=f"runs/{TARGET_ID}/{{variant_id}}/outputs/msa/conservation.json",
+        volume=f"runs/{TARGET_ID}/{{variant_id}}/outputs/volume/volume_metrics.json",
+        extras=optional_feature_inputs,
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/scores/score_breakdown.json",
+    params:
+        input_args=lambda wildcards, input: format_inputs(input),
+    shell:
+        "python scripts/run_tool.py score {params.input_args} --output {output}"
+
+
+rule leaderboard:
+    input:
+        expand(
+            f"runs/{TARGET_ID}/{{variant_id}}/outputs/scores/score_breakdown.json",
+            variant_id=VARIANTS,
+        ),
+    output:
+        f"runs/{TARGET_ID}/batch/outputs/scores/leaderboard.csv",
+    params:
+        input_args=lambda wildcards, input: format_inputs(input),
+    shell:
+        "python scripts/run_tool.py leaderboard {params.input_args} --output {output}"

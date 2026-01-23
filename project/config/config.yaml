@@ -1,0 +1,6 @@
+target_id: demo_target
+
+features:
+  pockets: true
+  tunnels: false
+  docking: true
