@@ -23,7 +23,7 @@
             "type": "string"
           },
           "score": {
-            "type": "number"
+            "type": ["number", "null"]
           },
           "weight": {
             "type": "number"
@@ -38,6 +38,28 @@
         },
         "required": ["name", "score", "weight", "category", "description"]
       }
+    },
+    "missing_penalties": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "module": {
+            "type": "string"
+          },
+          "penalty": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": ["module", "penalty", "reason"]
+      }
+    },
+    "needs_review": {
+      "type": "boolean"
     },
     "metadata": {
       "type": "object",
