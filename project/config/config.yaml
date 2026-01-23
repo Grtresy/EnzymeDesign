@@ -36,6 +36,14 @@ structure_backend_configs:
     model_weights: /path/to/openfold_weights.pt
     args: []
 
+hhblits_db: /path/to/hhblits_db
+hhblits:
+  evalue: 1e-3
+  num_iterations: 3
+  maxseq: 10000
+  cpu: 4
+  extra_args: []
+
 scoring:
   weights:
     S_shrink: 0.55
