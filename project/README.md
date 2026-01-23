@@ -42,6 +42,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Snakemake + Mamba 环境管理
+日常运行建议使用 Snakemake 的 Conda 环境管理（mamba 作为前端），确保每个规则使用独立环境：
+```bash
+cd project
+snakemake -j 16 --use-conda --conda-frontend mamba --config mode=real
+```
+
 ## 一键运行
 ### Mock 模式（默认）
 ```bash
@@ -54,6 +61,14 @@ snakemake -j 4 --config mode=mock
 cd project
 snakemake -j 16 --config mode=real
 ```
+
+## 工具下载与使用说明
+真实模式所需工具的下载与使用说明见：
+- `docs/tools/folding.md`
+- `docs/tools/hhblits.md`
+- `docs/tools/fpocket.md`
+- `docs/tools/caver.md`
+- `docs/tools/docking.md`
 
 ## 输入说明
 - `inputs/variants.txt`：变体列表（header 包含 `variant_id`）。
@@ -79,4 +94,3 @@ snakemake -j 16 --config mode=real
 - 查看 `runs/<target_id>/<variant_id>/work/<tool>/stdout.log` 与 `stderr.log`。
 - Schema 校验错误会记录在 meta 的 `errors` 字段中。
 - 若需要验证回退/重试，可加 `--config fail_tool=fpocket`。
-

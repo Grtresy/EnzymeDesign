@@ -1,0 +1,10 @@
+name: enzyme-caver
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - caver
+  - numpy
+  - pyyaml
+  - jsonschema
