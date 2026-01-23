@@ -1,4 +1,5 @@
 import yaml
+from pathlib import Path
 
 configfile: "config/config.yaml"
 
@@ -7,11 +8,12 @@ TARGET_SPEC_PATH = "config/target_spec.yaml"
 with open(TARGET_SPEC_PATH, "r", encoding="utf-8") as handle:
     TARGET_SPEC = yaml.safe_load(handle) or {}
 
-TARGET_ID = TARGET_SPEC.get("target_id", "target")
+TARGET_ID = TARGET_SPEC.get("target_id", config.get("target_id", "target"))
 FEATURES = config.get("features", {})
 ENABLE_POCKETS = FEATURES.get("pockets", False)
 ENABLE_TUNNELS = FEATURES.get("tunnels", False)
 ENABLE_DOCKING = FEATURES.get("docking", False)
+PRIMARY_BACKEND = config.get("structure_primary_backend", "esmfold")
 
 
 def read_variants(path: str):
@@ -34,24 +36,6 @@ def read_variants(path: str):
 
 VARIANTS = read_variants("inputs/variants.txt")
 
-wildcard_constraints:
-    target_id = TARGET_ID
-
-
-def optional_feature_inputs(wildcards):
-    inputs = []
-    if ENABLE_POCKETS:
-        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/pockets/pockets.json")
-    if ENABLE_TUNNELS:
-        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/tunnels/tunnels.json")
-    if ENABLE_DOCKING:
-        inputs.append(f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/docking/docking.json")
-    return inputs
-
-
-def format_inputs(inputs):
-    return " ".join(f"--input {path}" for path in inputs)
-
 
 rule all:
     input:
@@ -64,89 +48,159 @@ rule all:
 
 rule init_variant_inputs:
     input:
-        "inputs/variants.txt",
+        variant_list="inputs/variants.txt",
+        target_fasta="inputs/target.fasta",
+        reference_structure="inputs/reference_structure.pdb",
+        key_residues="inputs/key_residues.json",
+        hitl_decisions="inputs/hitl_decisions.csv",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/inputs/variant.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/inputs/snapshot.json",
     shell:
-        "python scripts/run_tool.py init_variant_inputs --input {input} --output {output}"
+        (
+            "python scripts/run_tool.py init_variant_inputs "
+            "--input {input.variant_list} "
+            "--input {input.target_fasta} "
+            "--input {input.reference_structure} "
+            "--input {input.key_residues} "
+            "--input {input.hitl_decisions} "
+            "--input inputs/variants/{{wildcards.variant_id}}.fasta "
+            "--output {output}"
+        )
 
 
 rule fold_structure:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/inputs/variant.json",
+        snapshot=f"runs/{TARGET_ID}/{{variant_id}}/inputs/snapshot.json",
+        fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
+        conf=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/structure_confidence.json",
     shell:
-        "python scripts/run_tool.py fold_structure --input {input} --output {output}"
+        (
+            "python scripts/run_tool.py fold_structure "
+            "--input {input.fasta} "
+            "--input inputs/target.fasta "
+            "--input inputs/reference_structure.pdb "
+            "--output {output.pdb} "
+            "--output {output.conf}"
+        )
 
 
 rule residue_map:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
+        fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/maps/residue_map.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/residue_map.json",
     shell:
-        "python scripts/run_tool.py residue_map --input {input} --output {output}"
+        "python scripts/run_tool.py residue_map --input {input.pdb} --input {input.fasta} --output {output}"
 
 
-rule msa_conservation:
+rule msa:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/msa/conservation.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/msa.a3m",
     shell:
-        "python scripts/run_tool.py msa_conservation --input {input} --output {output}"
+        "python scripts/run_tool.py hhblits --input {input.fasta} --output {output}"
+
+
+rule conservation:
+    input:
+        msa=f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/msa.a3m",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
+    output:
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/conservation.json",
+    shell:
+        "python scripts/run_tool.py conservation --input {input.msa} --input {input.pdb} --output {output}"
 
 
 rule volume_metrics:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
+        wt_pdb="inputs/reference_structure.pdb",
+        wt_fasta="inputs/target.fasta",
+        variant_fasta=f"inputs/variants/{{variant_id}}.fasta",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/volume/volume_metrics.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/metrics/geometry_metrics.json",
     shell:
-        "python scripts/run_tool.py volume_metrics --input {input} --output {output}"
+        (
+            "python scripts/run_tool.py volume_metrics "
+            "--input {input.pdb} "
+            "--input {input.wt_pdb} "
+            "--input {input.wt_fasta} "
+            "--input {input.variant_fasta} "
+            "--output {output}"
+        )
 
 
 rule pockets:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/pockets.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/fpocket/pockets.json",
     shell:
-        "python scripts/run_tool.py pockets --input {input} --output {output}"
+        "python scripts/run_tool.py fpocket --input {input.pdb} --output {output}"
 
 
 rule tunnels:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
+        pockets=rules.pockets.output,
     output:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/tunnels/tunnels.json",
+        f"runs/{TARGET_ID}/{{variant_id}}/outputs/tunnels/caver/tunnels.json",
     shell:
-        "python scripts/run_tool.py tunnels --input {input} --output {output}"
+        "python scripts/run_tool.py caver --input {input.pdb} --input {input.pockets} --output {output}"
 
 
 rule docking:
     input:
-        f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
+        pdb=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/variant.pdb",
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/docking/docking.json",
     shell:
-        "python scripts/run_tool.py docking --input {input} --output {output}"
+        "python scripts/run_tool.py docking --input {input.pdb} --output {output}"
 
 
 rule score:
     input:
-        structure=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structure/folded_structure.pdb",
-        residue_map=f"runs/{TARGET_ID}/{{variant_id}}/outputs/maps/residue_map.json",
-        conservation=f"runs/{TARGET_ID}/{{variant_id}}/outputs/msa/conservation.json",
-        volume=f"runs/{TARGET_ID}/{{variant_id}}/outputs/volume/volume_metrics.json",
-        extras=optional_feature_inputs,
+        structure_conf=f"runs/{TARGET_ID}/{{variant_id}}/outputs/structures/{PRIMARY_BACKEND}/structure_confidence.json",
+        geometry=f"runs/{TARGET_ID}/{{variant_id}}/outputs/metrics/geometry_metrics.json",
+        conservation=f"runs/{TARGET_ID}/{{variant_id}}/outputs/features/conservation.json",
+        residue_map=f"runs/{TARGET_ID}/{{variant_id}}/outputs/residue_map.json",
+        key_residues="inputs/key_residues.json",
+        hitl_decisions="inputs/hitl_decisions.csv",
+        pockets=lambda wildcards: (
+            f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/pockets/fpocket/pockets.json"
+            if ENABLE_POCKETS
+            else []
+        ),
+        tunnels=lambda wildcards: (
+            f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/tunnels/caver/tunnels.json"
+            if ENABLE_TUNNELS
+            else []
+        ),
+        docking=lambda wildcards: (
+            f"runs/{TARGET_ID}/{wildcards.variant_id}/outputs/docking/docking.json"
+            if ENABLE_DOCKING
+            else []
+        ),
     output:
         f"runs/{TARGET_ID}/{{variant_id}}/outputs/scores/score_breakdown.json",
-    params:
-        input_args=lambda wildcards, input: format_inputs(input),
     shell:
-        "python scripts/run_tool.py score {params.input_args} --output {output}"
+        (
+            "python scripts/score_variants.py "
+            "--structure-conf {input.structure_conf} "
+            "--geometry {input.geometry} "
+            "--conservation {input.conservation} "
+            "--residue-map {input.residue_map} "
+            "--key-residues {input.key_residues} "
+            "--hitl-decisions {input.hitl_decisions} "
+            "--pockets {input.pockets} "
+            "--tunnels {input.tunnels} "
+            "--docking {input.docking} "
+            "--output {output}"
+        )
 
 
 rule leaderboard:
@@ -157,7 +211,21 @@ rule leaderboard:
         ),
     output:
         f"runs/{TARGET_ID}/batch/outputs/scores/leaderboard.csv",
-    params:
-        input_args=lambda wildcards, input: format_inputs(input),
     shell:
-        "python scripts/run_tool.py leaderboard {params.input_args} --output {output}"
+        "python scripts/build_leaderboard.py --inputs {input} --output {output}"
+
+
+if ENABLE_POCKETS:
+    rule all_pockets:
+        input:
+            expand(
+                f"runs/{TARGET_ID}/{{variant_id}}/outputs/pockets/fpocket/pockets.json",
+                variant_id=VARIANTS,
+            )
+
+if ENABLE_TUNNELS:
+    use rule tunnels as tunnels_rule
+
+if ENABLE_DOCKING:
+    use rule docking as docking_rule
+

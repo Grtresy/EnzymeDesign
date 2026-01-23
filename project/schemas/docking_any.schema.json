@@ -1,51 +1,24 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Docking results",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Docking",
   "type": "object",
-  "additionalProperties": false,
+  "required": ["schema_version", "method", "poses"],
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "default": "1.0"
-    },
-    "method": {
-      "type": "string"
-    },
-    "receptor_id": {
-      "type": "string"
-    },
-    "ligand_id": {
-      "type": "string"
-    },
+    "schema_version": {"type": "string"},
+    "method": {"type": "string"},
+    "best_affinity": {"type": ["number", "null"]},
+    "top_confidence": {"type": ["number", "null"]},
     "poses": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "required": ["rank", "score", "path"],
         "properties": {
-          "pose_id": {
-            "type": "string"
-          },
-          "score": {
-            "type": "number"
-          },
-          "binding_energy": {
-            "type": "number"
-          },
-          "rmsd": {
-            "type": "number",
-            "minimum": 0
-          },
-          "interactions": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        },
-        "required": ["pose_id", "score", "binding_energy", "rmsd", "interactions"]
+          "rank": {"type": "integer"},
+          "score": {"type": "number"},
+          "path": {"type": "string"}
+        }
       }
     }
-  },
-  "required": ["schema_version", "method", "receptor_id", "ligand_id", "poses"]
+  }
 }

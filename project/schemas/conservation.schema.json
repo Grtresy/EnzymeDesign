@@ -1,45 +1,30 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "MSA conservation",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Conservation",
   "type": "object",
-  "additionalProperties": false,
+  "required": ["schema_version", "msa", "per_residue"],
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "default": "1.0"
+    "schema_version": {"type": "string"},
+    "msa": {
+      "type": "object",
+      "required": ["n_seq", "neff", "coverage"],
+      "properties": {
+        "n_seq": {"type": "integer"},
+        "neff": {"type": "number"},
+        "coverage": {"type": "number"}
+      }
     },
-    "method": {
-      "type": "string"
-    },
-    "window_size": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "residues": {
+    "per_residue": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "required": ["uid", "cons_score", "gap_fraction"],
         "properties": {
-          "position": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "residue": {
-            "type": "string",
-            "minLength": 1
-          },
-          "score": {
-            "type": "number"
-          },
-          "conservation_class": {
-            "type": "string",
-            "enum": ["low", "medium", "high"]
-          }
-        },
-        "required": ["position", "residue", "score", "conservation_class"]
+          "uid": {"type": "string"},
+          "cons_score": {"type": "number"},
+          "gap_fraction": {"type": "number"}
+        }
       }
     }
-  },
-  "required": ["schema_version", "method", "residues"]
+  }
 }

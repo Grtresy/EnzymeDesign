@@ -1,48 +1,28 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Pocket detection",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pockets",
   "type": "object",
-  "additionalProperties": false,
+  "required": ["schema_version", "pockets"],
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "default": "1.0"
-    },
+    "schema_version": {"type": "string"},
     "pockets": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "required": ["pocket_id", "score", "volume", "center", "residues"],
         "properties": {
-          "pocket_id": {
-            "type": "string"
-          },
-          "volume": {
-            "type": "number",
-            "minimum": 0
-          },
-          "score": {
-            "type": "number"
-          },
+          "pocket_id": {"type": "string"},
+          "score": {"type": "number"},
+          "volume": {"type": "number"},
           "center": {
             "type": "array",
-            "items": {
-              "type": "number"
-            },
+            "items": {"type": "number"},
             "minItems": 3,
             "maxItems": 3
           },
-          "residues": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "minimum": 1
-            }
-          }
-        },
-        "required": ["pocket_id", "volume", "score", "center", "residues"]
+          "residues": {"type": "array", "items": {"type": "string"}}
+        }
       }
     }
-  },
-  "required": ["schema_version", "pockets"]
+  }
 }

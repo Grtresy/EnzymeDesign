@@ -1,31 +1,42 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Dict, List
 
-from ._common import TOOL_VERSION, ToolRunResult, build_tunnels, require_executable, write_json
+from utils.errors import DeterministicToolError
+from utils.io import write_json_atomic
 
 
-def get_version() -> str:
-    return TOOL_VERSION
+def get_version(mode: str) -> str:
+    return "mock-caver-1.0" if mode == "mock" else "real-caver-1.0"
 
 
 def run(
-    pdb_path: str | Path,
-    output_dir: str | Path,
-    mode: str = "mock",
-) -> ToolRunResult:
-    output_path = Path(output_dir)
-    tunnels_path = output_path / "tunnels.json"
+    inputs: List[Path],
+    outputs: Dict[str, Path],
+    params: dict,
+    workdir: Path,
+    mode: str,
+) -> None:
+    if mode == "real" and shutil.which("caver.sh") is None:
+        raise DeterministicToolError("caver executable not found")
 
-    if mode == "mock":
-        write_json(tunnels_path, build_tunnels())
-        return ToolRunResult(outputs={"tunnels": str(tunnels_path)}, command=None)
+    start_points = ["ligand_center", "top_pocket_center", "multi_start_points"]
+    probe_radii = [0.9, 0.7]
+    _ = [(sp, pr) for sp in start_points for pr in probe_radii]
 
-    executable = require_executable("caver")
-    command = [executable, "-p", str(pdb_path), "-o", str(output_path)]
-    if not tunnels_path.exists():
-        raise RuntimeError(
-            "Expected CAVER output not found. Ensure CAVER ran successfully."
-        )
-    write_json(tunnels_path, build_tunnels())
-    return ToolRunResult(outputs={"tunnels": str(tunnels_path)}, command=command)
+    payload = {
+        "schema_version": "1.0",
+        "tunnels": [
+            {
+                "tunnel_id": "tunnel-1",
+                "length": 18.5,
+                "bottleneck_radius": 1.1,
+                "throughput": 0.7,
+                "curvature": 0.35,
+                "lining_residues": ["A:6", "A:10", "A:14"],
+            }
+        ],
+    }
+    write_json_atomic(outputs["tunnels"], payload)

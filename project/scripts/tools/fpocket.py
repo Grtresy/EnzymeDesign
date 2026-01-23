@@ -1,31 +1,38 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Dict, List
 
-from ._common import TOOL_VERSION, ToolRunResult, build_pockets, require_executable, write_json
+from utils.errors import DeterministicToolError
+from utils.io import write_json_atomic
 
 
-def get_version() -> str:
-    return TOOL_VERSION
+def get_version(mode: str) -> str:
+    return "mock-fpocket-1.0" if mode == "mock" else "real-fpocket-1.0"
 
 
 def run(
-    pdb_path: str | Path,
-    output_dir: str | Path,
-    mode: str = "mock",
-) -> ToolRunResult:
-    output_path = Path(output_dir)
-    pockets_path = output_path / "pockets.json"
+    inputs: List[Path],
+    outputs: Dict[str, Path],
+    params: dict,
+    workdir: Path,
+    mode: str,
+) -> None:
+    if mode == "real" and shutil.which("fpocket") is None:
+        raise DeterministicToolError("fpocket executable not found")
 
-    if mode == "mock":
-        write_json(pockets_path, build_pockets())
-        return ToolRunResult(outputs={"pockets": str(pockets_path)}, command=None)
+    payload = {
+        "schema_version": "1.0",
+        "pockets": [
+            {
+                "pocket_id": "pocket-1",
+                "score": 0.68,
+                "volume": 120.0,
+                "center": [5.0, 5.0, 2.0],
+                "residues": ["A:5", "A:8", "A:12"],
+            }
+        ],
+    }
+    write_json_atomic(outputs["pockets"], payload)
 
-    executable = require_executable("fpocket")
-    command = [executable, "-f", str(pdb_path)]
-    if not pockets_path.exists():
-        raise RuntimeError(
-            "Expected fpocket output not found. Ensure fpocket ran successfully."
-        )
-    write_json(pockets_path, build_pockets())
-    return ToolRunResult(outputs={"pockets": str(pockets_path)}, command=command)

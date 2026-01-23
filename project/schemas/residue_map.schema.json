@@ -1,55 +1,43 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Residue mapping",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Residue Map",
   "type": "object",
-  "additionalProperties": false,
+  "required": ["schema_version", "residues", "index"],
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "default": "1.0"
-    },
-    "source_sequence": {
-      "type": "string"
-    },
-    "target_sequence": {
-      "type": "string"
-    },
-    "mappings": {
+    "schema_version": {"type": "string"},
+    "residues": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "source_index": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "target_index": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "source_residue": {
-            "type": "string",
-            "minLength": 1
-          },
-          "target_residue": {
-            "type": "string",
-            "minLength": 1
-          },
-          "mapping_type": {
-            "type": "string",
-            "enum": ["aligned", "gap", "insertion", "deletion"]
-          }
-        },
         "required": [
-          "source_index",
-          "target_index",
-          "source_residue",
-          "target_residue",
-          "mapping_type"
-        ]
+          "uid",
+          "chain",
+          "auth_seq_id",
+          "ins_code",
+          "res_name",
+          "seq_index_0based",
+          "has_ca",
+          "is_missing"
+        ],
+        "properties": {
+          "uid": {"type": "string"},
+          "chain": {"type": "string"},
+          "auth_seq_id": {"type": "integer"},
+          "ins_code": {"type": "string"},
+          "res_name": {"type": "string"},
+          "seq_index_0based": {"type": "integer"},
+          "has_ca": {"type": "boolean"},
+          "is_missing": {"type": "boolean"}
+        }
+      }
+    },
+    "index": {
+      "type": "object",
+      "required": ["by_seq_index", "by_auth"],
+      "properties": {
+        "by_seq_index": {"type": "object"},
+        "by_auth": {"type": "object"}
       }
     }
-  },
-  "required": ["schema_version", "mappings"]
+  }
 }

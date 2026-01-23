@@ -1,48 +1,41 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Tool metadata",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tool Meta",
   "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "schema_version": {
-      "type": "string",
-      "default": "1.0"
-    },
-    "tool_name": {
-      "type": "string"
-    },
-    "tool_version": {
-      "type": "string"
-    },
-    "run_id": {
-      "type": "string"
-    },
-    "generated_at": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "inputs": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "outputs": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "parameters": {
-      "type": "object",
-      "default": {},
-      "additionalProperties": true
-    }
-  },
   "required": [
     "schema_version",
-    "tool_name",
-    "generated_at",
-    "inputs"
-  ]
+    "tool",
+    "tool_version",
+    "params",
+    "inputs",
+    "outputs",
+    "inputs_sha256",
+    "outputs_sha256",
+    "cache_key",
+    "cache_hit",
+    "exit_code",
+    "retries",
+    "started_at",
+    "ended_at",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "tool": {"type": "string"},
+    "tool_version": {"type": "string"},
+    "params": {"type": "object"},
+    "inputs": {"type": "array", "items": {"type": "string"}},
+    "outputs": {"type": "array", "items": {"type": "string"}},
+    "inputs_sha256": {"type": "string"},
+    "outputs_sha256": {"type": "string"},
+    "cache_key": {"type": "string"},
+    "cache_hit": {"type": "boolean"},
+    "exit_code": {"type": "integer"},
+    "retries": {"type": "integer"},
+    "started_at": {"type": "string"},
+    "ended_at": {"type": "string"},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "string"}}
+  }
 }

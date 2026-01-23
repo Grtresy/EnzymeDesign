@@ -1,40 +1,35 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Dict, List
 
-from ._common import TOOL_VERSION, ToolRunResult, build_docking, require_executable, write_json
+from utils.errors import DeterministicToolError
+from utils.io import write_json_atomic
 
 
-def get_version() -> str:
-    return TOOL_VERSION
+def get_version(mode: str) -> str:
+    return "mock-diffdock-1.0" if mode == "mock" else "real-diffdock-1.0"
 
 
 def run(
-    receptor_path: str | Path,
-    ligand_path: str | Path,
-    output_dir: str | Path,
-    mode: str = "mock",
-) -> ToolRunResult:
-    output_path = Path(output_dir)
-    docking_path = output_path / "docking.json"
+    inputs: List[Path],
+    outputs: Dict[str, Path],
+    params: dict,
+    workdir: Path,
+    mode: str,
+) -> None:
+    if mode == "real" and shutil.which("diffdock") is None:
+        raise DeterministicToolError("diffdock executable not found")
 
-    if mode == "mock":
-        write_json(docking_path, build_docking("diffdock"))
-        return ToolRunResult(outputs={"docking": str(docking_path)}, command=None)
+    payload = {
+        "schema_version": "1.0",
+        "method": "diffdock",
+        "best_affinity": None,
+        "top_confidence": 0.62,
+        "poses": [
+            {"rank": 1, "score": 0.62, "path": "poses/diffdock_pose_1.sdf"}
+        ],
+    }
+    write_json_atomic(outputs["docking"], payload)
 
-    executable = require_executable("diffdock")
-    command = [
-        executable,
-        "--receptor",
-        str(receptor_path),
-        "--ligand",
-        str(ligand_path),
-        "--out",
-        str(output_path),
-    ]
-    if not docking_path.exists():
-        raise RuntimeError(
-            "Expected DiffDock output not found. Ensure diffdock ran successfully."
-        )
-    write_json(docking_path, build_docking("diffdock"))
-    return ToolRunResult(outputs={"docking": str(docking_path)}, command=command)

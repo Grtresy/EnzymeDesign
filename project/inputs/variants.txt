@@ -1,4 +1,4 @@
-variant_id
-variant_001
-variant_002
-variant_003
+variant_id,description
+var_short,shortened_variant
+var_same,same_length_variant
+var_long,elongated_variant

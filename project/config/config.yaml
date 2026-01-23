@@ -1,6 +1,35 @@
-target_id: demo_target
+mode: mock
+fail_tool: null
+
+target_id: enzyme_shrink_demo
+
+cache:
+  dir: cache
+  mode: hardlink
+
+retries:
+  max_retries: 2
+  backoff_seconds: 2
 
 features:
   pockets: true
-  tunnels: false
+  tunnels: true
   docking: true
+
+structure_backends:
+  - esmfold
+  - omegafold
+  - openfold
+structure_primary_backend: esmfold
+
+scoring:
+  weights:
+    S_shrink: 0.55
+    S_struct: 0.20
+    S_mut_risk: 0.15
+    S_cons: 0.10
+    S_function_guard: 0.00
+  keep_bonus: 0.02
+  drop_score: -1.0
+  missing_penalty: 0.08
+

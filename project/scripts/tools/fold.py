@@ -1,58 +1,64 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Dict, List
 
-from ._common import (
-    TOOL_VERSION,
-    ToolRunResult,
-    build_structure_confidence,
-    require_executable,
-    write_json,
-    write_minimal_pdb,
-)
+import numpy as np
+
+from utils.errors import DeterministicToolError
+from utils.io import write_json_atomic
+from utils.pdb import write_mock_pdb
 
 
-def get_version() -> str:
-    return TOOL_VERSION
+def get_version(mode: str) -> str:
+    return "mock-fold-1.0" if mode == "mock" else "real-fold-1.0"
+
+
+def _mock_fold(sequence: str, pdb_path: Path, conf_path: Path, backend_id: str) -> None:
+    write_mock_pdb(sequence, pdb_path)
+    rng = np.random.default_rng(7)
+    plddt = rng.normal(78, 4, size=len(sequence)).clip(50, 95)
+    per_res = [
+        {"uid": f"A:{idx}", "plddt": float(score)}
+        for idx, score in enumerate(plddt, start=1)
+    ]
+    payload = {
+        "schema_version": "1.0",
+        "backend_id": backend_id,
+        "mean_plddt": float(np.mean(plddt)) if len(plddt) else 0.0,
+        "per_res_plddt": per_res,
+        "clash_score": float(max(0.0, 10.0 - np.mean(plddt) / 10.0)),
+    }
+    write_json_atomic(conf_path, payload)
 
 
 def run(
-    sequence: str | None,
-    output_dir: str | Path,
-    mode: str = "mock",
-    model: str = "mockfold",
-) -> ToolRunResult:
-    output_path = Path(output_dir)
-    pdb_path = output_path / "structure.pdb"
-    confidence_path = output_path / "structure_confidence.json"
+    inputs: List[Path],
+    outputs: Dict[str, Path],
+    params: dict,
+    workdir: Path,
+    mode: str,
+) -> None:
+    fasta_path = next(p for p in inputs if p.suffix == ".fasta" and p.name != "target.fasta")
+    sequence = "".join(
+        line.strip()
+        for line in fasta_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(">")
+    )
+    pdb_path = outputs["pdb"]
+    conf_path = outputs["structure_confidence"]
+    backends = params["config"].get("structure_backends", ["esmfold"])
 
     if mode == "mock":
-        write_minimal_pdb(pdb_path)
-        residues = [(1, "A"), (2, "C"), (3, "D")]
-        write_json(confidence_path, build_structure_confidence(residues, model=model))
-        return ToolRunResult(
-            outputs={
-                "pdb": str(pdb_path),
-                "structure_confidence": str(confidence_path),
-            },
-            command=None,
-        )
+        _mock_fold(sequence, pdb_path, conf_path, backends[0])
+        return
 
-    executable = require_executable("colabfold_batch")
-    fasta_path = output_path / "input.fasta"
-    fasta_path.write_text(f">query\n{sequence or 'ACD'}\n")
-    command = [executable, str(fasta_path), str(output_path)]
-    if not pdb_path.exists():
-        raise RuntimeError(
-            "Expected fold output not found. Ensure colabfold_batch ran successfully."
-        )
-    if not confidence_path.exists():
-        residues = [(1, "A")]
-        write_json(confidence_path, build_structure_confidence(residues, model=model))
-    return ToolRunResult(
-        outputs={
-            "pdb": str(pdb_path),
-            "structure_confidence": str(confidence_path),
-        },
-        command=command,
-    )
+    for backend_id in backends:
+        if shutil.which(backend_id) is None:
+            continue
+        _mock_fold(sequence, pdb_path, conf_path, backend_id)
+        return
+
+    raise DeterministicToolError("No available folding backend found")
+
