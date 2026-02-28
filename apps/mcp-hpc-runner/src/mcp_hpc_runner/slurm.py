@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+import shlex
+import uuid
+
+from .config import RunnerConfig
+from .errors import FailureMapper
+from .logging_utils import prepare_log_payload, redact_text
+from .models import JobHandle, JobStatus, RunResult, RunSpec
+from .remote import CommandRunner, wrap_ssh
+from .staging import StagingManager
+from .store import ArtifactStore
+from .validation import (
+    ensure_valid_runspec,
+    run_success_checks,
+    validate_expected_outputs,
+)
+
+
+def _map_slurm_state(raw: str) -> str:
+    upper = raw.strip().upper()
+    if not upper:
+        return "unknown"
+    if upper in {"PENDING", "CONFIGURING", "REQUEUE_FED"}:
+        return "queued"
+    if upper in {"RUNNING", "COMPLETING"}:
+        return "running"
+    if upper in {"COMPLETED"}:
+        return "completed"
+    if upper in {"CANCELLED", "PREEMPTED"}:
+        return "cancelled"
+    if upper in {"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"}:
+        return "failed"
+    return "unknown"
+
+
+class SlurmRunner:
+    def __init__(
+        self,
+        config: RunnerConfig,
+        store: ArtifactStore,
+        staging: StagingManager,
+        command_runner: CommandRunner,
+        failure_mapper: FailureMapper,
+    ) -> None:
+        self.config = config
+        self.store = store
+        self.staging = staging
+        self.command_runner = command_runner
+        self.failure_mapper = failure_mapper
+
+    def _make_run_id(self) -> str:
+        return uuid.uuid4().hex[:12]
+
+    def _remote_run_dir(self, run_id: str) -> str:
+        return str(PurePosixPath(self.config.cluster.remote_base_dir) / run_id)
+
+    def _ensure_remote_layout(self, remote_run_dir: str) -> None:
+        cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            [
+                "mkdir",
+                "-p",
+                str(PurePosixPath(remote_run_dir) / "work"),
+                str(PurePosixPath(remote_run_dir) / "out"),
+                str(PurePosixPath(remote_run_dir) / "tmp"),
+                str(PurePosixPath(remote_run_dir) / "logs"),
+            ],
+        )
+        self.command_runner.run(cmd, check=True)
+
+    def _partition_for(self, spec: RunSpec) -> str | None:
+        if spec.resources.partition:
+            return spec.resources.partition
+        if spec.resources.gpus > 0:
+            return (
+                self.config.slurm.gpu_partition or self.config.slurm.default_partition
+            )
+        return self.config.slurm.default_partition
+
+    def build_sbatch_script(self, spec: RunSpec, remote_run_dir: str) -> str:
+        partition = self._partition_for(spec)
+        lines = [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"#SBATCH --job-name={spec.name}",
+            f"#SBATCH --cpus-per-task={spec.resources.cpus}",
+            f"#SBATCH --mem={spec.resources.mem_mb}",
+            f"#SBATCH --time={spec.resources.time_minutes}",
+            f"#SBATCH --output={PurePosixPath(remote_run_dir) / 'logs' / 'slurm-%j.out'}",
+            f"#SBATCH --error={PurePosixPath(remote_run_dir) / 'logs' / 'slurm-%j.err'}",
+        ]
+        if partition:
+            lines.append(f"#SBATCH --partition={partition}")
+        if spec.resources.gpus > 0:
+            if self.config.slurm.gpu_flag_style == "gres":
+                lines.append(f"#SBATCH --gres=gpu:{spec.resources.gpus}")
+            else:
+                lines.append(f"#SBATCH --gpus={spec.resources.gpus}")
+
+        command = shlex.join(spec.command)
+        lines.append(f"cd {shlex.quote(str(PurePosixPath(remote_run_dir) / 'work'))}")
+        lines.append(command)
+        return "\n".join(lines) + "\n"
+
+    def submit(self, spec: RunSpec) -> RunResult:
+        ensure_valid_runspec(spec)
+        run_id = spec.run_id or self._make_run_id()
+        remote_run_dir = self._remote_run_dir(run_id)
+        self.store.ensure_run_layout(run_id)
+        self.store.write_json(run_id, "runspec.json", spec.to_dict())
+        self._ensure_remote_layout(remote_run_dir)
+        upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
+
+        script = self.build_sbatch_script(spec, remote_run_dir)
+        local_script = self.store.run_root(run_id) / "metadata" / "job.sbatch"
+        local_script.parent.mkdir(parents=True, exist_ok=True)
+        local_script.write_text(script, encoding="utf-8")
+
+        remote_script = str(PurePosixPath(remote_run_dir) / "logs" / "job.sbatch")
+        upload_cmd = self.staging.build_upload_command(
+            local_script, remote_script, use_rsync=self.config.execution.use_rsync
+        )
+        upload = self.command_runner.run(upload_cmd, check=False)
+        if upload.returncode != 0 and self.config.execution.use_rsync:
+            upload_fallback = self.staging.build_upload_command(
+                local_script, remote_script, use_rsync=False
+            )
+            self.command_runner.run(upload_fallback, check=True)
+        elif upload.returncode != 0:
+            raise RuntimeError(upload.stderr.strip())
+
+        submit_cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            ["sbatch", "--parsable", remote_script],
+        )
+        submit = self.command_runner.run(submit_cmd, check=False)
+        stderr = redact_text(submit.stderr, self.config.logging.redact_patterns)
+
+        job_id = None
+        if submit.returncode == 0:
+            token = submit.stdout.strip().split(";")[0]
+            job_id = token if token else None
+
+        handle = (
+            JobHandle(run_id=run_id, job_id=job_id, remote_run_dir=remote_run_dir)
+            if job_id
+            else None
+        )
+        if handle:
+            self.store.write_json(run_id, "job_handle.json", handle.to_dict())
+
+        metadata = {
+            "submitted_at": datetime.now(tz=UTC).isoformat(),
+            "upload_entries": upload_entries,
+            "sbatch_script": str(local_script),
+            "submit_stdout": submit.stdout.strip(),
+        }
+        self.store.write_json(run_id, "submit_metadata.json", metadata)
+
+        mapped = self.failure_mapper.map_error(stderr, spec.failure_signatures)
+        return RunResult(
+            run_id=run_id,
+            requested_mode=spec.execution_mode,
+            selected_mode="sbatch",
+            remote_run_dir=remote_run_dir,
+            status="submitted" if submit.returncode == 0 and job_id else "failed",
+            exit_code=submit.returncode,
+            job_id=job_id,
+            stdout=submit.stdout.strip(),
+            stderr=stderr,
+            error_code=(mapped.code if mapped else None),
+            metadata=metadata,
+            logs={
+                "submit": prepare_log_payload(
+                    submit.stdout + stderr, self.config.logging.inline_log_limit
+                )
+            },
+        )
+
+    def load_handle(self, run_id: str) -> JobHandle:
+        return JobHandle.from_dict(self.store.read_json(run_id, "job_handle.json"))
+
+    def status(self, handle: JobHandle) -> JobStatus:
+        squeue_cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            ["squeue", "-h", "-j", handle.job_id, "-o", "%T"],
+        )
+        squeue = self.command_runner.run(squeue_cmd, check=False)
+        raw_state = squeue.stdout.strip()
+
+        if squeue.returncode == 0 and raw_state:
+            return JobStatus(
+                run_id=handle.run_id,
+                job_id=handle.job_id,
+                state=_map_slurm_state(raw_state),
+                raw_state=raw_state,
+            )
+
+        sacct_cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            [
+                "sacct",
+                "-j",
+                handle.job_id,
+                "--format=State,ExitCode",
+                "--parsable2",
+                "--noheader",
+            ],
+        )
+        sacct = self.command_runner.run(sacct_cmd, check=False)
+        raw = sacct.stdout.strip().splitlines()[0] if sacct.stdout.strip() else ""
+        state_token = raw.split("|")[0] if raw else ""
+        exit_code = None
+        if raw and "|" in raw:
+            exit_token = raw.split("|")[1]
+            try:
+                exit_code = int(exit_token.split(":")[0])
+            except ValueError:
+                exit_code = None
+
+        return JobStatus(
+            run_id=handle.run_id,
+            job_id=handle.job_id,
+            state=_map_slurm_state(state_token),
+            raw_state=state_token,
+            exit_code=exit_code,
+        )
+
+    def logs(self, handle: JobHandle, tail_lines: int = 200) -> dict[str, object]:
+        out_path = str(
+            PurePosixPath(handle.remote_run_dir) / "logs" / f"slurm-{handle.job_id}.out"
+        )
+        err_path = str(
+            PurePosixPath(handle.remote_run_dir) / "logs" / f"slurm-{handle.job_id}.err"
+        )
+
+        out_tail_cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            ["tail", "-n", str(tail_lines), out_path],
+        )
+        err_tail_cmd = wrap_ssh(
+            self.config.cluster.ssh_target,
+            ["tail", "-n", str(tail_lines), err_path],
+        )
+        out_tail = self.command_runner.run(out_tail_cmd, check=False)
+        err_tail = self.command_runner.run(err_tail_cmd, check=False)
+
+        stdout = redact_text(out_tail.stdout, self.config.logging.redact_patterns)
+        stderr = redact_text(err_tail.stdout, self.config.logging.redact_patterns)
+
+        self.store.write_log(handle.run_id, "slurm_tail_stdout.log", stdout)
+        self.store.write_log(handle.run_id, "slurm_tail_stderr.log", stderr)
+
+        return {
+            "run_id": handle.run_id,
+            "job_id": handle.job_id,
+            "remote_stdout_path": out_path,
+            "remote_stderr_path": err_path,
+            "stdout": prepare_log_payload(stdout, self.config.logging.inline_log_limit),
+            "stderr": prepare_log_payload(stderr, self.config.logging.inline_log_limit),
+        }
+
+    def cancel(self, handle: JobHandle) -> RunResult:
+        cancel_cmd = wrap_ssh(
+            self.config.cluster.ssh_target, ["scancel", handle.job_id]
+        )
+        cancelled = self.command_runner.run(cancel_cmd, check=False)
+        stderr = redact_text(cancelled.stderr, self.config.logging.redact_patterns)
+        mapped = self.failure_mapper.map_error(stderr)
+        return RunResult(
+            run_id=handle.run_id,
+            requested_mode="sbatch",
+            selected_mode="sbatch",
+            remote_run_dir=handle.remote_run_dir,
+            status="cancelled" if cancelled.returncode == 0 else "failed",
+            exit_code=cancelled.returncode,
+            job_id=handle.job_id,
+            stdout=cancelled.stdout.strip(),
+            stderr=stderr,
+            error_code=(mapped.code if mapped else None),
+            logs={
+                "cancel": prepare_log_payload(
+                    cancelled.stdout + stderr, self.config.logging.inline_log_limit
+                )
+            },
+        )
+
+    def fetch_artifacts(self, spec: RunSpec, handle: JobHandle) -> RunResult:
+        entries = self.staging.download_outputs(
+            handle.run_id,
+            spec.expected_outputs,
+            handle.remote_run_dir,
+        )
+
+        outputs_root = self.store.run_root(handle.run_id) / "outputs"
+        missing_outputs, empty_outputs = validate_expected_outputs(
+            outputs_root, spec.expected_outputs
+        )
+        success_check_failures = run_success_checks(outputs_root, spec)
+        status = "completed"
+        error_code = None
+        if missing_outputs or empty_outputs or success_check_failures:
+            status = "failed"
+            error_code = "OUTPUT_VALIDATION_FAILED"
+
+        artifacts = {
+            entry["remote_path"]: entry["local_path"]
+            for entry in entries
+            if entry.get("returncode", 1) == 0
+        }
+
+        metadata = {
+            "validation": {
+                "missing_outputs": missing_outputs,
+                "empty_outputs": empty_outputs,
+                "success_check_failures": success_check_failures,
+            }
+        }
+
+        return RunResult(
+            run_id=handle.run_id,
+            requested_mode="sbatch",
+            selected_mode="sbatch",
+            remote_run_dir=handle.remote_run_dir,
+            status=status,
+            job_id=handle.job_id,
+            error_code=error_code,
+            artifacts=artifacts,
+            metadata=metadata,
+        )

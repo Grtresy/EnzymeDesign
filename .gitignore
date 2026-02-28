@@ -4,6 +4,12 @@
 
 .venv/
 
+.pytest_cache/
+
+.mcp_hpc_runner/
+
+hpc_runner.toml
+
 cache/
 !cache/.gitkeep
 
@@ -15,3 +21,5 @@ __pycache__/
 data/
 
 old/
+
+containers
