@@ -100,7 +100,9 @@ class StagingManager:
             remote_path = str(PurePosixPath(remote_run_dir) / "work" / item.remote_path)
             remote_parent = str(PurePosixPath(remote_path).parent)
             checksum = _sha256(local_path)
-            cache_key = f"{checksum}:{item.remote_path}"
+            # Key is content + absolute remote destination (run-specific).
+            # This avoids collisions across runs when remote_path is reused.
+            cache_key = f"{checksum}:{remote_path}"
             skipped = cache.get(cache_key) == remote_path
 
             if not skipped:

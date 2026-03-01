@@ -92,9 +92,11 @@ def test_sbatch_sentinel_and_fetch(tmp_path: Path) -> None:
             "python3",
             "-c",
             (
+                "import os; "
                 "from pathlib import Path; "
-                "Path('../out').mkdir(parents=True, exist_ok=True); "
-                "Path('../out/success.txt').write_text('ok\\n', encoding='utf-8')"
+                "out = Path(os.environ.get('OUTDIR', '../out')); "
+                "out.mkdir(parents=True, exist_ok=True); "
+                "(out / 'success.txt').write_text('ok\\n', encoding='utf-8')"
             ),
         ],
         execution_mode="sbatch",

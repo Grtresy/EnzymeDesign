@@ -1,0 +1,32 @@
+{
+  "hhblits": {
+    "query_fasta": "./fixtures/query.fasta",
+    "db_prefix": "uniclust30"
+  },
+  "chai_fold": {
+    "input_fasta": "./fixtures/query.fasta"
+  },
+  "alphafold3": {
+    "input_json": "./fixtures/af3_input.json"
+  },
+  "colabfold": {
+    "input_fasta": "./fixtures/query.fasta"
+  },
+  "fpocket": {
+    "structure_path": "./fixtures/target.pdb"
+  },
+  "tunnels": {
+    "structure_path": "./fixtures/target.pdb",
+    "mode": "detect"
+  },
+  "vina": {
+    "receptor_path": "./fixtures/receptor.pdbqt",
+    "ligand_path": "./fixtures/ligand.pdbqt",
+    "center_x": 0,
+    "center_y": 0,
+    "center_z": 0,
+    "size_x": 20,
+    "size_y": 20,
+    "size_z": 20
+  }
+}

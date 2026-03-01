@@ -72,6 +72,10 @@ class MCPHpcServer:
                         "job_id": {"type": "string"},
                         "remote_run_dir": {"type": "string"},
                     },
+                    "anyOf": [
+                        {"required": ["run_id"]},
+                        {"required": ["job_id", "remote_run_dir"]},
+                    ],
                 },
             },
             {
@@ -85,6 +89,10 @@ class MCPHpcServer:
                         "remote_run_dir": {"type": "string"},
                         "tail_lines": {"type": "integer", "default": 200},
                     },
+                    "anyOf": [
+                        {"required": ["run_id"]},
+                        {"required": ["job_id", "remote_run_dir"]},
+                    ],
                 },
             },
             {
@@ -97,6 +105,10 @@ class MCPHpcServer:
                         "job_id": {"type": "string"},
                         "remote_run_dir": {"type": "string"},
                     },
+                    "anyOf": [
+                        {"required": ["run_id"]},
+                        {"required": ["job_id", "remote_run_dir"]},
+                    ],
                 },
             },
             {
@@ -125,14 +137,14 @@ class MCPHpcServer:
 
         job_id = args.get("job_id")
         remote_run_dir = args.get("remote_run_dir")
-        if run_id and job_id and remote_run_dir:
+        if job_id and remote_run_dir:
             return JobHandle(
-                run_id=str(run_id),
+                run_id=str(run_id) if run_id else f"adhoc-{job_id}",
                 job_id=str(job_id),
                 remote_run_dir=str(remote_run_dir),
             )
         raise ValueError(
-            "Provide run_id with stored handle, or run_id+job_id+remote_run_dir"
+            "Provide run_id with stored handle, or job_id+remote_run_dir (optionally run_id)"
         )
 
     def _load_runspec_for_run(
@@ -186,13 +198,15 @@ class MCPHpcServer:
             if not raw:
                 continue
 
+            request_id = None
             try:
                 request = json.loads(raw)
+                request_id = request.get("id") if isinstance(request, dict) else None
                 response = self._handle_rpc(request)
             except Exception as exc:  # noqa: BLE001
                 response = {
                     "jsonrpc": "2.0",
-                    "id": None,
+                    "id": request_id,
                     "error": {"code": -32000, "message": str(exc)},
                 }
 

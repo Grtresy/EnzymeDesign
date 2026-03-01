@@ -8,7 +8,7 @@ from .config import RunnerConfig
 from .errors import FailureMapper
 from .logging_utils import prepare_log_payload, redact_text
 from .models import RunResult, RunSpec
-from .remote import CommandRunner, make_remote_shell_command, wrap_ssh
+from .remote import CommandRunner, make_remote_shell_command_with_env, wrap_ssh
 from .staging import StagingManager
 from .store import ArtifactStore
 from .validation import (
@@ -67,7 +67,22 @@ class SSHRunner:
         upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
 
         remote_work_dir = str(PurePosixPath(remote_run_dir) / "work")
-        remote_argv = make_remote_shell_command(remote_work_dir, spec.command)
+
+        env = {
+            # Convenience (short names): keep to low-collision variables.
+            "WORKDIR": str(PurePosixPath(remote_run_dir) / "work"),
+            "OUTDIR": str(PurePosixPath(remote_run_dir) / "out"),
+            # Namespaced (preferred).
+            "MCP_RUN_DIR": str(remote_run_dir),
+            "MCP_WORKDIR": str(PurePosixPath(remote_run_dir) / "work"),
+            "MCP_OUTDIR": str(PurePosixPath(remote_run_dir) / "out"),
+            "MCP_TMPDIR": str(PurePosixPath(remote_run_dir) / "tmp"),
+            "MCP_LOGDIR": str(PurePosixPath(remote_run_dir) / "logs"),
+        }
+
+        remote_argv = make_remote_shell_command_with_env(
+            remote_work_dir, spec.command, env
+        )
         ssh_cmd = wrap_ssh(self.config.cluster.ssh_target, remote_argv)
         raw = self.command_runner.run(ssh_cmd, check=False)
 

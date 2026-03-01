@@ -82,9 +82,15 @@ class SlurmRunner:
 
     def build_sbatch_script(self, spec: RunSpec, remote_run_dir: str) -> str:
         partition = self._partition_for(spec)
+        run_dir = str(PurePosixPath(remote_run_dir))
+        work_dir = str(PurePosixPath(remote_run_dir) / "work")
+        out_dir = str(PurePosixPath(remote_run_dir) / "out")
+        tmp_dir = str(PurePosixPath(remote_run_dir) / "tmp")
+        log_dir = str(PurePosixPath(remote_run_dir) / "logs")
+        # IMPORTANT: Slurm only honors #SBATCH directives that appear before the
+        # first non-comment executable line. Keep all directives at the top.
         lines = [
             "#!/usr/bin/env bash",
-            "set -euo pipefail",
             f"#SBATCH --job-name={spec.name}",
             f"#SBATCH --cpus-per-task={spec.resources.cpus}",
             f"#SBATCH --mem={spec.resources.mem_mb}",
@@ -100,9 +106,48 @@ class SlurmRunner:
             else:
                 lines.append(f"#SBATCH --gpus={spec.resources.gpus}")
 
+        lines.append("set -euo pipefail")
+
+        # Export layout hints for the job payload.
+        lines.extend(
+            [
+                # Convenience (short names): keep to low-collision variables.
+                f"export WORKDIR={shlex.quote(work_dir)}",
+                f"export OUTDIR={shlex.quote(out_dir)}",
+                # Namespaced (preferred).
+                f"export MCP_RUN_DIR={shlex.quote(run_dir)}",
+                f"export MCP_WORKDIR={shlex.quote(work_dir)}",
+                f"export MCP_OUTDIR={shlex.quote(out_dir)}",
+                f"export MCP_TMPDIR={shlex.quote(tmp_dir)}",
+                f"export MCP_LOGDIR={shlex.quote(log_dir)}",
+            ]
+        )
+
+        # Normalize to absolute paths for the job, even when remote_run_dir is
+        # configured as a home-relative path (e.g. "mcp_runs/<id>"). Use
+        # SLURM_SUBMIT_DIR as the anchor because it's set even if the job cannot
+        # chdir into the submit directory at startup.
+        lines.extend(
+            [
+                'anchor="${SLURM_SUBMIT_DIR:-$HOME}"',
+                'if [[ "$WORKDIR" != /* ]]; then WORKDIR="$anchor/$WORKDIR"; fi',
+                'if [[ "$OUTDIR" != /* ]]; then OUTDIR="$anchor/$OUTDIR"; fi',
+                'if [[ "$MCP_WORKDIR" != /* ]]; then MCP_WORKDIR="$anchor/$MCP_WORKDIR"; fi',
+                'if [[ "$MCP_OUTDIR" != /* ]]; then MCP_OUTDIR="$anchor/$MCP_OUTDIR"; fi',
+                'if [[ "$MCP_TMPDIR" != /* ]]; then MCP_TMPDIR="$anchor/$MCP_TMPDIR"; fi',
+                'if [[ "$MCP_LOGDIR" != /* ]]; then MCP_LOGDIR="$anchor/$MCP_LOGDIR"; fi',
+                'if [[ "$MCP_RUN_DIR" != /* ]]; then MCP_RUN_DIR="$anchor/$MCP_RUN_DIR"; fi',
+                "export WORKDIR OUTDIR MCP_RUN_DIR MCP_WORKDIR MCP_OUTDIR MCP_TMPDIR MCP_LOGDIR",
+                'mkdir -p "$WORKDIR" "$OUTDIR" "$MCP_TMPDIR" "$MCP_LOGDIR"',
+            ]
+        )
+
         command = shlex.join(spec.command)
-        lines.append(f"cd {shlex.quote(str(PurePosixPath(remote_run_dir) / 'work'))}")
-        lines.append(command)
+
+        # Match ssh backend behavior: run the payload in a login shell so the
+        # job sees user profile (/etc/profile, ~/.bash_profile, etc.).
+        inner = f"cd $WORKDIR && {command}"
+        lines.append(f"bash -lc {shlex.quote(inner)}")
         return "\n".join(lines) + "\n"
 
     def submit(self, spec: RunSpec) -> RunResult:

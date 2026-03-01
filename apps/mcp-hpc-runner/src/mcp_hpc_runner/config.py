@@ -120,6 +120,8 @@ def load_config(path: str | Path | None) -> RunnerConfig:
 
     # Remote paths are passed as argv; avoid relying on shell-only expansions.
     remote_base_dir = config.cluster.remote_base_dir.strip()
+    if remote_base_dir in {"~", "~/"}:
+        remote_base_dir = ""
     if remote_base_dir.startswith("~/"):
         remote_base_dir = remote_base_dir[2:]
     config.cluster.remote_base_dir = remote_base_dir

@@ -29,7 +29,22 @@ class CommandRunner:
 
 
 def make_remote_shell_command(cwd: str, argv: list[str]) -> list[str]:
-    command = f"cd {shlex.quote(cwd)} && {shlex.join(argv)}"
+    return make_remote_shell_command_with_env(cwd, argv, env=None)
+
+
+def make_remote_shell_command_with_env(
+    cwd: str, argv: list[str], env: dict[str, str] | None
+) -> list[str]:
+    exports = ""
+    if env:
+        # Use explicit exports so both ssh and sbatch can share layout hints.
+        # Note: RunSpec.command is argv (not a shell snippet), so callers that
+        # want to use these variables should read them from the process env.
+        exports = "; ".join(
+            f"export {key}={shlex.quote(value)}" for key, value in env.items()
+        )
+        exports = exports + "; "
+    command = f"{exports}cd {shlex.quote(cwd)} && {shlex.join(argv)}"
     return ["bash", "-lc", command]
 
 

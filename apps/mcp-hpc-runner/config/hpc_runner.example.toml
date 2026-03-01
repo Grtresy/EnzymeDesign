@@ -4,8 +4,8 @@ ssh_user = ""
 remote_base_dir = "mcp_runs"
 
 [slurm]
-default_partition = "cpu"
-gpu_partition = "gpu"
+default_partition = "" # optional; leave empty to use cluster default
+gpu_partition = ""     # optional; leave empty to use cluster default
 gpu_flag_style = "gpus" # one of: gpus, gres
 time_threshold_minutes = 60
 mem_threshold_mb = 32768

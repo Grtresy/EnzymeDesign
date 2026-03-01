@@ -123,23 +123,24 @@ instead of prompting for passwords/host-key confirmation.
 Unit tests:
 
 ```bash
-uv --project apps/mcp-hpc-runner run pytest
+uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest
 ```
 
 Unit-only (skip integration):
 
 ```bash
-uv --project apps/mcp-hpc-runner run pytest -m "not integration"
+uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest -m "not integration"
 ```
 
 Integration tests (SSH + Slurm) are marked with `@pytest.mark.integration` and
-will run automatically when `config/hpc_runner.toml` exists and points to a
-reachable cluster with key-based auth.
+will run when an integration config exists and points to a reachable cluster
+with key-based auth.
 
 To use a different config path:
 
 ```bash
-HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml uv --project apps/mcp-hpc-runner run pytest -m integration
+HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
+  uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest -m integration
 ```
 
 ## Integration Boundary: Tool Contracts
