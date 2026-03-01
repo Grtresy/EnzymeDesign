@@ -46,6 +46,7 @@ class StagedInput:
     local_path: str
     remote_path: str
     required: bool = True
+    stage_to: str = "work"  # "work" or "out"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StagedInput":
@@ -53,6 +54,7 @@ class StagedInput:
             local_path=str(data["local_path"]),
             remote_path=str(data["remote_path"]),
             required=bool(data.get("required", True)),
+            stage_to=str(data.get("stage_to", "work")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +62,7 @@ class StagedInput:
             "local_path": self.local_path,
             "remote_path": self.remote_path,
             "required": self.required,
+            "stage_to": self.stage_to,
         }
 
 

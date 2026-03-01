@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -15,6 +16,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="mcp-hpc-tool-contracts-integration")
     parser.add_argument("--params-file", type=Path, required=True)
     parser.add_argument("--runner-config", type=Path, default=None)
+    parser.add_argument("--runner-bin", type=str, default=None)
     parser.add_argument("--async", action="store_true", dest="asynchronous")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--poll-seconds", type=int, default=10)
@@ -42,12 +44,14 @@ def run_smoke_suite(
     adapter_payloads: dict[str, dict[str, Any]],
     *,
     runner_config: str | Path | None,
+    runner_bin: str | None = None,
     asynchronous: bool,
     wait: bool,
     poll_seconds: int,
     max_polls: int,
 ) -> dict[str, Any]:
-    client = RunnerClient(runner_config=runner_config)
+    resolved_bin = runner_bin or os.getenv("HPC_TOOL_CONTRACTS_RUNNER_BIN", "mcp-hpc-runner")
+    client = RunnerClient(runner_bin=resolved_bin, runner_config=runner_config)
     results: dict[str, Any] = {}
     for adapter_id in ADAPTER_IDS:
         if adapter_id not in adapter_payloads:
@@ -73,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     results = run_smoke_suite(
         payloads,
         runner_config=args.runner_config,
+        runner_bin=args.runner_bin,
         asynchronous=args.asynchronous,
         wait=args.wait,
         poll_seconds=args.poll_seconds,

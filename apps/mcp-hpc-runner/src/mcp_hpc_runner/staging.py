@@ -97,7 +97,7 @@ class StagingManager:
         entries: list[dict[str, Any]] = []
         for item in inputs:
             local_path = Path(item.local_path).expanduser().resolve()
-            remote_path = str(PurePosixPath(remote_run_dir) / "work" / item.remote_path)
+            remote_path = str(PurePosixPath(remote_run_dir) / item.stage_to / item.remote_path)
             remote_parent = str(PurePosixPath(remote_path).parent)
             checksum = _sha256(local_path)
             # Key is content + absolute remote destination (run-specific).

@@ -105,7 +105,10 @@ def _compile_hhblits(params: dict[str, Any]) -> CompiledAdapterRun:
         mode="sif",
         entrypoint=CANONICAL_SIF_IMAGES["hhblits"],
         command=build_sif_command(
-            image=CANONICAL_SIF_IMAGES["hhblits"], entrypoint="hhblits", args=argv
+            image=CANONICAL_SIF_IMAGES["hhblits"],
+            entrypoint="hhblits",
+            args=argv,
+            extra_host_binds=["/db"],
         ),
     )
     spack = InvocationCandidate(
@@ -164,7 +167,10 @@ def _compile_chai_fold(params: dict[str, Any]) -> CompiledAdapterRun:
         mode="sif",
         entrypoint="~/containers/chai-1.sif",
         command=build_sif_command(
-            image="~/containers/chai-1.sif", entrypoint="chai-lab", args=common_args
+            image="~/containers/chai-1.sif",
+            entrypoint="chai-lab",
+            args=common_args,
+            extra_host_binds=["/models"],
         ),
     )
     native = InvocationCandidate(
@@ -227,6 +233,7 @@ def _compile_alphafold3(params: dict[str, Any]) -> CompiledAdapterRun:
             image="~/containers/alphafold3.sif",
             entrypoint="alphafold3",
             args=common_args,
+            extra_host_binds=["/models"],
         ),
     )
     native = InvocationCandidate(
@@ -284,6 +291,7 @@ def _compile_colabfold(params: dict[str, Any]) -> CompiledAdapterRun:
             image="~/containers/colabfold.sif",
             entrypoint="colabfold_batch",
             args=common_args,
+            extra_host_binds=["/db"],
         ),
     )
     native = InvocationCandidate(
@@ -325,30 +333,32 @@ def _compile_colabfold(params: dict[str, Any]) -> CompiledAdapterRun:
 def _compile_fpocket(params: dict[str, Any]) -> CompiledAdapterRun:
     structure_path = _required_str(params, "structure_path")
     input_stem = _stable_name(structure_path, "target")
-    default_dir = f"{input_stem}_out"
-    output_dir = _optional_str(params, "output_dir", default_dir)
     input_remote = f"inputs/{input_stem}.pdb"
+    # fpocket writes {stem}_out/ next to the input file.
+    # Staging the input to out/inputs/ makes the output land in out/inputs/{stem}_out/,
+    # which is exactly where staging looks for it (relative path inputs/{stem}_out).
+    output_dir = f"inputs/{input_stem}_out"
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint="/opt/tools/fpocket",
-        smoke_check=["/opt/tools/fpocket", "-h"],
-        command=["/opt/tools/fpocket", "-f", f"/work/{input_remote}"],
-    )
+    # SIF: input accessible at /out/inputs/{stem}.pdb; output written to /out/inputs/{stem}_out/.
     sif = InvocationCandidate(
         mode="sif",
         entrypoint=CANONICAL_SIF_IMAGES["fpocket"],
         command=build_sif_command(
             image=CANONICAL_SIF_IMAGES["fpocket"],
             entrypoint="fpocket",
-            args=["-f", f"/work/{input_remote}"],
-            extra_runtime_args=["--pwd", "/out"],
+            args=["-f", f"/out/{input_remote}"],
         ),
+    )
+    wrapper = InvocationCandidate(
+        mode="wrapper",
+        entrypoint="/opt/tools/fpocket",
+        smoke_check=["/opt/tools/fpocket", "-h"],
+        command=["/opt/tools/fpocket", "-f", f"/out/{input_remote}"],
     )
     native = InvocationCandidate(
         mode="native",
         entrypoint="fpocket",
-        command=["fpocket", "-f", f"/work/{input_remote}"],
+        command=["fpocket", "-f", f"/out/{input_remote}"],
     )
     selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
 
@@ -363,7 +373,7 @@ def _compile_fpocket(params: dict[str, Any]) -> CompiledAdapterRun:
         command=selected.selected.command,
         execution_mode="auto",
         resources={"cpus": 4, "mem_mb": 8000, "gpus": 0, "time_minutes": 120},
-        inputs=[staged_input(structure_path, input_remote)],
+        inputs=[staged_input(structure_path, input_remote, stage_to="out")],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],

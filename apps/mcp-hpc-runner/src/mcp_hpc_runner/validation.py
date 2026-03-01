@@ -34,7 +34,7 @@ def validate_runspec(spec: RunSpec) -> list[str]:
     for item in spec.inputs:
         if not item.remote_path or item.remote_path.startswith("/"):
             errors.append(
-                "inputs.remote_path must be relative to remote work/ directory"
+                "inputs.remote_path must be a relative path"
             )
         local = Path(item.local_path)
         if item.required and not local.exists():

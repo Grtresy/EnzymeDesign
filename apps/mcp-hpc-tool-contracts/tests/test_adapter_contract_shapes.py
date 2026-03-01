@@ -93,9 +93,11 @@ def test_fpocket_default_output_matches_remote_input_stem(tmp_path: Path) -> Non
 
     compiled = compile_adapter("fpocket", {"structure_path": str(structure)})
 
+    # Input is staged to out/inputs/ so fpocket writes its output next to it in out/.
     assert compiled.runspec["inputs"][0]["remote_path"] == "inputs/protein.pdb"
-    assert compiled.runspec["expected_outputs"][0]["path"] == "protein_out"
-    assert "/work/inputs/protein.pdb" in compiled.runspec["command"]
+    assert compiled.runspec["inputs"][0]["stage_to"] == "out"
+    assert compiled.runspec["expected_outputs"][0]["path"] == "inputs/protein_out"
+    assert "/out/inputs/protein.pdb" in compiled.runspec["command"]
 
 
 def test_tunnels_records_backend_metadata(tmp_path: Path) -> None:

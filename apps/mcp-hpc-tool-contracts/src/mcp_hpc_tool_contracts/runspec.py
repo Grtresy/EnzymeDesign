@@ -34,13 +34,18 @@ def ensure_relative_path(path: str, *, field_name: str) -> str:
     return str(normalized)
 
 
-def staged_input(local_path: str, remote_path: str) -> dict[str, Any]:
+def staged_input(
+    local_path: str, remote_path: str, *, stage_to: str = "work"
+) -> dict[str, Any]:
+    if stage_to not in ("work", "out"):
+        raise ValueError(f"staged_input stage_to must be 'work' or 'out', got {stage_to!r}")
     return {
         "local_path": str(local_path),
         "remote_path": ensure_relative_path(
             remote_path, field_name="inputs.remote_path"
         ),
         "required": True,
+        "stage_to": stage_to,
     }
 
 
