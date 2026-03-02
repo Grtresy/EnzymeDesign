@@ -37,7 +37,13 @@ def _adapter_params(tmp_path: Path) -> dict[str, dict[str, object]]:
         "alphafold3": {"input_json": str(af3_json)},
         "colabfold": {"input_fasta": str(query)},
         "fpocket": {"structure_path": str(target)},
-        "tunnels": {"structure_path": str(target), "mode": "detect"},
+        "tunnels": {
+            "structure_path": str(target),
+            "mode": "detect",
+            "starting_point_x": 10.0,
+            "starting_point_y": 10.0,
+            "starting_point_z": 10.0,
+        },
         "vina": {
             "receptor_path": str(receptor),
             "ligand_path": str(ligand),

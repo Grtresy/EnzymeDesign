@@ -1,0 +1,11 @@
+{
+  "sequences": [
+    {
+      "protein": {
+        "id": "A",
+        "sequence": "LSDEDFKAVFGMTRSAFANLPLWKQQNLKKEKGLF"
+      }
+    }
+  ],
+  "modelSeeds": [1]
+}

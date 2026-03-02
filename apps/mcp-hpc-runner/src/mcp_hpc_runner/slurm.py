@@ -143,6 +143,13 @@ class SlurmRunner:
             ]
         )
 
+        # Bind work/out/tmp into any apptainer container launched by wrapper-mode
+        # scripts.  This lets wrappers that invoke their own `apptainer exec`
+        # (e.g. alphafold3) access inputs and write outputs at /work and /out.
+        lines.append(
+            'export APPTAINER_BINDPATH="$MCP_WORKDIR:/work,$MCP_OUTDIR:/out,$MCP_TMPDIR:/tmp"'
+        )
+
         # Pre-create subdirectories required by expected outputs (e.g. hhblits/).
         out_subdirs: set[str] = set()
         for output in spec.expected_outputs:

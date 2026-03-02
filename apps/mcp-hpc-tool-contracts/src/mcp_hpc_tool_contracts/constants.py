@@ -15,7 +15,7 @@ ADAPTER_IDS: tuple[str, ...] = (
 CANONICAL_WRAPPER_ENTRYPOINTS: dict[str, str] = {
     "alphafold3": "/opt/tools/alphafold3",
     "chai_fold": "/opt/tools/chai-lab",
-    "colabfold": "/opt/tools/colabfold_local",
+    "colabfold": "/opt/tools/colabfold_batch",
 }
 
 CANONICAL_SIF_IMAGES: dict[str, str] = {

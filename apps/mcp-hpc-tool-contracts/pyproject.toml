@@ -29,4 +29,5 @@ pythonpath = ["src"]
 addopts = "-q"
 markers = [
   "integration: opt-in tests requiring reachable HPC resources",
+  "slow: GPU adapter tests that take 5-25 min to complete",
 ]

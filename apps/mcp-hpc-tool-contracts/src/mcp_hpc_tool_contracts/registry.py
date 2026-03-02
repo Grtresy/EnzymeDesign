@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,19 +187,23 @@ def _compile_chai_fold(
     input_fasta = _required_str(params, "input_fasta")
     output_dir = _optional_str(params, "output_dir", "chai_fold")
     input_remote = "inputs/input.fasta"
-    common_args = ["fold", f"/work/{input_remote}", f"/out/{output_dir}"]
+
+    # sif mode: container-internal /work and /out paths (via apptainer bind mounts).
+    # wrapper/native: the job cd-s to $WORKDIR before running, so relative paths work.
+    sif_args = ["fold", f"/work/{input_remote}", f"/out/{output_dir}"]
+    host_args = ["fold", input_remote, f"../out/{output_dir}"]
 
     sif_image = "~/containers/chai-1.sif"
     wrapper_path = CANONICAL_WRAPPER_ENTRYPOINTS["chai_fold"]
     commands: dict[str, list[str]] = {
-        "wrapper": [wrapper_path, *common_args],
+        "wrapper": [wrapper_path, *host_args],
         "sif": build_sif_command(
             image=sif_image,
             entrypoint="chai-lab",
-            args=common_args,
+            args=sif_args,
             extra_host_binds=["/models"],
         ),
-        "native": ["chai-lab", *common_args],
+        "native": ["chai-lab", *host_args],
     }
     _validate_mode("chai_fold", mode)
     command = commands[mode]
@@ -305,19 +310,23 @@ def _compile_colabfold(
     input_fasta = _required_str(params, "input_fasta")
     output_dir = _optional_str(params, "output_dir", "colabfold")
     input_remote = "inputs/input.fasta"
-    common_args = [f"/work/{input_remote}", f"/out/{output_dir}"]
+
+    # sif mode: container-internal /work and /out paths.
+    # wrapper/native: relative paths from $WORKDIR (where the job cd-s to).
+    sif_args = [f"/work/{input_remote}", f"/out/{output_dir}"]
+    host_args = [input_remote, f"../out/{output_dir}"]
 
     sif_image = "~/containers/colabfold.sif"
     wrapper_path = CANONICAL_WRAPPER_ENTRYPOINTS["colabfold"]
     commands: dict[str, list[str]] = {
-        "wrapper": [wrapper_path, *common_args],
+        "wrapper": [wrapper_path, *host_args],
         "sif": build_sif_command(
             image=sif_image,
             entrypoint="colabfold_batch",
-            args=common_args,
+            args=sif_args,
             extra_host_binds=["/db"],
         ),
-        "native": ["colabfold_batch", *common_args],
+        "native": ["colabfold_batch", *host_args],
     }
     _validate_mode("colabfold", mode)
     command = commands[mode]
@@ -417,6 +426,22 @@ def _compile_fpocket(
     )
 
 
+def _write_caver_conf(sp_x: float, sp_y: float, sp_z: float) -> str:
+    """Write a minimal caver config file and return its local path."""
+    conf_content = (
+        f"starting_point_coordinates {sp_x:.3f} {sp_y:.3f} {sp_z:.3f}\n"
+        "probe_radius 0.9\n"
+        "shell_radius 3\n"
+        "shell_depth 4\n"
+        "clustering_threshold 3.5\n"
+        "seed 1\n"
+    )
+    conf_hash = hashlib.md5(conf_content.encode()).hexdigest()[:8]
+    conf_path = f"/tmp/caver_conf_{conf_hash}.txt"
+    Path(conf_path).write_text(conf_content)
+    return conf_path
+
+
 def _compile_tunnels(
     params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
 ) -> CompiledAdapterRun:
@@ -433,28 +458,49 @@ def _compile_tunnels(
             f"got '{backend}'"
         )
     output_dir = _optional_str(params, "output_dir", f"tunnels-{tunnel_mode}")
-    input_remote = "inputs/target.pdb"
-
     sif_image = CANONICAL_SIF_IMAGES["tunnels"]
 
     if tunnel_mode == "detect":
+        # caver CLI: caver -pdb DIR -conf FILE -out DIR
+        # PDB must be staged into a directory; conf is generated from starting point.
+        sp_x = _number(params, "starting_point_x")
+        sp_y = _number(params, "starting_point_y")
+        sp_z = _number(params, "starting_point_z")
+        conf_local_path = _write_caver_conf(sp_x, sp_y, sp_z)
+
+        pdb_remote = "inputs/pdb/target.pdb"
+        conf_remote = "inputs/caver.conf"
         entrypoint = "caver"
         wrapper_path = "/opt/tools/caver"
         command_args = [
-            "--input", f"/work/{input_remote}",
-            "--output", f"/out/{output_dir}",
+            "-pdb", "/work/inputs/pdb",
+            "-conf", f"/work/{conf_remote}",
+            "-out", f"/out/{output_dir}",
+        ]
+        inputs = [
+            staged_input(structure_path, pdb_remote),
+            staged_input(conf_local_path, conf_remote),
         ]
     else:
+        pdb_remote = "inputs/target.pdb"
         entrypoint = "cd-screening"
         wrapper_path = "/opt/tools/caverdock"
-        command_args = [f"/work/{input_remote}", "-o", f"/out/{output_dir}"]
+        command_args = [f"/work/{pdb_remote}", "-o", f"/out/{output_dir}"]
+        inputs = [staged_input(structure_path, pdb_remote)]
 
+    # The caverdock SIF sets CAVER_HOME=/opt/caver-3.0.2 in its %environment,
+    # but caver.jar lives at /opt/caver-3.0.2/caver/caver.jar.  Override the
+    # variable so the caver wrapper script finds the correct JAR.
+    caver_env = (
+        ["--env", "CAVER_HOME=/opt/caver-3.0.2/caver"] if tunnel_mode == "detect" else []
+    )
     commands: dict[str, list[str]] = {
         "wrapper": [wrapper_path, *command_args],
         "sif": build_sif_command(
             image=sif_image,
             entrypoint=entrypoint,
             args=command_args,
+            extra_runtime_args=caver_env if tunnel_mode == "detect" else None,
         ),
         "native": [entrypoint, *command_args],
     }
@@ -484,7 +530,7 @@ def _compile_tunnels(
         command=command,
         execution_mode="auto",
         resources=resources,
-        inputs=[staged_input(structure_path, input_remote)],
+        inputs=inputs,
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
@@ -669,6 +715,18 @@ _ADAPTERS: dict[str, AdapterDefinition] = {
                 },
                 "backend": {"type": "string", "enum": ["caver", "caverdock"]},
                 "output_dir": {"type": "string"},
+                "starting_point_x": {
+                    "type": "number",
+                    "description": "X coordinate of tunnel starting point (required for detect mode)",
+                },
+                "starting_point_y": {
+                    "type": "number",
+                    "description": "Y coordinate of tunnel starting point (required for detect mode)",
+                },
+                "starting_point_z": {
+                    "type": "number",
+                    "description": "Z coordinate of tunnel starting point (required for detect mode)",
+                },
             },
         },
         compile_fn=_compile_tunnels,

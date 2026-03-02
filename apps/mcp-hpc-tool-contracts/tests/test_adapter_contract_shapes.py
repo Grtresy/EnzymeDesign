@@ -126,7 +126,13 @@ def test_tunnels_wrapper_entrypoint_matches_mode(tmp_path: Path) -> None:
 
     detect = compile_adapter(
         "tunnels",
-        {"structure_path": files["pdb"], "mode": "detect"},
+        {
+            "structure_path": files["pdb"],
+            "mode": "detect",
+            "starting_point_x": 10.0,
+            "starting_point_y": 10.0,
+            "starting_point_z": 10.0,
+        },
         profile=_profile("tunnels", "wrapper"),
     )
     dock = compile_adapter(
