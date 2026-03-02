@@ -118,19 +118,6 @@ class FailureSignature:
 
 
 @dataclass(slots=True)
-class FallbackStep:
-    mode: str
-    reason: str
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FallbackStep":
-        return cls(mode=str(data["mode"]), reason=str(data["reason"]))
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"mode": self.mode, "reason": self.reason}
-
-
-@dataclass(slots=True)
 class RunSpec:
     name: str
     stage: str
@@ -141,7 +128,6 @@ class RunSpec:
     expected_outputs: list[ExpectedOutput] = field(default_factory=list)
     success_checks: list[SuccessCheck] = field(default_factory=list)
     failure_signatures: list[FailureSignature] = field(default_factory=list)
-    fallback: list[FallbackStep] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     run_id: str | None = None
 
@@ -166,9 +152,6 @@ class RunSpec:
                 FailureSignature.from_dict(value)
                 for value in data.get("failure_signatures", [])
             ],
-            fallback=[
-                FallbackStep.from_dict(value) for value in data.get("fallback", [])
-            ],
             metadata=dict(data.get("metadata", {})),
             run_id=data.get("run_id"),
         )
@@ -186,7 +169,6 @@ class RunSpec:
             "failure_signatures": [
                 value.to_dict() for value in self.failure_signatures
             ],
-            "fallback": [value.to_dict() for value in self.fallback],
             "metadata": self.metadata,
             "run_id": self.run_id,
         }

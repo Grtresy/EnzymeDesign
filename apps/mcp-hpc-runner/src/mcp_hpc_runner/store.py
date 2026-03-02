@@ -55,6 +55,9 @@ class ArtifactStore:
     def write_outputs_manifest(self, run_id: str, data: dict[str, Any]) -> Path:
         return self.write_json(run_id, "outputs_manifest.json", data)
 
+    def write_preflight_manifest(self, run_id: str, data: dict[str, Any]) -> Path:
+        return self.write_json(run_id, "preflight_manifest.json", data)
+
     def dedup_cache_path(self) -> Path:
         return self.cache_dir / "input_dedup.json"
 

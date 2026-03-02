@@ -3,13 +3,19 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .cluster_profile import ClusterProfile
 from .models import CompiledAdapterRun
 from .registry import compile_adapter as _compile_adapter
 from .runner_client import RunnerClient
 
 
-def compile_adapter(adapter_id: str, params: dict[str, Any]) -> CompiledAdapterRun:
-    return _compile_adapter(adapter_id, params)
+def compile_adapter(
+    adapter_id: str,
+    params: dict[str, Any],
+    *,
+    profile: ClusterProfile | None = None,
+) -> CompiledAdapterRun:
+    return _compile_adapter(adapter_id, params, profile=profile)
 
 
 def _normalize_artifacts(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -44,13 +50,14 @@ def run_adapter(
     adapter_id: str,
     params: dict[str, Any],
     *,
+    profile: ClusterProfile | None = None,
     asynchronous: bool = False,
     wait: bool = False,
     poll_seconds: int = 5,
     max_polls: int = 120,
     runner_client: RunnerClient | None = None,
 ) -> dict[str, Any]:
-    compiled = compile_adapter(adapter_id, params)
+    compiled = compile_adapter(adapter_id, params, profile=profile)
     client = runner_client or RunnerClient()
 
     if not asynchronous:

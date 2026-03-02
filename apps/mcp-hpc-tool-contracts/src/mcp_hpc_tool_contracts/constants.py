@@ -26,3 +26,16 @@ CANONICAL_SIF_IMAGES: dict[str, str] = {
 }
 
 HHBLITS_SPACK_FALLBACK = os.getenv("HHBLITS_SPACK_FALLBACK", "/opt/spack/bin/hhblits")
+
+# Natural default invocation mode for each adapter when no cluster profile is set.
+# Adapters that ship as SIF images default to "sif"; adapters that rely on
+# host-installed wrappers (no SIF image available) default to "wrapper".
+ADAPTER_DEFAULT_MODES: dict[str, str] = {
+    "hhblits":    "sif",
+    "chai_fold":  "wrapper",
+    "alphafold3": "wrapper",
+    "colabfold":  "wrapper",
+    "fpocket":    "sif",
+    "tunnels":    "sif",
+    "vina":       "sif",
+}

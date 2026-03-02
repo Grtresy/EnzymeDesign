@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from .cluster_profile import ClusterProfile
 from .constants import ADAPTER_IDS
 from .runner_client import RunnerClient
 from .service import run_adapter
@@ -52,6 +53,13 @@ def run_smoke_suite(
 ) -> dict[str, Any]:
     resolved_bin = runner_bin or os.getenv("HPC_TOOL_CONTRACTS_RUNNER_BIN", "mcp-hpc-runner")
     client = RunnerClient(runner_bin=resolved_bin, runner_config=runner_config)
+
+    profile = (
+        ClusterProfile.from_toml(runner_config)
+        if runner_config and Path(runner_config).exists()
+        else ClusterProfile.empty()
+    )
+
     results: dict[str, Any] = {}
     for adapter_id in ADAPTER_IDS:
         if adapter_id not in adapter_payloads:
@@ -59,6 +67,7 @@ def run_smoke_suite(
         result = run_adapter(
             adapter_id,
             adapter_payloads[adapter_id],
+            profile=profile,
             asynchronous=asynchronous,
             wait=wait,
             poll_seconds=poll_seconds,

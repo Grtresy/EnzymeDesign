@@ -21,3 +21,49 @@ inline_log_limit = 4096
 redact_patterns = [
   "(?i)(password|passwd|token|secret|api[_-]?key)\\s*[=:]\\s*[^\\s]+",
 ]
+
+# ── Per-adapter invocation mode and resource constraints ──────────────────────
+# mode: which invocation backend to use on this cluster.
+#   "wrapper"  — use the pre-installed wrapper at /opt/tools/<tool>
+#   "sif"      — use an Apptainer SIF image from ~/containers/
+#   "native"   — call the binary directly (must be on PATH)
+#   "spack"    — use a Spack-installed binary (hhblits only)
+# partition:  Slurm partition to submit this adapter's jobs to (overrides [slurm] defaults).
+# gpus:       Number of GPUs to request (overrides the adapter's built-in default).
+# ─────────────────────────────────────────────────────────────────────────────
+# Example: Diannan 340 cluster
+# [adapters.alphafold3]
+# mode = "wrapper"
+# partition = "3090"
+# gpus = 1
+#
+# [adapters.chai_fold]
+# mode = "wrapper"
+# partition = "3090"
+# gpus = 1
+#
+# [adapters.colabfold]
+# mode = "wrapper"
+# partition = "3090"
+# gpus = 1
+#
+# [adapters.fpocket]
+# mode = "sif"
+# partition = "3090"
+# gpus = 0
+#
+# [adapters.hhblits]
+# mode = "sif"          # no /db yet; leave sif, runs will fail until DB is provisioned
+# partition = "3090"
+# gpus = 0
+# db_host_path = "/home/user/hhblits_db"   # host-side DB path; use absolute path (~ is expanded at compile time)
+#
+# [adapters.tunnels]
+# mode = "sif"
+# partition = "3090"
+# gpus = 0
+#
+# [adapters.vina]
+# mode = "sif"
+# partition = "3090"
+# gpus = 0

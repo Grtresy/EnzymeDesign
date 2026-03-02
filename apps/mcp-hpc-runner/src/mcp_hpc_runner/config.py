@@ -43,11 +43,19 @@ class LoggingConfig:
 
 
 @dataclass(slots=True)
+class AdapterConfig:
+    mode: str = "sif"
+    partition: str | None = None
+    gpus: int | None = None
+
+
+@dataclass(slots=True)
 class RunnerConfig:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     slurm: SlurmConfig = field(default_factory=SlurmConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    adapters: dict[str, AdapterConfig] = field(default_factory=dict)
 
     @property
     def artifact_root(self) -> Path:
@@ -60,6 +68,15 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
     slurm_raw = data.get("slurm", {})
     execution_raw = data.get("execution", {})
     logging_raw = data.get("logging", {})
+
+    adapters: dict[str, AdapterConfig] = {}
+    for adapter_id, section in data.get("adapters", {}).items():
+        gpus_raw = section.get("gpus")
+        adapters[adapter_id] = AdapterConfig(
+            mode=str(section.get("mode", "sif")),
+            partition=str(section["partition"]) if section.get("partition") else None,
+            gpus=int(gpus_raw) if gpus_raw is not None else None,
+        )
 
     return RunnerConfig(
         cluster=ClusterConfig(
@@ -102,6 +119,7 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
                 str(pattern) for pattern in logging_raw.get("redact_patterns", [])
             ],
         ),
+        adapters=adapters,
     )
 
 

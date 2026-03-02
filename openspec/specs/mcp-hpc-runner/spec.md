@@ -35,9 +35,19 @@ The system MUST allow the caller to request `ssh`, `sbatch`, or `auto` mode.
 ### Requirement: Runner stages inputs and outputs when filesystems are not shared
 The system MUST support running with no shared filesystem between local and HPC environments by staging inputs to the remote environment and fetching declared outputs back to local storage.
 
+The RunSpec input staging contract MUST support selecting the remote staging
+target directory per input:
+
+- `inputs[*].stage_to = "work"` (default): stage input under `<remote_run_dir>/work/...`
+- `inputs[*].stage_to = "out"`: stage input under `<remote_run_dir>/out/...`
+
 #### Scenario: Inputs are uploaded before remote execution
 - **WHEN** a run request includes one or more input files
 - **THEN** the system uploads the inputs to a remote per-run working directory before executing the command
+
+#### Scenario: Input staged to out for tools that write outputs next to inputs
+- **WHEN** a run request stages an input with `stage_to = "out"`
+- **THEN** the input file is uploaded under the remote output directory and is available to tools as `/out/...` when using the shared bind policy
 
 #### Scenario: Declared outputs are fetched after successful execution
 - **WHEN** a run completes successfully and declares expected outputs
@@ -100,6 +110,37 @@ The system MUST support declarative expected outputs per run and MUST mark a run
 #### Scenario: Missing required output fails the run
 - **WHEN** a run declares an expected output file and the file is not present on completion
 - **THEN** the system returns a failure result with a normalized error code and diagnostics
+
+### Requirement: Runner performs remote preflight checks and records a manifest
+The system MUST perform remote preflight checks after staging inputs and before
+executing or submitting a run.
+
+The runner MUST write a `preflight_manifest.json` into the local artifact store
+for the run.
+
+If preflight fails, the runner MUST fail the run early and MUST NOT execute the
+command (ssh mode) nor submit the job (sbatch mode).
+
+Preflight checks MUST include:
+
+- staged inputs exist at their remote locations (respecting `stage_to`)
+- remote output directory exists (and is writable by virtue of directory creation)
+
+If `RunSpec.metadata.tool_contract.preflight_hints` exists, preflight SHOULD
+also check:
+
+- entrypoint existence:
+  - `{kind:"binary", path:"/opt/tools/..."}` requires an executable file
+  - `{kind:"sif", path:"~/containers/..."}` requires a readable SIF image
+- optional bind paths exist (warn-only)
+
+#### Scenario: Preflight catches missing staged input
+- **WHEN** an input file is declared but is missing on the remote host
+- **THEN** preflight fails and the runner returns an error without executing or submitting the run
+
+#### Scenario: Preflight checks entrypoint when hints are provided
+- **WHEN** a RunSpec includes `metadata.tool_contract.preflight_hints.entrypoint`
+- **THEN** preflight validates that entrypoint exists before running
 
 ### Requirement: Runner captures and returns diagnostics
 The system MUST capture diagnostics sufficient for triage, including:

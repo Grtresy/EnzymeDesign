@@ -145,9 +145,9 @@ HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
 
 ## Integration Boundary: Tool Contracts
 
-This repository reserves a stable run-contract surface (`RunSpec` in,
-`RunResult`/`JobStatus` out). A future `mcp-hpc-tool-contracts` service can
-compile tool-specific parameters (e.g. wrapper/SIF/spack fallback policy) into
-`RunSpec` and call this runner without embedding tool-specific logic here.
+This repository provides a stable run-contract surface (`RunSpec` in,
+`RunResult`/`JobStatus` out). The in-repo `mcp-hpc-tool-contracts` layer
+compiles tool-specific parameters into `RunSpec` and calls this runner without
+embedding SSH/Slurm/staging logic here.
 
 See `docs/mcp-hpc-tool-contracts-interface.md` for details.

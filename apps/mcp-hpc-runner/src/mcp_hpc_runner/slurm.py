@@ -9,6 +9,7 @@ from .config import RunnerConfig
 from .errors import FailureMapper
 from .logging_utils import prepare_log_payload, redact_text
 from .models import JobHandle, JobStatus, RunResult, RunSpec
+from .preflight import PreflightError, preflight_manifest, run_preflight
 from .remote import CommandRunner, wrap_ssh
 from .staging import StagingManager
 from .store import ArtifactStore
@@ -142,6 +143,15 @@ class SlurmRunner:
             ]
         )
 
+        # Pre-create subdirectories required by expected outputs (e.g. hhblits/).
+        out_subdirs: set[str] = set()
+        for output in spec.expected_outputs:
+            parent = str(PurePosixPath(output.path).parent)
+            if parent and parent != ".":
+                out_subdirs.add(parent)
+        for subdir in sorted(out_subdirs):
+            lines.append(f'mkdir -p "$OUTDIR/{subdir}"')
+
         command = shlex.join(spec.command)
 
         # Match ssh backend behavior: run the payload in a login shell so the
@@ -158,6 +168,15 @@ class SlurmRunner:
         self.store.write_json(run_id, "runspec.json", spec.to_dict())
         self._ensure_remote_layout(remote_run_dir)
         upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
+
+        preflight_result = run_preflight(
+            spec, remote_run_dir, self.config, self.command_runner
+        )
+        adapter_id = spec.metadata.get("tool_contract", {}).get("adapter_id", spec.name)
+        pf_manifest = preflight_manifest(run_id, adapter_id, preflight_result)
+        self.store.write_preflight_manifest(run_id, pf_manifest)
+        if not preflight_result.passed:
+            raise PreflightError(pf_manifest)
 
         script = self.build_sbatch_script(spec, remote_run_dir)
         local_script = self.store.run_root(run_id) / "metadata" / "job.sbatch"

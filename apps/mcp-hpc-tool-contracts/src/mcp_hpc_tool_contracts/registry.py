@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .cluster_profile import ClusterProfile
 from .constants import (
     ADAPTER_IDS,
     CANONICAL_SIF_IMAGES,
     CANONICAL_WRAPPER_ENTRYPOINTS,
     HHBLITS_SPACK_FALLBACK,
 )
-from .invocation import InvocationCandidate, build_sif_command, select_invocation
-from .models import CompiledAdapterRun
+from .invocation import build_sif_command
+from .models import CompiledAdapterRun, InvocationMode
 from .runspec import (
     build_metadata,
     build_runspec,
@@ -21,8 +23,18 @@ from .runspec import (
     success_check,
 )
 
+# (params, mode, resource_overrides) -> CompiledAdapterRun
+CompileFn = Callable[[dict[str, Any], str, dict[str, Any]], CompiledAdapterRun]
 
-CompileFn = Callable[[dict[str, Any]], CompiledAdapterRun]
+_VALID_MODES: dict[str, tuple[str, ...]] = {
+    "hhblits":   ("wrapper", "sif", "spack"),
+    "chai_fold": ("wrapper", "sif", "native"),
+    "alphafold3":("wrapper", "sif", "native"),
+    "colabfold": ("wrapper", "sif", "native"),
+    "fpocket":   ("wrapper", "sif", "native"),
+    "tunnels":   ("wrapper", "sif", "native"),
+    "vina":      ("wrapper", "sif", "native"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +77,25 @@ def _generic_failures() -> list[dict[str, str]]:
     ]
 
 
+def _validate_mode(adapter_id: str, mode: str) -> None:
+    valid = _VALID_MODES.get(adapter_id, ())
+    if mode not in valid:
+        raise ValueError(
+            f"Invalid invocation mode {mode!r} for adapter '{adapter_id}'. "
+            f"Valid modes: {sorted(valid)}"
+        )
+
+
+def _preflight_hints(
+    mode: InvocationMode, entrypoint_path: str, bind_paths: list[str]
+) -> dict[str, Any]:
+    kind = "sif" if mode == "sif" else "binary"
+    return {
+        "entrypoint": {"kind": kind, "path": entrypoint_path},
+        "bind_paths": bind_paths,
+    }
+
+
 def _ensure_hhblits_fallback_binary(path: str) -> None:
     if Path(path).name != "hhblits":
         raise ValueError(
@@ -72,63 +103,63 @@ def _ensure_hhblits_fallback_binary(path: str) -> None:
         )
 
 
-def _compile_hhblits(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_hhblits(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     query_fasta = _required_str(params, "query_fasta")
     db_prefix = _optional_str(params, "db_prefix", "uniclust30")
+    db_host_path = os.path.expanduser(_optional_str(params, "db_host_path", "/db"))
     iterations = int(params.get("iterations", 3))
     run_stem = _stable_name(query_fasta, "query")
     a3m_output = f"hhblits/{run_stem}.a3m"
     hhr_output = f"hhblits/{run_stem}.hhr"
-
     query_remote = "inputs/query.fasta"
-    argv = [
-        "-i",
-        f"/work/{query_remote}",
-        "-d",
-        f"/db/{db_prefix}",
-        "-n",
-        str(iterations),
-        "-oa3m",
-        f"/out/{a3m_output}",
-        "-o",
-        f"/out/{hhr_output}",
-    ]
-    _ensure_hhblits_fallback_binary(HHBLITS_SPACK_FALLBACK)
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint="/opt/tools/hhblits",
-        smoke_check=["/opt/tools/hhblits", "-h"],
-        command=["/opt/tools/hhblits", *argv],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint=CANONICAL_SIF_IMAGES["hhblits"],
-        command=build_sif_command(
-            image=CANONICAL_SIF_IMAGES["hhblits"],
+    argv = [
+        "-i", f"/work/{query_remote}",
+        "-d", f"/db/{db_prefix}",
+        "-n", str(iterations),
+        "-oa3m", f"/out/{a3m_output}",
+        "-o", f"/out/{hhr_output}",
+    ]
+
+    if mode == "spack":
+        _ensure_hhblits_fallback_binary(HHBLITS_SPACK_FALLBACK)
+
+    sif_image = CANONICAL_SIF_IMAGES["hhblits"]
+    commands: dict[str, list[str]] = {
+        "wrapper": ["/opt/tools/hhblits", *argv],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint="hhblits",
             args=argv,
-            extra_host_binds=["/db"],
+            extra_host_binds=[f"{db_host_path}:/db"],
         ),
+        "spack": [HHBLITS_SPACK_FALLBACK, *argv],
+    }
+    _validate_mode("hhblits", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif"
+        else command[0]
     )
-    spack = InvocationCandidate(
-        mode="spack",
-        entrypoint=HHBLITS_SPACK_FALLBACK,
-        command=[HHBLITS_SPACK_FALLBACK, *argv],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=spack)
+    hints = _preflight_hints(mode, entrypoint_path, [db_host_path])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 16000, "gpus": 0, "time_minutes": 180}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="hhblits",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="hhblits-contract",
         stage="evidence",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 16000, "gpus": 0, "time_minutes": 180},
+        resources=resources,
         inputs=[staged_input(query_fasta, query_remote)],
         expected_outputs=[
             expected_output(a3m_output, kind="file", required=True, non_empty=True),
@@ -139,198 +170,196 @@ def _compile_hhblits(params: dict[str, Any]) -> CompiledAdapterRun:
             success_check("non_empty", hhr_output),
         ],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="hhblits",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_chai_fold(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_chai_fold(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     input_fasta = _required_str(params, "input_fasta")
     output_dir = _optional_str(params, "output_dir", "chai_fold")
     input_remote = "inputs/input.fasta"
     common_args = ["fold", f"/work/{input_remote}", f"/out/{output_dir}"]
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint=CANONICAL_WRAPPER_ENTRYPOINTS["chai_fold"],
-        smoke_check=[CANONICAL_WRAPPER_ENTRYPOINTS["chai_fold"], "--help"],
-        command=[CANONICAL_WRAPPER_ENTRYPOINTS["chai_fold"], *common_args],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint="~/containers/chai-1.sif",
-        command=build_sif_command(
-            image="~/containers/chai-1.sif",
+    sif_image = "~/containers/chai-1.sif"
+    wrapper_path = CANONICAL_WRAPPER_ENTRYPOINTS["chai_fold"]
+    commands: dict[str, list[str]] = {
+        "wrapper": [wrapper_path, *common_args],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint="chai-lab",
             args=common_args,
             extra_host_binds=["/models"],
         ),
+        "native": ["chai-lab", *common_args],
+    }
+    _validate_mode("chai_fold", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint="chai-lab",
-        command=["chai-lab", *common_args],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, ["/models"])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 48000, "gpus": 1, "time_minutes": 240}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="chai_fold",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="chai-fold-contract",
         stage="generator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 48000, "gpus": 1, "time_minutes": 240},
+        resources=resources,
         inputs=[staged_input(input_fasta, input_remote)],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
         success_checks=[success_check("non_empty", output_dir)],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="chai_fold",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_alphafold3(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_alphafold3(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     input_json = _required_str(params, "input_json")
     output_dir = _optional_str(params, "output_dir", "alphafold3")
     input_remote = "inputs/input.json"
     common_args = [
-        "--json_path",
-        f"/work/{input_remote}",
-        "--output_dir",
-        f"/out/{output_dir}",
+        "--json_path", f"/work/{input_remote}",
+        "--output_dir", f"/out/{output_dir}",
     ]
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint=CANONICAL_WRAPPER_ENTRYPOINTS["alphafold3"],
-        smoke_check=[CANONICAL_WRAPPER_ENTRYPOINTS["alphafold3"], "--help"],
-        command=[CANONICAL_WRAPPER_ENTRYPOINTS["alphafold3"], *common_args],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint="~/containers/alphafold3.sif",
-        command=build_sif_command(
-            image="~/containers/alphafold3.sif",
+    sif_image = "~/containers/alphafold3.sif"
+    wrapper_path = CANONICAL_WRAPPER_ENTRYPOINTS["alphafold3"]
+    commands: dict[str, list[str]] = {
+        "wrapper": [wrapper_path, *common_args],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint="alphafold3",
             args=common_args,
             extra_host_binds=["/models"],
         ),
+        "native": ["alphafold3", *common_args],
+    }
+    _validate_mode("alphafold3", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint="alphafold3",
-        command=["alphafold3", *common_args],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, ["/models"])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 64000, "gpus": 1, "time_minutes": 360}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="alphafold3",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="alphafold3-contract",
         stage="evaluator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 64000, "gpus": 1, "time_minutes": 360},
+        resources=resources,
         inputs=[staged_input(input_json, input_remote)],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
         success_checks=[success_check("non_empty", output_dir)],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="alphafold3",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_colabfold(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_colabfold(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     input_fasta = _required_str(params, "input_fasta")
     output_dir = _optional_str(params, "output_dir", "colabfold")
     input_remote = "inputs/input.fasta"
     common_args = [f"/work/{input_remote}", f"/out/{output_dir}"]
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint=CANONICAL_WRAPPER_ENTRYPOINTS["colabfold"],
-        smoke_check=[CANONICAL_WRAPPER_ENTRYPOINTS["colabfold"], "--help"],
-        command=[CANONICAL_WRAPPER_ENTRYPOINTS["colabfold"], *common_args],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint="~/containers/colabfold.sif",
-        command=build_sif_command(
-            image="~/containers/colabfold.sif",
+    sif_image = "~/containers/colabfold.sif"
+    wrapper_path = CANONICAL_WRAPPER_ENTRYPOINTS["colabfold"]
+    commands: dict[str, list[str]] = {
+        "wrapper": [wrapper_path, *common_args],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint="colabfold_batch",
             args=common_args,
             extra_host_binds=["/db"],
         ),
+        "native": ["colabfold_batch", *common_args],
+    }
+    _validate_mode("colabfold", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint="colabfold_batch",
-        command=["colabfold_batch", *common_args],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, ["/db"])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 48000, "gpus": 1, "time_minutes": 240}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="colabfold",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="colabfold-contract",
         stage="evaluator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 48000, "gpus": 1, "time_minutes": 240},
+        resources=resources,
         inputs=[staged_input(input_fasta, input_remote)],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
         success_checks=[success_check("non_empty", output_dir)],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="colabfold",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_fpocket(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_fpocket(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     structure_path = _required_str(params, "structure_path")
     input_stem = _stable_name(structure_path, "target")
     input_remote = f"inputs/{input_stem}.pdb"
@@ -339,140 +368,141 @@ def _compile_fpocket(params: dict[str, Any]) -> CompiledAdapterRun:
     # which is exactly where staging looks for it (relative path inputs/{stem}_out).
     output_dir = f"inputs/{input_stem}_out"
 
-    # SIF: input accessible at /out/inputs/{stem}.pdb; output written to /out/inputs/{stem}_out/.
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint=CANONICAL_SIF_IMAGES["fpocket"],
-        command=build_sif_command(
-            image=CANONICAL_SIF_IMAGES["fpocket"],
+    sif_image = CANONICAL_SIF_IMAGES["fpocket"]
+    # All modes reference the input via /out/ because input is staged to out/.
+    commands: dict[str, list[str]] = {
+        "wrapper": ["/opt/tools/fpocket", "-f", f"/out/{input_remote}"],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint="fpocket",
             args=["-f", f"/out/{input_remote}"],
         ),
+        "native": ["fpocket", "-f", f"/out/{input_remote}"],
+    }
+    _validate_mode("fpocket", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint="/opt/tools/fpocket",
-        smoke_check=["/opt/tools/fpocket", "-h"],
-        command=["/opt/tools/fpocket", "-f", f"/out/{input_remote}"],
-    )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint="fpocket",
-        command=["fpocket", "-f", f"/out/{input_remote}"],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, [])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 4, "mem_mb": 8000, "gpus": 0, "time_minutes": 120}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="fpocket",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="fpocket-contract",
         stage="evaluator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 4, "mem_mb": 8000, "gpus": 0, "time_minutes": 120},
+        resources=resources,
         inputs=[staged_input(structure_path, input_remote, stage_to="out")],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
         success_checks=[success_check("non_empty", output_dir)],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="fpocket",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_tunnels(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_tunnels(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     structure_path = _required_str(params, "structure_path")
-    mode = str(params.get("mode", "detect"))
-    if mode not in {"detect", "dock"}:
+    tunnel_mode = str(params.get("mode", "detect"))
+    if tunnel_mode not in {"detect", "dock"}:
         raise ValueError("tunnels.mode must be detect or dock")
     _VALID_BACKENDS = {"detect": "caver", "dock": "caverdock"}
-    default_backend = _VALID_BACKENDS[mode]
+    default_backend = _VALID_BACKENDS[tunnel_mode]
     backend = str(params.get("backend", default_backend))
     if backend != default_backend:
         raise ValueError(
-            f"tunnels.backend must be '{default_backend}' when mode='{mode}', got '{backend}'"
+            f"tunnels.backend must be '{default_backend}' when mode='{tunnel_mode}', "
+            f"got '{backend}'"
         )
-    output_dir = _optional_str(params, "output_dir", f"tunnels-{mode}")
+    output_dir = _optional_str(params, "output_dir", f"tunnels-{tunnel_mode}")
     input_remote = "inputs/target.pdb"
 
-    if mode == "detect":
+    sif_image = CANONICAL_SIF_IMAGES["tunnels"]
+
+    if tunnel_mode == "detect":
         entrypoint = "caver"
-        wrapper_entrypoint = "/opt/tools/caver"
+        wrapper_path = "/opt/tools/caver"
         command_args = [
-            "--input",
-            f"/work/{input_remote}",
-            "--output",
-            f"/out/{output_dir}",
+            "--input", f"/work/{input_remote}",
+            "--output", f"/out/{output_dir}",
         ]
     else:
         entrypoint = "cd-screening"
-        wrapper_entrypoint = "/opt/tools/caverdock"
+        wrapper_path = "/opt/tools/caverdock"
         command_args = [f"/work/{input_remote}", "-o", f"/out/{output_dir}"]
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint=wrapper_entrypoint,
-        smoke_check=[wrapper_entrypoint, "-h"],
-        command=[wrapper_entrypoint, *command_args],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint=CANONICAL_SIF_IMAGES["tunnels"],
-        command=build_sif_command(
-            image=CANONICAL_SIF_IMAGES["tunnels"],
+    commands: dict[str, list[str]] = {
+        "wrapper": [wrapper_path, *command_args],
+        "sif": build_sif_command(
+            image=sif_image,
             entrypoint=entrypoint,
             args=command_args,
         ),
+        "native": [entrypoint, *command_args],
+    }
+    _validate_mode("tunnels", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint=entrypoint,
-        command=[entrypoint, *command_args],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, [])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 16000, "gpus": 0, "time_minutes": 180}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="tunnels",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
-        extra={"tunnel_mode": mode, "tunnel_backend": backend},
+        selected_mode=mode,
+        extra={
+            "tunnel_mode": tunnel_mode,
+            "tunnel_backend": backend,
+            "preflight_hints": hints,
+        },
     )
     runspec = build_runspec(
         name="tunnels-contract",
         stage="evaluator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 16000, "gpus": 0, "time_minutes": 180},
+        resources=resources,
         inputs=[staged_input(structure_path, input_remote)],
         expected_outputs=[
             expected_output(output_dir, kind="dir", required=True, non_empty=True)
         ],
         success_checks=[success_check("non_empty", output_dir)],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="tunnels",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
 
-def _compile_vina(params: dict[str, Any]) -> CompiledAdapterRun:
+def _compile_vina(
+    params: dict[str, Any], mode: str, resource_overrides: dict[str, Any]
+) -> CompiledAdapterRun:
     receptor = _required_str(params, "receptor_path")
     ligand = _required_str(params, "ligand_path")
     center_x = _number(params, "center_x")
@@ -489,59 +519,48 @@ def _compile_vina(params: dict[str, Any]) -> CompiledAdapterRun:
     log_file = f"{output_dir}/vina.log"
 
     common_args = [
-        "--receptor",
-        f"/work/{receptor_remote}",
-        "--ligand",
-        f"/work/{ligand_remote}",
-        "--center_x",
-        str(center_x),
-        "--center_y",
-        str(center_y),
-        "--center_z",
-        str(center_z),
-        "--size_x",
-        str(size_x),
-        "--size_y",
-        str(size_y),
-        "--size_z",
-        str(size_z),
-        "--out",
-        f"/out/{out_file}",
-        "--log",
-        f"/out/{log_file}",
+        "--receptor", f"/work/{receptor_remote}",
+        "--ligand", f"/work/{ligand_remote}",
+        "--center_x", str(center_x),
+        "--center_y", str(center_y),
+        "--center_z", str(center_z),
+        "--size_x", str(size_x),
+        "--size_y", str(size_y),
+        "--size_z", str(size_z),
+        "--out", f"/out/{out_file}",
+        "--log", f"/out/{log_file}",
     ]
 
-    wrapper = InvocationCandidate(
-        mode="wrapper",
-        entrypoint="/opt/tools/vina",
-        smoke_check=["/opt/tools/vina", "--help"],
-        command=["/opt/tools/vina", *common_args],
-    )
-    sif = InvocationCandidate(
-        mode="sif",
-        entrypoint=CANONICAL_SIF_IMAGES["vina"],
-        command=build_sif_command(
-            image=CANONICAL_SIF_IMAGES["vina"], entrypoint="vina", args=common_args
+    sif_image = CANONICAL_SIF_IMAGES["vina"]
+    commands: dict[str, list[str]] = {
+        "wrapper": ["/opt/tools/vina", *common_args],
+        "sif": build_sif_command(
+            image=sif_image, entrypoint="vina", args=common_args
         ),
+        "native": ["vina", *common_args],
+    }
+    _validate_mode("vina", mode)
+    command = commands[mode]
+
+    entrypoint_path = (
+        os.path.expanduser(sif_image) if mode == "sif" else command[0]
     )
-    native = InvocationCandidate(
-        mode="native",
-        entrypoint="vina",
-        command=["vina", *common_args],
-    )
-    selected = select_invocation(wrapper=wrapper, sif=sif, fallback=native)
+    hints = _preflight_hints(mode, entrypoint_path, [])  # type: ignore[arg-type]
+
+    base_resources = {"cpus": 8, "mem_mb": 12000, "gpus": 0, "time_minutes": 180}
+    resources = {**base_resources, **resource_overrides}
 
     metadata = build_metadata(
         adapter_id="vina",
-        selected_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        selected_mode=mode,
+        extra={"preflight_hints": hints},
     )
     runspec = build_runspec(
         name="vina-contract",
         stage="evaluator",
-        command=selected.selected.command,
+        command=command,
         execution_mode="auto",
-        resources={"cpus": 8, "mem_mb": 12000, "gpus": 0, "time_minutes": 180},
+        resources=resources,
         inputs=[
             staged_input(receptor, receptor_remote),
             staged_input(ligand, ligand_remote),
@@ -557,14 +576,12 @@ def _compile_vina(params: dict[str, Any]) -> CompiledAdapterRun:
             success_check("non_empty", log_file),
         ],
         failure_signatures=_generic_failures(),
-        fallback=selected.fallback,
         metadata=metadata,
     )
     return CompiledAdapterRun(
         adapter_id="vina",
         runspec=runspec,
-        invocation_mode=selected.selected.mode,
-        fallback=selected.fallback,
+        invocation_mode=mode,  # type: ignore[arg-type]
         metadata=metadata,
     )
 
@@ -580,6 +597,7 @@ _ADAPTERS: dict[str, AdapterDefinition] = {
                 "query_fasta": {"type": "string"},
                 "db_prefix": {"type": "string", "default": "uniclust30"},
                 "iterations": {"type": "integer", "default": 3, "minimum": 1},
+                "db_host_path": {"type": "string", "default": "/db"},
             },
         },
         compile_fn=_compile_hhblits,
@@ -711,6 +729,16 @@ def get_adapter(adapter_id: str) -> AdapterDefinition:
         ) from exc
 
 
-def compile_adapter(adapter_id: str, params: dict[str, Any]) -> CompiledAdapterRun:
+def compile_adapter(
+    adapter_id: str,
+    params: dict[str, Any],
+    *,
+    profile: ClusterProfile | None = None,
+) -> CompiledAdapterRun:
     definition = get_adapter(adapter_id)
-    return definition.compile_fn(dict(params))
+    p = profile or ClusterProfile.empty()
+    mode = p.mode_for(adapter_id)
+    resource_overrides = p.resource_overrides_for(adapter_id)
+    extra_defaults = p.extra_params_for(adapter_id)
+    merged_params = {**extra_defaults, **dict(params)}  # caller wins
+    return definition.compile_fn(merged_params, mode, resource_overrides)

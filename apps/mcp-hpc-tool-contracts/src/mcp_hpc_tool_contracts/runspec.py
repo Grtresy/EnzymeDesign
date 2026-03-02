@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
-from .models import FallbackReason
-
 
 _SHELL_SNIPPETS = ("&&", "||", ";", "`", "$(")
 
@@ -79,14 +77,12 @@ def build_metadata(
     *,
     adapter_id: str,
     selected_mode: str,
-    fallback: list[FallbackReason],
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "tool_contract": {
             "adapter_id": adapter_id,
             "selected_mode": selected_mode,
-            "fallback": [step.to_dict() for step in fallback],
             **(extra or {}),
         }
     }
@@ -102,7 +98,6 @@ def build_runspec(
     expected_outputs: list[dict[str, Any]],
     success_checks: list[dict[str, Any]],
     failure_signatures: list[dict[str, str]],
-    fallback: list[FallbackReason],
     metadata: dict[str, Any],
     execution_mode: str = "auto",
 ) -> dict[str, Any]:
@@ -116,6 +111,5 @@ def build_runspec(
         "expected_outputs": expected_outputs,
         "success_checks": success_checks,
         "failure_signatures": failure_signatures,
-        "fallback": [step.to_dict() for step in fallback],
         "metadata": metadata,
     }

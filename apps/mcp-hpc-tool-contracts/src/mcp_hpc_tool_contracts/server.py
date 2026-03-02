@@ -6,14 +6,24 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from .cluster_profile import ClusterProfile
 from .registry import get_adapter, list_adapters
 from .runner_client import RunnerClient
 from .service import compile_adapter, run_adapter
 
 
 class MCPToolContractsServer:
-    def __init__(self, runner_config: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        runner_config: str | Path | None = None,
+        cluster_config: str | Path | None = None,
+    ) -> None:
         self.runner_config = runner_config
+        self.profile = (
+            ClusterProfile.from_toml(cluster_config)
+            if cluster_config
+            else ClusterProfile.empty()
+        )
 
     def _tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
@@ -43,12 +53,13 @@ class MCPToolContractsServer:
 
         get_adapter(name)
         if not _execute:
-            return compile_adapter(name, args).to_dict()
+            return compile_adapter(name, args, profile=self.profile).to_dict()
 
         client = RunnerClient(runner_config=self.runner_config)
         return run_adapter(
             name,
             args,
+            profile=self.profile,
             asynchronous=_async,
             wait=_wait,
             runner_client=client,
@@ -119,11 +130,18 @@ class MCPToolContractsServer:
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="mcp-hpc-tool-contracts-server")
     parser.add_argument("--runner-config", type=Path, default=None)
+    parser.add_argument("--cluster-config", type=Path, default=None)
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
-    server = MCPToolContractsServer(runner_config=args.runner_config)
+    # --cluster-config takes precedence; fall back to --runner-config which also
+    # embeds [adapters.*] sections in the same toml file.
+    cluster_cfg = args.cluster_config or args.runner_config
+    server = MCPToolContractsServer(
+        runner_config=args.runner_config,
+        cluster_config=cluster_cfg,
+    )
     server.serve_stdio()
     return 0

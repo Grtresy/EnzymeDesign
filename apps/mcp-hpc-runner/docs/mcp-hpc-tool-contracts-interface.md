@@ -1,7 +1,7 @@
-# Reserved Interface: mcp-hpc-tool-contracts -> mcp-hpc-runner
+# Interface: mcp-hpc-tool-contracts -> mcp-hpc-runner
 
-This document defines the stable handoff boundary for a future
-`mcp-hpc-tool-contracts` service.
+This document defines the stable handoff boundary between the implemented
+`mcp-hpc-tool-contracts` layer and `mcp-hpc-runner`.
 
 ## Purpose
 
@@ -19,16 +19,14 @@ The caller must provide:
 5. `success_checks` and `failure_signatures`
 6. metadata recording invocation precedence decisions
 
-## Deterministic invocation precedence
+## Invocation mode selection and recording
 
-The tool-contract layer is responsible for selecting concrete command mode in
-this strict order:
+The tool-contract layer is responsible for selecting a concrete invocation mode
+for each adapter. Selection MUST be deterministic (for example, configuration-
+driven) and MUST be recorded in `RunSpec.metadata.tool_contract.selected_mode`.
 
-1. `/opt/tools` wrapper
-2. SIF command with shared bind policy (`/work`, `/out`, `/db`, `/models`, `/tmp`)
-3. Spack/native fallback
-
-Fallback reasons must be attached to `RunSpec.metadata`.
+Note: automatic runtime smoke checks and fallback chains may be added in the
+future, but are not required by this boundary.
 
 ## Runner responsibilities
 
@@ -39,6 +37,7 @@ Fallback reasons must be attached to `RunSpec.metadata`.
 - direct `ssh` execution and Slurm lifecycle operations
 - normalized envelopes (`RunResult`, `JobHandle`, `JobStatus`)
 - output validation and stable error code mapping
+- remote preflight checks (and `preflight_manifest.json`) prior to execution/submission
 
 ## Tool surfaces
 
