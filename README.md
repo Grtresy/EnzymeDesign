@@ -1,9 +1,14 @@
 # EnzymeDesign Monorepo
 
-This repository is organized as a monorepo. Each MCP service is a standalone
-`uv` project under `apps/` with its own:
+This repository is organized as a `uv` workspace monorepo. Each MCP service is
+still defined as its own project under `apps/`, and shared libraries live under
+`packages/`. Workspace members keep their own `pyproject.toml`, while dependency
+resolution and the virtual environment are managed at the repository root.
 
 - `pyproject.toml`
+
+The workspace root provides the shared:
+
 - `uv.lock`
 - `.venv` (created by `uv sync`)
 
@@ -25,4 +30,5 @@ uv --project apps/mcp-hpc-runner run mcp-hpc-runner list-tools --pretty
 uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve --config apps/mcp-hpc-runner/config/hpc_runner.toml
 ```
 
-Or `cd` into an app directory and run `uv sync` / `uv run ...` normally.
+Or `cd` into an app directory and run `uv sync` / `uv run ...` normally. In
+workspace mode these commands still resolve to the shared root `.venv`.
