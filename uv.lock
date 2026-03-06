@@ -4,6 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
+    "enzyme-host-cli",
     "mcp-hpc-runner",
     "mcp-hpc-tool-contracts",
     "mcp-preprocess",
@@ -190,6 +191,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/45/2d/9c5f2926cb5300a8eefc3f4f0b3f3df39db7f7ce40c8365444c49363cbda/cryptography-46.0.5-cp38-abi3-win32.whl", hash = "sha256:02f547fce831f5096c9a567fd41bc12ca8f11df260959ecc7c3202555cc47a72", size = 3010220, upload-time = "2026-02-10T19:18:17.361Z" },
     { url = "https://files.pythonhosted.org/packages/48/ef/0c2f4a8e31018a986949d34a01115dd057bf536905dca38897bacd21fac3/cryptography-46.0.5-cp38-abi3-win_amd64.whl", hash = "sha256:556e106ee01aa13484ce9b0239bca667be5004efb0aabbed28d353df86445595", size = 3467050, upload-time = "2026-02-10T19:18:18.899Z" },
 ]
+
+[[package]]
+name = "enzyme-host-cli"
+version = "0.1.0"
+source = { editable = "apps/enzyme-host-cli" }
+dependencies = [
+    { name = "mcp-hpc-tool-contracts" },
+    { name = "mcp-project-memory" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mcp-hpc-tool-contracts", editable = "apps/mcp-hpc-tool-contracts" },
+    { name = "mcp-project-memory", editable = "apps/mcp-project-memory" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "h11"

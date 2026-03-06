@@ -132,6 +132,20 @@ class ProjectMemoryStore:
         self._write_json_atomic(episode_dir / "state.json", payload)
         return payload
 
+    def save_episode_goal(
+        self, project_id: str, episode_id: str, goal_markdown: str
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        payload = goal_markdown
+        if not payload.endswith("\n"):
+            payload += "\n"
+        self._write_text_atomic(episode_dir / "goal.md", payload)
+        return {
+            "project_id": project_id,
+            "episode_id": episode_id,
+            "path": self._relative_to_project_root(project_id, episode_dir / "goal.md"),
+        }
+
     def record_decision(
         self,
         project_id: str,
