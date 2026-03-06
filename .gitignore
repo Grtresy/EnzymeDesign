@@ -1,0 +1,17 @@
+.vscode/
+
+.snakemake/
+
+.venv/
+
+cache/
+!cache/.gitkeep
+
+runs/
+!runs/.gitkeep
+
+__pycache__/
+
+data/
+
+old/
