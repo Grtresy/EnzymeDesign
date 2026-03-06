@@ -16,7 +16,32 @@ All MCP services should use a consistent Python version range.
 
 ## Apps
 
+- `apps/enzyme-web-host`: browser-based MVP host surface for project/episode workflow operations.
+- `apps/enzyme-host-cli`: debug and automation surface that reuses the shared host runtime.
 - `apps/mcp-hpc-runner`: local MCP(stdio) server that runs HPC workloads via SSH and Slurm.
+
+## Host workflow entrypoints
+
+The main MVP entrypoint is the Web Host:
+
+```bash
+uv --project apps/enzyme-web-host sync --extra dev
+uv --project apps/enzyme-web-host run enzyme-web-host --project-root /path/to/project
+```
+
+The CLI remains available for debugging, scripting, and regression coverage:
+
+```bash
+uv --project apps/enzyme-host-cli sync --extra dev
+uv --project apps/enzyme-host-cli run enzyme --help
+```
+
+Shared host execution uses one runtime package and deterministic routing:
+
+- preprocess tools `convert_format`, `smiles_to_3d`, `prepare_receptor`, `prepare_ligand` execute locally
+- HPC/domain tools such as `fpocket`, `hhblits`, `chai_fold`, `colabfold`, `alphafold3`, `tunnels`, and `vina` execute through `mcp-hpc-tool-contracts`
+
+Both flows persist canonical state and run manifests in the project workspace.
 
 ## Common commands
 

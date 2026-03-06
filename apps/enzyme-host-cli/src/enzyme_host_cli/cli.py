@@ -6,26 +6,12 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from .execution import ExecutionAdapter
-from .memory_client import MemoryClient
+from enzyme_host_runtime import HostRuntime
+from enzyme_host_runtime import RunRequest
 from .plan_runtime import PlanValidationError
-from .plan_runtime import load_confirmed_plan
 from .plan_runtime import load_plan_payload
-from .plan_runtime import select_steps
-from .reporting import build_report
 from .reporting import format_status
-from .reporting import report_path
-from .workspace import CliState
-from .workspace import ProjectContext
 from .workspace import WorkspaceError
-from .workspace import allocate_episode_id
-from .workspace import init_project
-from .workspace import load_project_context
-from .workspace import read_cli_state
-from .workspace import resolve_episode_id
-from .workspace import set_current_episode
-from .workspace import set_last_run
-from .workspace import write_cli_state
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -71,51 +57,49 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
+    runtime = HostRuntime()
     try:
         if args.command == "init":
-            return _cmd_init(args.name)
-        context = load_project_context(Path.cwd())
-        memory = MemoryClient(context)
+            return _cmd_init(runtime, args.name)
         if args.command == "new-episode":
-            return _cmd_new_episode(context, memory, args.goal)
+            return _cmd_new_episode(runtime, args.goal)
         if args.command == "plan":
-            return _cmd_plan(context, memory, args)
+            return _cmd_plan(runtime, args)
         if args.command == "run":
-            return _cmd_run(context, memory, args.step, args.resume, args.force)
+            return _cmd_run(runtime, args.step, args.resume, args.force)
         if args.command == "status":
-            return _cmd_status(context, memory)
+            return _cmd_status(runtime)
         if args.command == "logs":
-            return _cmd_logs(memory, args.run_id)
+            return _cmd_logs(runtime, args.run_id)
         if args.command == "report":
-            return _cmd_report(context, memory)
+            return _cmd_report(runtime)
     except (WorkspaceError, PlanValidationError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     raise ValueError(f"Unknown command: {args.command}")
 
 
-def _cmd_init(name: str) -> int:
-    context = init_project(Path.cwd(), name)
+def _cmd_init(runtime: HostRuntime, name: str) -> int:
+    context = runtime.init_project(Path.cwd(), name)
     print(f"Initialized project {context.config.project_name} at {context.root}")
     return 0
 
 
-def _cmd_new_episode(context: ProjectContext, memory: MemoryClient, goal: str) -> int:
-    episode_id = allocate_episode_id(context.root)
-    memory.create_episode(episode_id, goal)
-    set_current_episode(context.root, episode_id)
-    print(f"Created episode {episode_id}")
+def _cmd_new_episode(runtime: HostRuntime, goal: str) -> int:
+    snapshot = runtime.create_episode(Path.cwd(), goal)
+    print(f"Created episode {snapshot.episode_id}")
     return 0
 
 
-def _cmd_plan(context: ProjectContext, memory: MemoryClient, args: argparse.Namespace) -> int:
-    episode_id = resolve_episode_id(context.root)
+def _cmd_plan(runtime: HostRuntime, args: argparse.Namespace) -> int:
+    context = runtime.load_project(Path.cwd())
+    episode_id = context.cli_state.current_episode_id
+    if not episode_id:
+        raise WorkspaceError("No active episode. Run `enzyme new-episode` first.")
     if args.plan_command == "import":
-        plan = load_plan_payload(args.plan_file)
-        memory.confirm_plan(
-            episode_id,
-            plan,
-            source_path=args.plan_file,
+        runtime.confirm_plan(
+            Path.cwd(),
+            plan_file=args.plan_file,
             imported_at=_now_for_cli(),
         )
         print(f"Imported plan for episode {episode_id} from {args.plan_file}")
@@ -123,75 +107,47 @@ def _cmd_plan(context: ProjectContext, memory: MemoryClient, args: argparse.Name
     if args.plan_command == "confirm":
         plan_file = args.plan_file or (context.root / "episodes" / episode_id / "plan.yaml")
         plan = load_plan_payload(plan_file)
-        memory.confirm_plan(episode_id, plan, source_path=plan_file)
+        runtime.confirm_plan(Path.cwd(), plan=plan, plan_file=plan_file)
         print(f"Confirmed plan for episode {episode_id}")
         return 0
     raise ValueError(f"Unknown plan command: {args.plan_command}")
 
 
 def _cmd_run(
-    context: ProjectContext,
-    memory: MemoryClient,
+    runtime: HostRuntime,
     step_id: str | None,
     resume: bool,
     force: bool,
 ) -> int:
-    episode_id = resolve_episode_id(context.root)
-    state = memory.load_state(episode_id)
-    plan_steps = load_confirmed_plan(memory, episode_id)
-    selected = select_steps(plan_steps, state, step_id=step_id, resume=resume, force=force)
-    if not selected:
+    runs = runtime.run_plan(
+        Path.cwd(),
+        request=RunRequest(step_id=step_id, resume=resume, force=force),
+    )
+    if not runs:
         print("No steps selected. The plan is already complete.")
         return 0
-
-    adapter = ExecutionAdapter()
-    all_step_ids = [step.step_id for step in plan_steps]
-    for step in selected:
-        print(f"Running {step.step_id} ({step.tool})")
-        memory.update_state(
-            episode_id,
-            lambda current: _mark_step_started(current, step.step_id, step.tool),
-        )
-        result = adapter.run_step(context.root, step)
-        memory.write_run_manifest(episode_id, result.run_id, result.manifest_payload)
-        set_last_run(context.root, result.run_id)
-        memory.update_state(
-            episode_id,
-            lambda current: _mark_step_finished(
-                current,
-                episode_id,
-                step.step_id,
-                step.tool,
-                result.run_id,
-                result.status,
-                all_step_ids,
-            ),
-        )
-        print(f"Completed {step.step_id}: {result.status} ({result.run_id})")
-        if result.status != "completed":
-            raise RuntimeError(f"Step {step.step_id} finished with status {result.status}")
+    for item in runs:
+        print(f"Completed {item.step_id}: {item.status} ({item.run_id})")
     return 0
 
 
-def _cmd_status(context: ProjectContext, memory: MemoryClient) -> int:
-    episode_id = resolve_episode_id(context.root)
-    goal = memory.load_goal(episode_id)
-    state = memory.load_state(episode_id)
+def _cmd_status(runtime: HostRuntime) -> int:
+    snapshot = runtime.get_status(Path.cwd())
     print(
         format_status(
-            context.config.project_name,
-            context.root,
-            episode_id,
-            goal,
-            state,
+            snapshot.project_name,
+            Path(snapshot.project_root),
+            snapshot.episode_id,
+            snapshot.goal,
+            snapshot.state,
         )
     )
     return 0
 
 
-def _cmd_logs(memory: MemoryClient, run_id: str) -> int:
+def _cmd_logs(runtime: HostRuntime, run_id: str) -> int:
     try:
-        manifest = memory.load_run_manifest(run_id)
+        manifest = runtime.get_run(Path.cwd(), run_id)
     except FileNotFoundError as exc:
         raise RuntimeError(f"Run {run_id} not found.") from exc
     lines = [
@@ -214,103 +170,10 @@ def _cmd_logs(memory: MemoryClient, run_id: str) -> int:
     return 0
 
 
-def _cmd_report(context: ProjectContext, memory: MemoryClient) -> int:
-    episode_id = resolve_episode_id(context.root)
-    goal = memory.load_goal(episode_id)
-    try:
-        plan = memory.load_plan(episode_id)
-    except FileNotFoundError:
-        plan = None
-    state = memory.load_state(episode_id)
-    target = report_path(context.root, episode_id)
-    target.write_text(
-        build_report(context.config.project_name, episode_id, goal, plan, state),
-        encoding="utf-8",
-    )
-    memory.update_state(
-        episode_id,
-        lambda current: {
-            **current,
-            "report": {
-                "path": str(target.relative_to(context.root)),
-                "updated_at": _now_for_cli(),
-            },
-        },
-    )
+def _cmd_report(runtime: HostRuntime) -> int:
+    target = runtime.materialize_report(Path.cwd())
     print(target)
     return 0
-
-
-def _mark_step_started(state: dict[str, Any], step_id: str, tool: str) -> dict[str, Any]:
-    steps = _coerce_steps(state)
-    runs = _coerce_runs(state)
-    steps[step_id] = {
-        **steps.get(step_id, {}),
-        "tool": tool,
-        "status": "running",
-        "started_at": _now_for_cli(),
-    }
-    return {
-        **state,
-        "status": "running",
-        "steps": steps,
-        "runs": runs,
-    }
-
-
-def _mark_step_finished(
-    state: dict[str, Any],
-    episode_id: str,
-    step_id: str,
-    tool: str,
-    run_id: str,
-    status: str,
-    all_step_ids: list[str],
-) -> dict[str, Any]:
-    steps = _coerce_steps(state)
-    runs = _coerce_runs(state)
-    steps[step_id] = {
-        **steps.get(step_id, {}),
-        "tool": tool,
-        "status": status,
-        "run_id": run_id,
-        "manifest_path": f"episodes/{episode_id}/runs/{run_id}/manifest.json",
-        "updated_at": _now_for_cli(),
-    }
-    runs = [item for item in runs if item.get("run_id") != run_id]
-    runs.append(
-        {
-            "run_id": run_id,
-            "step_id": step_id,
-            "tool": tool,
-            "status": status,
-            "manifest_path": steps[step_id]["manifest_path"],
-        }
-    )
-    episode_status = "completed" if all(
-        steps.get(candidate_step_id, {}).get("status") == "completed"
-        for candidate_step_id in all_step_ids
-    ) else ("failed" if status != "completed" else "running")
-    return {
-        **state,
-        "status": episode_status,
-        "steps": steps,
-        "runs": runs,
-    }
-
-
-def _coerce_steps(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    raw = state.get("steps")
-    if not isinstance(raw, dict):
-        return {}
-    return {str(key): dict(value) for key, value in raw.items() if isinstance(value, dict)}
-
-
-def _coerce_runs(state: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = state.get("runs")
-    if not isinstance(raw, list):
-        return []
-    return [dict(item) for item in raw if isinstance(item, dict)]
 
 
 def _format_mapping(payload: dict[str, Any]) -> list[str]:

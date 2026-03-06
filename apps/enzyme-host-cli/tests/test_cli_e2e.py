@@ -13,6 +13,8 @@ def _run(repo_root: Path, cwd: Path, *args: str) -> subprocess.CompletedProcess[
         "PYTHONPATH": ":".join(
             [
                 str(repo_root / "apps" / "enzyme-host-cli" / "src"),
+                str(repo_root / "packages" / "enzyme-host-runtime" / "src"),
+                str(repo_root / "packages" / "preprocess-backend" / "src"),
                 str(repo_root / "apps" / "mcp-project-memory" / "src"),
                 str(repo_root / "apps" / "mcp-hpc-tool-contracts" / "src"),
                 str(repo_root / "apps" / "mcp-hpc-runner" / "src"),
@@ -84,6 +86,8 @@ def test_cli_flow_from_init_to_run_and_report(tmp_path: Path) -> None:
         "PYTHONPATH": ":".join(
             [
                 str(repo_root / "apps" / "enzyme-host-cli" / "src"),
+                str(repo_root / "packages" / "enzyme-host-runtime" / "src"),
+                str(repo_root / "packages" / "preprocess-backend" / "src"),
                 str(repo_root / "apps" / "mcp-project-memory" / "src"),
                 str(repo_root / "apps" / "mcp-hpc-tool-contracts" / "src"),
                 str(repo_root / "apps" / "mcp-hpc-runner" / "src"),

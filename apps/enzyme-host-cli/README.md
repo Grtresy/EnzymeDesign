@@ -1,7 +1,7 @@
 # enzyme-host-cli
 
-`enzyme-host-cli` provides the minimal local Host CLI/runtime described in the
-OpenSpec change.
+`enzyme-host-cli` is the debug and automation surface for the shared host
+runtime. The browser-based `enzyme-web-host` is now the main MVP operator entrypoint.
 
 ## MVP command surface
 
@@ -60,8 +60,15 @@ Each step must include:
 - either `params` or `inputs`
 
 `inputs` supports a small alias layer for the covered adapters. Relative paths
-are resolved from the project root before the step is submitted through
-`mcp-hpc-tool-contracts`.
+are resolved from the project root before execution.
+
+Mixed-plan routing rules:
+
+- `convert_format`, `smiles_to_3d`, `prepare_receptor`, and `prepare_ligand` run through the local preprocess executor
+- `fpocket`, `hhblits`, `chai_fold`, `colabfold`, `alphafold3`, `tunnels`, and `vina` run through `mcp-hpc-tool-contracts`
+
+Both routes write canonical step state and run manifests so `resume`, `status`,
+the Web Host, and the CLI all observe the same lineage.
 
 ## Local development
 
