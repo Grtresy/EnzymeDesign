@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,7 @@ from .models import RunManifestRecord
 from .models import utc_now_iso
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_RESERVED_IDS = {".", ".."}
 
 
 class ProjectMemoryStore:
@@ -196,8 +199,13 @@ class ProjectMemoryStore:
         episode_dir = self.ensure_episode_dir(project_id, episode_id)
         experiment_id = experiment_id or self._new_object_id("experiment")
         self._validate_id(experiment_id, "experiment_id")
+        self._ensure_object_id_available("experiments", experiment_id, project_id)
         candidate_ids = list(candidate_ids or [])
         run_ids = list(run_ids or [])
+        for candidate_id in candidate_ids:
+            self._validate_id(candidate_id, "candidate_id")
+        for run_id in run_ids:
+            self._validate_id(run_id, "run_id")
         payload = {
             **result,
             "experiment_id": experiment_id,
@@ -250,6 +258,7 @@ class ProjectMemoryStore:
         self, project_id: str, episode_id: str, run_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         self._validate_id(run_id, "run_id")
+        self._ensure_object_id_available("runs", run_id, project_id)
         episode_dir = self.ensure_episode_dir(project_id, episode_id)
         manifest_path = episode_dir / "runs" / run_id / "manifest.json"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,6 +284,7 @@ class ProjectMemoryStore:
         self, project_id: str, episode_id: str, candidate_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
         self._validate_id(candidate_id, "candidate_id")
+        self._ensure_object_id_available("candidates", candidate_id, project_id)
         episode_dir = self.ensure_episode_dir(project_id, episode_id)
         summary_path = (
             episode_dir / "artifacts" / "candidates" / candidate_id / "summary.json"
@@ -420,11 +430,12 @@ class ProjectMemoryStore:
             "experiments": "experiment_id",
         }[index_name]
         self._validate_id(object_id, label)
-        for project_id in self.list_project_ids():
-            index = self._load_index(index_name, project_id)
-            payload = index.get(object_id)
-            if payload is None:
-                continue
+        matches = self._find_index_matches(index_name, object_id)
+        if len(matches) > 1:
+            projects = ", ".join(sorted(project_id for project_id, _ in matches))
+            raise ValueError(f"Duplicate {label} across projects: {object_id} ({projects})")
+        if matches:
+            project_id, payload = matches[0]
             root = self.resolve_project_root(project_id)
             path = (root / payload["path"]).resolve()
             self._ensure_within(path, root)
@@ -451,9 +462,11 @@ class ProjectMemoryStore:
     def _update_index(
         self, index_name: str, object_id: str, payload: dict[str, Any], project_id: str
     ) -> None:
-        index = self._load_index(index_name, project_id)
-        index[object_id] = payload
-        self._write_json_atomic(self._index_path(project_id, index_name, create=True), index)
+        index_path = self._index_path(project_id, index_name, create=True)
+        with self._file_lock(index_path):
+            index = self._read_json(index_path) if index_path.exists() else {}
+            index[object_id] = payload
+            self._write_json_atomic(index_path, index)
 
     def _load_index(self, index_name: str, project_id: str) -> dict[str, Any]:
         index_path = self._index_path(project_id, index_name)
@@ -508,11 +521,19 @@ class ProjectMemoryStore:
             os.fsync(handle.fileno())
             temp_path = Path(handle.name)
         temp_path.replace(path)
+        directory_fd = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(self._dump_json_line(payload) + "\n")
+        with self._file_lock(path):
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(self._dump_json_line(payload) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def _dump_json(self, payload: Any) -> str:
         return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -530,5 +551,46 @@ class ProjectMemoryStore:
             raise ValueError(f"Path escapes project root: {path}")
 
     def _validate_id(self, value: str, label: str) -> None:
-        if not _ID_RE.match(value):
+        if value != value.strip() or value in _RESERVED_IDS or not _ID_RE.match(value):
             raise ValueError(f"Invalid {label}: {value}")
+
+    def _ensure_object_id_available(
+        self, index_name: str, object_id: str, project_id: str
+    ) -> None:
+        matches = self._find_index_matches(index_name, object_id)
+        for existing_project_id, _ in matches:
+            if existing_project_id != project_id:
+                singular = {
+                    "runs": "run_id",
+                    "candidates": "candidate_id",
+                    "experiments": "experiment_id",
+                }[index_name]
+                raise ValueError(
+                    f"{singular} must be globally unique across projects: {object_id}"
+                )
+
+    def _find_index_matches(
+        self, index_name: str, object_id: str
+    ) -> list[tuple[str, dict[str, Any]]]:
+        matches: list[tuple[str, dict[str, Any]]] = []
+        for project_id in self.list_project_ids():
+            index = self._load_index(index_name, project_id)
+            payload = index.get(object_id)
+            if payload is not None:
+                matches.append((project_id, payload))
+        return matches
+
+    def _lock_path(self, path: Path) -> Path:
+        return path.with_name(f"{path.name}.lock")
+
+    @contextmanager
+    def _file_lock(self, path: Path):
+        lock_path = self._lock_path(path)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("w", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()

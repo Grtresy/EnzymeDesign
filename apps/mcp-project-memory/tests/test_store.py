@@ -96,4 +96,84 @@ def test_invalid_ids_and_unsupported_uri_are_rejected(store: ProjectMemoryStore)
         store.ensure_episode_dir("demo", "../oops")
 
     with pytest.raises(ValueError):
+        store.ensure_episode_dir("demo", "..")
+
+    with pytest.raises(ValueError):
+        store.ensure_project_root("..")
+
+    with pytest.raises(ValueError):
+        store.import_experiment_results("demo", "ep1", {"score": 0.4}, experiment_id="..")
+
+    with pytest.raises(ValueError):
         store.read_resource_text("enzyme://project/demo/episode/../state")
+
+
+def test_indexed_ids_must_be_globally_unique_across_projects(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config = ProjectMemoryConfig(
+        projects={
+            "demo": workspace / "demo",
+            "other": workspace / "other",
+        }
+    )
+    store = ProjectMemoryStore(config)
+
+    store.write_run_manifest("demo", "ep1", "run-1", {"tool": "vina"})
+    with pytest.raises(ValueError):
+        store.write_run_manifest("other", "ep2", "run-1", {"tool": "gnina"})
+
+    store.write_candidate_summary("demo", "ep1", "cand-1", {"status": "selected"})
+    with pytest.raises(ValueError):
+        store.write_candidate_summary("other", "ep2", "cand-1", {"status": "rejected"})
+
+    store.import_experiment_results("demo", "ep1", {"score": 0.8}, experiment_id="exp-1")
+    with pytest.raises(ValueError):
+        store.import_experiment_results("other", "ep2", {"score": 0.3}, experiment_id="exp-1")
+
+
+def test_duplicate_index_entries_fail_closed_on_read(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    config = ProjectMemoryConfig(
+        projects={
+            "demo": workspace / "demo",
+            "other": workspace / "other",
+        }
+    )
+    store = ProjectMemoryStore(config)
+
+    demo_run = store.write_run_manifest("demo", "ep1", "run-1", {"tool": "vina"})
+    other_root = store.ensure_project_root("other")
+    other_run_path = other_root / "episodes" / "ep2" / "runs" / "run-1" / "manifest.json"
+    other_run_path.parent.mkdir(parents=True, exist_ok=True)
+    other_run_path.write_text(
+        json.dumps(
+            {
+                "run_id": "run-1",
+                "project_id": "other",
+                "episode_id": "ep2",
+                "tool": "gnina",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (other_root / ".enzyme" / "indexes").mkdir(parents=True, exist_ok=True)
+    (other_root / ".enzyme" / "indexes" / "runs.json").write_text(
+        json.dumps(
+            {
+                "run-1": {
+                    "run_id": "run-1",
+                    "project_id": "other",
+                    "episode_id": "ep2",
+                    "path": "episodes/ep2/runs/run-1/manifest.json",
+                    "tool": "gnina",
+                }
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert demo_run["tool"] == "vina"
+    with pytest.raises(ValueError):
+        store.read_resource_text("enzyme://run/run-1/manifest")

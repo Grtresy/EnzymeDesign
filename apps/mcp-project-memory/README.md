@@ -56,6 +56,8 @@ PYTHONPATH=apps/mcp-project-memory/src .venv/bin/python3 -m mcp_project_memory.c
 - `enzyme://candidate/{candidate_id}/summary`
 - `enzyme://experiment/{experiment_id}/result`
 
+`run_id`、`candidate_id`、`experiment_id` 当前要求在所有配置项目之间全局唯一。这样可以在保留上述稳定 URI 结构的同时，避免跨项目资源读取歧义。
+
 ## Tools
 
 - `update_episode_state`
