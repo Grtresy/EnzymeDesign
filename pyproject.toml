@@ -1,2 +1,11 @@
 [tool.uv.workspace]
-members = ["apps/*", "packages/*"]
+members = [
+  "apps/enzyme-host-cli",
+  "apps/enzyme-web-host",
+  "apps/mcp-hpc-runner",
+  "apps/mcp-hpc-tool-contracts",
+  "apps/mcp-preprocess",
+  "apps/mcp-project-memory",
+  "packages/enzyme-host-runtime",
+  "packages/preprocess-backend",
+]

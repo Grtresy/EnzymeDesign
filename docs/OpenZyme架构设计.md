@@ -485,13 +485,13 @@ Host Core 建议实现以下子模块：
 
 MVP 阶段也可以先不独立成 server，而由 Host 本地实现。
 
-### `mcp-domain-knowledge`（Phase 3+）
+### `mcp-enzyme-design-knowledge`（Phase 3+）
 
-这是领域知识注入的关键补充，用于增强 Agent 的专业决策能力。
+这是酶设计知识注入的关键补充，用于增强 Agent 在 enzyme design 场景下的专业决策能力。
 
 职责：
 
-- 酶设计领域知识库管理
+- 酶设计知识库管理
 - RAG 驱动的知识检索
 - 设计经验规则存储与查询
 - 相似案例推荐
@@ -501,11 +501,11 @@ MVP 阶段也可以先不独立成 server，而由 Host 本地实现。
 - tools：
   - `query_design_heuristics`: 查询设计经验规则
   - `find_similar_cases`: 查找相似设计案例
-  - `get_domain_constraints`: 获取领域特定约束建议
+  - `get_enzyme_design_constraints`: 获取酶设计特定约束建议
 - resources：
-  - `enzyme://knowledge/heuristics/{category}`
-  - `enzyme://knowledge/cases/{case_id}`
-  - `enzyme://knowledge/protocols/{protocol_name}`
+  - `enzyme://knowledge/enzyme-design/heuristics/{category}`
+  - `enzyme://knowledge/enzyme-design/cases/{case_id}`
+  - `enzyme://knowledge/enzyme-design/protocols/{protocol_name}`
 
 知识库内容示例：
 
@@ -847,8 +847,8 @@ Agent: 我注意到这个 episode 的工具调用都很顺利，
 
 ```json
 {
-  // 领域知识注入
-  "domain_context": {
+  // 酶设计知识注入
+  "enzyme_design_context": {
     "knowledge_refs": [],
     "design_heuristics": [],
     "reference_cases": []
@@ -1268,7 +1268,7 @@ def handle_critical_failure(failure, agent_state):
 - 敏感用途设计
 - 超预算长任务
 - 高风险激进设计轨道
-- 未验证来源的数据自动注入知识库
+- 未验证来源的数据自动注入酶设计知识库
 
 ---
 
@@ -1354,7 +1354,7 @@ def handle_critical_failure(failure, agent_state):
 
 **Agent 智能增强：**
 
-1. **领域知识注入**
+1. **酶设计知识注入**
    - RAG 驱动的知识检索
    - 设计经验规则库
    - 相似案例参考
@@ -1413,7 +1413,7 @@ def handle_critical_failure(failure, agent_state):
 | `mcp-project-memory` | 待实现 | 项目状态与工件资源层 | Phase 1 |
 | `mcp-structure-workbench` | 待实现 | 结构查看、交互标注与约束编辑的 MCP App | Phase 2 |
 | `mcp-bio-research` | 待实现 | 检索与知识抽取 | Phase 2 |
-| 领域知识 RAG | 待实现 | 酶设计知识注入 | Phase 3 |
+| `mcp-enzyme-design-knowledge` | 待实现 | 酶设计知识注入与案例/规则检索 | Phase 3 |
 | Checkpoint 系统 | 待实现 | 状态快照与回退 | Phase 3 |
 | 外部协作 Hooks | 待实现 | 事件通知与集成 | Phase 3 |
 | reporting server | 可选 | 报告与导出 | Phase 1-2 |
@@ -1454,7 +1454,7 @@ def handle_critical_failure(failure, agent_state):
 
 - **Phase 1 (MVP)**：建立持续决策型 Agent 基础设施
 - **Phase 2 (体验增强)**：终止条件、信任等级、进度预期、双层解释
-- **Phase 3 (智能增强)**：领域知识注入、多方案并行、Checkpoint 回退、外部协作
+- **Phase 3 (智能增强)**：酶设计知识注入、多方案并行、Checkpoint 回退、外部协作
 - **Phase 4 (规模化)**：多用户协作、企业级权限、高级分析
 
 这样设计的好处是：
@@ -1467,7 +1467,38 @@ def handle_critical_failure(failure, agent_state):
 
 ---
 
-## 16. 参考
+## 16. 生态整合与社区贡献
+
+### 16.1 Agent Skills 标准
+
+[Claude Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills) 是 K-Dense AI 推出的 170+ 科学技能库，采用 MIT 协议，遵循 Agent Skills 标准，可与 Cursor/Claude Code/Codex 等工具集成。
+
+经调研，该技能库在酶设计领域存在明显空白：
+- 仅有 3 个蛋白质工程相关技能（ESM、Glycoengineering、Adaptyv）
+- 缺乏专门的酶设计工作流技能
+
+### 16.2 OpenZyme 技能输出建议
+
+OpenZyme 可考虑将核心能力封装为 Agent Skills 标准格式的技能，贡献回社区：
+
+| 技能名称 | 说明 |
+|----------|------|
+| `enzyme-active-site-analysis` | 活性位点识别与分析 |
+| `enzyme-substrate-docking` | 酶-底物对接 |
+| `enzyme-stability-prediction` | 酶稳定性预测 |
+| `enzyme-tunnel-analysis` | 酶通道/口袋分析 |
+| `enzyme-design-workflow` | 完整酶设计工作流 |
+
+参考其 SKILL.md 文档结构：
+- 清晰的技能描述与适用场景
+- 结构化的输入/输出定义
+- 可复用的 prompt 模板
+
+这不仅能填补社区在酶设计技能的空白，也能提升 OpenZyme 的可见度和影响力。
+
+---
+
+## 17. 参考
 
 - `docs/OpenZyme Multi-Agent Design Framework.md`
 - `docs/CLI交互面设计.md`

@@ -45,10 +45,24 @@ The system MUST 为活跃 episode 提供 agent state、recent observations、run
 - 待处理的 feedback / approval 项
 - 当前 episode 的报告视图或下载入口
 
+当 agent workflow 启用 LLM backend 时，浏览器检查界面还必须包括：
+
+- 当前 agent backend 名称
+- 当前是否处于 fallback / degraded 状态
+- 最近一次 sidecar 或 provider 错误摘要（若存在）
+- provider / model / sidecar 版本等详细 provenance 信息的详情视图或调试视图入口
+
+浏览器主操作区域 MUST 优先显示 backend 与降级状态，而不是把完整 provider/model 元数据放在主要 workflow 操作区的显著位置。
+
 #### 场景：浏览器用户审查 agent 为什么改变行动路径
 - **WHEN** 一个 episode 在多轮 observation 后切换了 strategy 或 selected action
 - **THEN** Web Chat Host 显示最近 observations、decision trace 摘要和新的 working plan
 - **THEN** 显示的信息与共享 runtime 生成的规范 agent state 和 run lineage 匹配
+
+#### 场景：浏览器用户发现当前 workflow 已退回启发式 backend
+- **WHEN** LLM sidecar 调用失败且 runtime 已回退到启发式 adapter
+- **THEN** Web Chat Host 在主界面显示当前 backend 和 fallback / degraded 状态
+- **THEN** 用户可以在详情视图中查看 provider/model 或错误类别等更细的 provenance 信息
 
 ## ADDED Requirements
 

@@ -15,10 +15,22 @@ cache/
 
 runs/
 !runs/.gitkeep
+playgrounds/runs/*
+!playgrounds/runs/.gitkeep
 
 __pycache__/
 
 data/
+!playgrounds/host-agent-llm-sidecar/data/
+!playgrounds/host-agent-llm-sidecar/data/inputs/
+!playgrounds/host-agent-llm-sidecar/data/inputs/receptor.pdb
+!playgrounds/host-agent-llm-sidecar/data/refs/
+!playgrounds/host-agent-llm-sidecar/data/refs/.gitkeep
+!playgrounds/examples/host-agent-llm-sidecar/data/
+!playgrounds/examples/host-agent-llm-sidecar/data/inputs/
+!playgrounds/examples/host-agent-llm-sidecar/data/inputs/receptor.pdb
+!playgrounds/examples/host-agent-llm-sidecar/data/refs/
+!playgrounds/examples/host-agent-llm-sidecar/data/refs/.gitkeep
 
 old/
 
@@ -29,3 +41,7 @@ containers
 .codex/
 
 .opencode/
+
+node_modules/
+
+playgrounds/
