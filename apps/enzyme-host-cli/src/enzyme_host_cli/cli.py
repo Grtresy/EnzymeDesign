@@ -18,6 +18,7 @@ from .workspace import WorkspaceError
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="enzyme")
+    parser.add_argument("--verbose", action="store_true", help="Show detailed backend provenance")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_cmd = subparsers.add_parser("init", help="Initialize a new OpenZyme project")
@@ -74,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "workflow":
             return _cmd_workflow(runtime, args)
         if args.command == "status":
-            return _cmd_status(runtime)
+            return _cmd_status(runtime, verbose=args.verbose)
         if args.command == "logs":
             return _cmd_logs(runtime, args.run_id)
         if args.command == "report":
@@ -100,7 +101,7 @@ def _cmd_new_episode(runtime: HostRuntime, goal: str) -> int:
 def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
     if args.workflow_command == "start":
         snapshot = runtime.start_agent_workflow(Path.cwd())
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     if args.workflow_command == "continue":
         snapshot = runtime.continue_agent_workflow(
@@ -108,11 +109,11 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             expected_state_version=args.state_version,
             resume_token=args.resume_token,
         )
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     if args.workflow_command == "execute":
         snapshot = runtime.execute_selected_action(Path.cwd())
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     if args.workflow_command == "feedback":
         snapshot = runtime.submit_feedback(
@@ -124,7 +125,7 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             expected_state_version=args.state_version,
             resume_token=args.resume_token,
         )
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     if args.workflow_command == "interrupts":
         snapshot = runtime.get_status(Path.cwd())
@@ -150,7 +151,7 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             expected_state_version=args.state_version,
             resume_token=args.resume_token,
         )
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     if args.workflow_command == "reject-gate":
         snapshot = runtime.reject_gate(
@@ -160,20 +161,26 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             expected_state_version=args.state_version,
             resume_token=args.resume_token,
         )
-        print(_render_workflow_summary(snapshot))
+        print(_render_workflow_summary(snapshot, verbose=args.verbose))
         return 0
     raise ValueError(f"Unknown workflow command: {args.workflow_command}")
 
 
-def _cmd_status(runtime: HostRuntime) -> int:
+def _cmd_status(runtime: HostRuntime, *, verbose: bool) -> int:
     snapshot = runtime.get_status(Path.cwd())
-    print(
+    lines = [
         format_status(
             snapshot.project_name,
             Path(snapshot.project_root),
             snapshot.episode_id,
             snapshot.goal,
             snapshot.state,
+        ),
+        _render_backend_lines(snapshot.agent_backend, verbose=verbose),
+    ]
+    print(
+        "\n".join(
+            line for line in lines if line.strip()
         )
     )
     return 0
@@ -235,20 +242,20 @@ class _FakePrepareReceptorExecutor(StepExecutor):
         )
 
 
-def _render_workflow_summary(snapshot) -> str:
+def _render_workflow_summary(snapshot, *, verbose: bool) -> str:
     agent = snapshot.agent_state
     selected_action = agent.get("selected_action") if isinstance(agent, dict) else None
     next_action = selected_action.get("title") if isinstance(selected_action, dict) else "-"
-    return "\n".join(
-        [
-            f"Episode: {snapshot.episode_id}",
-            f"Agent Status: {agent.get('status', 'idle') if isinstance(agent, dict) else 'idle'}",
-            f"Next Action: {next_action}",
-            f"Pending Interrupts: {len(snapshot.pending_interrupts)}",
-            f"Approval Gates: {len(snapshot.approval_gates)}",
-            f"Runs: {len(snapshot.runs)}",
-        ]
-    )
+    lines = [
+        f"Episode: {snapshot.episode_id}",
+        f"Agent Status: {agent.get('status', 'idle') if isinstance(agent, dict) else 'idle'}",
+        f"Next Action: {next_action}",
+        *(_render_backend_lines(snapshot.agent_backend, verbose=verbose).splitlines()),
+        f"Pending Interrupts: {len(snapshot.pending_interrupts)}",
+        f"Approval Gates: {len(snapshot.approval_gates)}",
+        f"Runs: {len(snapshot.runs)}",
+    ]
+    return "\n".join(line for line in lines if line)
 
 
 def _format_mapping(payload: dict[str, Any]) -> list[str]:
@@ -260,6 +267,36 @@ def _format_mapping(payload: dict[str, Any]) -> list[str]:
         else:
             rendered.append(f"  {key}: {value}")
     return rendered
+
+
+def _render_backend_lines(agent_backend: dict[str, Any], *, verbose: bool) -> str:
+    if not isinstance(agent_backend, dict):
+        return ""
+    backend_name = str(agent_backend.get("backend") or "heuristic")
+    degraded = bool(agent_backend.get("degraded"))
+    fallback_used = bool(agent_backend.get("fallback_used"))
+    last_error = str(agent_backend.get("last_error_summary") or "-")
+    state = "degraded" if degraded else "healthy"
+    if backend_name == "heuristic" and not degraded:
+        state = "heuristic"
+    lines = [
+        f"Agent Backend: {backend_name}",
+        f"Backend State: {state}",
+        f"Fallback Active: {'yes' if fallback_used else 'no'}",
+        f"Sidecar Error: {last_error}",
+    ]
+    if verbose:
+        provider = str(agent_backend.get("provider") or "-")
+        model = str(agent_backend.get("model") or "-")
+        sidecar = agent_backend.get("sidecar")
+        if isinstance(sidecar, dict) and sidecar:
+            lines.append(
+                f"Provider/Model: {provider} / {model} ({sidecar.get('name', '-')}"
+                f" {sidecar.get('version', '-')})"
+            )
+        else:
+            lines.append(f"Provider/Model: {provider} / {model}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

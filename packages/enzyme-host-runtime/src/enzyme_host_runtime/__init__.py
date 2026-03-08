@@ -1,3 +1,5 @@
+from .agent_backend import AgentBackendConfig
+from .agent_backend import LLMSidecarConfig
 from .execution import ExecutionResult
 from .execution import HpcToolContractsExecutor
 from .execution import LocalPreprocessExecutor
@@ -7,6 +9,7 @@ from .memory_client import MemoryClient
 from .plan_runtime import PlanStep
 from .plan_runtime import PlanValidationError
 from .planning import AgentAction
+from .planning import AgentBackendBlockedError
 from .planning import AgentInterrupt
 from .planning import AgentModelAdapter
 from .planning import AgentObservation
@@ -19,6 +22,7 @@ from .planning import DecisionTraceEntry
 from .planning import DesignContract
 from .planning import HeuristicAgentAdapter
 from .planning import HumanFeedback
+from .planning import LLMAgentAdapter
 from .planning import ToolAction
 from .reporting import build_report
 from .reporting import format_status
@@ -34,6 +38,8 @@ from .workspace import WorkspaceError
 
 __all__ = [
     "AgentAction",
+    "AgentBackendBlockedError",
+    "AgentBackendConfig",
     "AgentInterrupt",
     "AgentModelAdapter",
     "AgentObservation",
@@ -53,6 +59,8 @@ __all__ = [
     "HostRuntime",
     "HpcToolContractsExecutor",
     "HumanFeedback",
+    "LLMAgentAdapter",
+    "LLMSidecarConfig",
     "list_episode_ids",
     "LocalPreprocessExecutor",
     "MemoryClient",

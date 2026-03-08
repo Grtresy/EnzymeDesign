@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Any
 from mcp_project_memory.store import StaleStateError
 from mcp_project_memory.models import utc_now_iso
 
+from .agent_backend import LLMSidecarClient
+from .agent_backend import load_agent_backend_config
 from .execution import RoutedExecutionAdapter
 from .memory_client import MemoryClient
 from .plan_runtime import PlanStep
@@ -17,6 +20,8 @@ from .plan_runtime import select_steps
 from .planning import AgentObservation
 from .planning import AgentState
 from .planning import AgentWorkflowOrchestrator
+from .planning import HeuristicAgentAdapter
+from .planning import LLMAgentAdapter
 from .reporting import build_report
 from .reporting import report_path
 from .workspace import ProjectContext
@@ -64,6 +69,7 @@ class EpisodeSnapshot:
     approval_gates: list[dict[str, Any]]
     planning_history: list[dict[str, Any]]
     execution_evidence: dict[str, Any]
+    agent_backend: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,7 +82,9 @@ class HostRuntime:
         workflow: AgentWorkflowOrchestrator | None = None,
     ) -> None:
         self.executor = executor or RoutedExecutionAdapter()
-        self.workflow = workflow or AgentWorkflowOrchestrator()
+        self.workflow = workflow
+        self._sidecar_clients: dict[tuple[str, tuple[str, ...], str], LLMSidecarClient] = {}
+        atexit.register(self.close)
 
     def init_project(self, base_dir: Path, name: str) -> ProjectContext:
         return init_project(base_dir, name)
@@ -127,7 +135,7 @@ class HostRuntime:
     def start_agent_workflow(self, start: Path, *, episode_id: str | None = None) -> EpisodeSnapshot:
         context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
-        updated = self.workflow.initialize(agent_state)
+        updated = self._workflow_for_root(context.root).initialize(agent_state)
         memory.save_agent_state(selected_episode, updated)
         return self.get_episode_snapshot(context, memory, selected_episode)
 
@@ -148,7 +156,7 @@ class HostRuntime:
                 resume_token=resume_token,
             )
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
-        updated = self.workflow.continue_workflow(agent_state)
+        updated = self._workflow_for_root(context.root).continue_workflow(agent_state)
         memory.save_agent_state(
             selected_episode,
             updated,
@@ -186,7 +194,7 @@ class HostRuntime:
                 expected_state_version=expected_state_version or interrupt.active_state_version,
                 resume_token=resume_token or interrupt.resume_token,
             )
-        updated = self.workflow.apply_feedback(
+        updated = self._workflow_for_root(context.root).apply_feedback(
             agent_state,
             interrupt_id=interrupt_id,
             content=content,
@@ -290,7 +298,7 @@ class HostRuntime:
                 created_at=utc_now_iso(),
                 payload={"status": "failed", "tool": plan_step.tool, "error": str(exc)},
             )
-            updated = self.workflow.record_observation(agent_state, observation)
+            updated = self._workflow_for_root(context.root).record_observation(agent_state, observation)
             memory.save_agent_state(selected_episode, updated)
             raise
         memory.write_run_manifest(selected_episode, result.run_id, result.manifest_payload)
@@ -316,7 +324,7 @@ class HostRuntime:
             run_id=result.run_id,
             manifest_path=f"episodes/{selected_episode}/runs/{result.run_id}/manifest.json",
         )
-        updated = self.workflow.record_observation(agent_state, observation)
+        updated = self._workflow_for_root(context.root).record_observation(agent_state, observation)
         memory.save_agent_state(selected_episode, updated)
         return self.get_episode_snapshot(context, memory, selected_episode)
 
@@ -408,6 +416,9 @@ class HostRuntime:
         runs = memory.list_episode_runs(episode_id)
         agent_state = memory.load_agent_state(episode_id, objective=goal)
         pending_interrupts = [item.to_dict() for item in agent_state.pending_interrupts if item.status == "pending"]
+        agent_backend = dict(agent_state.meta.get("backend_status") or {})
+        if not agent_backend:
+            agent_backend = _configured_backend_status(context.root)
         return EpisodeSnapshot(
             project_id=context.config.project_id,
             project_name=context.config.project_name,
@@ -427,6 +438,7 @@ class HostRuntime:
                 "latest_observation_id": agent_state.observations[-1].observation_id if agent_state.observations else None,
                 "termination_status": agent_state.termination_status,
             },
+            agent_backend=agent_backend,
         )
 
     def get_run(self, start: Path, run_id: str) -> dict[str, Any]:
@@ -499,6 +511,33 @@ class HostRuntime:
             resume_token=resume_token,
         )
 
+    def close(self) -> None:
+        for client in self._sidecar_clients.values():
+            client.close()
+        self._sidecar_clients.clear()
+
+    def _workflow_for_root(self, root: Path) -> AgentWorkflowOrchestrator:
+        if self.workflow is not None:
+            return self.workflow
+        backend_config = load_agent_backend_config(root)
+        if backend_config.backend == "llm-sidecar":
+            adapter = LLMAgentAdapter(
+                client=self._sidecar_client(backend_config),
+                config=backend_config.llm_sidecar,
+            )
+        else:
+            adapter = HeuristicAgentAdapter()
+        return AgentWorkflowOrchestrator(adapter=adapter)
+
+    def _sidecar_client(self, backend_config) -> LLMSidecarClient:
+        sidecar_config = backend_config.llm_sidecar
+        key = (sidecar_config.config_path, sidecar_config.command, sidecar_config.cwd)
+        client = self._sidecar_clients.get(key)
+        if client is None:
+            client = LLMSidecarClient(sidecar_config)
+            self._sidecar_clients[key] = client
+        return client
+
 
 def _mark_step_started(state: dict[str, Any], step_id: str, tool: str) -> dict[str, Any]:
     steps = _coerce_steps(state)
@@ -510,6 +549,23 @@ def _mark_step_started(state: dict[str, Any], step_id: str, tool: str) -> dict[s
         "started_at": utc_now_iso(),
     }
     return {**state, "status": "running", "steps": steps, "runs": runs}
+
+
+def _configured_backend_status(project_root: Path) -> dict[str, Any]:
+    config = load_agent_backend_config(project_root)
+    if config.backend == "llm-sidecar":
+        return {
+            "adapter": "llm-agent-adapter",
+            "backend": "llm-sidecar",
+            "provider": config.llm_sidecar.provider,
+            "model": config.llm_sidecar.model,
+            "sidecar": {},
+            "degraded": False,
+            "fallback_used": False,
+            "fallback_backend": None,
+            "last_error_summary": None,
+        }
+    return HeuristicAgentAdapter().current_backend_status()
 
 
 def _mark_step_finished(

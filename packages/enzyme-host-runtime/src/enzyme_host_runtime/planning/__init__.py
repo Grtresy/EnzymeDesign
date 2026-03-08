@@ -1,5 +1,7 @@
 from .adapters import AgentModelAdapter
+from .adapters import AgentBackendBlockedError
 from .adapters import HeuristicAgentAdapter
+from .llm_adapter import LLMAgentAdapter
 from .models import AgentAction
 from .models import AgentInterrupt
 from .models import AgentObservation
@@ -17,6 +19,7 @@ from .policy import GatePolicyDecision
 __all__ = [
     "AgentAction",
     "AgentInterrupt",
+    "AgentBackendBlockedError",
     "AgentModelAdapter",
     "AgentObservation",
     "AgentSession",
@@ -29,5 +32,6 @@ __all__ = [
     "GatePolicyDecision",
     "HeuristicAgentAdapter",
     "HumanFeedback",
+    "LLMAgentAdapter",
     "ToolAction",
 ]

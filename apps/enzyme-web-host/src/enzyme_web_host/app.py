@@ -243,6 +243,16 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
     current_status = escape(str(agent.get("status", "idle")))
     resume_token = escape(str(session.get("resume_token", "-")))
     state_version = escape(str(session.get("active_state_version", "-")))
+    backend = snapshot.agent_backend if isinstance(snapshot.agent_backend, dict) else {}
+    backend_name = escape(str(backend.get("backend") or "heuristic"))
+    backend_state = "degraded" if backend.get("degraded") else ("blocked" if agent.get("status") == "blocked" else "healthy")
+    fallback_state = "active" if backend.get("fallback_used") else "inactive"
+    sidecar_error = escape(str(backend.get("last_error_summary") or "None"))
+    provider = escape(str(backend.get("provider") or "-"))
+    model = escape(str(backend.get("model") or "-"))
+    sidecar_meta = backend.get("sidecar") if isinstance(backend.get("sidecar"), dict) else {}
+    sidecar_name = escape(str(sidecar_meta.get("name") or "-"))
+    sidecar_version = escape(str(sidecar_meta.get("version") or "-"))
     stale_banner = '<p class="notice">Workflow state was stale. The page has been refreshed to the latest canonical state.</p>' if stale else ""
 
     feedback_forms = "".join(_render_feedback_form(item) for item in snapshot.pending_interrupts if item.get("kind") != "approval_request")
@@ -272,6 +282,10 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
       <div class="hero-card">
         <div><span>Episode</span><strong>{escape(snapshot.episode_id)}</strong></div>
         <div><span>Agent Status</span><strong>{current_status}</strong></div>
+        <div><span>Backend</span><strong>{backend_name}</strong></div>
+        <div><span>Backend State</span><strong>{escape(backend_state)}</strong></div>
+        <div><span>Fallback</span><strong>{escape(fallback_state)}</strong></div>
+        <div><span>Sidecar Error</span><strong>{sidecar_error}</strong></div>
         <div><span>Next Action</span><strong>{next_action}</strong></div>
         <div><span>Resume Token</span><strong>{resume_token}</strong></div>
         <div><span>State Version</span><strong>{state_version}</strong></div>
@@ -317,6 +331,14 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
           <button type="submit">Generate Report</button>
           <a class="secondary" href="/report">Open Report</a>
         </form>
+      </article>
+      <article class="panel">
+        <h2>Backend Details</h2>
+        <p><strong>Current backend</strong>: {backend_name}</p>
+        <p><strong>State</strong>: {escape(backend_state)}</p>
+        <p><strong>Provider / model</strong>: {provider} / {model}</p>
+        <p><strong>Sidecar</strong>: {sidecar_name} {sidecar_version}</p>
+        <p><strong>Last sidecar error</strong>: {sidecar_error}</p>
       </article>
       <article class="panel">
         <h2>Pending Interrupts</h2>

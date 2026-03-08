@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enzyme_host_runtime.planning import AgentAction
+from enzyme_host_runtime.planning import AgentBackendBlockedError
 from enzyme_host_runtime.planning import AgentInterrupt
 from enzyme_host_runtime.planning import AgentObservation
 from enzyme_host_runtime.planning import AgentState
@@ -60,6 +61,59 @@ class _FakeAdapter:
 
     def summarize_observation(self, *, state: AgentState, observation: AgentObservation) -> str:
         return observation.summary
+
+    def current_backend_status(self) -> dict[str, object]:
+        return {
+            "backend": "heuristic",
+            "degraded": False,
+            "fallback_used": False,
+            "last_error_summary": None,
+        }
+
+
+class _ClarificationBlockedAdapter(_FakeAdapter):
+    def build_clarification_interrupt(self, *, state: AgentState, reason: str) -> AgentInterrupt:
+        del state, reason
+        raise AgentBackendBlockedError(
+            "sidecar unavailable",
+            operation="build_clarification_interrupt",
+            backend_status={
+                "backend": "llm-sidecar",
+                "degraded": False,
+                "fallback_used": False,
+                "last_error_summary": "sidecar unavailable",
+            },
+        )
+
+    def current_backend_status(self) -> dict[str, object]:
+        return {
+            "backend": "llm-sidecar",
+            "degraded": False,
+            "fallback_used": False,
+            "last_error_summary": None,
+        }
+
+
+class _ClarificationFallbackAdapter(_FakeAdapter):
+    def __init__(self) -> None:
+        self._backend_status = {
+            "backend": "llm-sidecar",
+            "degraded": False,
+            "fallback_used": False,
+            "last_error_summary": None,
+        }
+
+    def build_clarification_interrupt(self, *, state: AgentState, reason: str) -> AgentInterrupt:
+        self._backend_status = {
+            "backend": "llm-sidecar",
+            "degraded": True,
+            "fallback_used": True,
+            "last_error_summary": "schema validation failed",
+        }
+        return super().build_clarification_interrupt(state=state, reason=reason)
+
+    def current_backend_status(self) -> dict[str, object]:
+        return dict(self._backend_status)
 
 
 def test_workflow_orchestrator_selects_tool_action() -> None:
@@ -122,3 +176,41 @@ def test_new_selected_action_supersedes_pending_gate() -> None:
     assert updated.selected_action is not None
     assert updated.selected_action.action_id != "action-old"
     assert updated.approval_gates[0].status == "superseded"
+
+
+def test_clarification_backend_block_marks_workflow_blocked() -> None:
+    orchestrator = AgentWorkflowOrchestrator(adapter=_ClarificationBlockedAdapter())
+    state = orchestrator.initialize(AgentState.from_dict({}, episode_id="0001", objective="improve binding"))
+
+    observation = AgentObservation(
+        observation_id=new_object_id("obs"),
+        source="tool",
+        summary="tool failed",
+        created_at=state.session.updated_at,
+        payload={"status": "failed"},
+    )
+    updated = orchestrator.record_observation(state, observation)
+
+    assert updated.status == "blocked"
+    assert updated.selected_action is None
+    assert updated.meta["backend_status"]["backend"] == "llm-sidecar"
+    assert updated.decision_trace[-1].kind == "backend_error"
+
+
+def test_clarification_fallback_persists_degraded_backend_status() -> None:
+    orchestrator = AgentWorkflowOrchestrator(adapter=_ClarificationFallbackAdapter())
+    state = orchestrator.initialize(AgentState.from_dict({}, episode_id="0001", objective="improve binding"))
+
+    observation = AgentObservation(
+        observation_id=new_object_id("obs"),
+        source="tool",
+        summary="tool failed",
+        created_at=state.session.updated_at,
+        payload={"status": "failed"},
+    )
+    updated = orchestrator.record_observation(state, observation)
+
+    assert updated.status == "awaiting_feedback"
+    assert updated.meta["backend_status"]["degraded"] is True
+    assert updated.meta["backend_status"]["fallback_used"] is True
+    assert updated.decision_trace[-1].meta["degraded"] is True

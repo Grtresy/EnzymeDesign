@@ -1,0 +1,9 @@
+{
+  "backend": "llm-sidecar",
+  "llm_sidecar": {
+    "provider": "fake",
+    "model": "fake-structured-agent",
+    "timeout_seconds": 5,
+    "allow_fallback": true
+  }
+}

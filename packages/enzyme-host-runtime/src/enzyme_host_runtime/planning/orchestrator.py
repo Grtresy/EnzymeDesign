@@ -6,6 +6,7 @@ from typing import TypedDict
 from mcp_project_memory.models import utc_now_iso
 
 from .adapters import AgentModelAdapter
+from .adapters import AgentBackendBlockedError
 from .adapters import HeuristicAgentAdapter
 from .models import AgentAction
 from .models import AgentInterrupt
@@ -45,14 +46,22 @@ class AgentWorkflowOrchestrator:
     def initialize(self, state: AgentState) -> AgentState:
         next_state = self._copy_state(state)
         if not next_state.design_contract.summary:
-            next_state.design_contract = self.adapter.derive_design_contract(
-                episode_id=next_state.episode_id,
-                goal=next_state.objective,
-                current_state=next_state,
-            )
+            try:
+                next_state.design_contract = self.adapter.derive_design_contract(
+                    episode_id=next_state.episode_id,
+                    goal=next_state.objective,
+                    current_state=next_state,
+                )
+            except AgentBackendBlockedError as exc:
+                return self._stamp_session(self._block_state(next_state, exc))
             next_state.decision_trace.append(
-                self._trace("design_contract", "Derived design contract from episode objective.")
+                self._trace(
+                    "design_contract",
+                    "Derived design contract from episode objective.",
+                    meta=self._artifact_meta(next_state.design_contract),
+                )
             )
+            self._capture_backend_status(next_state)
         return self.continue_workflow(next_state)
 
     def continue_workflow(self, state: AgentState) -> AgentState:
@@ -112,8 +121,20 @@ class AgentWorkflowOrchestrator:
 
     def record_observation(self, state: AgentState, observation: AgentObservation) -> AgentState:
         state.observations.append(observation)
-        summary = self.adapter.summarize_observation(state=state, observation=observation)
-        state.decision_trace.append(self._trace("observation", summary, refs=[observation.observation_id]))
+        try:
+            summary = self.adapter.summarize_observation(state=state, observation=observation)
+        except AgentBackendBlockedError as exc:
+            blocked = self._block_state(state, exc, refs=[observation.observation_id])
+            return self._stamp_session(blocked)
+        self._capture_backend_status(state)
+        state.decision_trace.append(
+            self._trace(
+                "observation",
+                summary,
+                refs=[observation.observation_id],
+                meta=self._current_backend_status(),
+            )
+        )
         state.selected_action = None
         state.candidate_actions = []
         state.status = "idle"
@@ -150,15 +171,29 @@ class AgentWorkflowOrchestrator:
         return self._stamp_session(self._materialize_interrupt(self._apply_policy(self._decide_next_action(state))))
 
     def _decide_next_action(self, state: AgentState) -> AgentState:
-        candidates = self.adapter.propose_candidate_actions(state=state)
+        try:
+            candidates = self.adapter.propose_candidate_actions(state=state)
+        except AgentBackendBlockedError as exc:
+            return self._block_state(state, exc)
         state.candidate_actions = candidates
-        state.working_plan = self.adapter.build_working_plan(state=state, candidates=candidates)
-        selected = self.adapter.select_action(state=state, candidates=candidates)
+        try:
+            state.working_plan = self.adapter.build_working_plan(state=state, candidates=candidates)
+            selected = self.adapter.select_action(state=state, candidates=candidates)
+        except AgentBackendBlockedError as exc:
+            state.candidate_actions = []
+            state.selected_action = None
+            return self._block_state(state, exc)
+        self._capture_backend_status(state)
         self._supersede_stale_pending_items(state, selected)
         state.selected_action = selected
         state.status = "awaiting_action"
         state.decision_trace.append(
-            self._trace("selected_action", f"Selected action `{selected.title}`.", refs=[selected.action_id])
+            self._trace(
+                "selected_action",
+                f"Selected action `{selected.title}`.",
+                refs=[selected.action_id],
+                meta=self._artifact_meta(selected),
+            )
         )
         if selected.kind == "complete":
             state.status = "completed"
@@ -201,15 +236,24 @@ class AgentWorkflowOrchestrator:
                     and interrupt.related_action_id == action.action_id
                 ):
                     return state
-            interrupt = self.adapter.build_clarification_interrupt(
-                state=state,
-                reason=action.rationale,
-            )
+            try:
+                interrupt = self.adapter.build_clarification_interrupt(
+                    state=state,
+                    reason=action.rationale,
+                )
+            except AgentBackendBlockedError as exc:
+                return self._block_state(state, exc, refs=[action.action_id])
             interrupt.related_action_id = action.action_id
+            self._capture_backend_status(state)
             state.pending_interrupts.append(interrupt)
             state.status = "awaiting_feedback"
             state.decision_trace.append(
-                self._trace("interrupt", f"Created clarification interrupt `{interrupt.interrupt_id}`.", refs=[interrupt.interrupt_id])
+                self._trace(
+                    "interrupt",
+                    f"Created clarification interrupt `{interrupt.interrupt_id}`.",
+                    refs=[interrupt.interrupt_id],
+                    meta=self._current_backend_status(),
+                )
             )
             return state
         if action.gate_id and any(gate.gate_id == action.gate_id and gate.status == "pending" for gate in state.approval_gates):
@@ -298,11 +342,64 @@ class AgentWorkflowOrchestrator:
     def _copy_state(self, state: AgentState) -> AgentState:
         return AgentState.from_dict(state.to_dict(), episode_id=state.episode_id, objective=state.objective)
 
-    def _trace(self, kind: str, summary: str, refs: list[str] | None = None) -> DecisionTraceEntry:
+    def _trace(
+        self,
+        kind: str,
+        summary: str,
+        refs: list[str] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> DecisionTraceEntry:
         return DecisionTraceEntry(
             entry_id=new_object_id("trace"),
             kind=kind,
             summary=summary,
             created_at=utc_now_iso(),
             refs=list(refs or []),
+            meta=dict(meta or {}),
         )
+
+    def _block_state(
+        self,
+        state: AgentState,
+        exc: AgentBackendBlockedError,
+        refs: list[str] | None = None,
+    ) -> AgentState:
+        state.status = "blocked"
+        state.selected_action = None
+        state.candidate_actions = []
+        state.meta["backend_status"] = dict(exc.backend_status)
+        state.decision_trace.append(
+            self._trace(
+                "backend_error",
+                f"{exc.operation} blocked: {exc.summary}",
+                refs=refs,
+                meta=exc.backend_status,
+            )
+        )
+        return state
+
+    def _capture_backend_status(self, state: AgentState) -> None:
+        state.meta["backend_status"] = self._current_backend_status()
+
+    def _current_backend_status(self) -> dict[str, Any]:
+        status_getter = getattr(self.adapter, "current_backend_status", None)
+        if callable(status_getter):
+            return dict(status_getter())
+        return {
+            "adapter": type(self.adapter).__name__,
+            "backend": "unknown",
+            "provider": None,
+            "model": None,
+            "sidecar": None,
+            "degraded": False,
+            "fallback_used": False,
+            "fallback_backend": None,
+            "last_error_summary": None,
+        }
+
+    def _artifact_meta(self, artifact: Any) -> dict[str, Any]:
+        if hasattr(artifact, "meta"):
+            return dict(getattr(artifact, "meta") or {})
+        if isinstance(artifact, dict):
+            return dict(artifact.get("_meta") or {})
+        return self._current_backend_status()

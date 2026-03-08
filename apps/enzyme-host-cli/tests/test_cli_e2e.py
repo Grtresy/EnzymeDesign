@@ -46,6 +46,7 @@ def test_cli_workflow_start_execute_status_and_report(tmp_path: Path) -> None:
     result = _run(repo_root, project_root, "workflow", "start", extra_env={"ENZYME_HOST_CLI_FAKE_EXECUTOR": "prepare_receptor_success"})
     assert result.returncode == 0, result.stderr
     assert "Agent Status:" in result.stdout
+    assert "Agent Backend:" in result.stdout
 
     result = _run(repo_root, project_root, "workflow", "execute", extra_env={"ENZYME_HOST_CLI_FAKE_EXECUTOR": "prepare_receptor_success"})
     assert result.returncode == 0, result.stderr
@@ -54,6 +55,7 @@ def test_cli_workflow_start_execute_status_and_report(tmp_path: Path) -> None:
     result = _run(repo_root, project_root, "status")
     assert result.returncode == 0, result.stderr
     assert "Agent:" in result.stdout
+    assert "Agent Backend:" in result.stdout
 
     result = _run(repo_root, project_root, "report")
     assert result.returncode == 0, result.stderr

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from typing import Protocol
 
 from .models import AgentAction
@@ -25,6 +26,16 @@ class AgentModelAdapter(Protocol):
 
     def summarize_observation(self, *, state: AgentState, observation: AgentObservation) -> str: ...
 
+    def current_backend_status(self) -> dict[str, Any]: ...
+
+
+class AgentBackendBlockedError(RuntimeError):
+    def __init__(self, summary: str, *, operation: str, backend_status: dict[str, Any]) -> None:
+        super().__init__(summary)
+        self.summary = summary
+        self.operation = operation
+        self.backend_status = dict(backend_status)
+
 
 @dataclass(slots=True)
 class HeuristicAgentAdapter:
@@ -41,6 +52,7 @@ class HeuristicAgentAdapter:
                 "Keep tool execution inside the controlled runtime boundary.",
             ],
             open_questions=[] if goal_text else ["What is the concrete design objective for this episode?"],
+            meta=self._artifact_meta("derive_design_contract"),
         )
 
     def build_working_plan(self, *, state: AgentState, candidates: list[AgentAction]) -> dict[str, object]:
@@ -58,42 +70,45 @@ class HeuristicAgentAdapter:
             "summary": state.design_contract.summary,
             "candidate_actions": [action.title for action in candidates],
             "steps": tool_steps,
-            "_meta": {"adapter": self.adapter_name},
+            "_meta": self._artifact_meta("build_working_plan"),
         }
 
     def propose_candidate_actions(self, *, state: AgentState) -> list[AgentAction]:
         latest_observation = state.observations[-1] if state.observations else None
         latest_feedback = state.human_feedback[-1] if state.human_feedback else None
         if latest_observation and latest_observation.payload.get("status") == "completed":
-            return [
-                AgentAction(
-                    action_id=new_object_id("action"),
-                    kind="complete",
-                    title="Complete episode",
-                    rationale="A successful observation was recorded and no further work is required by the heuristic adapter.",
-                )
-            ]
-        if latest_observation and latest_observation.payload.get("status") == "failed":
-            if latest_feedback is not None:
                 return [
                     AgentAction(
                         action_id=new_object_id("action"),
-                        kind="tool",
-                        title="Retry receptor preparation",
-                        rationale=f"Retry after human feedback: {latest_feedback.content}",
-                        tool_action=ToolAction(
-                            tool="prepare_receptor",
-                            inputs={"input": "data/inputs/receptor.pdb"},
-                            risk_level="normal",
-                        ),
+                        kind="complete",
+                        title="Complete episode",
+                        rationale="A successful observation was recorded and no further work is required by the heuristic adapter.",
+                        meta=self._artifact_meta("propose_candidate_actions"),
                     )
                 ]
+        if latest_observation and latest_observation.payload.get("status") == "failed":
+            if latest_feedback is not None:
+                    return [
+                        AgentAction(
+                            action_id=new_object_id("action"),
+                            kind="tool",
+                            title="Retry receptor preparation",
+                            rationale=f"Retry after human feedback: {latest_feedback.content}",
+                            tool_action=ToolAction(
+                                tool="prepare_receptor",
+                                inputs={"input": "data/inputs/receptor.pdb"},
+                                risk_level="normal",
+                            ),
+                            meta=self._artifact_meta("propose_candidate_actions"),
+                        )
+                    ]
             return [
                 AgentAction(
                     action_id=new_object_id("action"),
                     kind="clarification",
                     title="Request human guidance",
                     rationale="The latest observation indicates a failure and requires operator feedback.",
+                    meta=self._artifact_meta("propose_candidate_actions"),
                 )
             ]
         if not state.design_contract.summary:
@@ -103,6 +118,7 @@ class HeuristicAgentAdapter:
                     kind="clarification",
                     title="Request objective clarification",
                     rationale="The design objective is missing or underspecified.",
+                    meta=self._artifact_meta("propose_candidate_actions"),
                 )
             ]
         return [
@@ -116,6 +132,7 @@ class HeuristicAgentAdapter:
                     inputs={"input": "data/inputs/receptor.pdb"},
                     risk_level="normal",
                 ),
+                meta=self._artifact_meta("propose_candidate_actions"),
             )
         ]
 
@@ -137,6 +154,25 @@ class HeuristicAgentAdapter:
         if observation.payload.get("status") == "completed":
             return f"Observation {observation.observation_id} completed successfully."
         return f"Observation {observation.observation_id} failed: {observation.summary}"
+
+    def current_backend_status(self) -> dict[str, Any]:
+        return {
+            "adapter": self.adapter_name,
+            "backend": "heuristic",
+            "provider": None,
+            "model": None,
+            "sidecar": None,
+            "degraded": False,
+            "fallback_used": False,
+            "fallback_backend": None,
+            "last_error_summary": None,
+        }
+
+    def _artifact_meta(self, operation: str) -> dict[str, Any]:
+        return {
+            **self.current_backend_status(),
+            "operation": operation,
+        }
 
 
 def _first_goal_line(goal: str) -> str:

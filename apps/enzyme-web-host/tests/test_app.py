@@ -83,6 +83,7 @@ def test_web_host_agent_flow_can_start_execute_and_report(tmp_path: Path) -> Non
     response = client.post("/workflow/start", follow_redirects=True)
     assert response.status_code == 200
     assert "Pending Interrupts" in response.text
+    assert "Backend State" in response.text
 
     response = client.post("/workflow/execute", follow_redirects=False)
     assert response.status_code == 303
@@ -92,6 +93,7 @@ def test_web_host_agent_flow_can_start_execute_and_report(tmp_path: Path) -> Non
     assert payload["runs"][0]["run_id"] == "local-run-1"
     assert payload["execution_evidence"]["observation_count"] == 1
     assert payload["agent_state"]["termination_status"] == "completed"
+    assert payload["agent_backend"]["backend"] == "heuristic"
 
     response = client.post("/report", follow_redirects=True)
     assert response.status_code == 200

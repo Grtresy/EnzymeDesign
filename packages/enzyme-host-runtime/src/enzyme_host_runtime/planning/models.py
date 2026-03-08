@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from dataclasses import field
 from dataclasses import dataclass
 from typing import Any
 import uuid
@@ -19,9 +20,12 @@ class DesignContract:
     constraints: list[str]
     assumptions: list[str]
     open_questions: list[str]
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["_meta"] = payload.pop("meta")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> DesignContract:
@@ -32,6 +36,7 @@ class DesignContract:
             constraints=[str(item) for item in payload.get("constraints") or []],
             assumptions=[str(item) for item in payload.get("assumptions") or []],
             open_questions=[str(item) for item in payload.get("open_questions") or []],
+            meta=dict(payload.get("_meta") or {}),
         )
 
 
@@ -64,6 +69,7 @@ class AgentAction:
     action_revision: int = 1
     tool_action: ToolAction | None = None
     gate_id: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +80,7 @@ class AgentAction:
             "rationale": self.rationale,
             "tool_action": self.tool_action.to_dict() if self.tool_action else None,
             "gate_id": self.gate_id,
+            "_meta": self.meta,
         }
 
     @classmethod
@@ -88,6 +95,7 @@ class AgentAction:
             rationale=str(payload.get("rationale") or ""),
             tool_action=ToolAction.from_dict(payload.get("tool_action")),
             gate_id=_optional_str(payload.get("gate_id")),
+            meta=dict(payload.get("_meta") or {}),
         )
 
 
@@ -100,9 +108,12 @@ class AgentObservation:
     payload: dict[str, Any]
     run_id: str | None = None
     manifest_path: str | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["_meta"] = payload.pop("meta")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> AgentObservation | None:
@@ -116,6 +127,7 @@ class AgentObservation:
             payload=dict(payload.get("payload") or {}),
             run_id=_optional_str(payload.get("run_id")),
             manifest_path=_optional_str(payload.get("manifest_path")),
+            meta=dict(payload.get("_meta") or {}),
         )
 
 
@@ -230,9 +242,12 @@ class DecisionTraceEntry:
     summary: str
     created_at: str
     refs: list[str]
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["_meta"] = payload.pop("meta")
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> DecisionTraceEntry | None:
@@ -244,6 +259,7 @@ class DecisionTraceEntry:
             summary=str(payload.get("summary") or ""),
             created_at=str(payload.get("created_at") or utc_now_iso()),
             refs=[str(item) for item in payload.get("refs") or []],
+            meta=dict(payload.get("_meta") or {}),
         )
 
 
@@ -295,6 +311,7 @@ class AgentState:
     status: str
     termination_status: str
     state_version: int
+    meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -313,6 +330,7 @@ class AgentState:
             "status": self.status,
             "termination_status": self.termination_status,
             "state_version": self.state_version,
+            "_meta": self.meta,
         }
 
     @classmethod
@@ -334,6 +352,7 @@ class AgentState:
             status=str(payload.get("status") or "idle"),
             termination_status=str(payload.get("termination_status") or "active"),
             state_version=int(payload.get("state_version") or 1),
+            meta=dict(payload.get("_meta") or {}),
         )
 
 

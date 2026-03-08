@@ -1,0 +1,15 @@
+{
+  "name": "pi-ai-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Structured stdio sidecar for Host agent LLM operations",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node src/index.mjs --config ./config/example.json",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "0.57.1"
+  }
+}
