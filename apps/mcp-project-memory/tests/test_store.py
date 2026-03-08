@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from mcp_project_memory.config import ProjectMemoryConfig
+from mcp_project_memory.store import StaleStateError
 from mcp_project_memory.store import ProjectMemoryStore
 
 
@@ -72,6 +73,60 @@ def test_record_decision_writes_valid_jsonl_and_archive_reads_it(store: ProjectM
     manifest = store.archive_episode("demo", "ep1")
     assert manifest["decision_log"]["count"] == 1
     assert (episode_dir / "manifest.json").exists()
+
+
+def test_save_agent_state_exposes_canonical_agent_resources(store: ProjectMemoryStore) -> None:
+    payload = store.save_agent_state(
+        "demo",
+        "ep1",
+        {
+            "state_version": 2,
+            "status": "awaiting_feedback",
+            "decision_trace": [{"entry_id": "trace-1", "kind": "selected_action"}],
+            "human_feedback": [{"feedback_id": "feedback-1", "content": "retry"}],
+            "approval_gates": [{"gate_id": "gate-1", "action_id": "action-1", "action_revision": 1}],
+            "pending_interrupts": [{"interrupt_id": "interrupt-1", "kind": "approval_request"}],
+            "session": {
+                "session_id": "session-1",
+                "active_state_version": 2,
+                "resume_token": "resume-1",
+                "updated_at": "2026-03-08T00:00:00+00:00",
+            },
+        },
+    )
+
+    assert payload["state_version"] == 2
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/agent-state"))["status"] == "awaiting_feedback"
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/decision-log"))[0]["entry_id"] == "trace-1"
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/feedback-log"))[0]["feedback_id"] == "feedback-1"
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/approval-gates"))[0]["gate_id"] == "gate-1"
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/interrupts"))[0]["interrupt_id"] == "interrupt-1"
+    assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/session"))["resume_token"] == "resume-1"
+
+
+def test_submit_resume_rejects_stale_token(store: ProjectMemoryStore) -> None:
+    store.save_agent_state(
+        "demo",
+        "ep1",
+        {
+            "state_version": 3,
+            "session": {
+                "session_id": "session-1",
+                "active_state_version": 3,
+                "resume_token": "resume-1",
+                "updated_at": "2026-03-08T00:00:00+00:00",
+            },
+        },
+    )
+
+    accepted = store.submit_resume("demo", "ep1", state_version=3, resume_token="resume-1")
+    assert accepted["status"] == "accepted"
+
+    repeated = store.submit_resume("demo", "ep1", state_version=3, resume_token="resume-1")
+    assert repeated["status"] == "already_consumed"
+
+    with pytest.raises(StaleStateError):
+        store.submit_resume("demo", "ep1", state_version=3, resume_token="resume-stale")
 
 
 def test_import_experiment_results_generates_valid_id(store: ProjectMemoryStore) -> None:

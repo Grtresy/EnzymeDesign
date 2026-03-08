@@ -34,6 +34,12 @@ def test_list_tools_has_expected_surface(config_path: Path) -> None:
         tools = await server.mcp.list_tools()
         assert [tool.name for tool in tools] == [
             "update_episode_state",
+            "save_agent_state",
+            "append_feedback",
+            "upsert_approval_gate",
+            "write_interrupts",
+            "save_session",
+            "submit_resume",
             "record_decision",
             "confirm_plan",
             "save_structure_annotations",
@@ -66,6 +72,75 @@ def test_resources_are_listed_and_tool_writes_are_readable(config_path: Path) ->
 
         contents = list(await server.mcp.read_resource("enzyme://project/demo/episode/ep1/state"))
         assert json.loads(contents[0].content)["status"] == "ready"
+
+        await server.mcp.call_tool(
+            "save_agent_state",
+            {
+                "project_id": "demo",
+                "episode_id": "ep1",
+                "agent_state": {
+                    "state_version": 4,
+                    "status": "awaiting_feedback",
+                    "human_feedback": [{"feedback_id": "feedback-1", "content": "retry"}],
+                    "approval_gates": [{"gate_id": "gate-1", "action_id": "action-1", "action_revision": 1}],
+                    "pending_interrupts": [{"interrupt_id": "interrupt-1", "kind": "approval_request"}],
+                    "session": {
+                        "session_id": "session-1",
+                        "active_state_version": 4,
+                        "resume_token": "resume-1",
+                        "updated_at": "2026-03-08T00:00:00+00:00",
+                    },
+                },
+            },
+        )
+        agent_contents = list(await server.mcp.read_resource("enzyme://project/demo/episode/ep1/agent-state"))
+        assert json.loads(agent_contents[0].content)["status"] == "awaiting_feedback"
+
+    anyio.run(run)
+
+
+def test_submit_resume_tool_rejects_stale_token(config_path: Path) -> None:
+    server = create_server(str(config_path))
+
+    async def run() -> None:
+        await server.mcp.call_tool(
+            "save_agent_state",
+            {
+                "project_id": "demo",
+                "episode_id": "ep1",
+                "agent_state": {
+                    "state_version": 5,
+                    "session": {
+                        "session_id": "session-1",
+                        "active_state_version": 5,
+                        "resume_token": "resume-1",
+                        "updated_at": "2026-03-08T00:00:00+00:00",
+                    },
+                },
+            },
+        )
+
+        accepted = await server.mcp.call_tool(
+            "submit_resume",
+            {
+                "project_id": "demo",
+                "episode_id": "ep1",
+                "state_version": 5,
+                "resume_token": "resume-1",
+            },
+        )
+        assert json.loads(accepted[0][0].text)["status"] == "accepted"
+
+        with pytest.raises(Exception):
+            await server.mcp.call_tool(
+                "submit_resume",
+                {
+                    "project_id": "demo",
+                    "episode_id": "ep1",
+                    "state_version": 5,
+                    "resume_token": "resume-stale",
+                },
+            )
 
     anyio.run(run)
 

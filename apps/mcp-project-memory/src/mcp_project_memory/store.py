@@ -24,6 +24,10 @@ _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _RESERVED_IDS = {".", ".."}
 
 
+class StaleStateError(ValueError):
+    """Raised when a versioned workflow mutation targets stale state."""
+
+
 class ProjectMemoryStore:
     def __init__(self, config: ProjectMemoryConfig) -> None:
         self.config = config
@@ -108,6 +112,18 @@ class ProjectMemoryStore:
             return self._read_text(self._episode_file(target["project_id"], target["episode_id"], "plan.yaml"))
         if kind == "episode_annotations":
             return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "annotations.json")))
+        if kind == "episode_agent_state":
+            return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "agent_state.json")))
+        if kind == "episode_decision_log":
+            return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "agent_decision_log.json")))
+        if kind == "episode_feedback_log":
+            return self._dump_json(self._read_jsonl(self._episode_file(target["project_id"], target["episode_id"], "feedback_log.jsonl")))
+        if kind == "episode_approval_gates":
+            return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "approval_gates.json")))
+        if kind == "episode_interrupts":
+            return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "interrupts.json")))
+        if kind == "episode_session":
+            return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "session.json")))
         if kind == "run_manifest":
             return self._dump_json(self._read_json(self._resolve_indexed_file("runs", target["run_id"])))
         if kind == "candidate_summary":
@@ -144,6 +160,178 @@ class ProjectMemoryStore:
             "project_id": project_id,
             "episode_id": episode_id,
             "path": self._relative_to_project_root(project_id, episode_dir / "goal.md"),
+        }
+
+    def save_agent_state(
+        self,
+        project_id: str,
+        episode_id: str,
+        agent_state: dict[str, Any],
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        self._validate_expected_state_version(
+            project_id,
+            episode_id,
+            expected_state_version=expected_state_version,
+        )
+        payload = {
+            **agent_state,
+            "_meta": {
+                **dict(agent_state.get("_meta") or {}),
+                "updated_at": utc_now_iso(),
+            },
+        }
+        self._write_json_atomic(episode_dir / "agent_state.json", payload)
+        self._write_json_atomic(
+            episode_dir / "agent_decision_log.json",
+            list(payload.get("decision_trace") or []),
+        )
+        self._rewrite_jsonl(
+            episode_dir / "feedback_log.jsonl",
+            list(payload.get("human_feedback") or []),
+        )
+        self._write_json_atomic(
+            episode_dir / "approval_gates.json",
+            list(payload.get("approval_gates") or []),
+        )
+        self._write_json_atomic(
+            episode_dir / "interrupts.json",
+            list(payload.get("pending_interrupts") or []),
+        )
+        self._write_json_atomic(
+            episode_dir / "session.json",
+            dict(payload.get("session") or {}),
+        )
+        return payload
+
+    def append_feedback(
+        self,
+        project_id: str,
+        episode_id: str,
+        feedback: dict[str, Any],
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        self._validate_expected_state_version(
+            project_id,
+            episode_id,
+            expected_state_version=expected_state_version,
+        )
+        payload = {
+            **feedback,
+            "created_at": str(feedback.get("created_at") or utc_now_iso()),
+        }
+        self._append_jsonl(episode_dir / "feedback_log.jsonl", payload)
+        return payload
+
+    def upsert_approval_gate(
+        self,
+        project_id: str,
+        episode_id: str,
+        gate: dict[str, Any],
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        self._validate_expected_state_version(
+            project_id,
+            episode_id,
+            expected_state_version=expected_state_version,
+        )
+        path = episode_dir / "approval_gates.json"
+        gates = self._read_json(path) if path.exists() else []
+        updated = False
+        for index, item in enumerate(gates):
+            if isinstance(item, dict) and item.get("gate_id") == gate.get("gate_id"):
+                gates[index] = gate
+                updated = True
+                break
+        if not updated:
+            gates.append(gate)
+        self._write_json_atomic(path, gates)
+        return gate
+
+    def write_interrupts(
+        self,
+        project_id: str,
+        episode_id: str,
+        interrupts: list[dict[str, Any]],
+        *,
+        expected_state_version: int | None = None,
+    ) -> list[dict[str, Any]]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        self._validate_expected_state_version(
+            project_id,
+            episode_id,
+            expected_state_version=expected_state_version,
+        )
+        self._write_json_atomic(episode_dir / "interrupts.json", interrupts)
+        return interrupts
+
+    def save_session(
+        self,
+        project_id: str,
+        episode_id: str,
+        session: dict[str, Any],
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        self._validate_expected_state_version(
+            project_id,
+            episode_id,
+            expected_state_version=expected_state_version,
+        )
+        payload = {
+            **session,
+            "updated_at": str(session.get("updated_at") or utc_now_iso()),
+        }
+        self._write_json_atomic(episode_dir / "session.json", payload)
+        return payload
+
+    def submit_resume(
+        self,
+        project_id: str,
+        episode_id: str,
+        *,
+        state_version: int,
+        resume_token: str,
+    ) -> dict[str, Any]:
+        session_path = self.ensure_episode_dir(project_id, episode_id) / "session.json"
+        with self._file_lock(session_path):
+            current = self._read_json(session_path) if session_path.exists() else {}
+            current_version = int(
+                current.get("active_state_version")
+                or self._current_state_version(project_id, episode_id)
+                or 0
+            )
+            current_token = str(current.get("resume_token") or "")
+            if (
+                current.get("last_consumed_resume_token") == resume_token
+                and current_version == state_version
+            ):
+                return {
+                    "status": "already_consumed",
+                    "state_version": current_version,
+                    "resume_token": resume_token,
+                }
+            if current_version != state_version or current_token != resume_token:
+                raise StaleStateError(
+                    f"Stale workflow state for {episode_id}: expected version {state_version} token {resume_token}."
+                )
+            updated = {
+                **current,
+                "last_consumed_resume_token": resume_token,
+                "last_consumed_at": utc_now_iso(),
+            }
+            self._write_json_atomic(session_path, updated)
+        return {
+            "status": "accepted",
+            "state_version": state_version,
+            "resume_token": resume_token,
         }
 
     def record_decision(
@@ -349,6 +537,12 @@ class ProjectMemoryStore:
                 "state": "episode_state",
                 "plan": "episode_plan",
                 "annotations": "episode_annotations",
+                "agent-state": "episode_agent_state",
+                "decision-log": "episode_decision_log",
+                "feedback-log": "episode_feedback_log",
+                "approval-gates": "episode_approval_gates",
+                "interrupts": "episode_interrupts",
+                "session": "episode_session",
             }
             if leaf in mapping:
                 return {
@@ -406,6 +600,36 @@ class ProjectMemoryStore:
                     {
                         "uri": f"enzyme://project/{project_id}/episode/{episode_id}/annotations",
                         "name": f"{project_id}-{episode_id}-annotations",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/agent-state",
+                        "name": f"{project_id}-{episode_id}-agent-state",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/decision-log",
+                        "name": f"{project_id}-{episode_id}-decision-log",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/feedback-log",
+                        "name": f"{project_id}-{episode_id}-feedback-log",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/approval-gates",
+                        "name": f"{project_id}-{episode_id}-approval-gates",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/interrupts",
+                        "name": f"{project_id}-{episode_id}-interrupts",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/session",
+                        "name": f"{project_id}-{episode_id}-session",
                         "mime_type": "application/json",
                     },
                 ]
@@ -518,6 +742,42 @@ class ProjectMemoryStore:
         if not path.exists():
             raise FileNotFoundError(path)
         return path.read_text(encoding="utf-8")
+
+    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            raise FileNotFoundError(path)
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def _rewrite_jsonl(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        with self._file_lock(path):
+            payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+            self._write_text_atomic(path, payload)
+
+    def _current_state_version(self, project_id: str, episode_id: str) -> int:
+        path = self.ensure_episode_dir(project_id, episode_id) / "agent_state.json"
+        if path.exists():
+            payload = self._read_json(path)
+            return int(payload.get("state_version") or 0)
+        session_path = self.ensure_episode_dir(project_id, episode_id) / "session.json"
+        if session_path.exists():
+            payload = self._read_json(session_path)
+            return int(payload.get("active_state_version") or 0)
+        return 0
+
+    def _validate_expected_state_version(
+        self,
+        project_id: str,
+        episode_id: str,
+        *,
+        expected_state_version: int | None,
+    ) -> None:
+        if expected_state_version is None:
+            return
+        current_version = self._current_state_version(project_id, episode_id)
+        if current_version != expected_state_version:
+            raise StaleStateError(
+                f"Stale workflow state for {episode_id}: expected version {expected_state_version}, found {current_version}."
+            )
 
     def _read_json(self, path: Path) -> dict[str, Any]:
         if not path.exists():

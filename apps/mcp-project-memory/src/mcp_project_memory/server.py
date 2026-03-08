@@ -64,6 +64,102 @@ class ProjectMemoryServer:
             self.refresh_resources()
             return payload
 
+        @self.mcp.tool(description="Persist the canonical agent workflow state snapshot")
+        def save_agent_state(
+            project_id: str,
+            episode_id: str,
+            agent_state: dict[str, Any],
+            expected_state_version: int | None = None,
+        ) -> dict[str, Any]:
+            payload = self.store.save_agent_state(
+                project_id,
+                episode_id,
+                agent_state,
+                expected_state_version=expected_state_version,
+            )
+            self.refresh_resources()
+            return payload
+
+        @self.mcp.tool(description="Append a structured human feedback record to the episode feedback log")
+        def append_feedback(
+            project_id: str,
+            episode_id: str,
+            feedback: dict[str, Any],
+            expected_state_version: int | None = None,
+        ) -> dict[str, Any]:
+            payload = self.store.append_feedback(
+                project_id,
+                episode_id,
+                feedback,
+                expected_state_version=expected_state_version,
+            )
+            self.refresh_resources()
+            return payload
+
+        @self.mcp.tool(description="Create or update a structured approval gate for an episode")
+        def upsert_approval_gate(
+            project_id: str,
+            episode_id: str,
+            gate: dict[str, Any],
+            expected_state_version: int | None = None,
+        ) -> dict[str, Any]:
+            payload = self.store.upsert_approval_gate(
+                project_id,
+                episode_id,
+                gate,
+                expected_state_version=expected_state_version,
+            )
+            self.refresh_resources()
+            return payload
+
+        @self.mcp.tool(description="Persist the pending interrupt list for an episode")
+        def write_interrupts(
+            project_id: str,
+            episode_id: str,
+            interrupts: list[dict[str, Any]],
+            expected_state_version: int | None = None,
+        ) -> list[dict[str, Any]]:
+            payload = self.store.write_interrupts(
+                project_id,
+                episode_id,
+                interrupts,
+                expected_state_version=expected_state_version,
+            )
+            self.refresh_resources()
+            return payload
+
+        @self.mcp.tool(description="Persist the resumable session snapshot for an episode")
+        def save_session(
+            project_id: str,
+            episode_id: str,
+            session: dict[str, Any],
+            expected_state_version: int | None = None,
+        ) -> dict[str, Any]:
+            payload = self.store.save_session(
+                project_id,
+                episode_id,
+                session,
+                expected_state_version=expected_state_version,
+            )
+            self.refresh_resources()
+            return payload
+
+        @self.mcp.tool(description="Consume a resume token with state-version validation")
+        def submit_resume(
+            project_id: str,
+            episode_id: str,
+            state_version: int,
+            resume_token: str,
+        ) -> dict[str, Any]:
+            payload = self.store.submit_resume(
+                project_id,
+                episode_id,
+                state_version=state_version,
+                resume_token=resume_token,
+            )
+            self.refresh_resources()
+            return payload
+
         @self.mcp.tool(description="Append an auditable decision entry to the episode log")
         def record_decision(
             project_id: str,

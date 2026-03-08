@@ -81,7 +81,7 @@ def find_project_root(start: Path) -> Path:
     for candidate in search_roots:
         if (candidate / _CONFIG_PATH).exists():
             return candidate
-    raise WorkspaceError(f"Could not find enzyme project root from {start}")
+    raise WorkspaceError(f"Could not find OpenZyme project root from {start}")
 
 
 def load_project_context(start: Path) -> ProjectContext:

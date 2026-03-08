@@ -23,6 +23,13 @@ def format_status(
     plan = state.get("plan")
     if isinstance(plan, dict):
         lines.append(f"Plan: {plan.get('status', 'unknown')}")
+    agent = state.get("agent")
+    if isinstance(agent, dict):
+        rendered = agent.get("status", "idle")
+        session = agent.get("session")
+        if isinstance(session, dict) and session.get("resume_token"):
+            rendered = f"{rendered} ({session.get('resume_token')})"
+        lines.append(f"Agent: {rendered}")
     steps = state.get("steps")
     if isinstance(steps, dict) and steps:
         lines.append("Steps:")

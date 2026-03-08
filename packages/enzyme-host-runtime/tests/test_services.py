@@ -11,6 +11,8 @@ from enzyme_host_runtime.memory_client import MemoryClient
 from enzyme_host_runtime.plan_runtime import PlanStep
 from enzyme_host_runtime.plan_runtime import load_confirmed_plan
 from enzyme_host_runtime.plan_runtime import select_steps
+from enzyme_host_runtime.planning import HeuristicAgentAdapter
+from enzyme_host_runtime.planning import AgentWorkflowOrchestrator
 from enzyme_host_runtime.services import HostRuntime
 from enzyme_host_runtime.services import RunRequest
 from enzyme_host_runtime.workspace import allocate_episode_id
@@ -289,3 +291,131 @@ def test_execution_failure_marks_step_and_episode_failed(tmp_path: Path) -> None
     assert state["status"] == "failed"
     assert state["steps"]["prep_1"]["status"] == "failed"
     assert state["steps"]["prep_1"]["error"] == "missing input file"
+
+
+def test_start_agent_workflow_initializes_agent_state(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime()
+
+    snapshot = runtime.start_agent_workflow(context.root)
+    agent_state = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+
+    assert snapshot.agent_state["design_contract"]["summary"]
+    assert agent_state.selected_action is not None
+    assert agent_state.selected_action.kind == "tool"
+    assert agent_state.pending_interrupts == []
+
+
+def test_execute_selected_action_records_observation_and_completes_workflow(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime(executor=RoutedExecutionAdapter([_FakePreprocessExecutor()]))
+
+    runtime.start_agent_workflow(context.root)
+    snapshot = runtime.execute_selected_action(context.root)
+    agent_state = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+
+    assert snapshot.execution_evidence["observation_count"] == 1
+    assert agent_state.observations[-1].payload["status"] == "completed"
+    assert agent_state.termination_status == "completed"
+    assert memory.load_state(episode_id)["runs"][-1]["run_id"] == "local-demo-run"
+
+
+def test_hpc_selected_action_creates_gate_and_interrupt(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+
+    class _HpcAdapter(HeuristicAgentAdapter):
+        def propose_candidate_actions(self, *, state):
+            from enzyme_host_runtime.planning import AgentAction
+            from enzyme_host_runtime.planning import ToolAction
+            from enzyme_host_runtime.planning.models import new_object_id
+
+            return [
+                AgentAction(
+                    action_id=new_object_id("action"),
+                    kind="tool",
+                    title="Run docking",
+                    rationale="Needs HPC execution",
+                    tool_action=ToolAction(tool="vina", inputs={"receptor_pdbqt": "a", "ligand_pdbqt": "b"}, risk_level="high"),
+                )
+            ]
+
+    runtime = HostRuntime(
+        executor=RoutedExecutionAdapter([_FakeHpcExecutor()]),
+        workflow=AgentWorkflowOrchestrator(adapter=_HpcAdapter()),
+    )
+    snapshot = runtime.start_agent_workflow(context.root)
+    agent_state = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+
+    assert snapshot.pending_interrupts
+    assert snapshot.pending_interrupts[-1]["kind"] == "approval_request"
+    assert agent_state.approval_gates[-1].status == "pending"
+
+
+def test_feedback_can_resolve_interrupt_and_resume_workflow(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime(executor=RoutedExecutionAdapter([_ExplodingPreprocessExecutor()]))
+
+    runtime.start_agent_workflow(context.root)
+    with pytest.raises(RuntimeError):
+        runtime.execute_selected_action(context.root)
+
+    agent_state = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+    interrupt_id = agent_state.pending_interrupts[-1].interrupt_id
+    runtime.submit_feedback(
+        context.root,
+        interrupt_id=interrupt_id,
+        content="retry with the same preparation step",
+        kind="clarification",
+    )
+    resumed = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+
+    assert resumed.human_feedback[-1].content == "retry with the same preparation step"
+    assert all(item.status != "pending" for item in resumed.pending_interrupts)
+    assert resumed.selected_action is not None
+
+
+def test_stale_resume_token_is_rejected_after_feedback_resolution(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+
+    class _HpcAdapter(HeuristicAgentAdapter):
+        def propose_candidate_actions(self, *, state):
+            from enzyme_host_runtime.planning import AgentAction
+            from enzyme_host_runtime.planning import ToolAction
+            from enzyme_host_runtime.planning.models import new_object_id
+
+            return [
+                AgentAction(
+                    action_id=new_object_id("action"),
+                    kind="tool",
+                    title="Run docking",
+                    rationale="Needs HPC execution",
+                    tool_action=ToolAction(tool="vina", inputs={"receptor_pdbqt": "a", "ligand_pdbqt": "b"}, risk_level="high"),
+                )
+            ]
+
+    runtime = HostRuntime(
+        executor=RoutedExecutionAdapter([_FakeHpcExecutor()]),
+        workflow=AgentWorkflowOrchestrator(adapter=_HpcAdapter()),
+    )
+    runtime.start_agent_workflow(context.root)
+    initial = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+    interrupt = initial.pending_interrupts[-1]
+
+    runtime.submit_feedback(
+        context.root,
+        interrupt_id=interrupt.interrupt_id,
+        content="approved",
+        kind="approval",
+        expected_state_version=interrupt.active_state_version,
+        resume_token=interrupt.resume_token,
+    )
+
+    with pytest.raises(ValueError):
+        runtime.submit_feedback(
+            context.root,
+            interrupt_id=interrupt.interrupt_id,
+            content="approved again",
+            kind="approval",
+            expected_state_version=interrupt.active_state_version,
+            resume_token=interrupt.resume_token,
+        )

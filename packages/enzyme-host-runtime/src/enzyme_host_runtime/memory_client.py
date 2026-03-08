@@ -9,6 +9,7 @@ from mcp_project_memory.config import ProjectMemoryConfig
 from mcp_project_memory.models import utc_now_iso
 from mcp_project_memory.store import ProjectMemoryStore
 
+from .planning import AgentState
 from .workspace import ProjectContext
 
 
@@ -27,6 +28,11 @@ class MemoryClient:
         goal_text = goal.strip()
         self.store.ensure_episode_dir(self.project_id, episode_id)
         self.store.save_episode_goal(self.project_id, episode_id, f"# Goal\n\n{goal_text}\n")
+        agent_state = AgentState.from_dict(
+            {},
+            episode_id=episode_id,
+            objective=goal_text,
+        ).to_dict()
         state = {
             "status": "draft",
             "goal": {
@@ -34,9 +40,18 @@ class MemoryClient:
                 "updated_at": utc_now_iso(),
             },
             "plan": {"status": "missing"},
+            "planning": {
+                "status": "missing",
+                "latest_revision_id": None,
+                "latest_revision_status": None,
+                "approved_revision_id": None,
+                "history_length": 0,
+            },
+            "agent": agent_state,
             "steps": {},
             "runs": [],
         }
+        self.store.save_agent_state(self.project_id, episode_id, agent_state)
         return self.store.update_episode_state(self.project_id, episode_id, state)
 
     def load_goal(self, episode_id: str) -> str:
@@ -105,7 +120,10 @@ class MemoryClient:
                 "step_count": len(confirmed.get("steps") or []),
                 "confirmed_at": confirmed.get("_meta", {}).get("confirmed_at"),
                 "source_path": meta.get("source_path"),
+                "revision_id": confirmed.get("_meta", {}).get("revision_id"),
+                "planner": confirmed.get("_meta", {}).get("planner"),
             },
+            "planning": state.get("planning", {}),
             "steps": state.get("steps", {}),
             "runs": state.get("runs", []),
         }
@@ -127,3 +145,123 @@ class MemoryClient:
         if not isinstance(runs, list):
             return []
         return [item for item in runs if isinstance(item, dict)]
+
+    def load_agent_state(self, episode_id: str, *, objective: str) -> AgentState:
+        try:
+            raw = self.store.read_resource_text(
+                f"enzyme://project/{self.project_id}/episode/{episode_id}/agent-state"
+            )
+            payload = json.loads(raw)
+        except FileNotFoundError:
+            state = self.load_state(episode_id)
+            payload = state.get("agent")
+        return AgentState.from_dict(payload, episode_id=episode_id, objective=objective)
+
+    def save_agent_state(
+        self,
+        episode_id: str,
+        agent_state: AgentState,
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        self.store.save_agent_state(
+            self.project_id,
+            episode_id,
+            agent_state.to_dict(),
+            expected_state_version=expected_state_version,
+        )
+        return self.update_state(
+            episode_id,
+            lambda current: {
+                **current,
+                "status": agent_state.status,
+                "agent": agent_state.to_dict(),
+            },
+        )
+
+    def update_agent_state(
+        self,
+        episode_id: str,
+        objective: str,
+        updater: Callable[[AgentState], AgentState],
+    ) -> dict[str, Any]:
+        def _apply(current: dict[str, Any]) -> dict[str, Any]:
+            agent_state = AgentState.from_dict(current.get("agent"), episode_id=episode_id, objective=objective)
+            updated = updater(agent_state)
+            self.store.save_agent_state(self.project_id, episode_id, updated.to_dict())
+            return {
+                **current,
+                "status": updated.status,
+                "agent": updated.to_dict(),
+            }
+
+        return self.update_state(episode_id, _apply)
+
+    def consume_resume_token(
+        self,
+        episode_id: str,
+        *,
+        state_version: int,
+        resume_token: str,
+    ) -> dict[str, Any]:
+        return self.store.submit_resume(
+            self.project_id,
+            episode_id,
+            state_version=state_version,
+            resume_token=resume_token,
+        )
+
+    def record_decision(
+        self,
+        episode_id: str,
+        *,
+        decision_type: str,
+        reason: str,
+        author: str,
+        evidence_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return self.store.record_decision(
+            self.project_id,
+            episode_id,
+            decision_type=decision_type,
+            reason=reason,
+            author=author,
+            evidence_refs=evidence_refs,
+        )
+
+    def write_planning_revision(self, episode_id: str, revision: dict[str, Any]) -> dict[str, Any]:
+        revision_id = str(revision.get("revision_id") or "")
+        if not revision_id:
+            raise ValueError("Planning revision must include revision_id")
+        path = self._planning_revision_path(episode_id, revision_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(revision, indent=2) + "\n", encoding="utf-8")
+        return revision
+
+    def load_planning_revision(self, episode_id: str, revision_id: str) -> dict[str, Any]:
+        path = self._planning_revision_path(episode_id, revision_id)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def list_planning_revisions(self, episode_id: str) -> list[dict[str, Any]]:
+        directory = self._planning_dir(episode_id)
+        if not directory.exists():
+            return []
+        revisions: list[tuple[int, dict[str, Any]]] = []
+        for path in directory.glob("*.json"):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload.setdefault("_artifact_path", str(path.relative_to(self.context.root)))
+            revisions.append((path.stat().st_mtime_ns, payload))
+        revisions.sort(key=lambda item: item[0])
+        return [payload for _, payload in revisions]
+
+    def load_latest_planning_revision(self, episode_id: str) -> dict[str, Any] | None:
+        revisions = self.list_planning_revisions(episode_id)
+        if not revisions:
+            return None
+        return revisions[-1]
+
+    def _planning_dir(self, episode_id: str) -> Path:
+        return self.store.ensure_episode_dir(self.project_id, episode_id) / "artifacts" / "planning"
+
+    def _planning_revision_path(self, episode_id: str, revision_id: str) -> Path:
+        return self._planning_dir(episode_id) / f"{revision_id}.json"
