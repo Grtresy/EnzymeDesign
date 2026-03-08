@@ -1,7 +1,7 @@
 [project]
 name = "enzyme-host-cli"
 version = "0.1.0"
-description = "Minimal host CLI/runtime for enzyme project workflows"
+description = "Minimal host CLI/runtime for OpenZyme project workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

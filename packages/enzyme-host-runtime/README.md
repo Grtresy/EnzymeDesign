@@ -1,3 +1,3 @@
 # enzyme-host-runtime
 
-Shared host runtime services for Enzyme CLI and Web surfaces.
+Shared host runtime services for OpenZyme CLI and Web surfaces.

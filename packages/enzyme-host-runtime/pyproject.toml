@@ -1,12 +1,14 @@
 [project]
 name = "enzyme-host-runtime"
 version = "0.1.0"
-description = "Shared host runtime services for Enzyme CLI and Web surfaces"
+description = "Shared host runtime services for OpenZyme CLI and Web surfaces"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "langgraph>=0.2.0",
   "mcp-project-memory",
   "mcp-hpc-tool-contracts",
+  "pydantic>=2.9.0",
   "preprocess-backend",
 ]
 

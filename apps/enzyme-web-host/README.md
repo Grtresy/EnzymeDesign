@@ -1,4 +1,4 @@
-# Enzyme Web Host
+# OpenZyme Web Host
 
 Run the local browser host against an initialized project:
 

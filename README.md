@@ -1,9 +1,12 @@
-# EnzymeDesign Monorepo
+# OpenZyme Monorepo
 
 This repository is organized as a `uv` workspace monorepo. Each MCP service is
 still defined as its own project under `apps/`, and shared libraries live under
 `packages/`. Workspace members keep their own `pyproject.toml`, while dependency
 resolution and the virtual environment are managed at the repository root.
+
+The repository directory and Python package/import paths still use the legacy
+`enzyme-*` naming for compatibility, but the project brand is now `OpenZyme`.
 
 - `pyproject.toml`
 

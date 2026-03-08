@@ -1,7 +1,7 @@
 [project]
 name = "enzyme-web-host"
 version = "0.1.0"
-description = "Local web host for Enzyme project workflows"
+description = "Local web host for OpenZyme project workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

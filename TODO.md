@@ -1,8 +1,8 @@
-# EnzymeDesign Agent TODO (OpenCode + MCP)
+# OpenZyme Agent TODO (OpenCode + MCP)
 
 ## 目标
 
-- 基于 OpenCode 构建可调用的 EnzymeDesign Agent。
+- 基于 OpenCode 构建可调用的 OpenZyme Agent。
 - 将工作流能力封装为 MCP 工具，通过 skill 编排任务，通过 command 提供用户入口。
 - 采用 **Evaluator-first** 路线，先跑通和稳定评估闭环，再扩展到 5-Agent 全闭环。
 
