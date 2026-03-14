@@ -104,6 +104,24 @@ def test_save_agent_state_exposes_canonical_agent_resources(store: ProjectMemory
     assert json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/session"))["resume_token"] == "resume-1"
 
 
+def test_append_workflow_event_exposes_workflow_audit_resource(store: ProjectMemoryStore) -> None:
+    event = store.append_workflow_event(
+        "demo",
+        "ep1",
+        {
+            "event_id": "workflow-event-1",
+            "event_type": "capability_inspected",
+            "state_version": 2,
+            "refs": {"capability_id": "mcp-preprocess"},
+        },
+    )
+
+    assert event["event_id"] == "workflow-event-1"
+    payload = json.loads(store.read_resource_text("enzyme://project/demo/episode/ep1/workflow-audit"))
+    assert payload[0]["event_type"] == "capability_inspected"
+    assert payload[0]["refs"]["capability_id"] == "mcp-preprocess"
+
+
 def test_submit_resume_rejects_stale_token(store: ProjectMemoryStore) -> None:
     store.save_agent_state(
         "demo",

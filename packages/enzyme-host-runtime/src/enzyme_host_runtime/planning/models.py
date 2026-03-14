@@ -67,6 +67,7 @@ class AgentAction:
     title: str
     rationale: str
     action_revision: int = 1
+    capability_id: str | None = None
     tool_action: ToolAction | None = None
     gate_id: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
@@ -78,6 +79,7 @@ class AgentAction:
             "kind": self.kind,
             "title": self.title,
             "rationale": self.rationale,
+            "capability_id": self.capability_id,
             "tool_action": self.tool_action.to_dict() if self.tool_action else None,
             "gate_id": self.gate_id,
             "_meta": self.meta,
@@ -93,6 +95,7 @@ class AgentAction:
             kind=str(payload.get("kind") or "noop"),
             title=str(payload.get("title") or ""),
             rationale=str(payload.get("rationale") or ""),
+            capability_id=_optional_str(payload.get("capability_id")),
             tool_action=ToolAction.from_dict(payload.get("tool_action")),
             gate_id=_optional_str(payload.get("gate_id")),
             meta=dict(payload.get("_meta") or {}),

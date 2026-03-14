@@ -1,7 +1,7 @@
 import { complete, getModel, validateToolCall } from "@mariozechner/pi-ai";
 
 import { SidecarError, normalizeProviderError } from "./errors.mjs";
-import { RESULT_SCHEMAS, validateOperationResult } from "./schemas.mjs";
+import { TOOL_PARAMETER_SCHEMAS, validateOperationResult } from "./schemas.mjs";
 import { normalizeStructuredToolCall } from "./structured-output.mjs";
 
 const EMIT_RESULT_TOOL = "emit_structured_result";
@@ -40,7 +40,7 @@ async function resolveResult(request, sidecarConfig) {
     {
       name: EMIT_RESULT_TOOL,
       description: "Return the final structured JSON result for this host-agent operation.",
-      parameters: RESULT_SCHEMAS[request.operation],
+      parameters: TOOL_PARAMETER_SCHEMAS[request.operation],
     },
   ];
 

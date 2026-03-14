@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -97,3 +96,22 @@ def test_async_run_does_not_fetch_artifacts_after_failed_job(tmp_path: Path) -> 
     assert calls == ["job.submit", "job.status"]
     assert response["job_status"]["state"] == "failed"
     assert "fetch" not in response
+
+
+def test_runner_client_uses_env_runner_config_and_bin(monkeypatch) -> None:
+    monkeypatch.setenv("HPC_TOOL_CONTRACTS_RUNNER_CONFIG", "/tmp/runner.toml")
+    monkeypatch.setenv("HPC_TOOL_CONTRACTS_RUNNER_BIN", "/tmp/mcp-hpc-runner")
+
+    client = RunnerClient()
+
+    assert client.runner_bin == "/tmp/mcp-hpc-runner"
+    assert client.runner_config == Path("/tmp/runner.toml")
+
+
+def test_runner_client_falls_back_to_hpc_runner_config_env(monkeypatch) -> None:
+    monkeypatch.delenv("HPC_TOOL_CONTRACTS_RUNNER_CONFIG", raising=False)
+    monkeypatch.setenv("HPC_RUNNER_CONFIG", "/tmp/hpc_runner.toml")
+
+    client = RunnerClient()
+
+    assert client.runner_config == Path("/tmp/hpc_runner.toml")

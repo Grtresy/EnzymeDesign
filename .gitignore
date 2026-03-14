@@ -45,3 +45,5 @@ containers
 node_modules/
 
 playgrounds/
+
+database/

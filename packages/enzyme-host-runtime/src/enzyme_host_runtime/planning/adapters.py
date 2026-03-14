@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Protocol
 
+from ..capability import configured_capability_summaries
+from ..capability import visible_capability_bindings
 from .models import AgentAction
 from .models import AgentInterrupt
 from .models import AgentObservation
@@ -56,10 +58,12 @@ class HeuristicAgentAdapter:
         )
 
     def build_working_plan(self, *, state: AgentState, candidates: list[AgentAction]) -> dict[str, object]:
+        capability_summaries = configured_capability_summaries(state.meta)
         tool_steps = [
             {
                 "id": action.action_id,
                 "title": action.title,
+                "capability_id": action.capability_id,
                 "tool": action.tool_action.tool,
                 "inputs": action.tool_action.inputs,
             }
@@ -69,11 +73,20 @@ class HeuristicAgentAdapter:
         return {
             "summary": state.design_contract.summary,
             "candidate_actions": [action.title for action in candidates],
+            "capability_summaries": [item.capability_id for item in capability_summaries],
             "steps": tool_steps,
             "_meta": self._artifact_meta("build_working_plan"),
         }
 
     def propose_candidate_actions(self, *, state: AgentState) -> list[AgentAction]:
+        capability_summaries = configured_capability_summaries(state.meta)
+        visible_bindings = visible_capability_bindings(
+            state.meta,
+            episode_id=state.episode_id,
+            active_state_version=state.state_version,
+            role="host-agent",
+        )
+        bound_capability_ids = {item.contract.capability_id for item in visible_bindings}
         latest_observation = state.observations[-1] if state.observations else None
         latest_feedback = state.human_feedback[-1] if state.human_feedback else None
         if latest_observation and latest_observation.payload.get("status") == "completed":
@@ -94,6 +107,7 @@ class HeuristicAgentAdapter:
                             kind="tool",
                             title="Retry receptor preparation",
                             rationale=f"Retry after human feedback: {latest_feedback.content}",
+                            capability_id="mcp-preprocess",
                             tool_action=ToolAction(
                                 tool="prepare_receptor",
                                 inputs={"input": "data/inputs/receptor.pdb"},
@@ -119,6 +133,21 @@ class HeuristicAgentAdapter:
                     title="Request objective clarification",
                     rationale="The design objective is missing or underspecified.",
                     meta=self._artifact_meta("propose_candidate_actions"),
+                    )
+            ]
+        preprocess_summary = next(
+            (item for item in capability_summaries if item.capability_id == "mcp-preprocess"),
+            None,
+        )
+        if preprocess_summary is not None and "mcp-preprocess" not in bound_capability_ids:
+            return [
+                AgentAction(
+                    action_id=new_object_id("action"),
+                    kind="inspect_capability",
+                    title="Inspect preprocess capability",
+                    rationale="Review the preprocess capability detail contract before selecting a concrete tool.",
+                    capability_id="mcp-preprocess",
+                    meta=self._artifact_meta("propose_candidate_actions"),
                 )
             ]
         return [
@@ -127,6 +156,7 @@ class HeuristicAgentAdapter:
                 kind="tool",
                 title="Prepare receptor context",
                 rationale="Create a controlled preprocessing result before downstream analysis.",
+                capability_id="mcp-preprocess",
                 tool_action=ToolAction(
                     tool="prepare_receptor",
                     inputs={"input": "data/inputs/receptor.pdb"},

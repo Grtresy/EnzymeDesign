@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { validateOperationResult } from "../src/schemas.mjs";
 import { normalizeStructuredArguments, normalizeStructuredToolCall } from "../src/structured-output.mjs";
 
 test("normalizeStructuredArguments parses stringified action payload fields", () => {
@@ -64,6 +65,35 @@ test("normalizeStructuredArguments parses arrays of candidate actions", () => {
   ]);
 });
 
+test("normalizeStructuredArguments unwraps wrapped candidate action payloads", () => {
+  const value = normalizeStructuredArguments("propose_candidate_actions", {
+    actions: [
+      {
+        action_id: "action-1",
+        kind: "tool",
+        title: "Run fpocket",
+        rationale: "Use the HPC path.",
+        tool_action: "{\"tool\":\"mcp-hpc-tool-contracts/fpocket\",\"inputs\":{\"input_file\":\"data/inputs/protein.pdb\"}}",
+        gate_id: "null",
+      },
+    ],
+  });
+
+  assert.deepEqual(value, [
+    {
+      action_id: "action-1",
+      kind: "tool",
+      title: "Run fpocket",
+      rationale: "Use the HPC path.",
+      tool_action: {
+        tool: "fpocket",
+        inputs: { structure_path: "data/inputs/protein.pdb" },
+      },
+      gate_id: null,
+    },
+  ]);
+});
+
 test("normalizeStructuredArguments leaves non-JSON strings unchanged", () => {
   const value = normalizeStructuredArguments("select_action", {
     action_id: "action-2",
@@ -101,4 +131,109 @@ test("normalizeStructuredToolCall rewrites tool call arguments in place-safe fas
   });
   assert.equal(value.arguments.gate_id, null);
   assert.equal(typeof rawToolCall.arguments.tool_action, "string");
+});
+
+test("normalizeStructuredToolCall wraps top-level candidate action arrays for tool validation", () => {
+  const rawToolCall = {
+    type: "toolCall",
+    name: "emit_structured_result",
+    arguments: [
+      {
+        action_id: "action-1",
+        kind: "tool",
+        title: "Run fpocket",
+        rationale: "Use the HPC path.",
+        tool_action: "{\"tool\":\"mcp-hpc-tool-contracts/fpocket\",\"inputs\":{\"input_file\":\"data/inputs/protein.pdb\"}}",
+        gate_id: {},
+      },
+    ],
+  };
+
+  const value = normalizeStructuredToolCall("propose_candidate_actions", rawToolCall);
+
+  assert.deepEqual(value.arguments, {
+    actions: [
+      {
+        action_id: "action-1",
+        kind: "tool",
+        title: "Run fpocket",
+        rationale: "Use the HPC path.",
+        tool_action: {
+          tool: "fpocket",
+          inputs: { structure_path: "data/inputs/protein.pdb" },
+        },
+        gate_id: null,
+      },
+    ],
+  });
+});
+
+test("validateOperationResult accepts wrapped candidate action payloads", () => {
+  const value = validateOperationResult("propose_candidate_actions", {
+    actions: [
+      {
+        action_id: "action-1",
+        kind: "tool",
+        title: "Run fpocket",
+        rationale: "Use the HPC path.",
+        tool_action: {
+          tool: "fpocket",
+          inputs: { structure_path: "data/inputs/protein.pdb" },
+        },
+        gate_id: null,
+      },
+    ],
+  });
+
+  assert.equal(value[0].tool_action.tool, "fpocket");
+});
+
+test("validateOperationResult drops malformed optional gate ids", () => {
+  const value = validateOperationResult("propose_candidate_actions", {
+    actions: [
+      {
+        action_id: "action-1",
+        kind: "tool",
+        title: "Run fpocket",
+        rationale: "Use the HPC path.",
+        tool_action: {
+          tool: "fpocket",
+          inputs: { structure_path: "data/inputs/protein.pdb" },
+        },
+        gate_id: {},
+      },
+    ],
+  });
+
+  assert.equal(value[0].gate_id, null);
+});
+
+test("validateOperationResult trims extra working plan step properties", () => {
+  const value = validateOperationResult("build_working_plan", {
+    summary: "Run fpocket",
+    candidate_actions: ["action-hpc-fpocket-001"],
+    steps: [
+      {
+        id: "step-hpc-fpocket-execution-001",
+        title: "Execute fpocket",
+        tool: "fpocket",
+        inputs: { structure_path: "data/inputs/protein.pdb" },
+        gate_id: "gate-hpc-approval-001",
+        approval_handling: "pause_and_wait",
+      },
+      {
+        title: "Missing id should be discarded",
+        tool: "noop",
+      },
+    ],
+  });
+
+  assert.deepEqual(value.steps, [
+    {
+      id: "step-hpc-fpocket-execution-001",
+      title: "Execute fpocket",
+      tool: "fpocket",
+      inputs: { structure_path: "data/inputs/protein.pdb" },
+    },
+  ]);
 });

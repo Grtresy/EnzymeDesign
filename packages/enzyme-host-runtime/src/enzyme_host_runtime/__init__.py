@@ -1,5 +1,13 @@
 from .agent_backend import AgentBackendConfig
 from .agent_backend import LLMSidecarConfig
+from .capability import CapabilityDetailContract
+from .capability import CapabilitySummary
+from .capability import CapabilityToolDescriptor
+from .capability import CapabilityVisibilityScope
+from .capability import HostCapabilityGateway
+from .capability import InspectedCapabilityBinding
+from .capability import NormalizedExecutionResult
+from .capability import WorkflowAuditEvent
 from .execution import ExecutionResult
 from .execution import HpcToolContractsExecutor
 from .execution import LocalPreprocessExecutor
@@ -48,6 +56,10 @@ __all__ = [
     "AgentWorkflowOrchestrator",
     "ApprovalGate",
     "ApprovalPolicy",
+    "CapabilityDetailContract",
+    "CapabilitySummary",
+    "CapabilityToolDescriptor",
+    "CapabilityVisibilityScope",
     "CliState",
     "DecisionTraceEntry",
     "EpisodeSnapshot",
@@ -56,14 +68,17 @@ __all__ = [
     "build_report",
     "DesignContract",
     "HeuristicAgentAdapter",
+    "HostCapabilityGateway",
     "HostRuntime",
     "HpcToolContractsExecutor",
     "HumanFeedback",
+    "InspectedCapabilityBinding",
     "LLMAgentAdapter",
     "LLMSidecarConfig",
     "list_episode_ids",
     "LocalPreprocessExecutor",
     "MemoryClient",
+    "NormalizedExecutionResult",
     "PlanStep",
     "PlanValidationError",
     "ProjectConfig",
@@ -73,5 +88,6 @@ __all__ = [
     "RoutedExecutionAdapter",
     "StepExecutor",
     "ToolAction",
+    "WorkflowAuditEvent",
     "WorkspaceError",
 ]

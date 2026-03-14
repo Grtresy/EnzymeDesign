@@ -5,20 +5,18 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mcp_project_memory.config import ProjectMemoryConfig
 from mcp_project_memory.models import utc_now_iso
-from mcp_project_memory.store import ProjectMemoryStore
 
+from .capability import WorkflowAuditEvent
 from .planning import AgentState
+from .project_memory_service import ProjectMemoryService
 from .workspace import ProjectContext
 
 
 class MemoryClient:
     def __init__(self, context: ProjectContext) -> None:
         self.context = context
-        self.store = ProjectMemoryStore(
-            ProjectMemoryConfig(projects={context.config.project_id: context.root})
-        )
+        self.service = ProjectMemoryService(context)
 
     @property
     def project_id(self) -> str:
@@ -26,8 +24,8 @@ class MemoryClient:
 
     def create_episode(self, episode_id: str, goal: str) -> dict[str, Any]:
         goal_text = goal.strip()
-        self.store.ensure_episode_dir(self.project_id, episode_id)
-        self.store.save_episode_goal(self.project_id, episode_id, f"# Goal\n\n{goal_text}\n")
+        self.service.ensure_episode_dir(episode_id)
+        self.service.save_episode_goal(episode_id, f"# Goal\n\n{goal_text}\n")
         agent_state = AgentState.from_dict(
             {},
             episode_id=episode_id,
@@ -51,17 +49,17 @@ class MemoryClient:
             "steps": {},
             "runs": [],
         }
-        self.store.save_agent_state(self.project_id, episode_id, agent_state)
-        return self.store.update_episode_state(self.project_id, episode_id, state)
+        self.service.save_agent_state(episode_id, agent_state)
+        return self.service.update_episode_state(episode_id, state)
 
     def load_goal(self, episode_id: str) -> str:
-        return self.store.read_resource_text(
+        return self.service.read_text(
             f"enzyme://project/{self.project_id}/episode/{episode_id}/goal"
         )
 
     def load_state(self, episode_id: str) -> dict[str, Any]:
         try:
-            raw = self.store.read_resource_text(
+            raw = self.service.read_text(
                 f"enzyme://project/{self.project_id}/episode/{episode_id}/state"
             )
         except FileNotFoundError:
@@ -69,25 +67,25 @@ class MemoryClient:
         return json.loads(raw)
 
     def save_state(self, episode_id: str, state: dict[str, Any]) -> dict[str, Any]:
-        return self.store.update_episode_state(self.project_id, episode_id, state)
+        return self.service.update_episode_state(episode_id, state)
 
     def update_state(
         self,
         episode_id: str,
         updater: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]:
-        episode_dir = self.store.ensure_episode_dir(self.project_id, episode_id)
+        episode_dir = self.service.ensure_episode_dir(episode_id)
         state_path = episode_dir / "state.json"
-        with self.store._file_lock(state_path):
+        with self.service.store._file_lock(state_path):
             try:
                 current = json.loads(state_path.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 current = {}
             updated = updater(current)
-            return self.store.update_episode_state(self.project_id, episode_id, updated)
+            return self.service.update_episode_state(episode_id, updated)
 
     def load_plan(self, episode_id: str) -> dict[str, Any]:
-        raw = self.store.read_resource_text(
+        raw = self.service.read_text(
             f"enzyme://project/{self.project_id}/episode/{episode_id}/plan"
         )
         return json.loads(raw)
@@ -109,7 +107,7 @@ class MemoryClient:
             **plan,
             "_meta": meta,
         }
-        confirmed = self.store.confirm_plan(self.project_id, episode_id, payload)
+        confirmed = self.service.confirm_plan(episode_id, payload)
         state = self.load_state(episode_id)
         updated = {
             **state,
@@ -133,10 +131,10 @@ class MemoryClient:
     def write_run_manifest(
         self, episode_id: str, run_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        return self.store.write_run_manifest(self.project_id, episode_id, run_id, payload)
+        return self.service.write_run_manifest(episode_id, run_id, payload)
 
     def load_run_manifest(self, run_id: str) -> dict[str, Any]:
-        raw = self.store.read_resource_text(f"enzyme://run/{run_id}/manifest")
+        raw = self.service.read_text(f"enzyme://run/{run_id}/manifest")
         return json.loads(raw)
 
     def list_episode_runs(self, episode_id: str) -> list[dict[str, Any]]:
@@ -148,7 +146,7 @@ class MemoryClient:
 
     def load_agent_state(self, episode_id: str, *, objective: str) -> AgentState:
         try:
-            raw = self.store.read_resource_text(
+            raw = self.service.read_text(
                 f"enzyme://project/{self.project_id}/episode/{episode_id}/agent-state"
             )
             payload = json.loads(raw)
@@ -164,8 +162,7 @@ class MemoryClient:
         *,
         expected_state_version: int | None = None,
     ) -> dict[str, Any]:
-        self.store.save_agent_state(
-            self.project_id,
+        self.service.save_agent_state(
             episode_id,
             agent_state.to_dict(),
             expected_state_version=expected_state_version,
@@ -188,7 +185,7 @@ class MemoryClient:
         def _apply(current: dict[str, Any]) -> dict[str, Any]:
             agent_state = AgentState.from_dict(current.get("agent"), episode_id=episode_id, objective=objective)
             updated = updater(agent_state)
-            self.store.save_agent_state(self.project_id, episode_id, updated.to_dict())
+            self.service.save_agent_state(episode_id, updated.to_dict())
             return {
                 **current,
                 "status": updated.status,
@@ -204,8 +201,7 @@ class MemoryClient:
         state_version: int,
         resume_token: str,
     ) -> dict[str, Any]:
-        return self.store.submit_resume(
-            self.project_id,
+        return self.service.submit_resume(
             episode_id,
             state_version=state_version,
             resume_token=resume_token,
@@ -220,14 +216,28 @@ class MemoryClient:
         author: str,
         evidence_refs: list[str] | None = None,
     ) -> dict[str, Any]:
-        return self.store.record_decision(
-            self.project_id,
+        return self.service.record_decision(
             episode_id,
             decision_type=decision_type,
             reason=reason,
             author=author,
             evidence_refs=evidence_refs,
         )
+
+    def append_workflow_event(self, episode_id: str, event: WorkflowAuditEvent) -> dict[str, Any]:
+        return self.service.append_workflow_event(episode_id, event.to_dict())
+
+    def load_workflow_audit(self, episode_id: str) -> list[dict[str, Any]]:
+        try:
+            raw = self.service.read_text(
+                f"enzyme://project/{self.project_id}/episode/{episode_id}/workflow-audit"
+            )
+        except FileNotFoundError:
+            return []
+        payload = json.loads(raw)
+        if not isinstance(payload, list):
+            return []
+        return [dict(item) for item in payload if isinstance(item, dict)]
 
     def write_planning_revision(self, episode_id: str, revision: dict[str, Any]) -> dict[str, Any]:
         revision_id = str(revision.get("revision_id") or "")
@@ -261,7 +271,7 @@ class MemoryClient:
         return revisions[-1]
 
     def _planning_dir(self, episode_id: str) -> Path:
-        return self.store.ensure_episode_dir(self.project_id, episode_id) / "artifacts" / "planning"
+        return self.service.ensure_episode_dir(episode_id) / "artifacts" / "planning"
 
     def _planning_revision_path(self, episode_id: str, revision_id: str) -> Path:
         return self._planning_dir(episode_id) / f"{revision_id}.json"

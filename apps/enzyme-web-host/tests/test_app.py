@@ -94,6 +94,7 @@ def test_web_host_agent_flow_can_start_execute_and_report(tmp_path: Path) -> Non
     assert payload["execution_evidence"]["observation_count"] == 1
     assert payload["agent_state"]["termination_status"] == "completed"
     assert payload["agent_backend"]["backend"] == "heuristic"
+    assert "capability_inspected" in [item["event_type"] for item in payload["workflow_audit"]]
 
     response = client.post("/report", follow_redirects=True)
     assert response.status_code == 200

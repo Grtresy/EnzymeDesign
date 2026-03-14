@@ -41,6 +41,7 @@ def test_list_tools_has_expected_surface(config_path: Path) -> None:
             "save_session",
             "submit_resume",
             "record_decision",
+            "append_workflow_event",
             "confirm_plan",
             "save_structure_annotations",
             "import_experiment_results",

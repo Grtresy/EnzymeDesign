@@ -139,16 +139,25 @@ Both flows persist canonical state and run manifests in the project workspace.
 
 ## Playgrounds
 
-Template playgrounds now live under `playgrounds/examples/`, and disposable test
-instances live under `playgrounds/runs/`.
+`playgrounds/` now keeps a single minimal resource directory for real-LLM testing:
 
-Create a fresh run from the checked-in host-agent example:
+- `playgrounds/resource/`
 
-```bash
-cd /home/grtresy/VSCodeRepo/EnzymeDesign
-bash playgrounds/scripts/new-run.sh host-agent-llm-sidecar my-zhipu-test
-cd playgrounds/runs/my-zhipu-test
-```
+Only these files are treated as persistent base resources:
+
+- `playgrounds/resource/.env.local`
+- `playgrounds/resource/.enzyme/agent_backend.json`
+
+Recommended pattern:
+
+1. Create a disposable working folder under `playgrounds/`.
+2. Run `enzyme init <project-name>` from that folder.
+3. Copy `playgrounds/resource/.env.local` into the generated project root.
+4. Copy `playgrounds/resource/.enzyme/agent_backend.json` into the generated project root's `.enzyme/`.
+
+Any additional scenarios, scripts, runtime state, or temporary artifacts should
+be created on demand around the initialized project instead of relying on
+checked-in playground templates.
 
 ## Common commands
 

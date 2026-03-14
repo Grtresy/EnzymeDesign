@@ -54,6 +54,26 @@ Run MCP stdio server:
 uv --project apps/mcp-hpc-tool-contracts run mcp-hpc-tool-contracts serve
 ```
 
+## Runner Config Resolution
+
+`mcp-hpc-tool-contracts` 优先通过显式参数接收 `mcp-hpc-runner` 配置，例如：
+
+- CLI `--runner-config`
+- `MCPToolContractsServer(..., runner_config=...)`
+- `RunnerClient(runner_config=...)`
+
+如果上层没有显式传入，`RunnerClient` 会按下面顺序读取环境变量作为兜底：
+
+1. `HPC_TOOL_CONTRACTS_RUNNER_CONFIG`
+2. `HPC_RUNNER_CONFIG`
+
+推荐用法仍然是：
+
+- 在明确的 CLI / integration harness 中显式传 `--runner-config`
+- 在 Host runtime、playground 或临时自动化脚本里，用环境变量注入 runner config 作为 integration-friendly fallback
+
+也就是说，环境变量支持是为了让 Host -> tool-contracts -> runner 这条链路在不逐层手工传参时仍然能工作；它不是替代显式配置的主通道。
+
 ## Integration smoke harness (opt-in)
 
 Create a JSON payload map with one input set per adapter:

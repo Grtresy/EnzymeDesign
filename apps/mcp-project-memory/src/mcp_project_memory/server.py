@@ -180,6 +180,20 @@ class ProjectMemoryServer:
             self.refresh_resources()
             return payload
 
+        @self.mcp.tool(description="Append an auditable workflow event to the episode log")
+        def append_workflow_event(
+            project_id: str,
+            episode_id: str,
+            event: dict[str, Any],
+        ) -> dict[str, Any]:
+            payload = self.store.append_workflow_event(
+                project_id=project_id,
+                episode_id=episode_id,
+                event=event,
+            )
+            self.refresh_resources()
+            return payload
+
         @self.mcp.tool(description="Persist the confirmed structured plan for an episode")
         def confirm_plan(
             project_id: str,

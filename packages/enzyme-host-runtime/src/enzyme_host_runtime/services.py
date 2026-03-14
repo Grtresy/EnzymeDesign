@@ -5,21 +5,31 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import uuid
 
 from mcp_project_memory.store import StaleStateError
 from mcp_project_memory.models import utc_now_iso
 
 from .agent_backend import LLMSidecarClient
 from .agent_backend import load_agent_backend_config
+from .capability import CapabilitySummary
+from .capability import CapabilityVisibilityScope
+from .capability import HostCapabilityGateway
+from .capability import InspectedCapabilityBinding
+from .capability import WorkflowAuditEvent
+from .capability import capability_context_payload
+from .capability import configured_capability_summaries
 from .execution import RoutedExecutionAdapter
 from .memory_client import MemoryClient
 from .plan_runtime import PlanStep
 from .plan_runtime import load_confirmed_plan
 from .plan_runtime import load_plan_payload
 from .plan_runtime import select_steps
+from .planning import AgentAction
 from .planning import AgentObservation
 from .planning import AgentState
 from .planning import AgentWorkflowOrchestrator
+from .planning import DecisionTraceEntry
 from .planning import HeuristicAgentAdapter
 from .planning import LLMAgentAdapter
 from .reporting import build_report
@@ -70,6 +80,8 @@ class EpisodeSnapshot:
     planning_history: list[dict[str, Any]]
     execution_evidence: dict[str, Any]
     agent_backend: dict[str, Any]
+    capability_summaries: list[dict[str, Any]]
+    workflow_audit: list[dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -80,9 +92,11 @@ class HostRuntime:
         self,
         executor: RoutedExecutionAdapter | None = None,
         workflow: AgentWorkflowOrchestrator | None = None,
+        capability_gateway: HostCapabilityGateway | None = None,
     ) -> None:
         self.executor = executor or RoutedExecutionAdapter()
         self.workflow = workflow
+        self.capability_gateway = capability_gateway or HostCapabilityGateway(executor=self.executor)
         self._sidecar_clients: dict[tuple[str, tuple[str, ...], str], LLMSidecarClient] = {}
         atexit.register(self.close)
 
@@ -135,8 +149,16 @@ class HostRuntime:
     def start_agent_workflow(self, start: Path, *, episode_id: str | None = None) -> EpisodeSnapshot:
         context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
         updated = self._workflow_for_root(context.root).initialize(agent_state)
         memory.save_agent_state(selected_episode, updated)
+        self._append_action_selected_event(
+            memory,
+            selected_episode,
+            previous_action=agent_state.selected_action,
+            current_action=updated.selected_action,
+            state_version=updated.state_version,
+        )
         return self.get_episode_snapshot(context, memory, selected_episode)
 
     def continue_agent_workflow(
@@ -156,11 +178,19 @@ class HostRuntime:
                 resume_token=resume_token,
             )
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
         updated = self._workflow_for_root(context.root).continue_workflow(agent_state)
         memory.save_agent_state(
             selected_episode,
             updated,
             expected_state_version=expected_state_version,
+        )
+        self._append_action_selected_event(
+            memory,
+            selected_episode,
+            previous_action=agent_state.selected_action,
+            current_action=updated.selected_action,
+            state_version=updated.state_version,
         )
         return self.get_episode_snapshot(context, memory, selected_episode)
 
@@ -178,6 +208,7 @@ class HostRuntime:
     ) -> EpisodeSnapshot:
         context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
         if expected_state_version is not None or resume_token is not None:
             if (
                 agent_state.session.active_state_version != expected_state_version
@@ -205,6 +236,34 @@ class HostRuntime:
             selected_episode,
             updated,
             expected_state_version=expected_state_version or interrupt.active_state_version,
+        )
+        memory.append_workflow_event(
+            selected_episode,
+            self._workflow_event(
+                "feedback_recorded",
+                episode_id=selected_episode,
+                state_version=updated.state_version,
+                refs={"interrupt_id": interrupt_id},
+                details={"kind": kind, "actor": actor},
+            ),
+        )
+        if interrupt.gate_id:
+            memory.append_workflow_event(
+                selected_episode,
+                self._workflow_event(
+                    "gate_transitioned",
+                    episode_id=selected_episode,
+                    state_version=updated.state_version,
+                    refs={"gate_id": interrupt.gate_id, "interrupt_id": interrupt_id},
+                    details={"kind": kind, "actor": actor},
+                ),
+            )
+        self._append_action_selected_event(
+            memory,
+            selected_episode,
+            previous_action=agent_state.selected_action,
+            current_action=updated.selected_action,
+            state_version=updated.state_version,
         )
         return self.get_episode_snapshot(context, memory, selected_episode)
 
@@ -260,8 +319,15 @@ class HostRuntime:
     ) -> EpisodeSnapshot:
         context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
         agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
+        agent_state = self._advance_capability_inspection(
+            context.root,
+            memory,
+            selected_episode,
+            agent_state,
+        )
         action = agent_state.selected_action
-        if action is None or action.tool_action is None:
+        if action is None:
             raise ValueError("No executable tool action is currently selected.")
         if any(item.status == "pending" for item in agent_state.pending_interrupts):
             raise ValueError("Cannot execute while pending interrupts are unresolved.")
@@ -271,6 +337,9 @@ class HostRuntime:
                 raise ValueError("Selected action requires an approved gate before execution.")
             if gate.action_id != action.action_id or gate.action_revision != action.action_revision:
                 raise ValueError("Approved gate does not match the selected action revision.")
+        if action.tool_action is None:
+            raise ValueError("No executable tool action is currently selected.")
+        capability_id = action.capability_id or self.capability_gateway.resolve_capability_for_tool(action.tool_action.tool) or "unknown"
         plan_step = PlanStep(
             step_id=action.action_id,
             tool=action.tool_action.tool,
@@ -284,8 +353,17 @@ class HostRuntime:
             selected_episode,
             lambda current: _mark_step_started(current, plan_step.step_id, plan_step.tool),
         )
+        memory.append_workflow_event(
+            selected_episode,
+            self._workflow_event(
+                "action_execution_started",
+                episode_id=selected_episode,
+                state_version=agent_state.state_version,
+                refs={"action_id": action.action_id, "capability_id": capability_id, "tool": plan_step.tool},
+            ),
+        )
         try:
-            result = self.executor.run_step(context.root, selected_episode, plan_step)
+            normalized = self.capability_gateway.run_step(context.root, selected_episode, plan_step)
         except Exception as exc:
             memory.update_state(
                 selected_episode,
@@ -300,9 +378,42 @@ class HostRuntime:
             )
             updated = self._workflow_for_root(context.root).record_observation(agent_state, observation)
             memory.save_agent_state(selected_episode, updated)
+            memory.append_workflow_event(
+                selected_episode,
+                self._workflow_event(
+                    "observation_recorded",
+                    episode_id=selected_episode,
+                    state_version=updated.state_version,
+                    refs={"action_id": action.action_id, "capability_id": capability_id, "observation_id": observation.observation_id},
+                    details={"status": "failed", "tool": plan_step.tool},
+                ),
+            )
+            self._append_action_selected_event(
+                memory,
+                selected_episode,
+                previous_action=agent_state.selected_action,
+                current_action=updated.selected_action,
+                state_version=updated.state_version,
+            )
             raise
+        result = normalized.to_execution_result()
         memory.write_run_manifest(selected_episode, result.run_id, result.manifest_payload)
         set_last_run(context.root, result.run_id)
+        memory.append_workflow_event(
+            selected_episode,
+            self._workflow_event(
+                "action_execution_finished",
+                episode_id=selected_episode,
+                state_version=agent_state.state_version,
+                refs={
+                    "action_id": action.action_id,
+                    "capability_id": capability_id,
+                    "run_id": result.run_id,
+                    "tool": plan_step.tool,
+                },
+                details={"status": result.status},
+            ),
+        )
         state = memory.update_state(
             selected_episode,
             lambda current: _mark_step_finished(
@@ -326,6 +437,28 @@ class HostRuntime:
         )
         updated = self._workflow_for_root(context.root).record_observation(agent_state, observation)
         memory.save_agent_state(selected_episode, updated)
+        memory.append_workflow_event(
+            selected_episode,
+            self._workflow_event(
+                "observation_recorded",
+                episode_id=selected_episode,
+                state_version=updated.state_version,
+                refs={
+                    "action_id": action.action_id,
+                    "capability_id": capability_id,
+                    "run_id": result.run_id,
+                    "observation_id": observation.observation_id,
+                },
+                details={"status": result.status, "tool": plan_step.tool},
+            ),
+        )
+        self._append_action_selected_event(
+            memory,
+            selected_episode,
+            previous_action=agent_state.selected_action,
+            current_action=updated.selected_action,
+            state_version=updated.state_version,
+        )
         return self.get_episode_snapshot(context, memory, selected_episode)
 
     def run_plan(
@@ -415,10 +548,13 @@ class HostRuntime:
             plan = None
         runs = memory.list_episode_runs(episode_id)
         agent_state = memory.load_agent_state(episode_id, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, episode_id)
         pending_interrupts = [item.to_dict() for item in agent_state.pending_interrupts if item.status == "pending"]
         agent_backend = dict(agent_state.meta.get("backend_status") or {})
         if not agent_backend:
             agent_backend = _configured_backend_status(context.root)
+        capability_summaries = [item.to_dict() for item in configured_capability_summaries(agent_state.meta)]
+        workflow_audit = memory.load_workflow_audit(episode_id)
         return EpisodeSnapshot(
             project_id=context.config.project_id,
             project_name=context.config.project_name,
@@ -437,8 +573,11 @@ class HostRuntime:
                 "observation_count": len(agent_state.observations),
                 "latest_observation_id": agent_state.observations[-1].observation_id if agent_state.observations else None,
                 "termination_status": agent_state.termination_status,
+                "workflow_event_count": len(workflow_audit),
             },
             agent_backend=agent_backend,
+            capability_summaries=capability_summaries,
+            workflow_audit=workflow_audit[-12:],
         )
 
     def get_run(self, start: Path, run_id: str) -> dict[str, Any]:
@@ -469,6 +608,51 @@ class HostRuntime:
             },
         )
         return target
+
+    def list_capability_summaries(
+        self,
+        start: Path,
+        *,
+        episode_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
+        agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
+        return [item.to_dict() for item in configured_capability_summaries(agent_state.meta)]
+
+    def inspect_capability(
+        self,
+        start: Path,
+        capability_id: str,
+        *,
+        episode_id: str | None = None,
+    ) -> dict[str, Any]:
+        _context, memory, selected_episode, goal = self._context_for_episode(start, episode_id)
+        agent_state = memory.load_agent_state(selected_episode, objective=goal)
+        agent_state = self._prepare_agent_state(agent_state, selected_episode)
+        detail = self.capability_gateway.inspect(capability_id)
+        binding = InspectedCapabilityBinding(
+            contract=detail,
+            scope=CapabilityVisibilityScope(
+                episode_id=selected_episode,
+                active_state_version=agent_state.state_version,
+                role="host-agent",
+            ),
+            inspected_at=utc_now_iso(),
+        )
+        updated_state = self._add_inspected_capability(agent_state, binding)
+        memory.save_agent_state(selected_episode, updated_state)
+        memory.append_workflow_event(
+            selected_episode,
+            self._workflow_event(
+                "capability_inspected",
+                episode_id=selected_episode,
+                state_version=updated_state.state_version,
+                refs={"capability_id": capability_id},
+                details={"role": "host-agent", "server_name": detail.server_name},
+            ),
+        )
+        return detail.to_dict()
 
     def _context_for_episode(
         self,
@@ -528,6 +712,155 @@ class HostRuntime:
         else:
             adapter = HeuristicAgentAdapter()
         return AgentWorkflowOrchestrator(adapter=adapter)
+
+    def _prepare_agent_state(self, state: AgentState, episode_id: str) -> AgentState:
+        summaries = self.capability_gateway.list_summaries()
+        bindings = _load_inspected_bindings(state.meta)
+        state.meta = {
+            **state.meta,
+            **capability_context_payload(summaries, bindings),
+        }
+        return state
+
+    def _advance_capability_inspection(
+        self,
+        project_root: Path,
+        memory: MemoryClient,
+        episode_id: str,
+        state: AgentState,
+    ) -> AgentState:
+        while state.selected_action and state.selected_action.kind == "inspect_capability":
+            action = state.selected_action
+            if not action.capability_id:
+                raise ValueError("Selected inspect action is missing capability_id.")
+            detail = self.capability_gateway.inspect(action.capability_id)
+            binding = InspectedCapabilityBinding(
+                contract=detail,
+                scope=CapabilityVisibilityScope(
+                    episode_id=episode_id,
+                    active_state_version=state.state_version,
+                    role="host-agent",
+                ),
+                inspected_at=utc_now_iso(),
+            )
+            state = self._add_inspected_capability(state, binding)
+            state.decision_trace.append(
+                DecisionTraceEntry(
+                    entry_id=_new_event_id("trace"),
+                    kind="capability_inspected",
+                    summary=f"Inspected capability `{detail.capability_id}` before selecting a concrete tool.",
+                    created_at=utc_now_iso(),
+                    refs=[detail.capability_id],
+                    meta={"role": "host-agent"},
+                )
+            )
+            memory.append_workflow_event(
+                episode_id,
+                self._workflow_event(
+                    "capability_inspected",
+                    episode_id=episode_id,
+                    state_version=state.state_version,
+                    refs={"capability_id": detail.capability_id},
+                    details={"role": "host-agent", "server_name": detail.server_name},
+                ),
+            )
+            state.selected_action = None
+            state.candidate_actions = []
+            state.status = "idle"
+            state = self._workflow_for_root(project_root).continue_workflow(state)
+            memory.save_agent_state(episode_id, state)
+            self._append_action_selected_event(
+                memory,
+                episode_id,
+                previous_action=action,
+                current_action=state.selected_action,
+                state_version=state.state_version,
+            )
+        return state
+
+    def _add_inspected_capability(
+        self,
+        state: AgentState,
+        binding: InspectedCapabilityBinding,
+    ) -> AgentState:
+        bindings = _load_inspected_bindings(state.meta)
+        bindings = [
+            item
+            for item in bindings
+            if not (
+                item.contract.capability_id == binding.contract.capability_id
+                and item.scope.episode_id == binding.scope.episode_id
+                and item.scope.active_state_version == binding.scope.active_state_version
+                and item.scope.role == binding.scope.role
+            )
+        ]
+        bindings.append(binding)
+        state.meta = {
+            **state.meta,
+            **capability_context_payload(
+                self.capability_gateway.list_summaries(),
+                bindings,
+            ),
+        }
+        return state
+
+    def _workflow_event(
+        self,
+        event_type: str,
+        *,
+        episode_id: str,
+        state_version: int,
+        refs: dict[str, str] | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> WorkflowAuditEvent:
+        return WorkflowAuditEvent(
+            event_id=_new_event_id("workflow-event"),
+            event_type=event_type,
+            episode_id=episode_id,
+            state_version=state_version,
+            timestamp=utc_now_iso(),
+            refs=dict(refs or {}),
+            details=dict(details or {}),
+        )
+
+    def _append_action_selected_event(
+        self,
+        memory: MemoryClient,
+        episode_id: str,
+        *,
+        previous_action: AgentAction | None,
+        current_action: AgentAction | None,
+        state_version: int,
+    ) -> None:
+        if current_action is None:
+            return
+        if (
+            previous_action is not None
+            and previous_action.action_id == current_action.action_id
+            and previous_action.action_revision == current_action.action_revision
+        ):
+            return
+        refs = {"action_id": current_action.action_id}
+        if current_action.capability_id:
+            refs["capability_id"] = current_action.capability_id
+        if current_action.tool_action is not None:
+            refs["tool"] = current_action.tool_action.tool
+        if current_action.gate_id:
+            refs["gate_id"] = current_action.gate_id
+        memory.append_workflow_event(
+            episode_id,
+            self._workflow_event(
+                "action_selected",
+                episode_id=episode_id,
+                state_version=state_version,
+                refs=refs,
+                details={
+                    "kind": current_action.kind,
+                    "title": current_action.title,
+                    "action_revision": current_action.action_revision,
+                },
+            ),
+        )
 
     def _sidecar_client(self, backend_config) -> LLMSidecarClient:
         sidecar_config = backend_config.llm_sidecar
@@ -629,3 +962,15 @@ def _coerce_runs(state: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [dict(item) for item in raw if isinstance(item, dict)]
+
+
+def _load_inspected_bindings(meta: dict[str, Any]) -> list[InspectedCapabilityBinding]:
+    return [
+        InspectedCapabilityBinding.from_dict(item)
+        for item in meta.get("inspected_capabilities") or []
+        if isinstance(item, dict)
+    ]
+
+
+def _new_event_id(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"

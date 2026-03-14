@@ -75,6 +75,24 @@ export const RESULT_SCHEMAS = {
   ),
 };
 
+export const TOOL_PARAMETER_SCHEMAS = {
+  ...RESULT_SCHEMAS,
+  build_working_plan: Type.Object(
+    {
+      summary: Type.String({ minLength: 1 }),
+      candidate_actions: Type.Array(Type.String()),
+      steps: Type.Array(LooseObject),
+    },
+    { additionalProperties: false }
+  ),
+  propose_candidate_actions: Type.Object(
+    {
+      actions: Type.Array(actionSchema()),
+    },
+    { additionalProperties: false }
+  ),
+};
+
 export function validateRequest(payload) {
   if (!isObject(payload)) {
     throw new Error("Request must be an object.");
@@ -101,6 +119,9 @@ export function validateOperationResult(operation, value) {
     case "build_working_plan":
       return validateWorkingPlan(value);
     case "propose_candidate_actions":
+      if (isObject(value) && Array.isArray(value.actions)) {
+        value = value.actions;
+      }
       if (!Array.isArray(value)) {
         throw new Error("Candidate actions must be an array.");
       }
@@ -130,26 +151,32 @@ function validateDesignContract(value) {
 function validateWorkingPlan(value) {
   const payload = ensureObject(value, "Working plan must be an object.");
   const steps = Array.isArray(payload.steps) ? payload.steps : [];
+  const normalizedSteps = [];
+  for (const item of steps) {
+    if (!isObject(item)) {
+      continue;
+    }
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    const title = typeof item.title === "string" ? item.title.trim() : "";
+    if (!id || !title) {
+      continue;
+    }
+    const normalized = { id, title };
+    if (typeof item.tool === "string" && item.tool.trim()) {
+      normalized.tool = item.tool;
+    }
+    if (isObject(item.inputs)) {
+      normalized.inputs = item.inputs;
+    }
+    normalizedSteps.push(normalized);
+  }
   return {
     summary: requireString(payload.summary, "Working plan summary is required."),
     candidate_actions: requireStringList(
       payload.candidate_actions,
       "Working plan candidate_actions must be an array."
     ),
-    steps: steps.map((item) => {
-      const step = ensureObject(item, "Working plan step must be an object.");
-      const normalized = {
-        id: requireString(step.id, "Working plan step id is required."),
-        title: requireString(step.title, "Working plan step title is required."),
-      };
-      if (typeof step.tool === "string" && step.tool.trim()) {
-        normalized.tool = step.tool;
-      }
-      if (isObject(step.inputs)) {
-        normalized.inputs = step.inputs;
-      }
-      return normalized;
-    }),
+    steps: normalizedSteps,
   };
 }
 
@@ -240,7 +267,11 @@ function optionalString(value) {
   if (value == null) {
     return null;
   }
-  return requireString(value, "Expected optional string.");
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }
 
 function isObject(value) {

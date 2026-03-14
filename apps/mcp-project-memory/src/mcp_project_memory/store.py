@@ -124,6 +124,10 @@ class ProjectMemoryStore:
             return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "interrupts.json")))
         if kind == "episode_session":
             return self._dump_json(self._read_json(self._episode_file(target["project_id"], target["episode_id"], "session.json")))
+        if kind == "episode_workflow_audit":
+            return self._dump_json(
+                self._read_jsonl(self._episode_file(target["project_id"], target["episode_id"], "workflow_events.jsonl"))
+            )
         if kind == "run_manifest":
             return self._dump_json(self._read_json(self._resolve_indexed_file("runs", target["run_id"])))
         if kind == "candidate_summary":
@@ -357,6 +361,22 @@ class ProjectMemoryStore:
         self._append_jsonl(episode_dir / "decision_log.jsonl", decision.to_dict())
         return decision.to_dict()
 
+    def append_workflow_event(
+        self,
+        project_id: str,
+        episode_id: str,
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        episode_dir = self.ensure_episode_dir(project_id, episode_id)
+        payload = {
+            **event,
+            "event_id": str(event.get("event_id") or self._new_object_id("workflow-event")),
+            "episode_id": episode_id,
+            "timestamp": str(event.get("timestamp") or utc_now_iso()),
+        }
+        self._append_jsonl(episode_dir / "workflow_events.jsonl", payload)
+        return payload
+
     def confirm_plan(
         self, project_id: str, episode_id: str, plan: dict[str, Any]
     ) -> dict[str, Any]:
@@ -543,6 +563,7 @@ class ProjectMemoryStore:
                 "approval-gates": "episode_approval_gates",
                 "interrupts": "episode_interrupts",
                 "session": "episode_session",
+                "workflow-audit": "episode_workflow_audit",
             }
             if leaf in mapping:
                 return {
@@ -630,6 +651,11 @@ class ProjectMemoryStore:
                     {
                         "uri": f"enzyme://project/{project_id}/episode/{episode_id}/session",
                         "name": f"{project_id}-{episode_id}-session",
+                        "mime_type": "application/json",
+                    },
+                    {
+                        "uri": f"enzyme://project/{project_id}/episode/{episode_id}/workflow-audit",
+                        "name": f"{project_id}-{episode_id}-workflow-audit",
                         "mime_type": "application/json",
                     },
                 ]

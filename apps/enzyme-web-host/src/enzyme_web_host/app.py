@@ -39,6 +39,14 @@ def create_app(
     def api_status() -> dict[str, Any]:
         return app.state.runtime.get_status(app.state.project_root).to_dict()
 
+    @app.get("/api/capabilities")
+    def api_capabilities() -> list[dict[str, Any]]:
+        return app.state.runtime.list_capability_summaries(app.state.project_root)
+
+    @app.get("/api/capabilities/{capability_id}")
+    def api_capability_detail(capability_id: str) -> dict[str, Any]:
+        return app.state.runtime.inspect_capability(app.state.project_root, capability_id)
+
     @app.get("/api/runs/{run_id}")
     def api_run_detail(run_id: str) -> dict[str, Any]:
         try:
@@ -235,6 +243,8 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
     gates_html = "".join(_render_gate_item(item) for item in snapshot.approval_gates)
     decision_trace = list(agent.get("decision_trace") or []) if isinstance(agent, dict) else []
     trace_html = "".join(_render_trace_item(item) for item in reversed(decision_trace[-8:]))
+    capability_summaries_html = "".join(_render_capability_summary(item) for item in snapshot.capability_summaries)
+    workflow_audit_html = "".join(_render_workflow_event(item) for item in reversed(snapshot.workflow_audit[-10:]))
     report_preview = escape(report_text[:3000]) if report_text else "No report generated yet."
     run_detail = escape(json.dumps(selected_run, indent=2)) if selected_run else "No run selected."
     agent_preview = escape(json.dumps(agent, indent=2))
@@ -299,8 +309,6 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
         <pre>{escape(snapshot.goal.strip())}</pre>
         <p><strong>Recent Runs</strong></p>
         <div class="run-list">{runs_html or '<p>No runs yet.</p>'}</div>
-        <p><strong>Decision Trace</strong></p>
-        <div class="run-list">{trace_html or '<p>No decisions recorded yet.</p>'}</div>
       </article>
       <article class="panel">
         <h2>Workflow Actions</h2>
@@ -353,6 +361,15 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
         <pre>{evidence_preview}</pre>
       </article>
       <article class="panel">
+        <h2>Trace &amp; Debug</h2>
+        <p><strong>Capability Summaries</strong></p>
+        <div class="run-list">{capability_summaries_html or '<p>No capability summaries available.</p>'}</div>
+        <p><strong>Decision Trace</strong></p>
+        <div class="run-list">{trace_html or '<p>No decisions recorded yet.</p>'}</div>
+        <p><strong>Workflow Audit</strong></p>
+        <div class="run-list">{workflow_audit_html or '<p>No workflow audit events yet.</p>'}</div>
+      </article>
+      <article class="panel">
         <h2>Run Detail</h2>
         <pre>{run_detail}</pre>
       </article>
@@ -385,6 +402,37 @@ def _render_feedback_form(interrupt: dict[str, Any]) -> str:
   <textarea name="content" rows="3" placeholder="Provide the requested feedback"></textarea>
   <button type="submit">Submit Feedback</button>
 </form>
+"""
+
+
+def _render_capability_summary(summary: dict[str, Any]) -> str:
+    capability_id = escape(str(summary.get("capability_id", "-")))
+    title = escape(str(summary.get("title", capability_id)))
+    detail = escape(str(summary.get("summary", "")))
+    server_name = escape(str(summary.get("server_name", "-")))
+    return f"""
+<div class="run-item">
+  <strong>{title}</strong>
+  <span>{capability_id} via {server_name}</span>
+  <p>{detail}</p>
+</div>
+"""
+
+
+def _render_workflow_event(event: dict[str, Any]) -> str:
+    event_type = escape(str(event.get("event_type", "-")))
+    timestamp = escape(str(event.get("timestamp", "-")))
+    refs = event.get("refs")
+    refs_text = escape(json.dumps(refs, ensure_ascii=False)) if isinstance(refs, dict) and refs else ""
+    details = event.get("details")
+    details_text = escape(json.dumps(details, ensure_ascii=False)) if isinstance(details, dict) and details else ""
+    extra = "<br>".join(item for item in (refs_text, details_text) if item)
+    return f"""
+<div class="run-item">
+  <strong>{event_type}</strong>
+  <span>{timestamp}</span>
+  <p>{extra or 'No additional details.'}</p>
+</div>
 """
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import Any
 import uuid
@@ -52,6 +53,8 @@ class ExecutionResult:
     run_id: str
     status: str
     manifest_payload: dict[str, Any]
+    capability_id: str | None = None
+    output_refs: list[dict[str, str]] = field(default_factory=list)
 
 
 class StepExecutor:

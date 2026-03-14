@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Any, Callable
@@ -18,8 +19,8 @@ class RunnerClient:
         call_impl: CallImpl | None = None,
         timeout: float | None = None,
     ) -> None:
-        self.runner_bin = runner_bin
-        self.runner_config = Path(runner_config) if runner_config else None
+        self.runner_bin = _resolve_runner_bin(runner_bin)
+        self.runner_config = _resolve_runner_config(runner_config)
         self._call_impl = call_impl
         self.timeout = timeout
 
@@ -53,3 +54,22 @@ class RunnerClient:
             raise RuntimeError(
                 f"mcp-hpc-runner returned invalid JSON for {name}"
             ) from exc
+
+
+def _resolve_runner_bin(explicit: str) -> str:
+    if explicit != "mcp-hpc-runner":
+        return explicit
+    return str(os.getenv("HPC_TOOL_CONTRACTS_RUNNER_BIN", explicit)).strip() or explicit
+
+
+def _resolve_runner_config(explicit: str | Path | None) -> Path | None:
+    if explicit:
+        return Path(explicit)
+    env_value = (
+        os.getenv("HPC_TOOL_CONTRACTS_RUNNER_CONFIG")
+        or os.getenv("HPC_RUNNER_CONFIG")
+        or ""
+    ).strip()
+    if not env_value:
+        return None
+    return Path(env_value)

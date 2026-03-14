@@ -225,6 +225,7 @@ class LLMAgentAdapter:
             kind=kind,
             title=self._require_non_empty_str(data.get("title"), "Action title is required."),
             rationale=self._require_non_empty_str(data.get("rationale"), "Action rationale is required."),
+            capability_id=self._optional_str(data.get("capability_id")),
             tool_action=tool_action,
             gate_id=self._optional_str(data.get("gate_id")),
             meta={},

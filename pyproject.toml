@@ -9,3 +9,9 @@ members = [
   "packages/enzyme-host-runtime",
   "packages/preprocess-backend",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-httpx>=0.36.0",
+    "responses>=0.26.0",
+]

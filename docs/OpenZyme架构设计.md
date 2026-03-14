@@ -1,8 +1,11 @@
-# OpenZyme 架构设计
+# OpenZyme 当前实现架构设计
 
 ## 1. 文档目标
 
-本文档定义一个遵循 MCP（Model Context Protocol）规范、并提供持续工作会话体验的 OpenZyme 总体架构。
+本文档定义 OpenZyme 当前正在采用的实现架构，用于说明现有代码边界、核心组件关系和后续演进方向。
+
+顶层分层模型请先阅读 `docs/OpenZyme架构简单梳理.md`。  
+本文件回答的是“当前仓库怎样落地这些层、哪些已经完成、哪些仍在演进中”。
 
 设计目标有三点：
 
@@ -11,6 +14,8 @@
 3. 在产品层提供类似 Claude Code 的持续工作体验，包括任务恢复、工件管理、长任务追踪、结构化反馈和对话辅助。
 
 本文档优先基于当前仓库已有能力设计，不假设重写现有 `mcp-hpc-runner`、`mcp-hpc-tool-contracts` 和 `mcp-preprocess`。
+
+截至当前版本，Host runtime、Web Host、Host CLI 和 `mcp-project-memory` 的 MVP 形态已经落地；因此本文不再把它们视为纯提案，而是视为已实现基础设施上的增量演进。
 
 ---
 
@@ -169,6 +174,7 @@ User
 - MCP Server 用来提供稳定、可测试、可复用的能力边界；工作流编排和长期状态不应下沉到 MCP 层。
 - OpenZyme 当前没有引入 OpenClaw 式 `node` 的必要；若未来需要管理特定机器、仪器或工作站，建议先抽象为 `execution target` 或 `instrument host`。
 - `mcp-hpc-runner` 更适合作为基础设施层，不应直接暴露给高层设计 Agent 拼接底层 `RunSpec`。
+- 当前代码在分层语义上已基本遵循这一结构，但部分调用路径仍采用进程内适配器直连，而不是统一经过通用 MCP registry/client manager；这属于后续架构收敛工作，而不是当前分层判断失效。
 
 ---
 
@@ -192,7 +198,7 @@ Host Core 不应与单一界面形态绑定。
 - Web Host：主入口，负责对话辅助、MCP App iframe、artifact 面板、待反馈项和长任务状态展示
 - CLI：辅入口，负责调试、批处理、脚本化执行和无图形环境使用
 
-Host Core 建议实现以下子模块：
+Host Core 当前已经以共享 runtime 形态落地，以下子模块可视为当前实现与后续增强的统一抽象：
 
 ### 5.1.1 Session / Interrupt Manager
 
@@ -1289,7 +1295,13 @@ def handle_critical_failure(failure, agent_state):
 - `mcp-preprocess`
 - `mcp-hpc-tool-contracts`
 - `mcp-hpc-runner`
-- 简化版 `mcp-project-memory`
+- MVP 版 `mcp-project-memory`
+
+当前状态：
+
+- 这一阶段的基础骨架已经落地。
+- 当前仓库已具备共享 Host runtime、浏览器 Host、CLI Host、agent workflow、审批/中断恢复、run manifest 和 project memory 资源层。
+- 尚未完全完成的是更严格的协议层收敛、能力发现和更丰富的交互/智能增强能力。
 
 核心能力：
 
@@ -1405,12 +1417,12 @@ def handle_critical_failure(failure, agent_state):
 
 | 能力 | 当前状态 | 角色 | 阶段 |
 |------|----------|------|------|
-| `mcp-preprocess` | 已有 | 本地预处理与格式转换 | Phase 1 |
-| `mcp-hpc-tool-contracts` | 已有 | 领域工具入口 | Phase 1 |
-| `mcp-hpc-runner` | 已有 | 基础设施执行层 | Phase 1 |
-| Web Host | 待实现 | 主交互入口，承载对话辅助、反馈界面与 MCP App iframe | Phase 1 |
-| Host CLI | 待实现 | Claude Code 风格入口 | Phase 1 |
-| `mcp-project-memory` | 待实现 | 项目状态与工件资源层 | Phase 1 |
+| `mcp-preprocess` | 已实现 | 本地预处理与格式转换 | Phase 1 |
+| `mcp-hpc-tool-contracts` | 已实现 | 领域工具入口 | Phase 1 |
+| `mcp-hpc-runner` | 已实现 | 基础设施执行层 | Phase 1 |
+| Web Host | 已实现 MVP | 主交互入口，承载状态查看、反馈、审批与恢复 | Phase 1 |
+| Host CLI | 已实现 MVP | 调试、批处理、恢复和自动化入口 | Phase 1 |
+| `mcp-project-memory` | 已实现 MVP | 项目状态、agent workflow 状态与工件资源层 | Phase 1 |
 | `mcp-structure-workbench` | 待实现 | 结构查看、交互标注与约束编辑的 MCP App | Phase 2 |
 | `mcp-bio-research` | 待实现 | 检索与知识抽取 | Phase 2 |
 | `mcp-enzyme-design-knowledge` | 待实现 | 酶设计知识注入与案例/规则检索 | Phase 3 |
@@ -1426,6 +1438,11 @@ def handle_critical_failure(failure, agent_state):
 - `mcp-hpc-tool-contracts` 再调用 `mcp-hpc-runner`
 - Web Host 承载主要可视化交互，CLI 保留为辅助入口
 - Host 负责项目状态和体验，不让底层 runner 侵入产品层
+
+当前代码还存在两个现实差距：
+
+- Host runtime 到 preprocess、HPC tool contracts、project memory 的部分调用仍是库级直连或本地适配器调用，尚未全部收敛为统一的 MCP client 访问路径。
+- 因此当前实现已经满足“控制面分层”，但还没有完全满足“协议接入形态一致”。
 
 ---
 
@@ -1452,7 +1469,7 @@ def handle_critical_failure(failure, agent_state):
 
 **演进路线：**
 
-- **Phase 1 (MVP)**：建立持续决策型 Agent 基础设施
+- **Phase 1 (MVP，已基本完成)**：建立持续决策型 Agent 基础设施
 - **Phase 2 (体验增强)**：终止条件、信任等级、进度预期、双层解释
 - **Phase 3 (智能增强)**：酶设计知识注入、多方案并行、Checkpoint 回退、外部协作
 - **Phase 4 (规模化)**：多用户协作、企业级权限、高级分析

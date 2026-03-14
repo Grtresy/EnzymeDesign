@@ -302,7 +302,8 @@ def test_start_agent_workflow_initializes_agent_state(tmp_path: Path) -> None:
 
     assert snapshot.agent_state["design_contract"]["summary"]
     assert agent_state.selected_action is not None
-    assert agent_state.selected_action.kind == "tool"
+    assert agent_state.selected_action.kind == "inspect_capability"
+    assert agent_state.selected_action.capability_id == "mcp-preprocess"
     assert agent_state.pending_interrupts == []
 
 
@@ -318,6 +319,24 @@ def test_execute_selected_action_records_observation_and_completes_workflow(tmp_
     assert agent_state.observations[-1].payload["status"] == "completed"
     assert agent_state.termination_status == "completed"
     assert memory.load_state(episode_id)["runs"][-1]["run_id"] == "local-demo-run"
+    assert "capability_inspected" in [item["event_type"] for item in memory.load_workflow_audit(episode_id)]
+
+
+def test_workflow_audit_records_selected_actions_across_planning_and_execution(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime(executor=RoutedExecutionAdapter([_FakePreprocessExecutor()]))
+
+    runtime.start_agent_workflow(context.root)
+    runtime.execute_selected_action(context.root)
+
+    event_types = [item["event_type"] for item in memory.load_workflow_audit(episode_id)]
+
+    assert event_types[0] == "action_selected"
+    assert event_types.count("action_selected") >= 2
+    assert "capability_inspected" in event_types
+    assert "action_execution_started" in event_types
+    assert "action_execution_finished" in event_types
+    assert "observation_recorded" in event_types
 
 
 def test_hpc_selected_action_creates_gate_and_interrupt(tmp_path: Path) -> None:
