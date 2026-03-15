@@ -29,6 +29,7 @@ from .planning import AgentAction
 from .planning import AgentObservation
 from .planning import AgentState
 from .planning import AgentWorkflowOrchestrator
+from .planning import ApprovalPolicy
 from .planning import DecisionTraceEntry
 from .planning import HeuristicAgentAdapter
 from .planning import LLMAgentAdapter
@@ -39,6 +40,7 @@ from .workspace import allocate_episode_id
 from .workspace import list_episode_ids
 from .workspace import init_project
 from .workspace import load_project_context
+from .workspace import load_project_config
 from .workspace import resolve_episode_id
 from .workspace import set_current_episode
 from .workspace import set_last_run
@@ -82,6 +84,12 @@ class EpisodeSnapshot:
     agent_backend: dict[str, Any]
     capability_summaries: list[dict[str, Any]]
     workflow_audit: list[dict[str, Any]]
+    stop_reason: str
+    next_step_suggestion: str
+    needs_user_intervention: bool
+    plain_language_explanation: str
+    technical_explanation: str
+    progress_summary: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -549,6 +557,7 @@ class HostRuntime:
         runs = memory.list_episode_runs(episode_id)
         agent_state = memory.load_agent_state(episode_id, objective=goal)
         agent_state = self._prepare_agent_state(agent_state, episode_id)
+        self._workflow_for_root(context.root)._refresh_decision_experience(agent_state)
         pending_interrupts = [item.to_dict() for item in agent_state.pending_interrupts if item.status == "pending"]
         agent_backend = dict(agent_state.meta.get("backend_status") or {})
         if not agent_backend:
@@ -578,6 +587,12 @@ class HostRuntime:
             agent_backend=agent_backend,
             capability_summaries=capability_summaries,
             workflow_audit=workflow_audit[-12:],
+            stop_reason=agent_state.stop_reason,
+            next_step_suggestion=agent_state.next_step_suggestion,
+            needs_user_intervention=agent_state.needs_user_intervention,
+            plain_language_explanation=agent_state.plain_language_explanation,
+            technical_explanation=agent_state.technical_explanation,
+            progress_summary=agent_state.progress_summary.to_dict(),
         )
 
     def get_run(self, start: Path, run_id: str) -> dict[str, Any]:
@@ -704,6 +719,7 @@ class HostRuntime:
         if self.workflow is not None:
             return self.workflow
         backend_config = load_agent_backend_config(root)
+        project_config = load_project_config(root)
         if backend_config.backend == "llm-sidecar":
             adapter = LLMAgentAdapter(
                 client=self._sidecar_client(backend_config),
@@ -711,7 +727,12 @@ class HostRuntime:
             )
         else:
             adapter = HeuristicAgentAdapter()
-        return AgentWorkflowOrchestrator(adapter=adapter)
+        return AgentWorkflowOrchestrator(
+            adapter=adapter,
+            approval_policy=ApprovalPolicy(config=project_config.host.trust_policy),
+            max_decision_rounds=project_config.host.workflow_budget.max_decision_rounds,
+            max_auto_actions=project_config.host.workflow_budget.max_auto_actions,
+        )
 
     def _prepare_agent_state(self, state: AgentState, episode_id: str) -> AgentState:
         summaries = self.capability_gateway.list_summaries()

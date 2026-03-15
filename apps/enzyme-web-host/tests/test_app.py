@@ -82,8 +82,8 @@ def test_web_host_agent_flow_can_start_execute_and_report(tmp_path: Path) -> Non
 
     response = client.post("/workflow/start", follow_redirects=True)
     assert response.status_code == 200
-    assert "Pending Interrupts" in response.text
-    assert "Backend State" in response.text
+    assert "Decision Summary" in response.text
+    assert "Technical Explanation" in response.text
 
     response = client.post("/workflow/execute", follow_redirects=False)
     assert response.status_code == 303
@@ -119,10 +119,15 @@ def test_web_host_can_submit_feedback_for_pending_interrupt(tmp_path: Path) -> N
     client.post("/workflow/start", follow_redirects=True)
     response = client.post("/workflow/execute", follow_redirects=False)
     assert response.status_code == 400
+    home = client.get("/")
+    assert "Decision Summary" in home.text
+    assert "What To Do Next" in home.text
 
     snapshot = client.get("/api/status").json()
     interrupt = snapshot["pending_interrupts"][-1]
     interrupt_id = interrupt["interrupt_id"]
+    assert snapshot["stop_reason"] == "needs_input"
+    assert snapshot["next_step_suggestion"]
 
     response = client.post(
         "/workflow/feedback",
@@ -151,11 +156,15 @@ def test_web_host_displays_and_resolves_approval_gate(tmp_path: Path) -> None:
     client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
     response = client.post("/workflow/start", follow_redirects=True)
     assert response.status_code == 200
-    assert "Approval Gates" in response.text
+    assert "Decision Summary" in response.text
+    assert "Why It Stopped" in response.text
+    assert "这是高成本或远程计算动作" in response.text
 
     snapshot = client.get("/api/status").json()
     gate_id = snapshot["approval_gates"][-1]["gate_id"]
     interrupt = next(item for item in snapshot["pending_interrupts"] if item.get("gate_id") == gate_id)
+    assert snapshot["stop_reason"] == "awaiting_approval"
+    assert snapshot["plain_language_explanation"]
 
     response = client.post(
         f"/workflow/gates/{gate_id}/approve",

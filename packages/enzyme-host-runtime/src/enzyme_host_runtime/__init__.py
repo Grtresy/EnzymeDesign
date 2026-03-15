@@ -31,6 +31,7 @@ from .planning import DesignContract
 from .planning import HeuristicAgentAdapter
 from .planning import HumanFeedback
 from .planning import LLMAgentAdapter
+from .planning import ProgressSummary
 from .planning import ToolAction
 from .reporting import build_report
 from .reporting import format_status
@@ -42,6 +43,8 @@ from .workspace import CliState
 from .workspace import list_episode_ids
 from .workspace import ProjectConfig
 from .workspace import ProjectContext
+from .workspace import TrustPolicyConfig
+from .workspace import TrustPolicyRuleConfig
 from .workspace import WorkspaceError
 
 __all__ = [
@@ -88,6 +91,9 @@ __all__ = [
     "RoutedExecutionAdapter",
     "StepExecutor",
     "ToolAction",
+    "ProgressSummary",
+    "TrustPolicyConfig",
+    "TrustPolicyRuleConfig",
     "WorkflowAuditEvent",
     "WorkspaceError",
 ]

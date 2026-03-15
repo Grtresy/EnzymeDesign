@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -307,6 +308,21 @@ def test_start_agent_workflow_initializes_agent_state(tmp_path: Path) -> None:
     assert agent_state.pending_interrupts == []
 
 
+def test_start_agent_workflow_persists_progress_summary_and_explanations(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime()
+
+    snapshot = runtime.start_agent_workflow(context.root)
+    state = memory.load_state(episode_id)
+
+    assert snapshot.progress_summary["current_focus"]
+    assert snapshot.plain_language_explanation
+    assert snapshot.technical_explanation
+    assert state["agent"]["progress_summary"]["current_focus"] == snapshot.progress_summary["current_focus"]
+    assert state["agent"]["plain_language_explanation"] == snapshot.plain_language_explanation
+    assert state["agent"]["technical_explanation"] == snapshot.technical_explanation
+
+
 def test_execute_selected_action_records_observation_and_completes_workflow(tmp_path: Path) -> None:
     context, memory, episode_id = _project(tmp_path)
     runtime = HostRuntime(executor=RoutedExecutionAdapter([_FakePreprocessExecutor()]))
@@ -368,6 +384,8 @@ def test_hpc_selected_action_creates_gate_and_interrupt(tmp_path: Path) -> None:
     assert snapshot.pending_interrupts
     assert snapshot.pending_interrupts[-1]["kind"] == "approval_request"
     assert agent_state.approval_gates[-1].status == "pending"
+    assert agent_state.approval_gates[-1].plain_language_reason
+    assert agent_state.approval_gates[-1].trust_decision == "approval_required"
 
 
 def test_feedback_can_resolve_interrupt_and_resume_workflow(tmp_path: Path) -> None:
@@ -438,3 +456,49 @@ def test_stale_resume_token_is_rejected_after_feedback_resolution(tmp_path: Path
             expected_state_version=interrupt.active_state_version,
             resume_token=interrupt.resume_token,
         )
+
+
+def test_project_trust_policy_can_block_runtime_action(tmp_path: Path) -> None:
+    context, _memory, episode_id = _project(tmp_path)
+    config_path = context.root / "enzyme.yaml"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["host"] = {
+        **dict(payload.get("host") or {}),
+        "trust_policy": {
+            "rules": [
+                {
+                    "tool": "prepare_receptor",
+                    "decision": "block",
+                    "policy_reason": "Project policy blocks preprocessing until the input files are reviewed.",
+                    "plain_language_reason": "项目要求先人工检查输入，所以系统现在不能直接跑预处理。",
+                    "trust_decision": "blocked",
+                    "rule_id": "project:block-prepare",
+                }
+            ]
+        },
+    }
+    config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    runtime = HostRuntime(executor=RoutedExecutionAdapter([_FakePreprocessExecutor()]))
+    runtime.start_agent_workflow(context.root)
+
+    with pytest.raises(ValueError):
+        runtime.execute_selected_action(context.root)
+
+    snapshot = runtime.get_status(context.root, episode_id=episode_id)
+    assert snapshot.stop_reason == "blocked"
+    assert snapshot.plain_language_explanation == "项目要求先人工检查输入，所以系统现在不能直接跑预处理。"
+
+
+def test_canonical_state_persists_progress_and_explanations(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+    runtime = HostRuntime(executor=RoutedExecutionAdapter([_FakePreprocessExecutor()]))
+
+    snapshot = runtime.start_agent_workflow(context.root)
+    state = memory.load_state(episode_id)
+
+    assert state["stop_reason"] == snapshot.stop_reason
+    assert state["next_step_suggestion"] == snapshot.next_step_suggestion
+    assert state["plain_language_explanation"] == snapshot.plain_language_explanation
+    assert state["technical_explanation"] == snapshot.technical_explanation
+    assert state["progress_summary"]["current_focus"] == snapshot.progress_summary["current_focus"]

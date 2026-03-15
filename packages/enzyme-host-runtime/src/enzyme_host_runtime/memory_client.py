@@ -33,6 +33,12 @@ class MemoryClient:
         ).to_dict()
         state = {
             "status": "draft",
+            "stop_reason": agent_state.get("stop_reason", "active"),
+            "next_step_suggestion": agent_state.get("next_step_suggestion", ""),
+            "needs_user_intervention": agent_state.get("needs_user_intervention", False),
+            "plain_language_explanation": agent_state.get("plain_language_explanation", ""),
+            "technical_explanation": agent_state.get("technical_explanation", ""),
+            "progress_summary": dict(agent_state.get("progress_summary") or {}),
             "goal": {
                 "path": f"episodes/{episode_id}/goal.md",
                 "updated_at": utc_now_iso(),
@@ -172,6 +178,12 @@ class MemoryClient:
             lambda current: {
                 **current,
                 "status": agent_state.status,
+                "stop_reason": agent_state.stop_reason,
+                "next_step_suggestion": agent_state.next_step_suggestion,
+                "needs_user_intervention": agent_state.needs_user_intervention,
+                "plain_language_explanation": agent_state.plain_language_explanation,
+                "technical_explanation": agent_state.technical_explanation,
+                "progress_summary": agent_state.progress_summary.to_dict(),
                 "agent": agent_state.to_dict(),
             },
         )
@@ -189,6 +201,12 @@ class MemoryClient:
             return {
                 **current,
                 "status": updated.status,
+                "stop_reason": updated.stop_reason,
+                "next_step_suggestion": updated.next_step_suggestion,
+                "needs_user_intervention": updated.needs_user_intervention,
+                "plain_language_explanation": updated.plain_language_explanation,
+                "technical_explanation": updated.technical_explanation,
+                "progress_summary": updated.progress_summary.to_dict(),
                 "agent": updated.to_dict(),
             }
 

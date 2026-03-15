@@ -12,7 +12,6 @@ from enzyme_host_runtime import HostRuntime
 from enzyme_host_runtime import RoutedExecutionAdapter
 from enzyme_host_runtime import StepExecutor
 from .plan_runtime import PlanValidationError
-from .reporting import format_status
 from .workspace import WorkspaceError
 
 
@@ -133,7 +132,14 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             print("No pending interrupts")
             return 0
         for item in snapshot.pending_interrupts:
-            print(f"{item['interrupt_id']}: {item['kind']} [{item['status']}]")
+            lines = [
+                f"{item['interrupt_id']}: {item['kind']} [{item['status']}]",
+                f"  Summary: {item.get('plain_language_explanation') or item.get('prompt') or '-'}",
+                f"  Next: {item.get('suggested_user_action') or 'Respond with the requested input and continue the workflow.'}",
+            ]
+            if args.verbose:
+                lines.append(f"  Technical: {item.get('technical_explanation') or '-'}")
+            print("\n".join(lines))
         return 0
     if args.workflow_command == "gates":
         snapshot = runtime.get_status(Path.cwd())
@@ -141,7 +147,14 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
             print("No approval gates")
             return 0
         for item in snapshot.approval_gates:
-            print(f"{item['gate_id']}: {item['risk_level']} [{item['status']}]")
+            lines = [
+                f"{item['gate_id']}: {item['risk_level']} [{item['status']}]",
+                f"  Summary: {item.get('plain_language_reason') or item.get('policy_reason') or '-'}",
+                f"  Trust: {item.get('trust_decision') or '-'}",
+            ]
+            if args.verbose:
+                lines.append(f"  Policy: {item.get('policy_reason') or '-'}")
+            print("\n".join(lines))
         return 0
     if args.workflow_command == "approve-gate":
         snapshot = runtime.approve_gate(
@@ -169,14 +182,7 @@ def _cmd_workflow(runtime: HostRuntime, args: argparse.Namespace) -> int:
 def _cmd_status(runtime: HostRuntime, *, verbose: bool) -> int:
     snapshot = runtime.get_status(Path.cwd())
     lines = [
-        format_status(
-            snapshot.project_name,
-            Path(snapshot.project_root),
-            snapshot.episode_id,
-            snapshot.goal,
-            snapshot.state,
-        ),
-        _render_backend_lines(snapshot.agent_backend, verbose=verbose),
+        _render_workflow_summary(snapshot, verbose=verbose, include_project=True),
     ]
     print(
         "\n".join(
@@ -242,19 +248,44 @@ class _FakePrepareReceptorExecutor(StepExecutor):
         )
 
 
-def _render_workflow_summary(snapshot, *, verbose: bool) -> str:
+def _render_workflow_summary(snapshot, *, verbose: bool, include_project: bool = False) -> str:
     agent = snapshot.agent_state
+    progress = snapshot.progress_summary if isinstance(snapshot.progress_summary, dict) else {}
     selected_action = agent.get("selected_action") if isinstance(agent, dict) else None
     next_action = selected_action.get("title") if isinstance(selected_action, dict) else "-"
+    blocker = progress.get("current_blocker") or progress.get("waiting_on") or "-"
+    lines = []
+    if include_project:
+        lines.extend(
+            [
+                f"Project: {snapshot.project_name}",
+                f"Root: {snapshot.project_root}",
+                f"Episode: {snapshot.episode_id}",
+                f"Goal: {_first_goal_line(snapshot.goal)}",
+            ]
+        )
+    else:
+        lines.append(f"Episode: {snapshot.episode_id}")
     lines = [
-        f"Episode: {snapshot.episode_id}",
+        *lines,
+        f"Workflow Status: {snapshot.stop_reason}",
+        f"Summary: {snapshot.plain_language_explanation}",
+        f"Current Focus: {progress.get('current_focus') or '-'}",
+        f"Why It Stopped: {blocker}",
+        f"Next Step: {snapshot.next_step_suggestion or progress.get('next_step') or '-'}",
+        f"Needs User Action: {'yes' if snapshot.needs_user_intervention else 'no'}",
         f"Agent Status: {agent.get('status', 'idle') if isinstance(agent, dict) else 'idle'}",
         f"Next Action: {next_action}",
-        *(_render_backend_lines(snapshot.agent_backend, verbose=verbose).splitlines()),
         f"Pending Interrupts: {len(snapshot.pending_interrupts)}",
         f"Approval Gates: {len(snapshot.approval_gates)}",
         f"Runs: {len(snapshot.runs)}",
     ]
+    recent_completed = list(progress.get("recent_completed") or [])
+    if recent_completed:
+        lines.append(f"Recent Completed: {'; '.join(str(item) for item in recent_completed)}")
+    lines.extend(_render_backend_lines(snapshot.agent_backend, verbose=verbose).splitlines())
+    if verbose:
+        lines.extend(_render_verbose_workflow_lines(snapshot))
     return "\n".join(line for line in lines if line)
 
 
@@ -297,6 +328,44 @@ def _render_backend_lines(agent_backend: dict[str, Any], *, verbose: bool) -> st
         else:
             lines.append(f"Provider/Model: {provider} / {model}")
     return "\n".join(lines)
+
+
+def _render_verbose_workflow_lines(snapshot) -> list[str]:
+    agent = snapshot.agent_state if isinstance(snapshot.agent_state, dict) else {}
+    selected_action = agent.get("selected_action") if isinstance(agent, dict) else None
+    lines = [
+        "Technical Explanation:",
+        f"  {snapshot.technical_explanation}",
+    ]
+    if isinstance(selected_action, dict) and selected_action:
+        lines.append(f"Selected Action Technical: {selected_action.get('technical_explanation') or '-'}")
+        lines.append(f"Trust Decision: {selected_action.get('trust_decision') or '-'}")
+        lines.append(f"Policy Reason: {selected_action.get('policy_reason') or '-'}")
+        lines.append(f"Policy Summary: {selected_action.get('policy_summary') or '-'}")
+        lines.append(f"Policy Rule: {selected_action.get('policy_rule_id') or '-'}")
+        lines.append(f"Policy Scope: {selected_action.get('policy_scope') or '-'}")
+    latest_observation = None
+    observations = agent.get("observations") if isinstance(agent, dict) else None
+    if isinstance(observations, list) and observations:
+        latest_observation = observations[-1]
+    if isinstance(latest_observation, dict):
+        lines.append(f"Latest Observation: {latest_observation.get('summary') or '-'}")
+    pending_interrupt = next((item for item in snapshot.pending_interrupts if isinstance(item, dict)), None)
+    if pending_interrupt is not None:
+        lines.append(f"Pending Interrupt Technical: {pending_interrupt.get('technical_explanation') or '-'}")
+    pending_gate = next((item for item in snapshot.approval_gates if isinstance(item, dict) and item.get('status') == 'pending'), None)
+    if pending_gate is not None:
+        lines.append(f"Pending Gate Trust: {pending_gate.get('trust_decision') or '-'}")
+        lines.append(f"Pending Gate Reason: {pending_gate.get('policy_reason') or '-'}")
+    return lines
+
+
+def _first_goal_line(goal: str) -> str:
+    for line in goal.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 if __name__ == "__main__":

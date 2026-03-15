@@ -11,6 +11,7 @@ from .models import ApprovalGate
 from .models import DecisionTraceEntry
 from .models import DesignContract
 from .models import HumanFeedback
+from .models import ProgressSummary
 from .models import ToolAction
 from .orchestrator import AgentWorkflowOrchestrator
 from .policy import ApprovalPolicy
@@ -33,5 +34,6 @@ __all__ = [
     "HeuristicAgentAdapter",
     "HumanFeedback",
     "LLMAgentAdapter",
+    "ProgressSummary",
     "ToolAction",
 ]

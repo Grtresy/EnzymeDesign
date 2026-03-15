@@ -250,9 +250,21 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
     agent_preview = escape(json.dumps(agent, indent=2))
     evidence_preview = escape(json.dumps(snapshot.execution_evidence, indent=2))
     next_action = escape(selected_action.get("title", "No action selected")) if selected_action else "No action selected"
-    current_status = escape(str(agent.get("status", "idle")))
+    current_status = escape(str(snapshot.stop_reason or agent.get("status", "idle")))
+    operational_status = escape(str(agent.get("status", "idle")))
     resume_token = escape(str(session.get("resume_token", "-")))
     state_version = escape(str(session.get("active_state_version", "-")))
+    progress = snapshot.progress_summary if isinstance(snapshot.progress_summary, dict) else {}
+    current_focus = escape(str(progress.get("current_focus") or "No current focus available."))
+    current_blocker = escape(str(progress.get("current_blocker") or progress.get("waiting_on") or "No blocker recorded."))
+    next_step = escape(str(snapshot.next_step_suggestion or progress.get("next_step") or "No next step suggestion recorded."))
+    plain_language_explanation = escape(str(snapshot.plain_language_explanation or "No summary available."))
+    technical_explanation = escape(str(snapshot.technical_explanation or "No technical explanation available."))
+    needs_user_intervention = "Yes" if snapshot.needs_user_intervention else "No"
+    recent_completed_items = list(progress.get("recent_completed") or [])
+    recent_completed_html = "".join(
+        f"<li>{escape(str(item))}</li>" for item in recent_completed_items
+    ) or "<li>No recent completed milestones.</li>"
     backend = snapshot.agent_backend if isinstance(snapshot.agent_backend, dict) else {}
     backend_name = escape(str(backend.get("backend") or "heuristic"))
     backend_state = "degraded" if backend.get("degraded") else ("blocked" if agent.get("status") == "blocked" else "healthy")
@@ -291,18 +303,45 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
       </div>
       <div class="hero-card">
         <div><span>Episode</span><strong>{escape(snapshot.episode_id)}</strong></div>
-        <div><span>Agent Status</span><strong>{current_status}</strong></div>
+        <div><span>Workflow Status</span><strong>{current_status}</strong></div>
+        <div><span>Operational Status</span><strong>{operational_status}</strong></div>
+        <div><span>Needs User Action</span><strong>{needs_user_intervention}</strong></div>
         <div><span>Backend</span><strong>{backend_name}</strong></div>
         <div><span>Backend State</span><strong>{escape(backend_state)}</strong></div>
         <div><span>Fallback</span><strong>{escape(fallback_state)}</strong></div>
-        <div><span>Sidecar Error</span><strong>{sidecar_error}</strong></div>
+        <div><span>Current Focus</span><strong>{current_focus}</strong></div>
+        <div><span>Next Step</span><strong>{next_step}</strong></div>
         <div><span>Next Action</span><strong>{next_action}</strong></div>
         <div><span>Resume Token</span><strong>{resume_token}</strong></div>
         <div><span>State Version</span><strong>{state_version}</strong></div>
         <div><span>Pending Interrupts</span><strong>{escape(str(len(snapshot.pending_interrupts)))}</strong></div>
+        <div><span>Sidecar Error</span><strong>{sidecar_error}</strong></div>
       </div>
     </section>
     <section class="grid">
+      <article class="panel panel-wide">
+        <h2>Decision Summary</h2>
+        <p class="summary-lede">{plain_language_explanation}</p>
+        <div class="summary-grid">
+          <div class="summary-card">
+            <span>Status</span>
+            <strong>{current_status}</strong>
+            <p>{current_focus}</p>
+          </div>
+          <div class="summary-card">
+            <span>Why It Stopped</span>
+            <strong>{current_blocker}</strong>
+            <p>The main view prioritizes the blocker before raw trace data.</p>
+          </div>
+          <div class="summary-card">
+            <span>What To Do Next</span>
+            <strong>{next_step}</strong>
+            <p>User intervention: {needs_user_intervention}</p>
+          </div>
+        </div>
+        <p><strong>Recent Completed Milestones</strong></p>
+        <ul class="summary-list">{recent_completed_html}</ul>
+      </article>
       <article class="panel">
         <h2>Project Context</h2>
         <p><strong>Goal</strong></p>
@@ -362,6 +401,16 @@ def _render_index(runtime: HostRuntime, project_root: Path, *, run_id: str | Non
       </article>
       <article class="panel">
         <h2>Trace &amp; Debug</h2>
+        <p><strong>Technical Explanation</strong></p>
+        <pre>{technical_explanation}</pre>
+        <p><strong>Selected Action Policy</strong></p>
+        <pre>{escape(json.dumps({
+            "trust_decision": (selected_action or {}).get("trust_decision"),
+            "policy_reason": (selected_action or {}).get("policy_reason"),
+            "policy_summary": (selected_action or {}).get("policy_summary"),
+            "policy_rule_id": (selected_action or {}).get("policy_rule_id"),
+            "policy_scope": (selected_action or {}).get("policy_scope"),
+        }, indent=2, ensure_ascii=False))}</pre>
         <p><strong>Capability Summaries</strong></p>
         <div class="run-list">{capability_summaries_html or '<p>No capability summaries available.</p>'}</div>
         <p><strong>Decision Trace</strong></p>
@@ -440,16 +489,18 @@ def _render_gate_form(gate: dict[str, Any], interrupt: dict[str, Any] | None) ->
     gate_id = escape(str(gate.get("gate_id", "")))
     state_version = escape(str((interrupt or {}).get("active_state_version", "")))
     resume_token = escape(str((interrupt or {}).get("resume_token", "")))
+    summary = escape(str(gate.get("plain_language_reason") or gate.get("policy_reason") or "Review this gate before continuing."))
     return f"""
+<p class="gate-summary">{summary}</p>
 <form method="post" action="/workflow/gates/{gate_id}/approve" class="inline-form">
   <input type="hidden" name="state_version" value="{state_version}">
   <input type="hidden" name="resume_token" value="{resume_token}">
-  <button type="submit">Approve Gate {gate_id}</button>
+  <button type="submit">Approve and Continue</button>
 </form>
 <form method="post" action="/workflow/gates/{gate_id}/reject" class="inline-form">
   <input type="hidden" name="state_version" value="{state_version}">
   <input type="hidden" name="resume_token" value="{resume_token}">
-  <button type="submit">Reject Gate {gate_id}</button>
+  <button type="submit">Reject and Stop</button>
 </form>
 """
 
@@ -501,20 +552,26 @@ def _render_run_item(item: dict[str, Any], *, active_run_id: str | None) -> str:
 
 
 def _render_interrupt_item(item: dict[str, Any]) -> str:
+    summary = escape(str(item.get("plain_language_explanation") or item.get("prompt") or "-"))
+    suggestion = escape(str(item.get("suggested_user_action") or "-"))
     return (
         '<div class="run-item">'
         f"<strong>{escape(str(item.get('title', '-')))}</strong>"
         f"<span>{escape(str(item.get('kind', 'interrupt')))} / {escape(str(item.get('status', 'unknown')))}</span>"
+        f"<p>{summary}</p>"
+        f"<p>Next: {suggestion}</p>"
         f"<code>{escape(str(item.get('interrupt_id', '-')))}</code>"
         "</div>"
     )
 
 
 def _render_gate_item(item: dict[str, Any]) -> str:
+    reason = escape(str(item.get("plain_language_reason") or item.get("policy_reason", "-")))
     return (
         '<div class="run-item">'
         f"<strong>{escape(str(item.get('gate_id', '-')))}</strong>"
-        f"<span>{escape(str(item.get('risk_level', 'normal')))} / {escape(str(item.get('status', 'unknown')))}</span>"
+        f"<span>{escape(str(item.get('risk_level', 'normal')))} / {escape(str(item.get('status', 'unknown')))} / {escape(str(item.get('trust_decision', '-')))}</span>"
+        f"<p>{reason}</p>"
         f"<code>{escape(str(item.get('policy_reason', '-')))}</code>"
         "</div>"
     )
@@ -569,6 +626,14 @@ h2 { font-size: 1.2rem; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .panel { padding: 20px; }
 .panel-wide { grid-column: 1 / -1; }
+.summary-lede { font-size: 1.1rem; line-height: 1.5; margin-top: 0; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 16px 0 18px; }
+.summary-card { border: 1px solid var(--line); border-radius: 18px; padding: 16px; background: rgba(255,255,255,0.72); display: grid; gap: 8px; }
+.summary-card span { color: var(--muted); font-size: 0.82rem; }
+.summary-card strong { font-size: 1.05rem; }
+.summary-card p { margin: 0; color: var(--muted); }
+.summary-list { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+.gate-summary { margin: 0 0 10px; color: var(--muted); }
 .stack { display: grid; gap: 10px; margin-bottom: 14px; }
 .inline-form { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 textarea, input, select, button, .secondary { font: inherit; border-radius: 14px; }
@@ -579,5 +644,5 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: "SF
 .run-list { display: grid; gap: 10px; }
 .run-item { display: grid; gap: 4px; color: inherit; text-decoration: none; border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; background: rgba(255,255,255,0.72); }
 .run-item.active { border-color: var(--accent); background: rgba(30, 107, 82, 0.08); }
-@media (max-width: 980px) { .hero, .grid { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .hero, .grid, .summary-grid { grid-template-columns: 1fr; } }
 """

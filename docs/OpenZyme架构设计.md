@@ -49,6 +49,8 @@ MCP 解决的是能力接入标准化，不解决完整产品体验。
 - MCP Server 不负责长期会话管理。
 - MCP Server 不持有跨工具的全局工作流状态。
 - Claude Code 风格的连续工作体验由 Host 提供。
+- OpenZyme 对 MCP 的优先要求是遵守 tools / resources / prompts / structured payload 的协议边界，而不是强制每条调用都必须经过独立部署的 MCP client/server 传输链路。
+- 因此，对仓库内的同进程实现，只要仍然受同一份 MCP 形状的能力契约约束，就可视为合法实现形态；是否外化为独立进程边界，应由部署、复用、隔离和互操作需求决定，而不是被架构预设为硬门槛。
 
 ### 3.2 状态机优先于流水线
 
@@ -174,7 +176,8 @@ User
 - MCP Server 用来提供稳定、可测试、可复用的能力边界；工作流编排和长期状态不应下沉到 MCP 层。
 - OpenZyme 当前没有引入 OpenClaw 式 `node` 的必要；若未来需要管理特定机器、仪器或工作站，建议先抽象为 `execution target` 或 `instrument host`。
 - `mcp-hpc-runner` 更适合作为基础设施层，不应直接暴露给高层设计 Agent 拼接底层 `RunSpec`。
-- 当前代码在分层语义上已基本遵循这一结构，但部分调用路径仍采用进程内适配器直连，而不是统一经过通用 MCP registry/client manager；这属于后续架构收敛工作，而不是当前分层判断失效。
+- 当前代码在分层语义上已基本遵循这一结构，但部分调用路径仍采用进程内适配器直连，而不是统一经过通用 MCP registry/client manager。
+- 如果这些直连路径仍然遵守同一份 MCP 形状的能力契约、资源命名和结构化输入输出，它们应被视为“协议内的内嵌实现”，而不是架构违背；是否进一步统一为真实 MCP transport，属于后续收敛与工程化选择。
 
 ---
 
@@ -405,14 +408,21 @@ Host Core 当前已经以共享 runtime 形态落地，以下子模块可视为�
 
 ## 5.3.2 建议新增的 Server
 
-### `mcp-bio-research`
+### `mcp-bio-research`（Phase 2）
 
 建议职责：
 
-- PubMed / Semantic Scholar / UniProt / RCSB / PDB 查询
-- 文献元数据拉取
-- 结构注释抽取
-- 同源序列与功能注释查询
+- 统一承接 literature / structure / annotation research
+- 聚合 PubMed / Semantic Scholar / UniProt / RCSB / PDB 等外部来源
+- 返回 external research evidence，而不是长期知识对象
+- 为 Host 提供稳定的 `evidence_ref`、`resource_uri`、`source_refs`
+
+建议接入方式：
+
+- 把 `pubmed-mcp`、`arxiv-mcp` 一类能力视为 provider adapter 或 ingestion connector，而不是直接暴露给 Host 的长期知识接口
+- 文献主来源优先考虑 PubMed / OpenAlex / Crossref 这类更贴近生物与学术元数据的来源
+- arXiv 更适合作为算法、模型、预印本与方法学补充来源，而不是 enzyme knowledge 的唯一主源
+- Host 应优先面对统一的 `search_literature`、`search_structure_records`、`query_biological_annotations` 语义，而不是 provider-specific tools
 
 建议暴露：
 
@@ -501,6 +511,9 @@ MVP 阶段也可以先不独立成 server，而由 Host 本地实现。
 - RAG 驱动的知识检索
 - 设计经验规则存储与查询
 - 相似案例推荐
+- 只暴露经过整理、审核和沉淀的 curated knowledge objects
+- 为 Host 返回稳定 `knowledge_ref`、`source_refs`、`confidence` 和 `last_reviewed_at`
+- 不直接承担在线 research 抓取职责，也不把未审核 evidence 直接提升为长期知识
 
 建议暴露：
 
@@ -535,6 +548,42 @@ reference_cases:
     outcome: "活性提升 3 倍"
     lessons: ["口袋疏水性对芳香底物结合至关重要"]
 ```
+
+### Research Evidence 到 Curated Knowledge 的沉淀链路（Phase 3+）
+
+建议把“外部 research”与“长期 knowledge”明确拆成两段，而不是让 MCP 之间直接互相调用：
+
+```text
+外部文献/数据库
+  -> pubmed-mcp / arxiv-mcp / 其它 provider
+  -> mcp-bio-research
+  -> external research evidence (evidence_ref)
+  -> Host / skill / curation workflow
+  -> mcp-enzyme-design-knowledge
+  -> curated knowledge object (knowledge_ref)
+```
+
+建议职责边界如下：
+
+- `mcp-bio-research` 负责检索和规范化外部证据，输出 `evidence_ref`
+- `mcp-project-memory` 负责把 `evidence_refs`、query context 和 decision trace 记入 canonical workflow state
+- Host、skill 或独立 curation workflow 负责筛选、归纳、冲突处理和审核
+- `mcp-enzyme-design-knowledge` 负责把审核通过的 heuristic / case / protocol / constraint 条目持久化为长期知识对象
+
+建议的沉淀流程：
+
+1. 在 Phase 2 中，Host 通过 `mcp-bio-research` 获取论文、结构和注释 evidence，并记录 `evidence_refs`
+2. 在 Phase 3 中，新增 knowledge curation skill 或等价 workflow，基于 `evidence_refs` 生成 candidate knowledge drafts
+3. candidate draft 至少带有 `source_refs`、适用范围、排除条件、`confidence` 草案和审核信息
+4. 经过人工审核、规则校验或受控 LLM 归纳后，再由 Host/skill 调用 `mcp-enzyme-design-knowledge` 写入正式知识对象
+5. 只有审核通过的对象才暴露为 `knowledge_ref` 或 `enzyme://knowledge/...` 资源
+
+关键约束：
+
+- `evidence_ref` 不等于 `knowledge_ref`
+- `mcp-bio-research` 不应持有长期知识库状态
+- `mcp-enzyme-design-knowledge` 不应承担在线 research 抓取与 workflow 编排
+- 调度者应是 Host / skill / curation workflow，而不是 MCP 之间直接互调
 
 ---
 
@@ -1332,6 +1381,7 @@ def handle_critical_failure(failure, agent_state):
 - annotation -> constraint 转换
 - `mcp-bio-research`
 - 文献结构化抽取
+- 外部 research evidence 检索与 `evidence_ref` 沉淀
 - evidence graph
 - 多轨设计
 - 候选多样性控制
@@ -1355,6 +1405,12 @@ def handle_critical_failure(failure, agent_state):
    - 技术层面 + 用户层面的决策解释
    - 自然语言决策摘要
 
+5. **无桥梁版对话感验证**
+   - 在不引入新的对话控制平面的前提下，先验证“对话感缺失”是否主要来自呈现方式而非状态模型
+   - 将 workflow audit、approval gate、interrupt、next step 和 explanation 重组为更连续的叙事时间线与消息卡片
+   - 保持 canonical truth 仍然是 episode / workflow state / gate / interrupt / run，而不是聊天记录
+   - 若这一步已经能显著改善协作感，则继续坚持 `workflow-first`，避免过早引入新的中间层
+
 ## 13.3 第三阶段（Phase 3 - 智能增强）
 
 新增能力：
@@ -1370,6 +1426,8 @@ def handle_critical_failure(failure, agent_state):
    - RAG 驱动的知识检索
    - 设计经验规则库
    - 相似案例参考
+   - knowledge curation workflow / skill
+   - `evidence_ref` -> `knowledge_ref` 的审核沉淀链路
 
 2. **多方案并行探索**
    - 同时探索多个候选方案
@@ -1385,6 +1443,15 @@ def handle_critical_failure(failure, agent_state):
    - 事件通知机制
    - 与实验团队协作
    - 外部系统集成
+
+5. **受限对话桥梁层**
+   - 在确认自然语言入口已成为核心需求后，引入一个位于 Web Host 与 runtime 之间的薄适配层
+   - 该层职责限定为：
+     - 读取对话历史与 canonical workflow state
+     - 将自然语言输入解释为有限集合的结构化 intent / proposed mutation
+     - 基于 workflow events 与当前状态生成更自然的对话式解释
+   - 该层不应直接执行工具、不应直接改写 canonical state，也不应成为新的隐式控制平面
+   - 真正的业务裁决仍由 runtime 提交 domain event 并更新 workflow state；对话历史保留为证据与语境，而非唯一状态真源
 
 ## 13.4 第四阶段（Phase 4 - 规模化）
 
@@ -1424,8 +1491,9 @@ def handle_critical_failure(failure, agent_state):
 | Host CLI | 已实现 MVP | 调试、批处理、恢复和自动化入口 | Phase 1 |
 | `mcp-project-memory` | 已实现 MVP | 项目状态、agent workflow 状态与工件资源层 | Phase 1 |
 | `mcp-structure-workbench` | 待实现 | 结构查看、交互标注与约束编辑的 MCP App | Phase 2 |
-| `mcp-bio-research` | 待实现 | 检索与知识抽取 | Phase 2 |
-| `mcp-enzyme-design-knowledge` | 待实现 | 酶设计知识注入与案例/规则检索 | Phase 3 |
+| `mcp-bio-research` | 待实现 | 外部 research evidence 检索与结构化抽取 | Phase 2 |
+| `mcp-enzyme-design-knowledge` | 待实现 | 已审核酶设计知识的存储、检索与案例/规则注入 | Phase 3 |
+| knowledge curation workflow / skill | 待设计 | 将 `evidence_ref` 审核沉淀为 `knowledge_ref` | Phase 3 |
 | Checkpoint 系统 | 待实现 | 状态快照与回退 | Phase 3 |
 | 外部协作 Hooks | 待实现 | 事件通知与集成 | Phase 3 |
 | reporting server | 可选 | 报告与导出 | Phase 1-2 |
@@ -1442,7 +1510,8 @@ def handle_critical_failure(failure, agent_state):
 当前代码还存在两个现实差距：
 
 - Host runtime 到 preprocess、HPC tool contracts、project memory 的部分调用仍是库级直连或本地适配器调用，尚未全部收敛为统一的 MCP client 访问路径。
-- 因此当前实现已经满足“控制面分层”，但还没有完全满足“协议接入形态一致”。
+- 如果以“所有能力都必须经过独立 MCP transport”作为标准，这仍然是不完全收敛的。
+- 但如果以“能力边界、资源命名、工具契约和结构化 payload 均保持 MCP 形状”作为标准，那么这些差距不构成 Phase 1 的阻塞项，更接近后续可选的实现收敛工作。
 
 ---
 
@@ -1470,8 +1539,8 @@ def handle_critical_failure(failure, agent_state):
 **演进路线：**
 
 - **Phase 1 (MVP，已基本完成)**：建立持续决策型 Agent 基础设施
-- **Phase 2 (体验增强)**：终止条件、信任等级、进度预期、双层解释
-- **Phase 3 (智能增强)**：酶设计知识注入、多方案并行、Checkpoint 回退、外部协作
+- **Phase 2 (体验增强)**：终止条件、信任等级、进度预期、双层解释、`mcp-bio-research`
+- **Phase 3 (智能增强)**：酶设计知识注入、knowledge curation、多方案并行、Checkpoint 回退、外部协作
 - **Phase 4 (规模化)**：多用户协作、企业级权限、高级分析
 
 这样设计的好处是：

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 import json
 from pathlib import Path
 import re
@@ -19,10 +20,130 @@ class WorkspaceError(RuntimeError):
 
 
 @dataclass(slots=True)
+class WorkflowBudgetConfig:
+    max_decision_rounds: int = 6
+    max_auto_actions: int = 3
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_decision_rounds": self.max_decision_rounds,
+            "max_auto_actions": self.max_auto_actions,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> WorkflowBudgetConfig:
+        payload = payload or {}
+        return cls(
+            max_decision_rounds=max(1, int(payload.get("max_decision_rounds") or 6)),
+            max_auto_actions=max(1, int(payload.get("max_auto_actions") or 3)),
+        )
+
+
+@dataclass(slots=True)
+class TrustPolicyRuleConfig:
+    tool: str
+    decision: str = "allow"
+    risk_level: str = "normal"
+    policy_reason: str = ""
+    plain_language_reason: str = ""
+    trust_decision: str = "auto_allowed"
+    rule_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "decision": self.decision,
+            "risk_level": self.risk_level,
+            "policy_reason": self.policy_reason,
+            "plain_language_reason": self.plain_language_reason,
+            "trust_decision": self.trust_decision,
+            "rule_id": self.rule_id,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> TrustPolicyRuleConfig | None:
+        if not isinstance(payload, dict):
+            return None
+        tool = str(payload.get("tool") or "").strip()
+        if not tool:
+            return None
+        return cls(
+            tool=tool,
+            decision=str(payload.get("decision") or "allow"),
+            risk_level=str(payload.get("risk_level") or "normal"),
+            policy_reason=str(payload.get("policy_reason") or ""),
+            plain_language_reason=str(payload.get("plain_language_reason") or ""),
+            trust_decision=str(payload.get("trust_decision") or "auto_allowed"),
+            rule_id=_as_optional_str(payload.get("rule_id")),
+        )
+
+
+@dataclass(slots=True)
+class TrustPolicyConfig:
+    default_decision: str = "allow"
+    default_policy_reason: str = "No trust policy rule requires extra approval for this action."
+    default_plain_language_reason: str = "这是低风险动作，当前策略允许系统直接继续。"
+    default_trust_decision: str = "auto_allowed"
+    rules: list[TrustPolicyRuleConfig] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "default_decision": self.default_decision,
+            "default_policy_reason": self.default_policy_reason,
+            "default_plain_language_reason": self.default_plain_language_reason,
+            "default_trust_decision": self.default_trust_decision,
+            "rules": [item.to_dict() for item in self.rules],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> TrustPolicyConfig:
+        payload = payload or {}
+        rules = [
+            item
+            for raw in payload.get("rules") or []
+            if (item := TrustPolicyRuleConfig.from_dict(raw)) is not None
+        ]
+        return cls(
+            default_decision=str(payload.get("default_decision") or "allow"),
+            default_policy_reason=str(
+                payload.get("default_policy_reason")
+                or "No trust policy rule requires extra approval for this action."
+            ),
+            default_plain_language_reason=str(
+                payload.get("default_plain_language_reason")
+                or "这是低风险动作，当前策略允许系统直接继续。"
+            ),
+            default_trust_decision=str(payload.get("default_trust_decision") or "auto_allowed"),
+            rules=rules,
+        )
+
+
+@dataclass(slots=True)
+class HostRuntimeConfig:
+    workflow_budget: WorkflowBudgetConfig = field(default_factory=WorkflowBudgetConfig)
+    trust_policy: TrustPolicyConfig = field(default_factory=TrustPolicyConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workflow_budget": self.workflow_budget.to_dict(),
+            "trust_policy": self.trust_policy.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> HostRuntimeConfig:
+        payload = payload or {}
+        return cls(
+            workflow_budget=WorkflowBudgetConfig.from_dict(payload.get("workflow_budget")),
+            trust_policy=TrustPolicyConfig.from_dict(payload.get("trust_policy")),
+        )
+
+
+@dataclass(slots=True)
 class ProjectConfig:
     project_id: str
     project_name: str
     created_at: str
+    host: HostRuntimeConfig = field(default_factory=HostRuntimeConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,7 +151,8 @@ class ProjectConfig:
                 "id": self.project_id,
                 "name": self.project_name,
                 "created_at": self.created_at,
-            }
+            },
+            "host": self.host.to_dict(),
         }
 
 
@@ -103,6 +225,7 @@ def load_project_config(root: Path) -> ProjectConfig:
         project_id=project_id,
         project_name=str(project.get("name") or project_id),
         created_at=created_at,
+        host=HostRuntimeConfig.from_dict(payload.get("host")),
     )
 
 

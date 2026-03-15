@@ -70,6 +70,13 @@ class AgentAction:
     capability_id: str | None = None
     tool_action: ToolAction | None = None
     gate_id: str | None = None
+    plain_language_explanation: str = ""
+    technical_explanation: str = ""
+    trust_decision: str | None = None
+    policy_reason: str | None = None
+    policy_summary: str | None = None
+    policy_rule_id: str | None = None
+    policy_scope: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +89,13 @@ class AgentAction:
             "capability_id": self.capability_id,
             "tool_action": self.tool_action.to_dict() if self.tool_action else None,
             "gate_id": self.gate_id,
+            "plain_language_explanation": self.plain_language_explanation,
+            "technical_explanation": self.technical_explanation,
+            "trust_decision": self.trust_decision,
+            "policy_reason": self.policy_reason,
+            "policy_summary": self.policy_summary,
+            "policy_rule_id": self.policy_rule_id,
+            "policy_scope": self.policy_scope,
             "_meta": self.meta,
         }
 
@@ -98,6 +112,13 @@ class AgentAction:
             capability_id=_optional_str(payload.get("capability_id")),
             tool_action=ToolAction.from_dict(payload.get("tool_action")),
             gate_id=_optional_str(payload.get("gate_id")),
+            plain_language_explanation=str(payload.get("plain_language_explanation") or ""),
+            technical_explanation=str(payload.get("technical_explanation") or ""),
+            trust_decision=_optional_str(payload.get("trust_decision")),
+            policy_reason=_optional_str(payload.get("policy_reason")),
+            policy_summary=_optional_str(payload.get("policy_summary")),
+            policy_rule_id=_optional_str(payload.get("policy_rule_id")),
+            policy_scope=_optional_str(payload.get("policy_scope")),
             meta=dict(payload.get("_meta") or {}),
         )
 
@@ -172,6 +193,10 @@ class ApprovalGate:
     status: str
     created_at: str
     action_snapshot: dict[str, Any]
+    plain_language_reason: str = ""
+    trust_decision: str = "approval_required"
+    policy_rule_id: str | None = None
+    policy_scope: str | None = None
     resolved_by: str | None = None
     resolved_at: str | None = None
 
@@ -193,6 +218,10 @@ class ApprovalGate:
             status=str(payload.get("status") or "pending"),
             created_at=str(payload.get("created_at") or utc_now_iso()),
             action_snapshot=dict(payload.get("action_snapshot") or {}),
+            plain_language_reason=str(payload.get("plain_language_reason") or ""),
+            trust_decision=str(payload.get("trust_decision") or "approval_required"),
+            policy_rule_id=_optional_str(payload.get("policy_rule_id")),
+            policy_scope=_optional_str(payload.get("policy_scope")),
             resolved_by=_optional_str(payload.get("resolved_by")),
             resolved_at=_optional_str(payload.get("resolved_at")),
         )
@@ -213,6 +242,9 @@ class AgentInterrupt:
     updated_at: str | None = None
     resolved_at: str | None = None
     resolution: str | None = None
+    plain_language_explanation: str = ""
+    technical_explanation: str = ""
+    suggested_user_action: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -235,6 +267,9 @@ class AgentInterrupt:
             updated_at=_optional_str(payload.get("updated_at")),
             resolved_at=_optional_str(payload.get("resolved_at")),
             resolution=_optional_str(payload.get("resolution")),
+            plain_language_explanation=str(payload.get("plain_language_explanation") or ""),
+            technical_explanation=str(payload.get("technical_explanation") or ""),
+            suggested_user_action=str(payload.get("suggested_user_action") or ""),
         )
 
 
@@ -277,6 +312,8 @@ class AgentSession:
     awaiting_feedback: bool
     resume_token: str
     updated_at: str
+    decision_rounds: int = 0
+    auto_action_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -294,6 +331,33 @@ class AgentSession:
             awaiting_feedback=bool(payload.get("awaiting_feedback")),
             resume_token=str(payload.get("resume_token") or new_object_id("resume")),
             updated_at=str(payload.get("updated_at") or utc_now_iso()),
+            decision_rounds=int(payload.get("decision_rounds") or 0),
+            auto_action_count=int(payload.get("auto_action_count") or 0),
+        )
+
+
+@dataclass(slots=True)
+class ProgressSummary:
+    current_focus: str
+    recent_completed: list[str]
+    current_blocker: str
+    waiting_on: str
+    next_step: str
+    needs_user_intervention: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> ProgressSummary:
+        payload = payload or {}
+        return cls(
+            current_focus=str(payload.get("current_focus") or ""),
+            recent_completed=[str(item) for item in payload.get("recent_completed") or []],
+            current_blocker=str(payload.get("current_blocker") or ""),
+            waiting_on=str(payload.get("waiting_on") or ""),
+            next_step=str(payload.get("next_step") or ""),
+            needs_user_intervention=bool(payload.get("needs_user_intervention")),
         )
 
 
@@ -313,6 +377,12 @@ class AgentState:
     session: AgentSession
     status: str
     termination_status: str
+    stop_reason: str
+    next_step_suggestion: str
+    needs_user_intervention: bool
+    plain_language_explanation: str
+    technical_explanation: str
+    progress_summary: ProgressSummary
     state_version: int
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -332,6 +402,12 @@ class AgentState:
             "session": self.session.to_dict(),
             "status": self.status,
             "termination_status": self.termination_status,
+            "stop_reason": self.stop_reason,
+            "next_step_suggestion": self.next_step_suggestion,
+            "needs_user_intervention": self.needs_user_intervention,
+            "plain_language_explanation": self.plain_language_explanation,
+            "technical_explanation": self.technical_explanation,
+            "progress_summary": self.progress_summary.to_dict(),
             "state_version": self.state_version,
             "_meta": self.meta,
         }
@@ -354,6 +430,12 @@ class AgentState:
             session=AgentSession.from_dict(payload.get("session"), episode_id=episode_id),
             status=str(payload.get("status") or "idle"),
             termination_status=str(payload.get("termination_status") or "active"),
+            stop_reason=str(payload.get("stop_reason") or "active"),
+            next_step_suggestion=str(payload.get("next_step_suggestion") or ""),
+            needs_user_intervention=bool(payload.get("needs_user_intervention")),
+            plain_language_explanation=str(payload.get("plain_language_explanation") or ""),
+            technical_explanation=str(payload.get("technical_explanation") or ""),
+            progress_summary=ProgressSummary.from_dict(payload.get("progress_summary")),
             state_version=int(payload.get("state_version") or 1),
             meta=dict(payload.get("_meta") or {}),
         )

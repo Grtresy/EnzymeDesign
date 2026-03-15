@@ -45,7 +45,8 @@ def test_cli_workflow_start_execute_status_and_report(tmp_path: Path) -> None:
 
     result = _run(repo_root, project_root, "workflow", "start", extra_env={"ENZYME_HOST_CLI_FAKE_EXECUTOR": "prepare_receptor_success"})
     assert result.returncode == 0, result.stderr
-    assert "Agent Status:" in result.stdout
+    assert "Workflow Status:" in result.stdout
+    assert "Next Step:" in result.stdout
     assert "Agent Backend:" in result.stdout
 
     result = _run(repo_root, project_root, "workflow", "execute", extra_env={"ENZYME_HOST_CLI_FAKE_EXECUTOR": "prepare_receptor_success"})
@@ -54,7 +55,8 @@ def test_cli_workflow_start_execute_status_and_report(tmp_path: Path) -> None:
 
     result = _run(repo_root, project_root, "status")
     assert result.returncode == 0, result.stderr
-    assert "Agent:" in result.stdout
+    assert "Workflow Status:" in result.stdout
+    assert "Summary:" in result.stdout
     assert "Agent Backend:" in result.stdout
 
     result = _run(repo_root, project_root, "report")
@@ -85,7 +87,13 @@ def test_cli_can_list_interrupts_and_submit_feedback(tmp_path: Path) -> None:
     result = _run(repo_root, project_root, "workflow", "interrupts")
     assert result.returncode == 0, result.stderr
     assert "clarification_request" in result.stdout
+    assert "Summary:" in result.stdout
+    assert "Next:" in result.stdout
     interrupt_id = result.stdout.strip().split(":")[0]
+
+    verbose = _run(repo_root, project_root, "--verbose", "status")
+    assert verbose.returncode == 0, verbose.stderr
+    assert "Technical Explanation:" in verbose.stdout
 
     result = _run(repo_root, project_root, "workflow", "feedback", interrupt_id, "retry the step")
     assert result.returncode == 0, result.stderr

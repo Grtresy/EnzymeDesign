@@ -178,6 +178,9 @@ class HeuristicAgentAdapter:
             prompt=reason,
             created_at=state.session.updated_at,
             related_action_id=state.selected_action.action_id if state.selected_action else None,
+            plain_language_explanation="系统现在缺少继续执行所需的关键信息，需要你补充说明后再继续。",
+            technical_explanation=f"Clarification interrupt created because: {reason or 'missing context'}.",
+            suggested_user_action="补充缺失输入、澄清目标，或直接告诉系统下一步该怎么做。",
         )
 
     def summarize_observation(self, *, state: AgentState, observation: AgentObservation) -> str:
