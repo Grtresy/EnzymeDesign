@@ -16,6 +16,39 @@ The server binds to a single project root, reads canonical workspace state throu
 
 For development, the MVP uses a Python-only stack with FastAPI and server-rendered HTML.
 
+## No-bridge validation goal
+
+This iteration is intentionally **not** a new chat bridge.
+
+The browser now tries to feel more like a continuous conversation by reordering
+existing canonical workflow state into a timeline, while keeping these
+guardrails:
+
+- the shared runtime snapshot remains the only workflow truth source
+- page refresh reconstructs the same narrative from canonical state alone
+- approve, reject, feedback, continue, and execute still go through the same
+  runtime-backed HTTP routes
+- there is still no freeform browser chat composer or browser-side conversation
+  store
+
+The validation is trying to answer three plain-language questions:
+
+- can users tell what the system just did without scanning multiple panels
+- can users tell why the workflow stopped and what it needs from them next
+- can users respond inline, near the relevant card, without a separate chat
+  control plane
+
+Current observation points and success criteria:
+
+- `awaiting_approval`: the main lane should show a narrative timeline plus an
+  actionable gate card in the same area
+- `needs_input`: the pending interrupt should appear as an inline feedback card,
+  not as a detached control panel
+- after refresh: the same gate / interrupt / selected-action references should
+  still be reconstructible from canonical snapshot data
+- debug and provenance data should still be available, but only in the
+  secondary inspection area
+
 ## Decision summary in the main view
 
 The browser home page now prioritizes a shared decision summary from runtime,
@@ -115,6 +148,23 @@ CLI uses:
 - `plain_language_explanation`
 - `technical_explanation`
 
+The main timeline also derives message cards from:
+
+- `selected_action`
+- `pending_interrupts`
+- `approval_gates`
+- `runs`
+- `workflow_audit`
+
+Each card carries stable business references such as `action_id`, `gate_id`,
+`interrupt_id`, `run_id`, and `state_version` so the UI can stay traceable
+without introducing a second message store.
+
+The page also reserves a future host seam for `mcp-structure-workbench`, using
+the existing project and episode identifiers plus the canonical annotations URI:
+
+- `enzyme://project/{project_id}/episode/{episode_id}/annotations`
+
 ## Sidecar setup
 
 Install the Node sidecar once before using the LLM backend:
@@ -132,3 +182,18 @@ Workflow budget and trust-policy rules are configured in `enzyme.yaml` under the
 `host` section. That is where project-specific rules can require approval,
 auto-allow low-risk actions, or block specific tools with a human-readable
 reason that will appear in both Web Host and CLI.
+
+## Manual playground check
+
+For the real no-bridge validation pass, use the existing GLM + Web Host + HPC
+`fpocket` playground flow and watch for these checkpoints:
+
+1. start an episode and confirm the primary lane is the timeline, not the debug panels
+2. reach `awaiting_approval` and confirm the gate card explains why the system paused
+3. approve inline and confirm the next actionable card stays near the same narrative context
+4. inspect the recent run card and then open full detail from the secondary area
+5. refresh the page and confirm the same story can be rebuilt from canonical state
+
+If those checkpoints fail, the problem is still the presentation layer or the
+snapshot contract. If they pass, the project has cleaner evidence for deciding
+whether a later Phase 3 chat bridge is necessary.

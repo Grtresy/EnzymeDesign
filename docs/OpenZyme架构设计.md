@@ -424,6 +424,12 @@ Host Core 当前已经以共享 runtime 形态落地，以下子模块可视为�
 - arXiv 更适合作为算法、模型、预印本与方法学补充来源，而不是 enzyme knowledge 的唯一主源
 - Host 应优先面对统一的 `search_literature`、`search_structure_records`、`query_biological_annotations` 语义，而不是 provider-specific tools
 
+当前实现范围说明：
+
+- `pubmed-mcp`、`arxiv-mcp` 当前仅作为后续扩展位保留在设计中
+- Phase 2 的当前实现优先覆盖仓库 `docs/API` 中已整理的 research provider
+- 后续若接入这两个外部 MCP，应作为 `mcp-bio-research` 的 provider adapter 被吸收，而不是改变 Host 面向的统一 research 语义
+
 建议暴露：
 
 - 检索类 tools
@@ -453,6 +459,12 @@ Host Core 当前已经以共享 runtime 形态落地，以下子模块可视为�
 - UI 负责交互，不负责成为状态真源
 - 用户标注、约束编辑和备注必须写回 `mcp-project-memory` 或 episode state
 - Host 继续负责审批、编排和后续工具调用
+
+宿主预留原则：
+
+- 在 Phase 2 的 Web Host 体验增强中，应预留 `mcp-structure-workbench` 的宿主接缝，例如可嵌入 richer app block / viewer 的区域、可表达“打开结构工作台”的消息卡片入口，以及可向下传递 `project` / `episode` / `annotations` 上下文的视图模型字段
+- 这种预留应保持为轻接缝，而不是提前实现半套 workbench 本体、假的 iframe 协议或假的 MCP transport
+- 换句话说，Host 应先为未来 workbench 留出自然落点，但不能因为“预留接口”而重新引入新的状态真源或把当前阶段膨胀成 workbench 集成项目
 
 建议暴露：
 
@@ -562,6 +574,11 @@ reference_cases:
   -> mcp-enzyme-design-knowledge
   -> curated knowledge object (knowledge_ref)
 ```
+
+说明：
+
+- 上图中的 `pubmed-mcp / arxiv-mcp` 表示未来可选 provider，并不表示当前阶段已经纳入实现范围
+- 当前阶段先由 `mcp-bio-research` 对接仓库内已整理的 API provider；外部 MCP provider 后续再按需要补入
 
 建议职责边界如下：
 
@@ -1410,6 +1427,11 @@ def handle_critical_failure(failure, agent_state):
    - 将 workflow audit、approval gate、interrupt、next step 和 explanation 重组为更连续的叙事时间线与消息卡片
    - 保持 canonical truth 仍然是 episode / workflow state / gate / interrupt / run，而不是聊天记录
    - 若这一步已经能显著改善协作感，则继续坚持 `workflow-first`，避免过早引入新的中间层
+
+6. **为 `mcp-structure-workbench` 预留宿主接缝**
+   - 在 Web Host 页面结构和视图模型中，提前预留未来结构 workbench 的自然落位
+   - 预留内容以宿主接缝为限，例如 viewer 区域、workbench launch entry、project / episode / annotations 上下文传递
+   - 不要求在本阶段提前实现真实 iframe 集成、MCP App 协议或 workbench 本体
 
 ## 13.3 第三阶段（Phase 3 - 智能增强）
 

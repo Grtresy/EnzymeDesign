@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from enzyme_host_runtime.execution import ExecutionResult
+from enzyme_host_runtime.execution import build_step_params
 from enzyme_host_runtime.execution import RoutedExecutionAdapter
 from enzyme_host_runtime.execution import StepExecutor
 from enzyme_host_runtime.memory_client import MemoryClient
@@ -167,6 +168,22 @@ def test_update_state_preserves_latest_fields(tmp_path: Path) -> None:
 
     assert updated["note"] == {"source": "external"}
     assert updated["steps"]["step_1"]["status"] == "running"
+
+
+def test_build_step_params_accepts_fpocket_pdb_file_alias(tmp_path: Path) -> None:
+    step = PlanStep(
+        step_id="fpocket_1",
+        tool="fpocket",
+        payload={
+            "id": "fpocket_1",
+            "tool": "fpocket",
+            "inputs": {"pdb_file": "data/inputs/protein.pdb"},
+        },
+    )
+
+    params = build_step_params(tmp_path, step)
+
+    assert params["structure_path"] == str(tmp_path / "data/inputs/protein.pdb")
 
 
 class _FakePreprocessExecutor(StepExecutor):
@@ -386,6 +403,51 @@ def test_hpc_selected_action_creates_gate_and_interrupt(tmp_path: Path) -> None:
     assert agent_state.approval_gates[-1].status == "pending"
     assert agent_state.approval_gates[-1].plain_language_reason
     assert agent_state.approval_gates[-1].trust_decision == "approval_required"
+
+
+def test_continue_preserves_approved_selected_action(tmp_path: Path) -> None:
+    context, memory, episode_id = _project(tmp_path)
+
+    class _HpcAdapter(HeuristicAgentAdapter):
+        def propose_candidate_actions(self, *, state):
+            from enzyme_host_runtime.planning import AgentAction
+            from enzyme_host_runtime.planning import ToolAction
+            from enzyme_host_runtime.planning.models import new_object_id
+
+            return [
+                AgentAction(
+                    action_id=new_object_id("action"),
+                    kind="tool",
+                    title="Run docking",
+                    rationale="Needs HPC execution",
+                    tool_action=ToolAction(tool="vina", inputs={"receptor_pdbqt": "a", "ligand_pdbqt": "b"}, risk_level="high"),
+                )
+            ]
+
+    runtime = HostRuntime(
+        executor=RoutedExecutionAdapter([_FakeHpcExecutor()]),
+        workflow=AgentWorkflowOrchestrator(adapter=_HpcAdapter()),
+    )
+    runtime.start_agent_workflow(context.root)
+    initial = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+    selected_action = initial.selected_action
+    interrupt = initial.pending_interrupts[-1]
+    assert selected_action is not None
+
+    runtime.submit_feedback(
+        context.root,
+        interrupt_id=interrupt.interrupt_id,
+        content="approved",
+        kind="approval",
+    )
+    continued = runtime.continue_agent_workflow(context.root)
+    updated = memory.load_agent_state(episode_id, objective=memory.load_goal(episode_id))
+
+    assert continued.agent_state["selected_action"]["action_id"] == selected_action.action_id
+    assert updated.selected_action is not None
+    assert updated.selected_action.action_id == selected_action.action_id
+    assert updated.status == "awaiting_action"
+    assert any(item.status == "approved" for item in updated.approval_gates)
 
 
 def test_feedback_can_resolve_interrupt_and_resume_workflow(tmp_path: Path) -> None:

@@ -82,8 +82,11 @@ def test_web_host_agent_flow_can_start_execute_and_report(tmp_path: Path) -> Non
 
     response = client.post("/workflow/start", follow_redirects=True)
     assert response.status_code == 200
-    assert "Decision Summary" in response.text
+    assert "Main Timeline" in response.text
+    assert 'data-kind="summary"' in response.text
+    assert "Open Structure Workbench" not in response.text
     assert "Technical Explanation" in response.text
+    assert "Trace / Debug / Raw State / Report" in response.text
 
     response = client.post("/workflow/execute", follow_redirects=False)
     assert response.status_code == 303
@@ -120,8 +123,9 @@ def test_web_host_can_submit_feedback_for_pending_interrupt(tmp_path: Path) -> N
     response = client.post("/workflow/execute", follow_redirects=False)
     assert response.status_code == 400
     home = client.get("/")
-    assert "Decision Summary" in home.text
-    assert "What To Do Next" in home.text
+    assert "Main Timeline" in home.text
+    assert 'data-kind="interrupt"' in home.text
+    assert "Suggested response" in home.text
 
     snapshot = client.get("/api/status").json()
     interrupt = snapshot["pending_interrupts"][-1]
@@ -156,15 +160,18 @@ def test_web_host_displays_and_resolves_approval_gate(tmp_path: Path) -> None:
     client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
     response = client.post("/workflow/start", follow_redirects=True)
     assert response.status_code == 200
-    assert "Decision Summary" in response.text
-    assert "Why It Stopped" in response.text
+    assert "Main Timeline" in response.text
+    assert 'data-kind="approval_gate"' in response.text
     assert "这是高成本或远程计算动作" in response.text
 
     snapshot = client.get("/api/status").json()
     gate_id = snapshot["approval_gates"][-1]["gate_id"]
+    action_id = snapshot["agent_state"]["selected_action"]["action_id"]
     interrupt = next(item for item in snapshot["pending_interrupts"] if item.get("gate_id") == gate_id)
     assert snapshot["stop_reason"] == "awaiting_approval"
     assert snapshot["plain_language_explanation"]
+    assert gate_id in response.text
+    assert f'action="/workflow/gates/{gate_id}/approve"' in response.text
 
     response = client.post(
         f"/workflow/gates/{gate_id}/approve",
@@ -175,9 +182,103 @@ def test_web_host_displays_and_resolves_approval_gate(tmp_path: Path) -> None:
         follow_redirects=True,
     )
     assert response.status_code == 200
+    assert "Execute Approved Action" in response.text
+    assert "Execute Selected Action" not in response.text
+    assert "Continue Workflow" not in response.text
 
     updated = client.get("/api/status").json()
     assert any(item["status"] == "approved" for item in updated["approval_gates"])
+    assert updated["agent_state"]["selected_action"]["action_id"] == action_id
+
+
+def test_web_host_hides_continue_after_gate_rejection_blocks_workflow(tmp_path: Path) -> None:
+    client = _build_client(
+        tmp_path,
+        workflow=AgentWorkflowOrchestrator(adapter=_HpcAdapter()),
+    )
+
+    client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
+    client.post("/workflow/start", follow_redirects=True)
+
+    snapshot = client.get("/api/status").json()
+    gate_id = snapshot["approval_gates"][-1]["gate_id"]
+    interrupt = next(item for item in snapshot["pending_interrupts"] if item.get("gate_id") == gate_id)
+
+    response = client.post(
+        f"/workflow/gates/{gate_id}/reject",
+        data={
+            "state_version": interrupt["active_state_version"],
+            "resume_token": interrupt["resume_token"],
+        },
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert "Blocked" in response.text
+    assert "Continue Workflow" not in response.text
+    assert "Open Structure Workbench" not in response.text
+
+    updated = client.get("/api/status").json()
+    assert updated["stop_reason"] == "blocked"
+
+
+def test_web_host_hides_continue_when_workflow_budget_is_exhausted(tmp_path: Path) -> None:
+    client = _build_client(
+        tmp_path,
+        workflow=AgentWorkflowOrchestrator(
+            adapter=HeuristicAgentAdapter(),
+            max_decision_rounds=0,
+        ),
+    )
+
+    client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
+    response = client.post("/workflow/start", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert "Max Turns Exceeded" in response.text
+    assert "Continue Workflow" not in response.text
+
+    updated = client.get("/api/status").json()
+    assert updated["stop_reason"] == "max_turns_exceeded"
+
+
+def test_web_host_reconstructs_same_timeline_from_canonical_state_on_refresh(tmp_path: Path) -> None:
+    client = _build_client(
+        tmp_path,
+        workflow=AgentWorkflowOrchestrator(adapter=_HpcAdapter()),
+    )
+
+    client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
+    client.post("/workflow/start", follow_redirects=True)
+
+    snapshot = client.get("/api/status").json()
+    gate_id = snapshot["approval_gates"][-1]["gate_id"]
+    action_id = snapshot["agent_state"]["selected_action"]["action_id"]
+
+    first = client.get("/")
+    second = client.get("/")
+
+    for response in (first, second):
+        assert response.status_code == 200
+        assert "Main Timeline" in response.text
+        assert 'data-kind="summary"' in response.text
+        assert 'data-kind="approval_gate"' in response.text
+        assert 'data-kind="workbench_slot"' not in response.text
+        assert gate_id in response.text
+        assert action_id in response.text
+
+
+def test_web_host_keeps_debug_area_secondary_to_main_timeline(tmp_path: Path) -> None:
+    client = _build_client(tmp_path)
+
+    client.post("/episodes", data={"goal": "episode one"}, follow_redirects=True)
+    response = client.post("/workflow/start", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert "Trace / Debug / Raw State / Report" in response.text
+    assert "Technical Explanation" in response.text
+    assert response.text.index("Main Timeline") < response.text.index("Trace / Debug / Raw State / Report")
+    assert "Workflow Controls" in response.text
 
 
 def test_web_host_refreshes_on_stale_feedback_submission(tmp_path: Path) -> None:

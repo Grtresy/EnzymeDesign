@@ -21,11 +21,19 @@ _ALIASES: dict[str, dict[str, str]] = {
     "hhblits": {"fasta": "query_fasta", "db": "db_prefix"},
     "chai_fold": {"fasta": "input_fasta"},
     "colabfold": {"fasta": "input_fasta"},
-    "fpocket": {"pdb": "structure_path"},
+    "fpocket": {
+        "input_file": "structure_path",
+        "pdb": "structure_path",
+        "pdb_file": "structure_path",
+    },
     "prepare_receptor": {"input": "input_path", "output": "output_path"},
     "prepare_ligand": {"input": "input_path", "output": "output_path"},
     "smiles_to_3d": {"output": "output_path"},
-    "tunnels": {"pdb": "structure_path"},
+    "tunnels": {
+        "input_file": "structure_path",
+        "pdb": "structure_path",
+        "pdb_file": "structure_path",
+    },
     "vina": {
         "receptor_pdbqt": "receptor_path",
         "ligand_pdbqt": "ligand_path",

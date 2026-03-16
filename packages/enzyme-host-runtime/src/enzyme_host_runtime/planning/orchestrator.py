@@ -76,6 +76,10 @@ class AgentWorkflowOrchestrator:
         if any(item.status == "pending" for item in state.pending_interrupts):
             state.status = "awaiting_feedback"
             return self._stamp_session(state)
+        # Once a concrete action is already awaiting execution, "continue"
+        # should preserve that action instead of re-entering the decision loop.
+        if state.status == "awaiting_action" and state.selected_action is not None:
+            return self._stamp_session(state)
         payload = {"state": state}
         if self._graph is not None:
             return self._graph.invoke(payload)["state"]
