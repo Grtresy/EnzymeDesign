@@ -165,6 +165,19 @@ V2 默认只保留 5 个固定子图：
 - 形成可追溯的 evidence refs
 - 为 design/execution 阶段提供结构化输入
 
+`research` 子图可以参考 `~/VSCodeRepo/26/open_deep_research` 的 LangGraph 拆法，但默认采用“参考并重写”而不是直接集成。可吸收的主要是：
+
+- `research_brief -> supervisor -> 并行 researcher -> compression` 的结构模式
+- supervisor fan-out / researcher fan-in 的并行研究组织方式
+- researcher 内部“工具调用 -> 压缩汇总”的收束思路
+
+不直接复用其完整主图，原因是：
+
+- 其中的 `clarify_with_user` 在 OpenZyme 中属于 `intake`
+- 其中的 `final_report_generation` 在 OpenZyme 中属于 `report_review`
+- 其当前输出更偏 `compressed_research / notes / raw_notes / final_report`，不符合 OpenZyme 对 `EvidenceRecord`、source refs 和结构化 research output 的边界要求
+- 其工具与部署假设包含 Tavily、MCP adapter、OAP/Supabase 等通用 deep research 场景依赖，不应直接带入 V2 主线
+
 #### `design`
 
 - 生成设计候选
@@ -435,6 +448,15 @@ V2 统一使用 typed domain model，建议核心对象固定为：
 
 避免一个巨型共享 state 承担所有语义。
 
+其中 `research state` 的对外可观察产出应优先结构化为：
+
+- `EvidenceRecord[]`
+- research summary
+- unresolved gaps
+- source refs
+
+不应把自由文本 `notes`、`raw_notes` 或 `final_report` 直接作为 V2 `research` 子图的公共接口；这些形态最多只能作为内部中间产物。
+
 ### 9.3 前端读模型
 
 建议面向前端增加聚合投影：
@@ -557,6 +579,19 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 - candidate comparison
 - richer workflow pane
 
+其中 `research` 子图的第一版实现优先参考 `~/VSCodeRepo/26/open_deep_research` 的 LangGraph 结构，但按 OpenZyme 边界重写。第一版只吸收：
+
+- supervisor / researcher 子图组织
+- 并行 research unit 调度
+- research compression 节点思路
+
+第一版不引入：
+
+- 原工程完整 app 形态
+- OAP / Supabase 相关假设
+- 直接依赖其 Tavily / MCP 组合
+- 其 `clarify_with_user` 与 `final_report_generation` 主图流程
+
 #### Phase D：补齐报告与产品化
 
 - report_review 子图
@@ -578,6 +613,7 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 - 产品入口：Web 为主，CLI 为辅
 - 状态真源：数据库 + LangGraph checkpointer
 - 能力边界：多数收回 Host 内部 typed tools
+- `open_deep_research`：作为 `research` 子图参考实现，不直接集成为 V2 主线模块
 - 执行基础设施：保留独立 HPC/remote execution boundary
 - 前端策略：自建 React UI + LangGraph/LangChain frontend 能力
 

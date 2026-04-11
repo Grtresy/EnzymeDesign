@@ -1,7 +1,17 @@
 [tool.uv.workspace]
 members = [
   "apps/mcp-hpc-runner",
+  "apps/openzyme-host-api",
+  "packages/openzyme-domain",
+  "packages/openzyme-graph",
+  "packages/openzyme-storage",
 ]
+
+[tool.uv.sources]
+openzyme-host-api = { workspace = true }
+openzyme-domain = { workspace = true }
+openzyme-graph = { workspace = true }
+openzyme-storage = { workspace = true }
 
 [dependency-groups]
 dev = []
