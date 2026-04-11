@@ -1,0 +1,21 @@
+from __future__ import annotations
+
+from importlib.resources import files
+import sqlite3
+
+
+MIGRATION_IDS: tuple[str, ...] = ("001_phase_b_runtime_foundation",)
+
+
+def get_migration_sql(migration_id: str) -> str:
+    if migration_id not in MIGRATION_IDS:
+        msg = f"unknown migration id: {migration_id}"
+        raise ValueError(msg)
+    resource = files("openzyme_runtime.migrations").joinpath(f"{migration_id}.sql")
+    return resource.read_text()
+
+
+def apply_sqlite_migrations(connection: sqlite3.Connection) -> None:
+    for migration_id in MIGRATION_IDS:
+        connection.executescript(get_migration_sql(migration_id))
+    connection.commit()

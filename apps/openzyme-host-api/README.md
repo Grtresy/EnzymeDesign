@@ -1,10 +1,10 @@
 # openzyme-host-api
 
-V2 Host API contracts for OpenZyme.
+V2 Host API app and contracts for OpenZyme.
 
 ## Scope
 
-This app defines the Phase A Host-side contract for:
+This app defines the Phase B Host-side API surface for:
 
 - query resources
 - workflow commands
@@ -16,3 +16,12 @@ This app defines the Phase A Host-side contract for:
 - Resource and command identifiers reuse the domain and graph contracts.
 - Workflow events are Host projections derived from LangGraph stream/update data, not replacements for LangGraph runtime stream modes.
 - Read models remain projections over canonical business records and graph progress.
+- The stream endpoint emits projected workflow events for the UI and does not expose raw LangGraph transport chunks.
+
+## Local Demo
+
+1. `cd apps/openzyme-web-ui && npm run build`
+2. `cd /home/grtresy/VSCodeRepo/EnzymeDesign && uv run python -m openzyme_host_api.demo`
+3. Open `http://127.0.0.1:8000/ui/`
+
+The demo preloads `proj_001` and uses sqlite, an in-memory checkpointer, and a fake execution adapter so you can exercise the Phase B closed loop without HPC setup.

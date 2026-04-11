@@ -1,16 +1,21 @@
 # openzyme-web-ui
 
-V2 Web UI contract notes and read-model schema for OpenZyme.
+Minimal Phase B Web UI for OpenZyme.
 
 ## Scope
 
-This directory does not yet contain the React implementation.
-Phase A only establishes the minimum UI-facing contracts needed for:
+This directory now contains the first browser-facing workspace shell for Phase B:
 
+- create episode
 - workflow pane
 - pending interrupt and approval summaries
 - run and artifact panels
-- report visibility
+- Host projection stream consumption
+
+## Development
+
+- `npm test`
+- `npm run build`
 
 See [contracts/read_models.json](./contracts/read_models.json) for the minimum projection fields.
-These fields are projection contracts over Host/API data, not raw LangGraph runtime state.
+The browser consumes Host workspace projections and Host workflow events directly; it does not rebuild raw LangGraph state in the client.

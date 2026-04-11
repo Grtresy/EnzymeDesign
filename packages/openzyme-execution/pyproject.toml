@@ -1,16 +1,13 @@
 [project]
-name = "openzyme-host-api"
+name = "openzyme-execution"
 version = "0.1.0"
-description = "V2 Host API app and contracts for OpenZyme"
+description = "Execution adapters for OpenZyme Phase B"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.115,<1.0",
+  "mcp-hpc-runner",
   "openzyme-domain",
-  "openzyme-graph",
   "openzyme-runtime",
-  "openzyme-storage",
-  "uvicorn>=0.30,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +20,7 @@ requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/openzyme_host_api"]
+packages = ["src/openzyme_execution"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

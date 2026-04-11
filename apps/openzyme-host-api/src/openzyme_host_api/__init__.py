@@ -11,6 +11,12 @@ from .contracts import RunProjection
 from .contracts import WorkflowProjection
 from .contracts import WorkflowStreamEventContract
 from .contracts import build_host_api_contract
+from .app import HostApiDependencies
+from .app import create_app
+from .demo import build_demo_foundation
+from .projections import HostProjectionLoader
+from .projections import WorkflowEventProjector
+from .service import HostApiService
 
 __all__ = [
     "COMMAND_SURFACE",
@@ -18,12 +24,18 @@ __all__ = [
     "QUERY_RESOURCES",
     "STREAM_EVENT_TYPES",
     "ArtifactProjection",
+    "HostApiDependencies",
     "CommandContract",
+    "HostApiService",
     "HostApiContract",
+    "HostProjectionLoader",
     "QueryResourceContract",
     "ReportProjection",
     "RunProjection",
+    "WorkflowEventProjector",
     "WorkflowProjection",
     "WorkflowStreamEventContract",
     "build_host_api_contract",
+    "build_demo_foundation",
+    "create_app",
 ]

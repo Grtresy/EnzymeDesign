@@ -5,7 +5,10 @@ description = "V2 graph contracts for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "langgraph>=1.0,<2.0",
   "openzyme-domain",
+  "openzyme-execution",
+  "openzyme-runtime",
   "openzyme-storage",
 ]
 
