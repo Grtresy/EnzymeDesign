@@ -42,6 +42,8 @@ containers
 
 .opencode/
 
+.agents/
+
 node_modules/
 
 playgrounds/
