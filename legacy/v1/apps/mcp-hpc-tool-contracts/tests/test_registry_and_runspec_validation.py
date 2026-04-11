@@ -10,6 +10,8 @@ from mcp_hpc_tool_contracts.registry import compile_adapter, list_adapters
 def _import_runner_validation() -> tuple[object, object]:
     repo_root = Path(__file__).resolve().parents[3]
     runner_src = repo_root / "apps" / "mcp-hpc-runner" / "src"
+    if not runner_src.exists():
+        runner_src = repo_root.parent.parent / "apps" / "mcp-hpc-runner" / "src"
     sys.path.insert(0, str(runner_src))
     from mcp_hpc_runner.models import RunSpec  # type: ignore[import-not-found]
     from mcp_hpc_runner.validation import (  # type: ignore[import-not-found]

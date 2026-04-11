@@ -11,6 +11,8 @@ from mcp_hpc_tool_contracts.constants import (
 def _manual_text() -> str:
     repo_root = Path(__file__).resolve().parents[3]
     doc_path = repo_root / "docs" / "HPC服务器调用指南.md"
+    if not doc_path.exists():
+        doc_path = repo_root.parent.parent / "docs" / "HPC服务器调用指南.md"
     return doc_path.read_text(encoding="utf-8")
 
 

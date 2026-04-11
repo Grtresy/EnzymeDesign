@@ -282,6 +282,8 @@ def test_clarification_fallback_persists_degraded_backend_status() -> None:
 def test_workflow_budget_exhaustion_sets_structured_stop_reason() -> None:
     orchestrator = AgentWorkflowOrchestrator(adapter=_FakeAdapter(), max_decision_rounds=1)
     state = orchestrator.initialize(AgentState.from_dict({}, episode_id="0001", objective="improve binding"))
+    state.selected_action = None
+    state.status = "idle"
 
     updated = orchestrator.continue_workflow(state)
 
@@ -358,6 +360,8 @@ def test_allowed_tool_action_keeps_policy_explanation_without_gate() -> None:
 def test_budget_exhaustion_sets_max_turns_exceeded() -> None:
     orchestrator = AgentWorkflowOrchestrator(adapter=_FakeAdapter(), max_decision_rounds=1)
     state = orchestrator.initialize(AgentState.from_dict({}, episode_id="0001", objective="improve binding"))
+    state.selected_action = None
+    state.status = "idle"
 
     updated = orchestrator.continue_workflow(state)
 

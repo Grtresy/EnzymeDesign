@@ -44,7 +44,7 @@ Compile + run via `mcp-hpc-runner`:
 uv --project apps/mcp-hpc-tool-contracts run mcp-hpc-tool-contracts run \
   --adapter fpocket \
   --params-json '{"structure_path": "./fixtures/target.pdb"}' \
-  --runner-config apps/mcp-hpc-runner/config/hpc_runner.toml \
+  --runner-config ../../apps/mcp-hpc-runner/config/hpc_runner.toml \
   --pretty
 ```
 
@@ -104,5 +104,5 @@ Then run:
 ```bash
 uv --project apps/mcp-hpc-tool-contracts run mcp-hpc-tool-contracts-integration \
   --params-file ./adapter-smoke-inputs.json \
-  --runner-config apps/mcp-hpc-runner/config/hpc_runner.toml
+  --runner-config ../../apps/mcp-hpc-runner/config/hpc_runner.toml
 ```

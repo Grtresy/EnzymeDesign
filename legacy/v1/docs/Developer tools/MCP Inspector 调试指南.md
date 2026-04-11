@@ -1,10 +1,10 @@
 # MCP Inspector 调试指南
 
-本文档记录本仓库各 MCP server 的常用 Inspector 调试命令，以及在远程机器上使用 Inspector 时的端口转发注意事项。
+本文档记录 V1 legacy 工作区中各 MCP server 的常用 Inspector 调试命令，以及在远程机器上使用 Inspector 时的端口转发注意事项。
 
 ## 前提
 
-- 在仓库根目录执行命令。
+- 在 `legacy/v1` 目录执行命令。
 - 本地已安装 `node` / `npx`。
 - 本地已安装 `uv`。
 
@@ -25,7 +25,7 @@
 
 ```bash
 npx @modelcontextprotocol/inspector \
-  uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-preprocess \
+  uv --directory ./apps/mcp-preprocess \
   run mcp-preprocess serve
 ```
 
@@ -35,7 +35,7 @@ npx @modelcontextprotocol/inspector \
 
 ```bash
 npx @modelcontextprotocol/inspector \
-  uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-hpc-tool-contracts \
+  uv --directory ./apps/mcp-hpc-tool-contracts \
   run mcp-hpc-tool-contracts serve
 ```
 
@@ -43,9 +43,9 @@ npx @modelcontextprotocol/inspector \
 
 ```bash
 npx @modelcontextprotocol/inspector \
-  uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-hpc-tool-contracts \
+  uv --directory ./apps/mcp-hpc-tool-contracts \
   run mcp-hpc-tool-contracts \
-  --runner-config /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-hpc-runner/config/hpc_runner.toml \
+  --runner-config ../../apps/mcp-hpc-runner/config/hpc_runner.toml \
   serve
 ```
 
@@ -55,9 +55,9 @@ npx @modelcontextprotocol/inspector \
 
 ```bash
 npx @modelcontextprotocol/inspector \
-  uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-project-memory \
+  uv --directory ./apps/mcp-project-memory \
   run mcp-project-memory \
-  --config /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-project-memory/config/project_memory.toml \
+  --config ./apps/mcp-project-memory/config/project_memory.example.toml \
   serve
 ```
 
@@ -65,11 +65,13 @@ npx @modelcontextprotocol/inspector \
 
 该服务依赖 SSH / rsync / Slurm 环境，建议最后再测。
 
+`mcp-hpc-runner` 仍位于主仓库根目录，不在 `legacy/v1/apps/` 下复制一份。
+
 ```bash
 npx @modelcontextprotocol/inspector \
-  uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-hpc-runner \
+  uv --directory ../../apps/mcp-hpc-runner \
   run mcp-hpc-runner \
-  --config /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-hpc-runner/config/hpc_runner.toml \
+  --config ../../apps/mcp-hpc-runner/config/hpc_runner.toml \
   serve
 ```
 
@@ -86,7 +88,7 @@ npx @modelcontextprotocol/inspector \
 先不要急着怀疑 MCP server 的远程端口暴露。优先单独验证目标 server 能否直接运行：
 
 ```bash
-uv --directory /home/grtresy/VSCodeRepo/EnzymeDesign/apps/mcp-preprocess run mcp-preprocess serve
+uv --directory ./apps/mcp-preprocess run mcp-preprocess serve
 ```
 
 如果单独运行都失败，先修复 server 启动问题；如果单独运行正常，再回到 Inspector 命令继续排查。

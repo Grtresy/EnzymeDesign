@@ -1,17 +1,7 @@
 [tool.uv.workspace]
 members = [
-  "apps/enzyme-host-cli",
-  "apps/enzyme-web-host",
   "apps/mcp-hpc-runner",
-  "apps/mcp-hpc-tool-contracts",
-  "apps/mcp-preprocess",
-  "apps/mcp-project-memory",
-  "packages/enzyme-host-runtime",
-  "packages/preprocess-backend",
 ]
 
 [dependency-groups]
-dev = [
-    "pytest-httpx>=0.36.0",
-    "responses>=0.26.0",
-]
+dev = []
