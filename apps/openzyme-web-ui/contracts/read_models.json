@@ -6,8 +6,24 @@
       "objective",
       "current_phase",
       "progress",
+      "summary",
       "pending_interrupt",
       "pending_approval"
+    ]
+  },
+  "research_projection": {
+    "required_fields": [
+      "summary",
+      "evidence",
+      "source_refs",
+      "unresolved_gaps"
+    ]
+  },
+  "design_projection": {
+    "required_fields": [
+      "candidates",
+      "rankings",
+      "selected_candidate"
     ]
   },
   "run_projection": {
@@ -48,6 +64,18 @@
       "pending_approval",
       "runs",
       "artifacts",
+      "report"
+    ]
+  },
+  "phase_c_workspace": {
+    "required_fields": [
+      "episode_id",
+      "workflow",
+      "pending_actions",
+      "runs",
+      "artifacts",
+      "research",
+      "design",
       "report"
     ]
   }

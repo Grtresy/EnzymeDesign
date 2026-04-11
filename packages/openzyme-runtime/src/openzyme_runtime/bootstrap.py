@@ -16,6 +16,7 @@ from .checkpointer import PostgresCheckpointerFactory
 from .repositories import PhaseBRepositories
 from .seams import ExecutionAdapter
 from .seams import ProjectionLoader
+from .seams import ResearchAdapter
 
 
 GraphBuilder = Callable[["GraphAssemblyInputs"], Any]
@@ -26,6 +27,7 @@ class RuntimeFoundation:
     repositories: PhaseBRepositories
     checkpointer_factory: PostgresCheckpointerFactory
     execution_adapter: ExecutionAdapter | None = None
+    research_adapter: ResearchAdapter | None = None
     projection_loader: ProjectionLoader | None = None
 
 
@@ -34,6 +36,7 @@ class GraphAssemblyInputs:
     repositories: PhaseBRepositories
     checkpointer: Any
     execution_adapter: ExecutionAdapter | None
+    research_adapter: ResearchAdapter | None
     projection_loader: ProjectionLoader | None
 
 
@@ -56,6 +59,7 @@ class GraphRuntimeFacade:
                     repositories=self._foundation.repositories,
                     checkpointer=checkpointer,
                     execution_adapter=self._foundation.execution_adapter,
+                    research_adapter=self._foundation.research_adapter,
                     projection_loader=self._foundation.projection_loader,
                 )
             )

@@ -8,6 +8,7 @@ dependencies = [
   "langgraph>=1.0,<2.0",
   "openzyme-domain",
   "openzyme-execution",
+  "openzyme-research",
   "openzyme-runtime",
   "openzyme-storage",
 ]

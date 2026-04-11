@@ -5,18 +5,33 @@ from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
+from openzyme_domain import Episode
 from openzyme_domain import Project
+from openzyme_domain import EvidenceRecord
+from openzyme_domain import ResearchSummaryRecord
+from openzyme_domain import SourceRef
+from openzyme_domain import SourceRefKind
+from openzyme_domain import UnresolvedGapRecord
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
+from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_graph.research import build_phase_c_research_graph
+from openzyme_graph.design import build_phase_c_design_graph
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
+from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
 from openzyme_runtime import PostgresCheckpointerFactory
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
+from openzyme_research import ResearchFinding
+from openzyme_research import ResearchSource
+from openzyme_research import ResearchUnit
+from openzyme_research import ResearchUnitResult
 from openzyme_domain import ArtifactKind
+from openzyme_domain import SourceRefKind
 from openzyme_domain import RunStatus
 
 
@@ -43,7 +58,40 @@ class FakeExecutionAdapter:
         )
 
 
-def _build_client(monkeypatch) -> TestClient:
+class FakeResearchAdapter:
+    mode = "success"
+
+    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+        if self.mode == "failure":
+            return ResearchUnitResult(
+                unit_id=unit.unit_id,
+                summary="",
+                findings=(),
+                unresolved_gaps=("Retry the primary query",),
+                error_message="search timeout",
+            )
+        return ResearchUnitResult(
+            unit_id=unit.unit_id,
+            summary=f"{unit.topic} supports the brief.",
+            findings=(
+                ResearchFinding(
+                    summary=f"Finding for {unit.query}",
+                    query=unit.query,
+                    confidence_label="high",
+                    sources=(
+                        ResearchSource(
+                            title=f"Source for {unit.unit_id}",
+                            locator=f"https://example.org/{unit.unit_id}",
+                            kind=SourceRefKind.WEB_PAGE,
+                        ),
+                    ),
+                ),
+            ),
+            unresolved_gaps=("Need structural follow-up",),
+        )
+
+
+def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     saver = InMemorySaver()
 
     @contextmanager
@@ -65,12 +113,135 @@ def _build_client(monkeypatch) -> TestClient:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-b/memory")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        research_adapter=FakeResearchAdapter(),
     )
-    return TestClient(create_app(HostApiDependencies(foundation=foundation)))
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=foundation,
+                    graph_builder=build_v2_supervisor_graph,
+                )
+            )
+        ),
+        foundation,
+    )
+
+
+def _build_research_client(monkeypatch, mode: str = "success") -> tuple[TestClient, RuntimeFoundation]:
+    saver = InMemorySaver()
+
+    @contextmanager
+    def _shared_open(self: PostgresCheckpointerFactory):
+        yield saver
+
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _shared_open,
+    )
+
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+    repositories.projects.save(Project.create("proj_001", "Thermostability project"))
+    research_adapter = FakeResearchAdapter()
+    research_adapter.mode = mode
+    foundation = RuntimeFoundation(
+        repositories=repositories,
+        checkpointer_factory=PostgresCheckpointerFactory(
+            PostgresCheckpointerConfig(conn_string="postgresql://phase-c/memory")
+        ),
+        research_adapter=research_adapter,
+    )
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=foundation,
+                    graph_builder=build_phase_c_research_graph,
+                )
+            )
+        ),
+        foundation,
+    )
+
+
+def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+    saver = InMemorySaver()
+
+    @contextmanager
+    def _shared_open(self: PostgresCheckpointerFactory):
+        yield saver
+
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _shared_open,
+    )
+
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+    repositories.projects.save(Project.create("proj_001", "Thermostability project"))
+    repositories.episodes.save(
+        Episode.create("ep_design", "proj_001", "Design a thermostable variant")
+    )
+    repositories.research_summaries.save(
+        ResearchSummaryRecord(
+            episode_id="ep_design",
+            summary="Literature supports two promising scaffold directions.",
+            created_at="2026-04-11T12:00:00+00:00",
+            updated_at="2026-04-11T12:00:00+00:00",
+        )
+    )
+    repositories.evidence_records.save(
+        EvidenceRecord(
+            evidence_id="ev_001",
+            episode_id="ep_design",
+            summary="Scaffold A is supported by thermostability evidence.",
+            query="scaffold A evidence",
+            created_at="2026-04-11T12:01:00+00:00",
+        )
+    )
+    repositories.evidence_records.save(
+        EvidenceRecord(
+            evidence_id="ev_002",
+            episode_id="ep_design",
+            summary="Scaffold B has structure-backed homolog support.",
+            query="scaffold B evidence",
+            created_at="2026-04-11T12:02:00+00:00",
+        )
+    )
+    foundation = RuntimeFoundation(
+        repositories=repositories,
+        checkpointer_factory=PostgresCheckpointerFactory(
+            PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
+        ),
+    )
+    runtime = GraphRuntimeFacade(foundation)
+    with runtime.compile_graph(build_phase_c_design_graph) as graph:
+        graph.invoke(
+            {
+                "episode_id": "ep_design",
+                "project_id": "proj_001",
+                "objective": "Design a thermostable variant",
+            },
+            runtime.build_episode_graph_config("ep_design"),
+        )
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=foundation,
+                    graph_builder=build_phase_c_design_graph,
+                )
+            )
+        ),
+        foundation,
+    )
 
 
 def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> None:
-    client = _build_client(monkeypatch)
+    client, _ = _build_client(monkeypatch)
 
     response = client.post(
         "/commands/create_episode",
@@ -79,24 +250,28 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workspace"]["workflow"]["current_phase"] == "execution"
+    assert payload["workspace"]["workflow"]["current_phase"] == "design"
     assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "approval"
     assert payload["workspace"]["pending_actions"][0]["status"] == "pending"
+    assert payload["workspace"]["workflow"]["summary"]["evidence_count"] == 2
+    assert payload["workspace"]["workflow"]["summary"]["candidate_count"] == 2
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.phase_changed",
         "workflow.progress_updated",
         "workflow.interrupt_pending",
         "workflow.approval_pending",
+        "workflow.evidence_updated",
+        "workflow.candidate_updated",
     }
 
     episode_id = payload["episode_id"]
     workspace = client.get(f"/episodes/{episode_id}/workspace")
     assert workspace.status_code == 200
-    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].endswith("-execution-approval")
+    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].endswith("-design-approval")
 
 
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
-    client = _build_client(monkeypatch)
+    client, _ = _build_client(monkeypatch)
 
     created = client.post(
         "/commands/create_episode",
@@ -105,11 +280,32 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     episode_id = created["episode_id"]
     approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
 
-    response = client.post(
+    first_response = client.post(
         "/commands/resolve_approval",
         json={
             "episode_id": episode_id,
             "approval_id": approval_id,
+            "decision": "approved",
+        },
+    )
+    assert first_response.status_code == 200
+    first_payload = first_response.json()
+    assert first_payload["workspace"]["workflow"]["current_phase"] == "execution"
+    assert first_payload["workspace"]["workflow"]["episode_status"] == "interrupted"
+    assert first_payload["workspace"]["pending_actions"][0]["approval_id"].endswith("-execution-approval")
+    assert first_payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith(f"{episode_id}-candidate-")
+    assert {event["event_type"] for event in first_payload["events"]} >= {
+        "workflow.phase_changed",
+        "workflow.summary_updated",
+        "workflow.selected_candidate_changed",
+        "workflow.approval_pending",
+    }
+
+    response = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": first_payload["workspace"]["pending_actions"][0]["approval_id"],
             "decision": "approved",
         },
     )
@@ -135,7 +331,7 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
 
 
 def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> None:
-    client = _build_client(monkeypatch)
+    client, _ = _build_client(monkeypatch)
 
     created = client.post(
         "/commands/create_episode",
@@ -152,6 +348,15 @@ def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> N
     )
     assert resumed.status_code == 200
 
+    resumed_again = client.post(
+        "/commands/resume_episode",
+        json={
+            "episode_id": episode_id,
+            "resume_payload": {"approved": True},
+        },
+    )
+    assert resumed_again.status_code == 200
+
     stream_response = client.get(f"/episodes/{episode_id}/stream")
     assert stream_response.status_code == 200
     lines = [line for line in stream_response.text.splitlines() if line.startswith("data: ")]
@@ -162,3 +367,143 @@ def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> N
     assert "workflow.progress_updated" in event_types
     assert "workflow.run_status_changed" in event_types
     assert "workflow.artifact_available" in event_types
+
+
+def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> None:
+    client, foundation = _build_client(monkeypatch)
+
+    created = client.post(
+        "/commands/create_episode",
+        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
+    ).json()
+    episode_id = created["episode_id"]
+
+    foundation.repositories.evidence_records.save(
+        EvidenceRecord(
+            evidence_id="ev_001",
+            episode_id=episode_id,
+            summary="A homolog family remains active above 60C.",
+            query="thermostable homolog catalase",
+            confidence_label="high",
+            created_at="2026-04-11T12:00:00+00:00",
+        )
+    )
+    foundation.repositories.source_refs.save(
+        SourceRef(
+            source_ref_id="src_001",
+            evidence_id="ev_001",
+            episode_id=episode_id,
+            title="Thermostable catalase paper",
+            locator="https://example.org/paper",
+            kind=SourceRefKind.PAPER,
+            created_at="2026-04-11T12:01:00+00:00",
+        )
+    )
+    foundation.repositories.research_summaries.save(
+        ResearchSummaryRecord(
+            episode_id=episode_id,
+            summary="Public literature indicates one promising stable scaffold family.",
+            created_at="2026-04-11T12:02:00+00:00",
+            updated_at="2026-04-11T12:02:00+00:00",
+        )
+    )
+    foundation.repositories.unresolved_gaps.save(
+        UnresolvedGapRecord(
+            gap_id="gap_001",
+            episode_id=episode_id,
+            summary="Missing structure-backed comparison for top hits.",
+            created_at="2026-04-11T12:03:00+00:00",
+        )
+    )
+
+    workspace = client.get(f"/episodes/{episode_id}/workspace")
+
+    assert workspace.status_code == 200
+    research = workspace.json()["research"]
+    assert research["summary"]["summary"].startswith("Public literature indicates")
+    assert research["evidence"][0]["query"] == "thermostable homolog catalase"
+    assert research["evidence"][0]["source_refs"][0]["kind"] == "paper"
+    assert research["unresolved_gaps"][0]["summary"].startswith("Missing structure-backed")
+
+
+def test_phase_c_workflow_queries_project_research_progress_and_failures(monkeypatch) -> None:
+    client, _ = _build_research_client(monkeypatch, mode="failure")
+
+    created = client.post(
+        "/commands/create_episode",
+        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
+    )
+
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["workspace"]["workflow"]["current_phase"] == "research"
+    assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "recoverable_failure"
+    assert payload["workspace"]["workflow"]["progress"]["phase"] == "research"
+
+
+def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/commands/create_episode",
+        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
+    ).json()
+    episode_id = created["episode_id"]
+    design_approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
+
+    design_resume = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": design_approval_id,
+            "decision": "approved",
+        },
+    )
+    assert design_resume.status_code == 200
+    design_payload = design_resume.json()
+    assert design_payload["workspace"]["workflow"]["current_phase"] == "execution"
+    assert design_payload["workspace"]["pending_actions"][0]["approval_id"].endswith("-execution-approval")
+
+    execution_resume = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": design_payload["workspace"]["pending_actions"][0]["approval_id"],
+            "decision": "approved",
+        },
+    )
+
+    assert execution_resume.status_code == 200
+    execution_payload = execution_resume.json()
+    assert execution_payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert execution_payload["workspace"]["pending_actions"] == []
+    assert execution_payload["workspace"]["runs"][0]["episode_id"] == episode_id
+
+
+def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> None:
+    client, _ = _build_design_client(monkeypatch)
+
+    created = client.get("/episodes/ep_design/workspace")
+    assert created.json()["workflow"]["summary"]["candidate_count"] == 2
+    approval_id = created.json()["pending_actions"][0]["approval_id"]
+
+    resumed = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": "ep_design",
+            "approval_id": approval_id,
+            "decision": "approved",
+        },
+    )
+
+    assert resumed.status_code == 200
+    payload = resumed.json()
+    assert payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert payload["workspace"]["pending_actions"] == []
+    assert len(payload["workspace"]["design"]["candidates"]) == 2
+    assert payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith("ep_design-candidate-")
+    assert {event["event_type"] for event in payload["events"]} >= {
+        "workflow.summary_updated",
+        "workflow.candidate_updated",
+        "workflow.selected_candidate_changed",
+    }

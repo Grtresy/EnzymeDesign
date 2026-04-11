@@ -24,6 +24,15 @@ class FakeExecutionAdapter:
         return {"episode_id": episode_id, "payload": payload}
 
 
+class FakeResearchAdapter:
+    def conduct(self, *, episode_id: str, research_brief: str, unit) -> dict[str, object]:
+        return {
+            "episode_id": episode_id,
+            "research_brief": research_brief,
+            "unit": unit,
+        }
+
+
 class FakeProjectionLoader:
     def load_workflow_projection(self, episode_id: str) -> dict[str, object]:
         return {"episode_id": episode_id}
@@ -36,6 +45,12 @@ class FakeProjectionLoader:
 
     def load_pending_actions(self, episode_id: str) -> list[dict[str, object]]:
         return [{"episode_id": episode_id, "kind": "approval"}]
+
+    def load_research_projection(self, episode_id: str) -> dict[str, object]:
+        return {"episode_id": episode_id, "evidence": []}
+
+    def load_design_projection(self, episode_id: str) -> dict[str, object]:
+        return {"episode_id": episode_id, "candidates": []}
 
 
 @contextmanager
@@ -85,6 +100,7 @@ def test_runtime_facade_binds_repositories_checkpointer_and_internal_seams(monke
             PostgresCheckpointerConfig(conn_string="postgresql://runtime/foundation")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        research_adapter=FakeResearchAdapter(),
         projection_loader=FakeProjectionLoader(),
     )
     facade = GraphRuntimeFacade(foundation)
@@ -94,12 +110,14 @@ def test_runtime_facade_binds_repositories_checkpointer_and_internal_seams(monke
             "checkpointer_setup_called": inputs.checkpointer.setup_called,
             "repository_bundle": inputs.repositories,
             "execution_adapter": inputs.execution_adapter,
+            "research_adapter": inputs.research_adapter,
             "projection_loader": inputs.projection_loader,
         }
     ) as compiled:
         assert compiled["checkpointer_setup_called"] is True
         assert compiled["repository_bundle"] is repositories
         assert compiled["execution_adapter"] is foundation.execution_adapter
+        assert compiled["research_adapter"] is foundation.research_adapter
         assert compiled["projection_loader"] is foundation.projection_loader
 
     assert facade.build_episode_graph_config("ep_001") == {"configurable": {"thread_id": "ep_001"}}

@@ -5,6 +5,7 @@ members = [
   "packages/openzyme-domain",
   "packages/openzyme-execution",
   "packages/openzyme-graph",
+  "packages/openzyme-research",
   "packages/openzyme-runtime",
   "packages/openzyme-storage",
 ]
@@ -15,6 +16,7 @@ openzyme-host-api = { workspace = true }
 openzyme-domain = { workspace = true }
 openzyme-execution = { workspace = true }
 openzyme-graph = { workspace = true }
+openzyme-research = { workspace = true }
 openzyme-runtime = { workspace = true }
 openzyme-storage = { workspace = true }
 

@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from typing import Callable
 from uuid import uuid4
 
 from langgraph.types import Command
 from openzyme_domain import ApprovalStatus
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
-from openzyme_graph.workflow import build_phase_b_supervisor_graph
 from openzyme_runtime import GraphRuntimeFacade
 
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
+
+GraphBuilder = Callable[[Any], Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,7 @@ class HostApiService:
     runtime: GraphRuntimeFacade
     projection_loader: HostProjectionLoader
     event_projector: WorkflowEventProjector
+    graph_builder: GraphBuilder
 
     def create_episode(self, project_id: str, objective: str) -> HostCommandResult:
         project = self.runtime.repositories.projects.get(project_id)
@@ -52,7 +55,7 @@ class HostApiService:
         )
         self.runtime.repositories.episodes.save(episode)
 
-        with self.runtime.compile_graph(build_phase_b_supervisor_graph) as graph:
+        with self.runtime.compile_graph(self.graph_builder) as graph:
             result = graph.invoke(
                 {
                     "episode_id": episode_id,
@@ -87,7 +90,7 @@ class HostApiService:
             raise KeyError(msg)
 
         before = self.projection_loader.load_episode_workspace(episode_id)
-        with self.runtime.compile_graph(build_phase_b_supervisor_graph) as graph:
+        with self.runtime.compile_graph(self.graph_builder) as graph:
             graph.invoke(
                 Command(resume=resume_payload),
                 self.runtime.build_episode_graph_config(episode_id),
@@ -122,4 +125,3 @@ class HostApiService:
             msg = "decision must be 'approved' or 'rejected'"
             raise ValueError(msg)
         return self.resume_episode(episode_id, {"approved": decision == "approved"})
-

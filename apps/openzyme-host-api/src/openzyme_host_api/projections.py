@@ -7,6 +7,7 @@ from typing import Any
 from typing import Callable
 
 from openzyme_domain import EpisodeStatus
+from openzyme_domain import SourceRef
 from openzyme_graph import GraphPhase
 from openzyme_graph import ProgressStatus
 from openzyme_runtime import GraphRuntimeFacade
@@ -38,7 +39,34 @@ def _derive_episode_status(workflow: dict[str, Any]) -> EpisodeStatus:
     return EpisodeStatus.ACTIVE
 
 
+def _build_workflow_summary(
+    workflow: dict[str, Any],
+    research: dict[str, Any],
+    design: dict[str, Any],
+) -> dict[str, Any]:
+    selected_candidate = design.get("selected_candidate")
+    return {
+        "current_phase": workflow["current_phase"],
+        "workflow_status": workflow["status"],
+        "active_node": workflow["progress"]["active_node"],
+        "message": workflow["progress"]["message"],
+        "wait_state": None if workflow["pending_interrupt"] is None else workflow["pending_interrupt"]["type"],
+        "evidence_count": len(research.get("evidence", [])),
+        "candidate_count": len(design.get("candidates", [])),
+        "selected_candidate_id": None
+        if selected_candidate is None
+        else selected_candidate["candidate_id"],
+    }
+
+
 GraphBuilder = Callable[[Any], Any]
+
+
+def _group_source_refs_by_evidence(source_refs: list[SourceRef]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for source_ref in source_refs:
+        grouped.setdefault(source_ref.evidence_id, []).append(source_ref.to_dict())
+    return grouped
 
 
 @dataclass(slots=True)
@@ -87,15 +115,55 @@ class HostProjectionLoader(ProjectionLoader):
             for approval in self.runtime.repositories.approvals.list_pending_by_episode(episode_id)
         ]
 
+    def load_research_projection(self, episode_id: str) -> dict[str, Any]:
+        evidence_records = self.runtime.repositories.evidence_records.list_by_episode(episode_id)
+        source_refs = self.runtime.repositories.source_refs.list_by_episode(episode_id)
+        grouped_source_refs = _group_source_refs_by_evidence(source_refs)
+        evidence: list[dict[str, Any]] = []
+        for record in evidence_records:
+            item = record.to_dict()
+            item["source_refs"] = grouped_source_refs.get(record.evidence_id, [])
+            evidence.append(item)
+
+        summary = self.runtime.repositories.research_summaries.get_by_episode(episode_id)
+        unresolved_gaps = self.runtime.repositories.unresolved_gaps.list_by_episode(episode_id)
+        return {
+            "summary": None if summary is None else summary.to_dict(),
+            "evidence": evidence,
+            "source_refs": [source_ref.to_dict() for source_ref in source_refs],
+            "unresolved_gaps": [gap.to_dict() for gap in unresolved_gaps],
+        }
+
+    def load_design_projection(self, episode_id: str) -> dict[str, Any]:
+        candidates = [candidate.to_dict() for candidate in self.runtime.repositories.candidates.list_by_episode(episode_id)]
+        rankings = [ranking.to_dict() for ranking in self.runtime.repositories.candidate_rankings.list_by_episode(episode_id)]
+        selected_candidate = self.runtime.repositories.selected_candidates.get_by_episode(episode_id)
+        ranking_by_candidate_id = {ranking["candidate_id"]: ranking for ranking in rankings}
+        enriched_candidates: list[dict[str, Any]] = []
+        for candidate in candidates:
+            item = dict(candidate)
+            item["ranking"] = ranking_by_candidate_id.get(candidate["candidate_id"])
+            enriched_candidates.append(item)
+        return {
+            "candidates": enriched_candidates,
+            "rankings": rankings,
+            "selected_candidate": None if selected_candidate is None else selected_candidate.to_dict(),
+        }
+
     def load_episode_workspace(self, episode_id: str) -> dict[str, Any]:
         workflow = self.load_workflow_projection(episode_id)
         workflow["episode_status"] = _derive_episode_status(workflow).value
+        research = self.load_research_projection(episode_id)
+        design = self.load_design_projection(episode_id)
+        workflow["summary"] = _build_workflow_summary(workflow, research, design)
         return {
             "episode_id": episode_id,
             "workflow": workflow,
             "pending_actions": self.load_pending_actions(episode_id),
             "runs": self.load_run_projection(episode_id),
             "artifacts": self.load_artifact_projection(episode_id),
+            "research": research,
+            "design": design,
             "report": None,
         }
 
@@ -116,6 +184,12 @@ class WorkflowEventProjector:
                 "episode_id": workspace["episode_id"],
                 "progress": workflow["progress"],
                 "updated_at": workflow["progress"]["updated_at"],
+            },
+            {
+                "event_type": "workflow.summary_updated",
+                "episode_id": workspace["episode_id"],
+                "summary": workflow["summary"],
+                "updated_at": workflow["updated_at"],
             },
         ]
         if workflow["pending_interrupt"] is not None:
@@ -163,6 +237,33 @@ class WorkflowEventProjector:
                     "updated_at": workspace["report"]["created_at"],
                 }
             )
+        if workspace["research"]["evidence"] or workspace["research"]["summary"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.evidence_updated",
+                    "episode_id": workspace["episode_id"],
+                    "research": workspace["research"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        if workspace["design"]["candidates"] or workspace["design"]["selected_candidate"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.candidate_updated",
+                    "episode_id": workspace["episode_id"],
+                    "design": workspace["design"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        if workspace["design"]["selected_candidate"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.selected_candidate_changed",
+                    "episode_id": workspace["episode_id"],
+                    "selected_candidate": workspace["design"]["selected_candidate"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
         return events
 
     def project_delta_events(
@@ -193,6 +294,15 @@ class WorkflowEventProjector:
                     "episode_id": after["episode_id"],
                     "progress": after_workflow["progress"],
                     "updated_at": after_workflow["progress"]["updated_at"],
+                }
+            )
+        if before_workflow.get("summary") != after_workflow.get("summary"):
+            events.append(
+                {
+                    "event_type": "workflow.summary_updated",
+                    "episode_id": after["episode_id"],
+                    "summary": after_workflow["summary"],
+                    "updated_at": after_workflow["updated_at"],
                 }
             )
         if before_workflow["pending_interrupt"] != after_workflow["pending_interrupt"]:
@@ -239,5 +349,32 @@ class WorkflowEventProjector:
                         "updated_at": artifact["created_at"],
                     }
                 )
+        if before["research"] != after["research"]:
+            events.append(
+                {
+                    "event_type": "workflow.evidence_updated",
+                    "episode_id": after["episode_id"],
+                    "research": after["research"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        if before["design"] != after["design"]:
+            events.append(
+                {
+                    "event_type": "workflow.candidate_updated",
+                    "episode_id": after["episode_id"],
+                    "design": after["design"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        if before["design"].get("selected_candidate") != after["design"].get("selected_candidate"):
+            if after["design"].get("selected_candidate") is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.selected_candidate_changed",
+                        "episode_id": after["episode_id"],
+                        "selected_candidate": after["design"]["selected_candidate"],
+                        "updated_at": after_workflow["updated_at"],
+                    }
+                )
         return events
-

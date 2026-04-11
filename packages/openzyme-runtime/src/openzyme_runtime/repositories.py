@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from openzyme_domain import Approval
 from openzyme_domain import ApprovalStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
+from openzyme_domain import CandidateRankingRecord
+from openzyme_domain import CandidateRecord
+from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
 from openzyme_domain import Project
+from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
+from openzyme_domain import SelectedCandidateRecord
+from openzyme_domain import SourceRef
+from openzyme_domain import SourceRefKind
+from openzyme_domain import UnresolvedGapRecord
 
 
 class OwnershipError(ValueError):
@@ -362,12 +371,384 @@ class ArtifactRecordRepository:
 
 
 @dataclass(slots=True)
+class EvidenceRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, evidence: EvidenceRecord) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO evidence_records (evidence_id, episode_id, summary, query, confidence_label, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(evidence_id) DO UPDATE SET
+                summary = excluded.summary,
+                query = excluded.query,
+                confidence_label = excluded.confidence_label
+            """,
+            (
+                evidence.evidence_id,
+                evidence.episode_id,
+                evidence.summary,
+                evidence.query,
+                evidence.confidence_label,
+                evidence.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, evidence_id: str) -> EvidenceRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM evidence_records WHERE evidence_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return EvidenceRecord(
+            evidence_id=row["evidence_id"],
+            episode_id=row["episode_id"],
+            summary=row["summary"],
+            query=row["query"],
+            confidence_label=row["confidence_label"],
+            created_at=row["created_at"],
+        )
+
+    def list_by_episode(self, episode_id: str) -> list[EvidenceRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM evidence_records WHERE episode_id = ? ORDER BY created_at, evidence_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            EvidenceRecord(
+                evidence_id=row["evidence_id"],
+                episode_id=row["episode_id"],
+                summary=row["summary"],
+                query=row["query"],
+                confidence_label=row["confidence_label"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class SourceRefRepository:
+    connection: sqlite3.Connection
+
+    def save(self, source_ref: SourceRef) -> None:
+        _require_linked_episode_id(
+            self.connection,
+            table_name="evidence_records",
+            id_column="evidence_id",
+            record_id=source_ref.evidence_id,
+            expected_episode_id=source_ref.episode_id,
+        )
+        self.connection.execute(
+            """
+            INSERT INTO source_refs (source_ref_id, evidence_id, episode_id, title, locator, kind, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_ref_id) DO UPDATE SET
+                evidence_id = excluded.evidence_id,
+                title = excluded.title,
+                locator = excluded.locator,
+                kind = excluded.kind
+            """,
+            (
+                source_ref.source_ref_id,
+                source_ref.evidence_id,
+                source_ref.episode_id,
+                source_ref.title,
+                source_ref.locator,
+                source_ref.kind.value,
+                source_ref.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_episode(self, episode_id: str) -> list[SourceRef]:
+        rows = self.connection.execute(
+            "SELECT * FROM source_refs WHERE episode_id = ? ORDER BY created_at, source_ref_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            SourceRef(
+                source_ref_id=row["source_ref_id"],
+                evidence_id=row["evidence_id"],
+                episode_id=row["episode_id"],
+                title=row["title"],
+                locator=row["locator"],
+                kind=SourceRefKind(row["kind"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_by_evidence(self, evidence_id: str) -> list[SourceRef]:
+        rows = self.connection.execute(
+            "SELECT * FROM source_refs WHERE evidence_id = ? ORDER BY created_at, source_ref_id",
+            (evidence_id,),
+        ).fetchall()
+        return [
+            SourceRef(
+                source_ref_id=row["source_ref_id"],
+                evidence_id=row["evidence_id"],
+                episode_id=row["episode_id"],
+                title=row["title"],
+                locator=row["locator"],
+                kind=SourceRefKind(row["kind"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class ResearchSummaryRepository:
+    connection: sqlite3.Connection
+
+    def save(self, summary: ResearchSummaryRecord) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO research_summaries (episode_id, summary, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(episode_id) DO UPDATE SET
+                summary = excluded.summary,
+                updated_at = excluded.updated_at
+            """,
+            (
+                summary.episode_id,
+                summary.summary,
+                summary.created_at,
+                summary.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get_by_episode(self, episode_id: str) -> ResearchSummaryRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM research_summaries WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ResearchSummaryRecord(
+            episode_id=row["episode_id"],
+            summary=row["summary"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class UnresolvedGapRepository:
+    connection: sqlite3.Connection
+
+    def save(self, gap: UnresolvedGapRecord) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO unresolved_gaps (gap_id, episode_id, summary, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(gap_id) DO UPDATE SET
+                summary = excluded.summary
+            """,
+            (
+                gap.gap_id,
+                gap.episode_id,
+                gap.summary,
+                gap.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_episode(self, episode_id: str) -> list[UnresolvedGapRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM unresolved_gaps WHERE episode_id = ? ORDER BY created_at, gap_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            UnresolvedGapRecord(
+                gap_id=row["gap_id"],
+                episode_id=row["episode_id"],
+                summary=row["summary"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class CandidateRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, candidate: CandidateRecord) -> None:
+        for evidence_id in candidate.supporting_evidence_ids:
+            _require_linked_episode_id(
+                self.connection,
+                table_name="evidence_records",
+                id_column="evidence_id",
+                record_id=evidence_id,
+                expected_episode_id=candidate.episode_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO candidate_records (candidate_id, episode_id, title, summary, supporting_evidence_ids_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(candidate_id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                supporting_evidence_ids_json = excluded.supporting_evidence_ids_json
+            """,
+            (
+                candidate.candidate_id,
+                candidate.episode_id,
+                candidate.title,
+                candidate.summary,
+                json.dumps(list(candidate.supporting_evidence_ids)),
+                candidate.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, candidate_id: str) -> CandidateRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM candidate_records WHERE candidate_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return CandidateRecord(
+            candidate_id=row["candidate_id"],
+            episode_id=row["episode_id"],
+            title=row["title"],
+            summary=row["summary"],
+            supporting_evidence_ids=tuple(json.loads(row["supporting_evidence_ids_json"])),
+            created_at=row["created_at"],
+        )
+
+    def list_by_episode(self, episode_id: str) -> list[CandidateRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM candidate_records WHERE episode_id = ? ORDER BY created_at, candidate_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            CandidateRecord(
+                candidate_id=row["candidate_id"],
+                episode_id=row["episode_id"],
+                title=row["title"],
+                summary=row["summary"],
+                supporting_evidence_ids=tuple(json.loads(row["supporting_evidence_ids_json"])),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class CandidateRankingRepository:
+    connection: sqlite3.Connection
+
+    def save(self, ranking: CandidateRankingRecord) -> None:
+        _require_linked_episode_id(
+            self.connection,
+            table_name="candidate_records",
+            id_column="candidate_id",
+            record_id=ranking.candidate_id,
+            expected_episode_id=ranking.episode_id,
+        )
+        self.connection.execute(
+            """
+            INSERT INTO candidate_rankings (ranking_id, episode_id, candidate_id, rank, rationale, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ranking_id) DO UPDATE SET
+                rank = excluded.rank,
+                rationale = excluded.rationale
+            """,
+            (
+                ranking.ranking_id,
+                ranking.episode_id,
+                ranking.candidate_id,
+                ranking.rank,
+                ranking.rationale,
+                ranking.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_episode(self, episode_id: str) -> list[CandidateRankingRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM candidate_rankings WHERE episode_id = ? ORDER BY rank, candidate_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            CandidateRankingRecord(
+                ranking_id=row["ranking_id"],
+                episode_id=row["episode_id"],
+                candidate_id=row["candidate_id"],
+                rank=row["rank"],
+                rationale=row["rationale"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class SelectedCandidateRepository:
+    connection: sqlite3.Connection
+
+    def save(self, selection: SelectedCandidateRecord) -> None:
+        _require_linked_episode_id(
+            self.connection,
+            table_name="candidate_records",
+            id_column="candidate_id",
+            record_id=selection.candidate_id,
+            expected_episode_id=selection.episode_id,
+        )
+        self.connection.execute(
+            """
+            INSERT INTO selected_candidates (episode_id, candidate_id, rationale, selected_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(episode_id) DO UPDATE SET
+                candidate_id = excluded.candidate_id,
+                rationale = excluded.rationale,
+                selected_at = excluded.selected_at
+            """,
+            (
+                selection.episode_id,
+                selection.candidate_id,
+                selection.rationale,
+                selection.selected_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get_by_episode(self, episode_id: str) -> SelectedCandidateRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM selected_candidates WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return SelectedCandidateRecord(
+            episode_id=row["episode_id"],
+            candidate_id=row["candidate_id"],
+            rationale=row["rationale"],
+            selected_at=row["selected_at"],
+        )
+
+
+@dataclass(slots=True)
 class PhaseBRepositories:
     projects: ProjectRepository
     episodes: EpisodeRepository
     approvals: ApprovalRepository
     runs: RunRepository
     artifact_records: ArtifactRecordRepository
+    evidence_records: EvidenceRecordRepository
+    source_refs: SourceRefRepository
+    research_summaries: ResearchSummaryRepository
+    unresolved_gaps: UnresolvedGapRepository
+    candidates: CandidateRecordRepository
+    candidate_rankings: CandidateRankingRepository
+    selected_candidates: SelectedCandidateRepository
 
     @classmethod
     def from_connection(cls, connection: sqlite3.Connection) -> "PhaseBRepositories":
@@ -377,4 +758,11 @@ class PhaseBRepositories:
             approvals=ApprovalRepository(connection),
             runs=RunRepository(connection),
             artifact_records=ArtifactRecordRepository(connection),
+            evidence_records=EvidenceRecordRepository(connection),
+            source_refs=SourceRefRepository(connection),
+            research_summaries=ResearchSummaryRepository(connection),
+            unresolved_gaps=UnresolvedGapRepository(connection),
+            candidates=CandidateRecordRepository(connection),
+            candidate_rankings=CandidateRankingRepository(connection),
+            selected_candidates=SelectedCandidateRepository(connection),
         )

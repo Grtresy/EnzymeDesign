@@ -6,10 +6,14 @@ const jsonHeaders = {
 const workflowEventTypes = [
   "workflow.phase_changed",
   "workflow.progress_updated",
+  "workflow.summary_updated",
   "workflow.interrupt_pending",
   "workflow.approval_pending",
   "workflow.run_status_changed",
   "workflow.artifact_available",
+  "workflow.evidence_updated",
+  "workflow.candidate_updated",
+  "workflow.selected_candidate_changed",
   "workflow.report_available",
 ];
 

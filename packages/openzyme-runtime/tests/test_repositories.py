@@ -2,11 +2,19 @@ from openzyme_domain import Approval
 from openzyme_domain import ApprovalStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
+from openzyme_domain import CandidateRankingRecord
+from openzyme_domain import CandidateRecord
+from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
 from openzyme_domain import Project
+from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
+from openzyme_domain import SelectedCandidateRecord
+from openzyme_domain import SourceRef
+from openzyme_domain import SourceRefKind
+from openzyme_domain import UnresolvedGapRecord
 from openzyme_runtime import OwnershipError
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import apply_sqlite_migrations
@@ -62,6 +70,56 @@ def test_phase_b_repositories_persist_canonical_records() -> None:
     assert repositories.artifact_records.list_by_episode(episode.episode_id) == [artifact]
 
 
+def test_research_repositories_persist_episode_scoped_evidence_outputs() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Research project")
+    episode = Episode.create("ep_001", project.project_id, "Map thermostability evidence")
+    evidence = EvidenceRecord(
+        evidence_id="ev_001",
+        episode_id=episode.episode_id,
+        summary="A homolog family retains activity at 65C.",
+        query="thermostable homolog catalase",
+        confidence_label="high",
+        created_at="2026-04-11T12:00:00+00:00",
+    )
+    source_ref = SourceRef(
+        source_ref_id="src_001",
+        evidence_id=evidence.evidence_id,
+        episode_id=episode.episode_id,
+        title="Catalase thermostability paper",
+        locator="https://example.org/paper",
+        kind=SourceRefKind.PAPER,
+        created_at="2026-04-11T12:01:00+00:00",
+    )
+    summary = ResearchSummaryRecord(
+        episode_id=episode.episode_id,
+        summary="Public literature suggests at least one stable scaffold family.",
+        created_at="2026-04-11T12:02:00+00:00",
+        updated_at="2026-04-11T12:02:00+00:00",
+    )
+    gap = UnresolvedGapRecord(
+        gap_id="gap_001",
+        episode_id=episode.episode_id,
+        summary="No structure-backed comparison yet.",
+        created_at="2026-04-11T12:03:00+00:00",
+    )
+
+    repositories.projects.save(project)
+    repositories.episodes.save(episode)
+    repositories.evidence_records.save(evidence)
+    repositories.source_refs.save(source_ref)
+    repositories.research_summaries.save(summary)
+    repositories.unresolved_gaps.save(gap)
+
+    assert repositories.evidence_records.list_by_episode(episode.episode_id) == [evidence]
+    assert repositories.source_refs.list_by_evidence(evidence.evidence_id) == [source_ref]
+    assert repositories.research_summaries.get_by_episode(episode.episode_id) == summary
+    assert repositories.unresolved_gaps.list_by_episode(episode.episode_id) == [gap]
+
+
 def test_repository_ownership_checks_reject_cross_episode_links() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -89,6 +147,128 @@ def test_repository_ownership_checks_reject_cross_episode_links() -> None:
                 approval_id="apr_a",
                 status=RunStatus.QUEUED,
                 execution_mode="hpc",
+                created_at="2026-04-11T12:01:00+00:00",
+            )
+        )
+    except OwnershipError as exc:
+        assert "belongs to episode 'ep_a'" in str(exc)
+    else:
+        raise AssertionError("expected OwnershipError")
+
+
+def test_source_ref_links_must_match_evidence_episode() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Research ownership project")
+    repositories.projects.save(project)
+    repositories.episodes.save(Episode.create("ep_a", project.project_id, "A"))
+    repositories.episodes.save(Episode.create("ep_b", project.project_id, "B"))
+    repositories.evidence_records.save(
+        EvidenceRecord(
+            evidence_id="ev_a",
+            episode_id="ep_a",
+            summary="Evidence A",
+            query="query A",
+            created_at="2026-04-11T12:00:00+00:00",
+        )
+    )
+
+    try:
+        repositories.source_refs.save(
+            SourceRef(
+                source_ref_id="src_b",
+                evidence_id="ev_a",
+                episode_id="ep_b",
+                title="Wrong episode source",
+                locator="https://example.org/wrong",
+                kind=SourceRefKind.WEB_PAGE,
+                created_at="2026-04-11T12:01:00+00:00",
+            )
+        )
+    except OwnershipError as exc:
+        assert "belongs to episode 'ep_a'" in str(exc)
+    else:
+        raise AssertionError("expected OwnershipError")
+
+
+def test_candidate_repositories_persist_rankings_and_selected_candidate() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Design project")
+    episode = Episode.create("ep_001", project.project_id, "Design candidate selection")
+    evidence = EvidenceRecord(
+        evidence_id="ev_001",
+        episode_id=episode.episode_id,
+        summary="Evidence A",
+        query="query A",
+        created_at="2026-04-11T12:00:00+00:00",
+    )
+    candidate = CandidateRecord(
+        candidate_id="cand_001",
+        episode_id=episode.episode_id,
+        title="Candidate A",
+        summary="Highest-scoring design candidate.",
+        supporting_evidence_ids=(evidence.evidence_id,),
+        created_at="2026-04-11T12:01:00+00:00",
+    )
+    ranking = CandidateRankingRecord(
+        ranking_id="rank_001",
+        episode_id=episode.episode_id,
+        candidate_id=candidate.candidate_id,
+        rank=1,
+        rationale="Most evidence-backed candidate.",
+        created_at="2026-04-11T12:02:00+00:00",
+    )
+    selected = SelectedCandidateRecord(
+        episode_id=episode.episode_id,
+        candidate_id=candidate.candidate_id,
+        rationale="Selected for execution handoff.",
+        selected_at="2026-04-11T12:03:00+00:00",
+    )
+
+    repositories.projects.save(project)
+    repositories.episodes.save(episode)
+    repositories.evidence_records.save(evidence)
+    repositories.candidates.save(candidate)
+    repositories.candidate_rankings.save(ranking)
+    repositories.selected_candidates.save(selected)
+
+    assert repositories.candidates.list_by_episode(episode.episode_id) == [candidate]
+    assert repositories.candidate_rankings.list_by_episode(episode.episode_id) == [ranking]
+    assert repositories.selected_candidates.get_by_episode(episode.episode_id) == selected
+
+
+def test_candidate_links_must_trace_to_same_episode_evidence() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Design ownership project")
+    repositories.projects.save(project)
+    repositories.episodes.save(Episode.create("ep_a", project.project_id, "A"))
+    repositories.episodes.save(Episode.create("ep_b", project.project_id, "B"))
+    repositories.evidence_records.save(
+        EvidenceRecord(
+            evidence_id="ev_a",
+            episode_id="ep_a",
+            summary="Evidence A",
+            query="query A",
+            created_at="2026-04-11T12:00:00+00:00",
+        )
+    )
+
+    try:
+        repositories.candidates.save(
+            CandidateRecord(
+                candidate_id="cand_b",
+                episode_id="ep_b",
+                title="Wrong episode candidate",
+                summary="Should fail",
+                supporting_evidence_ids=("ev_a",),
                 created_at="2026-04-11T12:01:00+00:00",
             )
         )

@@ -69,6 +69,14 @@ class ArtifactKind(StrEnum):
     OTHER = "other"
 
 
+class SourceRefKind(StrEnum):
+    WEB_PAGE = "web_page"
+    PAPER = "paper"
+    DATASET = "dataset"
+    REPORT = "report"
+    OTHER = "other"
+
+
 @dataclass(frozen=True, slots=True)
 class Project:
     project_id: str
@@ -199,6 +207,96 @@ class ReportRecord:
         return data
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceRecord:
+    evidence_id: str
+    episode_id: str
+    summary: str
+    query: str
+    created_at: str
+    confidence_label: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRef:
+    source_ref_id: str
+    evidence_id: str
+    episode_id: str
+    title: str
+    locator: str
+    kind: SourceRefKind
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["kind"] = self.kind.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSummaryRecord:
+    episode_id: str
+    summary: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedGapRecord:
+    gap_id: str
+    episode_id: str
+    summary: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRecord:
+    candidate_id: str
+    episode_id: str
+    title: str
+    summary: str
+    supporting_evidence_ids: tuple[str, ...]
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["supporting_evidence_ids"] = list(self.supporting_evidence_ids)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRankingRecord:
+    ranking_id: str
+    episode_id: str
+    candidate_id: str
+    rank: int
+    rationale: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedCandidateRecord:
+    episode_id: str
+    candidate_id: str
+    rationale: str
+    selected_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 CORE_ENTITY_NAMES: tuple[str, ...] = (
     "Project",
     "Episode",
@@ -216,3 +314,9 @@ RUN_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "Run"})
 APPROVAL_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "Approval"})
 ARTIFACT_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "Run", "ArtifactRecord"})
 REPORT_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "Run", "ReportRecord"})
+RESEARCH_EXTENSION_TARGETS: frozenset[str] = frozenset(
+    {"Episode", "EvidenceRecord", "SourceRef", "ResearchSummaryRecord", "UnresolvedGapRecord"}
+)
+DESIGN_EXTENSION_TARGETS: frozenset[str] = frozenset(
+    {"Episode", "CandidateRecord", "CandidateRankingRecord", "SelectedCandidateRecord"}
+)

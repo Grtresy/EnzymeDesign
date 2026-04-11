@@ -6,6 +6,7 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import Episode
 from openzyme_domain import Project
 from openzyme_domain import RunStatus
+from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_runtime import GraphRuntimeFacade
@@ -16,6 +17,11 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import build_episode_graph_config
 from openzyme_runtime import connect_sqlite
+from openzyme_research import ResearchFinding
+from openzyme_research import ResearchSource
+from openzyme_research import ResearchUnit
+from openzyme_research import ResearchUnitResult
+from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_graph.workflow import build_phase_b_supervisor_graph
 
 
@@ -39,6 +45,29 @@ class FakeExecutionAdapter:
                 ),
             ),
             raw_result={"status": "completed"},
+        )
+
+
+class FakeResearchAdapter:
+    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+        return ResearchUnitResult(
+            unit_id=unit.unit_id,
+            summary=f"{unit.topic} supports the research brief.",
+            findings=(
+                ResearchFinding(
+                    summary=f"Finding for {unit.query}",
+                    query=unit.query,
+                    confidence_label="high",
+                    sources=(
+                        ResearchSource(
+                            title=f"Source for {unit.unit_id}",
+                            locator=f"https://example.org/{unit.unit_id}",
+                            kind=SourceRefKind.WEB_PAGE,
+                        ),
+                    ),
+                ),
+            ),
+            unresolved_gaps=(f"Need follow-up for {unit.unit_id}",),
         )
 
 
@@ -66,6 +95,7 @@ def _build_foundation() -> RuntimeFoundation:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-b/memory")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        research_adapter=FakeResearchAdapter(),
     )
 
 
@@ -137,3 +167,44 @@ def test_phase_b_graph_resumes_on_same_episode_thread_and_persists_run_and_artif
     assert runs[0].status is RunStatus.SUCCEEDED
     assert len(artifacts) == 2
     assert approvals == []
+
+
+def test_unified_supervisor_routes_research_design_and_execution_on_one_thread(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation = _build_foundation()
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_v2_supervisor_graph) as graph:
+        first = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Improve thermostability",
+                "user_goal": "Research, design, and run the best candidate",
+            },
+            config,
+        )
+        first_snapshot = graph.get_state(config)
+        second = graph.invoke(Command(resume={"approved": True}), config)
+        second_snapshot = graph.get_state(config)
+        third = graph.invoke(Command(resume={"approved": True}), config)
+
+    assert first["__interrupt__"][0].value["phase"] == "design"
+    assert first_snapshot.values["current_phase"] == "design"
+    assert first_snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-design-approval"
+    assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
+    assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
+
+    assert second["__interrupt__"][0].value["phase"] == "execution"
+    assert second_snapshot.values["current_phase"] == "execution"
+    assert second_snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-execution-approval"
+    assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
+
+    assert third["status"] == "completed"
+    assert third["current_phase"] == "execution"
+    assert third["run_summary"]["run_id"] == "run_001"
+    assert len(third["artifact_refs"]) == 2

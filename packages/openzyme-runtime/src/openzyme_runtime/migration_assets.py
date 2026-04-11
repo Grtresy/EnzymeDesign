@@ -4,7 +4,11 @@ from importlib.resources import files
 import sqlite3
 
 
-MIGRATION_IDS: tuple[str, ...] = ("001_phase_b_runtime_foundation",)
+MIGRATION_IDS: tuple[str, ...] = (
+    "001_phase_b_runtime_foundation",
+    "002_phase_c_research_evidence_foundation",
+    "003_phase_c_design_candidate_selection",
+)
 
 
 def get_migration_sql(migration_id: str) -> str:

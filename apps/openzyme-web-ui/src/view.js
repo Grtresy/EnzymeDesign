@@ -67,6 +67,65 @@ function renderArtifacts(workspace) {
   `;
 }
 
+function renderEvidence(workspace) {
+  const research = workspace.research ?? { evidence: [], unresolved_gaps: [], summary: null };
+  if (!research.evidence.length && !research.summary) {
+    return '<p class="empty-state">No research evidence loaded yet.</p>';
+  }
+  return `
+    <div class="stack">
+      ${research.summary ? `<p><strong>Summary:</strong> ${escapeHtml(research.summary.summary)}</p>` : ""}
+      <ul class="data-list">
+        ${research.evidence
+          .map(
+            (evidence) => `
+              <li>
+                <span>${escapeHtml(evidence.evidence_id)}</span>
+                <span>${escapeHtml(evidence.summary)}</span>
+                <span>${escapeHtml(evidence.query)}</span>
+              </li>
+            `,
+          )
+          .join("")}
+      </ul>
+      ${
+        research.unresolved_gaps.length
+          ? `<p><strong>Open gaps:</strong> ${escapeHtml(research.unresolved_gaps.map((gap) => gap.summary).join(" | "))}</p>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderCandidates(workspace) {
+  const design = workspace.design ?? { candidates: [], selected_candidate: null };
+  if (!design.candidates.length) {
+    return '<p class="empty-state">No design candidates available yet.</p>';
+  }
+  return `
+    <div class="stack">
+      ${
+        design.selected_candidate
+          ? `<p><strong>Selected:</strong> ${escapeHtml(design.selected_candidate.candidate_id)} · ${escapeHtml(design.selected_candidate.rationale)}</p>`
+          : '<p class="empty-state">No selected candidate yet.</p>'
+      }
+      <ul class="data-list">
+        ${design.candidates
+          .map(
+            (candidate) => `
+              <li>
+                <span>${escapeHtml(candidate.candidate_id)}</span>
+                <span>${escapeHtml(candidate.title)}</span>
+                <span>${escapeHtml(candidate.ranking?.rank ?? "n/a")}</span>
+              </li>
+            `,
+          )
+          .join("")}
+      </ul>
+    </div>
+  `;
+}
+
 export function renderWorkspaceShell(viewState) {
   const workspace = viewState.workspace;
   if (!workspace) {
@@ -85,6 +144,13 @@ export function renderWorkspaceShell(viewState) {
         <h2>${escapeHtml(workspace.workflow.objective)}</h2>
         <p class="status-line">Phase: <strong>${escapeHtml(workspace.workflow.current_phase)}</strong> · Status: <strong>${escapeHtml(workspace.workflow.episode_status)}</strong></p>
         <p>${escapeHtml(workspace.workflow.progress.message ?? "No progress message")}</p>
+        ${
+          workspace.workflow.summary
+            ? `<p><strong>Summary:</strong> ${escapeHtml(
+                `Evidence ${workspace.workflow.summary.evidence_count}, candidates ${workspace.workflow.summary.candidate_count}, wait ${workspace.workflow.summary.wait_state ?? "none"}`,
+              )}</p>`
+            : ""
+        }
         <div class="action-row">
           <button type="button" data-action="resume">Resume Episode</button>
         </div>
@@ -108,6 +174,14 @@ export function renderWorkspaceShell(viewState) {
       <article class="panel">
         <h3>Artifacts</h3>
         ${renderArtifacts(workspace)}
+      </article>
+      <article class="panel">
+        <h3>Evidence</h3>
+        ${renderEvidence(workspace)}
+      </article>
+      <article class="panel">
+        <h3>Candidates</h3>
+        ${renderCandidates(workspace)}
       </article>
     </section>
   `;

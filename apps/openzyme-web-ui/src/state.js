@@ -2,6 +2,17 @@ function ensureWorkspace(workspace) {
   if (!workspace || !workspace.workflow) {
     throw new Error("workspace projection is required");
   }
+  workspace.research ??= {
+    summary: null,
+    evidence: [],
+    source_refs: [],
+    unresolved_gaps: [],
+  };
+  workspace.design ??= {
+    candidates: [],
+    rankings: [],
+    selected_candidate: null,
+  };
 }
 
 function mergeById(items, nextItem, idField) {
@@ -27,6 +38,10 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       next.workflow.progress = event.progress;
       next.workflow.updated_at = event.updated_at;
       return next;
+    case "workflow.summary_updated":
+      next.workflow.summary = event.summary;
+      next.workflow.updated_at = event.updated_at;
+      return next;
     case "workflow.interrupt_pending":
       next.workflow.pending_interrupt = event.interrupt;
       next.workflow.updated_at = event.updated_at;
@@ -40,6 +55,15 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       return next;
     case "workflow.artifact_available":
       next.artifacts = mergeById(next.artifacts, event.artifact, "artifact_id");
+      return next;
+    case "workflow.evidence_updated":
+      next.research = event.research;
+      return next;
+    case "workflow.candidate_updated":
+      next.design = event.design;
+      return next;
+    case "workflow.selected_candidate_changed":
+      next.design.selected_candidate = event.selected_candidate;
       return next;
     case "workflow.report_available":
       next.report = event.report;

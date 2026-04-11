@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from typing import Protocol
 
+from openzyme_research import ResearchAdapter
+
 
 class ExecutionAdapter(Protocol):
     """Boundary consumed by the execution graph to call the real runner."""
@@ -20,3 +22,10 @@ class ProjectionLoader(Protocol):
     def load_artifact_projection(self, episode_id: str) -> list[dict[str, Any]]: ...
 
     def load_pending_actions(self, episode_id: str) -> list[dict[str, Any]]: ...
+
+    def load_research_projection(self, episode_id: str) -> dict[str, Any]: ...
+
+    def load_design_projection(self, episode_id: str) -> dict[str, Any]: ...
+
+
+__all__ = ["ExecutionAdapter", "ProjectionLoader", "ResearchAdapter"]

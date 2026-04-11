@@ -9,12 +9,18 @@ from langgraph.checkpoint.memory import InMemorySaver
 from openzyme_domain import ArtifactKind
 from openzyme_domain import Project
 from openzyme_domain import RunStatus
+from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
+from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
+from openzyme_research import ResearchFinding
+from openzyme_research import ResearchSource
+from openzyme_research import ResearchUnit
+from openzyme_research import ResearchUnitResult
 
 from .app import HostApiDependencies
 from .app import create_app
@@ -49,6 +55,30 @@ class DemoExecutionAdapter:
         )
 
 
+@dataclass(slots=True)
+class DemoResearchAdapter:
+    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+        return ResearchUnitResult(
+            unit_id=unit.unit_id,
+            summary=f"{unit.topic} supports the demo objective.",
+            findings=(
+                ResearchFinding(
+                    summary=f"Demo finding for {unit.query}",
+                    query=unit.query,
+                    confidence_label="high",
+                    sources=(
+                        ResearchSource(
+                            title=f"Demo source for {unit.unit_id}",
+                            locator=f"https://example.org/demo/{unit.unit_id}",
+                            kind=SourceRefKind.WEB_PAGE,
+                        ),
+                    ),
+                ),
+            ),
+            unresolved_gaps=("Need wet-lab follow-up for the top hypothesis.",),
+        )
+
+
 class InMemoryCheckpointerFactory:
     def __init__(self) -> None:
         self._saver = InMemorySaver()
@@ -75,12 +105,16 @@ def build_demo_foundation() -> RuntimeFoundation:
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DemoExecutionAdapter(),
+        research_adapter=DemoResearchAdapter(),
     )
 
 
 def main() -> None:
     app = create_app(
-        HostApiDependencies(foundation=build_demo_foundation()),
+        HostApiDependencies(
+            foundation=build_demo_foundation(),
+            graph_builder=build_v2_supervisor_graph,
+        ),
         ui_dist_dir=UI_DIST_DIR if UI_DIST_DIR.exists() else None,
     )
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")

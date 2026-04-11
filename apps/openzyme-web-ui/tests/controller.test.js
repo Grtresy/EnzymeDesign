@@ -24,6 +24,16 @@ function buildPendingWorkspace() {
         requested_action: "Approve execution submission",
         created_at: "2026-04-11T00:00:00+00:00",
       },
+      summary: {
+        current_phase: "execution",
+        workflow_status: "interrupted",
+        active_node: "approval_gate",
+        message: "Waiting for approval",
+        wait_state: "approval",
+        evidence_count: 1,
+        candidate_count: 1,
+        selected_candidate_id: null,
+      },
       updated_at: "2026-04-11T00:00:00+00:00",
     },
     pending_actions: [
@@ -36,6 +46,17 @@ function buildPendingWorkspace() {
     ],
     runs: [],
     artifacts: [],
+    research: {
+      summary: { summary: "One scaffold family is promising." },
+      evidence: [{ evidence_id: "ev_001", summary: "Scaffold A is promising.", query: "scaffold A evidence" }],
+      source_refs: [],
+      unresolved_gaps: [],
+    },
+    design: {
+      candidates: [{ candidate_id: "cand_001", title: "Candidate A", ranking: { rank: 1 } }],
+      rankings: [{ candidate_id: "cand_001", rank: 1 }],
+      selected_candidate: null,
+    },
     report: null,
   };
 }
@@ -57,6 +78,16 @@ function buildCompletedWorkspace() {
       },
       pending_interrupt: null,
       pending_approval: null,
+      summary: {
+        current_phase: "execution",
+        workflow_status: "completed",
+        active_node: "execute_runner",
+        message: "Execution finished",
+        wait_state: null,
+        evidence_count: 1,
+        candidate_count: 1,
+        selected_candidate_id: "cand_001",
+      },
       updated_at: "2026-04-11T00:02:00+00:00",
     },
     pending_actions: [],
@@ -80,6 +111,22 @@ function buildCompletedWorkspace() {
         created_at: "2026-04-11T00:02:00+00:00",
       },
     ],
+    research: {
+      summary: { summary: "One scaffold family is promising." },
+      evidence: [{ evidence_id: "ev_001", summary: "Scaffold A is promising.", query: "scaffold A evidence" }],
+      source_refs: [],
+      unresolved_gaps: [],
+    },
+    design: {
+      candidates: [{ candidate_id: "cand_001", title: "Candidate A", ranking: { rank: 1 } }],
+      rankings: [{ candidate_id: "cand_001", rank: 1 }],
+      selected_candidate: {
+        episode_id: "ep_001",
+        candidate_id: "cand_001",
+        rationale: "Selected for execution handoff.",
+        selected_at: "2026-04-11T00:01:30+00:00",
+      },
+    },
     report: null,
   };
 }
@@ -117,6 +164,7 @@ test("workspace controller closes the loop from create through approval output v
   await controller.resolveApproval("approved");
   assert.equal(controller.state.workspace.runs[0].run_id, "run_001");
   assert.equal(controller.state.workspace.artifacts[0].artifact_id, "art_001");
+  assert.equal(controller.state.workspace.design.selected_candidate.candidate_id, "cand_001");
 
   streamHandler?.({
     event_type: "workflow.artifact_available",

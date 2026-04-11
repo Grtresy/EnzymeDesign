@@ -27,10 +27,14 @@ COMMAND_SURFACE: tuple[str, ...] = (
 STREAM_EVENT_TYPES: tuple[str, ...] = (
     "workflow.phase_changed",
     "workflow.progress_updated",
+    "workflow.summary_updated",
     "workflow.interrupt_pending",
     "workflow.approval_pending",
     "workflow.run_status_changed",
     "workflow.artifact_available",
+    "workflow.evidence_updated",
+    "workflow.candidate_updated",
+    "workflow.selected_candidate_changed",
     "workflow.report_available",
 )
 
@@ -126,6 +130,12 @@ def build_host_api_contract() -> HostApiContract:
             "Projected from structured graph progress state.",
         ),
         WorkflowStreamEventContract(
+            "workflow.summary_updated",
+            ("episode_id", "summary", "updated_at"),
+            "updates",
+            "Projected from the richer Host workflow summary derived from graph and canonical state.",
+        ),
+        WorkflowStreamEventContract(
             "workflow.interrupt_pending",
             ("episode_id", "interrupt", "updated_at"),
             "updates",
@@ -150,6 +160,24 @@ def build_host_api_contract() -> HostApiContract:
             "Projected when canonical artifact metadata becomes queryable.",
         ),
         WorkflowStreamEventContract(
+            "workflow.evidence_updated",
+            ("episode_id", "research", "updated_at"),
+            "updates",
+            "Projected when canonical research evidence or summary output changes.",
+        ),
+        WorkflowStreamEventContract(
+            "workflow.candidate_updated",
+            ("episode_id", "design", "updated_at"),
+            "updates",
+            "Projected when canonical design candidates or rankings change.",
+        ),
+        WorkflowStreamEventContract(
+            "workflow.selected_candidate_changed",
+            ("episode_id", "selected_candidate", "updated_at"),
+            "updates",
+            "Projected when the selected candidate record changes.",
+        ),
+        WorkflowStreamEventContract(
             "workflow.report_available",
             ("episode_id", "report", "updated_at"),
             "updates",
@@ -161,7 +189,14 @@ def build_host_api_contract() -> HostApiContract:
         commands=commands,
         stream_events=stream_events,
         workflow_projection=WorkflowProjection(
-            required_fields=("episode_id", "current_phase", "progress", "pending_interrupt", "pending_approval"),
+            required_fields=(
+                "episode_id",
+                "current_phase",
+                "progress",
+                "summary",
+                "pending_interrupt",
+                "pending_approval",
+            ),
         ),
         run_projection=RunProjection(
             required_fields=("run_id", "episode_id", "status", "execution_mode", "approval_id"),

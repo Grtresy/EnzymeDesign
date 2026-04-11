@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from openzyme_graph.workflow import build_phase_b_supervisor_graph
+from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import RuntimeFoundation
 
@@ -44,7 +44,7 @@ class ResolveApprovalRequest(BaseModel):
 @dataclass(frozen=True, slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
-    graph_builder: GraphBuilder = build_phase_b_supervisor_graph
+    graph_builder: GraphBuilder = build_v2_supervisor_graph
 
     def build_runtime(self) -> GraphRuntimeFacade:
         return GraphRuntimeFacade(self.foundation)
@@ -61,6 +61,7 @@ class HostApiDependencies:
             runtime=runtime,
             projection_loader=HostProjectionLoader(runtime=runtime, graph_builder=self.graph_builder),
             event_projector=WorkflowEventProjector(),
+            graph_builder=self.graph_builder,
         )
 
 

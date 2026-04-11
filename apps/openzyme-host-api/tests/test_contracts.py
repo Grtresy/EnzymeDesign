@@ -32,10 +32,14 @@ def test_workflow_stream_events_are_workflow_aware() -> None:
     assert STREAM_EVENT_TYPES == (
         "workflow.phase_changed",
         "workflow.progress_updated",
+        "workflow.summary_updated",
         "workflow.interrupt_pending",
         "workflow.approval_pending",
         "workflow.run_status_changed",
         "workflow.artifact_available",
+        "workflow.evidence_updated",
+        "workflow.candidate_updated",
+        "workflow.selected_candidate_changed",
         "workflow.report_available",
     )
 
@@ -47,6 +51,7 @@ def test_host_api_contract_builds_projection_shapes() -> None:
         "episode_id",
         "current_phase",
         "progress",
+        "summary",
         "pending_interrupt",
         "pending_approval",
     )
@@ -84,3 +89,6 @@ def test_web_ui_read_model_file_matches_minimum_closed_loop() -> None:
     payload = json.loads(read_model_path.read_text())
     assert tuple(payload["phase_b_closed_loop"]["required_fields"]) == HOST_UI_CLOSED_LOOP_FIELDS
     assert "current_phase" in payload["workflow_projection"]["required_fields"]
+    assert "summary" in payload["workflow_projection"]["required_fields"]
+    assert "research" in payload["phase_c_workspace"]["required_fields"]
+    assert "design" in payload["phase_c_workspace"]["required_fields"]
