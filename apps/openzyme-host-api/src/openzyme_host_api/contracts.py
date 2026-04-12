@@ -205,7 +205,15 @@ def build_host_api_contract() -> HostApiContract:
             required_fields=("artifact_id", "episode_id", "run_id", "kind", "storage_uri"),
         ),
         report_projection=ReportProjection(
-            required_fields=("report_id", "episode_id", "status", "artifact_id"),
+            required_fields=(
+                "report_id",
+                "episode_id",
+                "status",
+                "artifact_id",
+                "summary",
+                "stage_summary",
+                "updated_at",
+            ),
         ),
     )
 

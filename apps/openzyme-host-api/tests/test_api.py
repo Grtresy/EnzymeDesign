@@ -313,20 +313,25 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     assert response.status_code == 200
     payload = response.json()
     assert payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert payload["workspace"]["pending_actions"] == []
     assert len(payload["workspace"]["runs"]) == 1
-    assert len(payload["workspace"]["artifacts"]) == 2
+    assert len(payload["workspace"]["artifacts"]) == 3
+    assert payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.progress_updated",
         "workflow.run_status_changed",
         "workflow.artifact_available",
+        "workflow.report_available",
     }
 
     runs = client.get(f"/episodes/{episode_id}/runs")
     artifacts = client.get(f"/episodes/{episode_id}/artifacts")
+    reports = client.get(f"/episodes/{episode_id}/reports")
     pending = client.get(f"/episodes/{episode_id}/pending-actions")
     assert runs.json()[0]["status"] == "succeeded"
-    assert len(artifacts.json()) == 2
+    assert len(artifacts.json()) == 3
+    assert reports.json()[0]["artifact_id"] == f"{episode_id}-report-artifact"
     assert pending.json() == []
 
 
@@ -367,6 +372,7 @@ def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> N
     assert "workflow.progress_updated" in event_types
     assert "workflow.run_status_changed" in event_types
     assert "workflow.artifact_available" in event_types
+    assert "workflow.report_available" in event_types
 
 
 def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> None:
@@ -476,8 +482,10 @@ def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(
     assert execution_resume.status_code == 200
     execution_payload = execution_resume.json()
     assert execution_payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert execution_payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert execution_payload["workspace"]["pending_actions"] == []
     assert execution_payload["workspace"]["runs"][0]["episode_id"] == episode_id
+    assert execution_payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
 
 
 def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> None:
@@ -507,3 +515,60 @@ def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> No
         "workflow.candidate_updated",
         "workflow.selected_candidate_changed",
     }
+
+
+def test_report_query_and_projection_become_available_after_supervisor_completion(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/commands/create_episode",
+        json={"project_id": "proj_001", "objective": "Improve thermostability"},
+    ).json()
+    episode_id = created["episode_id"]
+    design_approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
+
+    design_resume = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": design_approval_id,
+            "decision": "approved",
+        },
+    ).json()
+
+    execution_approval_id = design_resume["workspace"]["pending_actions"][0]["approval_id"]
+    completed = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": execution_approval_id,
+            "decision": "approved",
+        },
+    )
+
+    assert completed.status_code == 200
+    workspace = completed.json()["workspace"]
+    report = workspace["report"]
+    assert report["summary"].startswith("Objective")
+    assert report["stage_summary"].startswith("Research summary:")
+
+    query = client.get(f"/episodes/{episode_id}/reports")
+    assert query.status_code == 200
+    assert query.json()[0]["report_id"] == report["report_id"]
+
+
+def test_project_and_episode_queries_support_browser_shell_bootstrap(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/commands/create_episode",
+        json={"project_id": "proj_001", "objective": "Bootstrap shell workspace"},
+    ).json()
+
+    projects = client.get("/projects")
+    episodes = client.get("/projects/proj_001/episodes")
+
+    assert projects.status_code == 200
+    assert projects.json()[0]["project_id"] == "proj_001"
+    assert episodes.status_code == 200
+    assert {episode["episode_id"] for episode in episodes.json()} >= {created["episode_id"]}

@@ -8,6 +8,7 @@ function buildPendingWorkspace() {
     episode_id: "ep_001",
     workflow: {
       episode_id: "ep_001",
+      project_id: "proj_001",
       objective: "Improve thermostability",
       current_phase: "execution",
       episode_status: "interrupted",
@@ -33,6 +34,8 @@ function buildPendingWorkspace() {
         evidence_count: 1,
         candidate_count: 1,
         selected_candidate_id: null,
+        report_id: null,
+        report_status: null,
       },
       updated_at: "2026-04-11T00:00:00+00:00",
     },
@@ -61,40 +64,43 @@ function buildPendingWorkspace() {
   };
 }
 
-function buildCompletedWorkspace() {
+function buildCompletedWorkspace(episodeId = "ep_001") {
   return {
-    episode_id: "ep_001",
+    episode_id: episodeId,
     workflow: {
-      episode_id: "ep_001",
+      episode_id: episodeId,
+      project_id: "proj_001",
       objective: "Improve thermostability",
-      current_phase: "execution",
+      current_phase: "report_review",
       episode_status: "completed",
       progress: {
-        phase: "execution",
-        active_node: "execute_runner",
+        phase: "report_review",
+        active_node: "generate_report",
         status: "succeeded",
         updated_at: "2026-04-11T00:02:00+00:00",
-        message: "Execution finished",
+        message: "Report review finished",
       },
       pending_interrupt: null,
       pending_approval: null,
       summary: {
-        current_phase: "execution",
+        current_phase: "report_review",
         workflow_status: "completed",
-        active_node: "execute_runner",
-        message: "Execution finished",
+        active_node: "generate_report",
+        message: "Report review finished",
         wait_state: null,
         evidence_count: 1,
         candidate_count: 1,
         selected_candidate_id: "cand_001",
+        report_id: "rep_001",
+        report_status: "ready",
       },
-      updated_at: "2026-04-11T00:02:00+00:00",
+      updated_at: "2026-04-11T00:02:10+00:00",
     },
     pending_actions: [],
     runs: [
       {
         run_id: "run_001",
-        episode_id: "ep_001",
+        episode_id: episodeId,
         status: "succeeded",
         execution_mode: "ssh",
         created_at: "2026-04-11T00:01:00+00:00",
@@ -104,11 +110,19 @@ function buildCompletedWorkspace() {
     artifacts: [
       {
         artifact_id: "art_001",
-        episode_id: "ep_001",
+        episode_id: episodeId,
         run_id: "run_001",
         kind: "result",
         storage_uri: "/tmp/result.json",
         created_at: "2026-04-11T00:02:00+00:00",
+      },
+      {
+        artifact_id: "art_report",
+        episode_id: episodeId,
+        run_id: "run_001",
+        kind: "report",
+        storage_uri: "/tmp/report.md",
+        created_at: "2026-04-11T00:02:10+00:00",
       },
     ],
     research: {
@@ -121,20 +135,56 @@ function buildCompletedWorkspace() {
       candidates: [{ candidate_id: "cand_001", title: "Candidate A", ranking: { rank: 1 } }],
       rankings: [{ candidate_id: "cand_001", rank: 1 }],
       selected_candidate: {
-        episode_id: "ep_001",
+        episode_id: episodeId,
         candidate_id: "cand_001",
         rationale: "Selected for execution handoff.",
         selected_at: "2026-04-11T00:01:30+00:00",
       },
     },
-    report: null,
+    report: {
+      report_id: "rep_001",
+      episode_id: episodeId,
+      status: "ready",
+      artifact_id: "art_report",
+      artifact_storage_uri: "/tmp/report.md",
+      title: "Final report",
+      summary: "Execution completed and report review is ready.",
+      stage_summary: "Research, design, execution, and report review are complete.",
+      updated_at: "2026-04-11T00:02:10+00:00",
+    },
   };
 }
 
-test("workspace controller closes the loop from create through approval output visibility", async () => {
+function buildEpisodes() {
+  return [
+    {
+      episode_id: "ep_000",
+      project_id: "proj_001",
+      objective: "Earlier run",
+      status: "completed",
+    },
+    {
+      episode_id: "ep_001",
+      project_id: "proj_001",
+      objective: "Improve thermostability",
+      status: "completed",
+    },
+  ];
+}
+
+test("workspace controller closes the loop from create through report visibility", async () => {
   let streamHandler = null;
   const changes = [];
   const fakeClient = {
+    async getProjects() {
+      return [{ project_id: "proj_001", name: "Thermostability project" }];
+    },
+    async getProjectEpisodes() {
+      return buildEpisodes();
+    },
+    async getWorkspace(episodeId) {
+      return buildCompletedWorkspace(episodeId);
+    },
     async createEpisode() {
       return { episode_id: "ep_001", workspace: buildPendingWorkspace() };
     },
@@ -154,6 +204,7 @@ test("workspace controller closes the loop from create through approval output v
     changes.push(snapshot);
   });
 
+  await controller.bootstrap();
   await controller.createEpisode({
     project_id: "proj_001",
     objective: "Improve thermostability",
@@ -163,8 +214,8 @@ test("workspace controller closes the loop from create through approval output v
 
   await controller.resolveApproval("approved");
   assert.equal(controller.state.workspace.runs[0].run_id, "run_001");
-  assert.equal(controller.state.workspace.artifacts[0].artifact_id, "art_001");
   assert.equal(controller.state.workspace.design.selected_candidate.candidate_id, "cand_001");
+  assert.equal(controller.state.workspace.report.report_id, "rep_001");
 
   streamHandler?.({
     event_type: "workflow.artifact_available",
@@ -177,6 +228,34 @@ test("workspace controller closes the loop from create through approval output v
       created_at: "2026-04-11T00:03:00+00:00",
     },
   });
-  assert.equal(controller.state.workspace.artifacts.length, 2);
-  assert.ok(changes.length >= 3);
+  assert.equal(controller.state.workspace.artifacts.length, 3);
+  assert.ok(changes.length >= 4);
+});
+
+test("workspace controller bootstraps project shell and switches episodes", async () => {
+  let loadedEpisodeId = "";
+  const fakeClient = {
+    async getProjects() {
+      return [{ project_id: "proj_001", name: "Thermostability project" }];
+    },
+    async getProjectEpisodes() {
+      return buildEpisodes();
+    },
+    async getWorkspace(episodeId) {
+      loadedEpisodeId = episodeId;
+      return buildCompletedWorkspace(episodeId);
+    },
+    streamEpisode() {
+      return { close() {} };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  await controller.bootstrap();
+  assert.equal(controller.state.currentProjectId, "proj_001");
+  assert.equal(controller.state.currentEpisodeId, "ep_001");
+
+  await controller.selectEpisode("ep_000");
+  assert.equal(loadedEpisodeId, "ep_000");
+  assert.equal(controller.state.currentEpisodeId, "ep_000");
 });

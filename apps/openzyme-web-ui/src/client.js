@@ -35,6 +35,14 @@ export class HostApiClient {
     this.baseUrl = baseUrl;
   }
 
+  getProjects() {
+    return requestJson(this.baseUrl, "/projects");
+  }
+
+  getProjectEpisodes(projectId) {
+    return requestJson(this.baseUrl, `/projects/${projectId}/episodes`);
+  }
+
   getWorkspace(episodeId) {
     return requestJson(this.baseUrl, `/episodes/${episodeId}/workspace`);
   }
@@ -53,6 +61,10 @@ export class HostApiClient {
 
   getArtifacts(episodeId) {
     return requestJson(this.baseUrl, `/episodes/${episodeId}/artifacts`);
+  }
+
+  getReports(episodeId) {
+    return requestJson(this.baseUrl, `/episodes/${episodeId}/reports`);
   }
 
   createEpisode(payload) {
@@ -92,11 +104,14 @@ export class HostApiClient {
 
 export function buildHostPaths(episodeId) {
   return {
+    projects: "/projects",
+    projectEpisodes: "/projects/proj_001/episodes",
     workspace: `/episodes/${episodeId}/workspace`,
     workflow: `/episodes/${episodeId}/workflow`,
     pendingActions: `/episodes/${episodeId}/pending-actions`,
     runs: `/episodes/${episodeId}/runs`,
     artifacts: `/episodes/${episodeId}/artifacts`,
+    reports: `/episodes/${episodeId}/reports`,
     stream: `/episodes/${episodeId}/stream?replay=1`,
     createEpisode: "/commands/create_episode",
     resumeEpisode: "/commands/resume_episode",

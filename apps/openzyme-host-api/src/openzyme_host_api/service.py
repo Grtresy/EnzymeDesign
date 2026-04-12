@@ -13,6 +13,7 @@ from openzyme_runtime import GraphRuntimeFacade
 
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
+from .tracing import workflow_trace
 
 GraphBuilder = Callable[[Any], Any]
 
@@ -55,29 +56,45 @@ class HostApiService:
         )
         self.runtime.repositories.episodes.save(episode)
 
-        with self.runtime.compile_graph(self.graph_builder) as graph:
-            result = graph.invoke(
-                {
-                    "episode_id": episode_id,
-                    "project_id": project_id,
-                    "objective": objective,
-                    "user_goal": objective,
-                },
-                self.runtime.build_episode_graph_config(episode_id),
+        with workflow_trace(
+            "host.create_episode",
+            action="create_episode",
+            project_id=project_id,
+            episode_id=episode_id,
+            phase="intake",
+            inputs={"project_id": project_id, "objective": objective},
+        ) as run:
+            with self.runtime.compile_graph(self.graph_builder) as graph:
+                result = graph.invoke(
+                    {
+                        "episode_id": episode_id,
+                        "project_id": project_id,
+                        "objective": objective,
+                        "user_goal": objective,
+                    },
+                    self.runtime.build_episode_graph_config(episode_id),
+                )
+
+            workflow = self.projection_loader.load_workflow_projection(episode_id)
+            persisted = Episode(
+                episode_id=episode.episode_id,
+                project_id=episode.project_id,
+                objective=episode.objective,
+                status=_build_episode_status(workflow["status"], "__interrupt__" in result),
+                created_at=episode.created_at,
+                updated_at=workflow["updated_at"],
             )
+            self.runtime.repositories.episodes.save(persisted)
 
-        workflow = self.projection_loader.load_workflow_projection(episode_id)
-        persisted = Episode(
-            episode_id=episode.episode_id,
-            project_id=episode.project_id,
-            objective=episode.objective,
-            status=_build_episode_status(workflow["status"], "__interrupt__" in result),
-            created_at=episode.created_at,
-            updated_at=workflow["updated_at"],
-        )
-        self.runtime.repositories.episodes.save(persisted)
-
-        workspace = self.projection_loader.load_episode_workspace(episode_id)
+            workspace = self.projection_loader.load_episode_workspace(episode_id)
+            if run is not None:
+                run.end(
+                    outputs={
+                        "episode_id": episode_id,
+                        "status": workspace["workflow"]["status"],
+                        "phase": workspace["workflow"]["current_phase"],
+                    }
+                )
         return HostCommandResult(
             workspace=workspace,
             events=self.event_projector.project_snapshot_events(workspace),
@@ -90,24 +107,42 @@ class HostApiService:
             raise KeyError(msg)
 
         before = self.projection_loader.load_episode_workspace(episode_id)
-        with self.runtime.compile_graph(self.graph_builder) as graph:
-            graph.invoke(
-                Command(resume=resume_payload),
-                self.runtime.build_episode_graph_config(episode_id),
-            )
-
-        workflow = self.projection_loader.load_workflow_projection(episode_id)
-        persisted = Episode(
-            episode_id=episode.episode_id,
+        with workflow_trace(
+            "host.resume_episode",
+            action="resume_episode",
             project_id=episode.project_id,
-            objective=episode.objective,
-            status=_build_episode_status(workflow["status"], workflow["pending_interrupt"] is not None),
-            created_at=episode.created_at,
-            updated_at=workflow["updated_at"],
-        )
-        self.runtime.repositories.episodes.save(persisted)
+            episode_id=episode_id,
+            phase=before["workflow"]["current_phase"],
+            inputs={"resume_payload": resume_payload},
+        ) as run:
+            with self.runtime.compile_graph(self.graph_builder) as graph:
+                graph.invoke(
+                    Command(resume=resume_payload),
+                    self.runtime.build_episode_graph_config(episode_id),
+                )
+            workflow = self.projection_loader.load_workflow_projection(episode_id)
+            persisted = Episode(
+                episode_id=episode.episode_id,
+                project_id=episode.project_id,
+                objective=episode.objective,
+                status=_build_episode_status(
+                    workflow["status"],
+                    workflow["pending_interrupt"] is not None,
+                ),
+                created_at=episode.created_at,
+                updated_at=workflow["updated_at"],
+            )
+            self.runtime.repositories.episodes.save(persisted)
 
-        after = self.projection_loader.load_episode_workspace(episode_id)
+            after = self.projection_loader.load_episode_workspace(episode_id)
+            if run is not None:
+                run.end(
+                    outputs={
+                        "episode_id": episode_id,
+                        "status": after["workflow"]["status"],
+                        "phase": after["workflow"]["current_phase"],
+                    }
+                )
         return HostCommandResult(
             workspace=after,
             events=self.event_projector.project_delta_events(before, after),
@@ -124,4 +159,21 @@ class HostApiService:
         if decision not in {"approved", "rejected"}:
             msg = "decision must be 'approved' or 'rejected'"
             raise ValueError(msg)
-        return self.resume_episode(episode_id, {"approved": decision == "approved"})
+        with workflow_trace(
+            "host.resolve_approval",
+            action="resolve_approval",
+            project_id=approval.project_id if hasattr(approval, "project_id") else None,
+            episode_id=episode_id,
+            approval_id=approval_id,
+            inputs={"decision": decision},
+        ) as run:
+            result = self.resume_episode(episode_id, {"approved": decision == "approved"})
+            if run is not None:
+                run.end(
+                    outputs={
+                        "episode_id": episode_id,
+                        "status": result.workspace["workflow"]["status"],
+                        "phase": result.workspace["workflow"]["current_phase"],
+                    }
+                )
+            return result

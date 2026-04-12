@@ -9,6 +9,7 @@ from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
 from openzyme_domain import RESEARCH_EXTENSION_TARGETS
+from openzyme_domain import ReportRecord
 from openzyme_domain import ReportStatus
 from openzyme_domain import RunStatus
 from openzyme_domain import SelectedCandidateRecord
@@ -115,3 +116,23 @@ def test_design_records_capture_candidate_traceability_and_selection() -> None:
     assert ranking.to_dict()["rank"] == 1
     assert selected.to_dict()["candidate_id"] == "cand_001"
     assert "CandidateRecord" in DESIGN_EXTENSION_TARGETS
+
+
+def test_report_records_expose_report_review_summary_fields() -> None:
+    report = ReportRecord(
+        report_id="rep_001",
+        episode_id="ep_001",
+        run_id="run_001",
+        status=ReportStatus.READY,
+        title="Final report",
+        summary="Execution completed successfully.",
+        stage_summary="Research, design, execution, and report review are complete.",
+        created_at="2026-04-11T12:00:00+00:00",
+        updated_at="2026-04-11T12:01:00+00:00",
+        artifact_id="art_001",
+    )
+
+    payload = report.to_dict()
+    assert payload["status"] == "ready"
+    assert payload["summary"].startswith("Execution completed")
+    assert payload["artifact_id"] == "art_001"

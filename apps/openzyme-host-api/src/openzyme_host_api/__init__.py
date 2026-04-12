@@ -17,6 +17,9 @@ from .demo import build_demo_foundation
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
 from .service import HostApiService
+from .tracing import build_trace_metadata
+from .tracing import build_trace_tags
+from .tracing import tracing_enabled
 
 __all__ = [
     "COMMAND_SURFACE",
@@ -36,6 +39,9 @@ __all__ = [
     "WorkflowProjection",
     "WorkflowStreamEventContract",
     "build_host_api_contract",
+    "build_trace_metadata",
+    "build_trace_tags",
     "build_demo_foundation",
     "create_app",
+    "tracing_enabled",
 ]

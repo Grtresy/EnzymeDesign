@@ -205,6 +205,39 @@ def test_unified_supervisor_routes_research_design_and_execution_on_one_thread(m
     assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
 
     assert third["status"] == "completed"
-    assert third["current_phase"] == "execution"
+    assert third["current_phase"] == "report_review"
     assert third["run_summary"]["run_id"] == "run_001"
     assert len(third["artifact_refs"]) == 2
+    assert third["report_summary"]["report_id"] == "ep_001-report"
+    assert foundation.repositories.reports.get("ep_001-report") is not None
+
+
+def test_unified_supervisor_only_completes_after_report_review_finishes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation = _build_foundation()
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_v2_supervisor_graph) as graph:
+        graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Improve thermostability",
+                "user_goal": "Research, design, and run the best candidate",
+            },
+            config,
+        )
+        graph.invoke(Command(resume={"approved": True}), config)
+        execution_resume = graph.invoke(Command(resume={"approved": True}), config)
+        final_snapshot = graph.get_state(config)
+
+    assert execution_resume["current_phase"] == "report_review"
+    assert execution_resume["status"] == "completed"
+    assert execution_resume["report_artifact_id"] == "ep_001-report-artifact"
+    assert final_snapshot.values["current_phase"] == "report_review"
+    assert final_snapshot.values["status"] == "completed"
+    assert foundation.repositories.reports.list_by_episode("ep_001")[0].artifact_id == "ep_001-report-artifact"

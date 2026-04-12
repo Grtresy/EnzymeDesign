@@ -57,6 +57,8 @@ def test_host_api_contract_builds_projection_shapes() -> None:
     )
     assert "storage_uri" in contract.artifact_projection.required_fields
     assert "artifact_id" in contract.report_projection.required_fields
+    assert "summary" in contract.report_projection.required_fields
+    assert "stage_summary" in contract.report_projection.required_fields
     assert contract.stream_events[0].source_stream_mode == "updates"
     assert "Projected" in contract.stream_events[0].notes
 

@@ -43,6 +43,7 @@ def _build_workflow_summary(
     workflow: dict[str, Any],
     research: dict[str, Any],
     design: dict[str, Any],
+    report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     selected_candidate = design.get("selected_candidate")
     return {
@@ -56,6 +57,8 @@ def _build_workflow_summary(
         "selected_candidate_id": None
         if selected_candidate is None
         else selected_candidate["candidate_id"],
+        "report_id": None if report is None else report["report_id"],
+        "report_status": None if report is None else report["status"],
     }
 
 
@@ -109,6 +112,16 @@ class HostProjectionLoader(ProjectionLoader):
             for artifact in self.runtime.repositories.artifact_records.list_by_episode(episode_id)
         ]
 
+    def load_report_projection(self, episode_id: str) -> dict[str, Any] | None:
+        reports = self.runtime.repositories.reports.list_by_episode(episode_id)
+        if not reports:
+            return None
+        report = reports[-1].to_dict()
+        artifact_id = report.get("artifact_id")
+        artifact = None if artifact_id is None else self.runtime.repositories.artifact_records.get(artifact_id)
+        report["artifact_storage_uri"] = None if artifact is None else artifact.storage_uri
+        return report
+
     def load_pending_actions(self, episode_id: str) -> list[dict[str, Any]]:
         return [
             approval.to_dict()
@@ -155,7 +168,8 @@ class HostProjectionLoader(ProjectionLoader):
         workflow["episode_status"] = _derive_episode_status(workflow).value
         research = self.load_research_projection(episode_id)
         design = self.load_design_projection(episode_id)
-        workflow["summary"] = _build_workflow_summary(workflow, research, design)
+        report = self.load_report_projection(episode_id)
+        workflow["summary"] = _build_workflow_summary(workflow, research, design, report)
         return {
             "episode_id": episode_id,
             "workflow": workflow,
@@ -164,8 +178,18 @@ class HostProjectionLoader(ProjectionLoader):
             "artifacts": self.load_artifact_projection(episode_id),
             "research": research,
             "design": design,
-            "report": None,
+            "report": report,
         }
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        rows = self.runtime.repositories.projects.connection.execute(
+            "SELECT * FROM projects ORDER BY created_at, project_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_project_episodes(self, project_id: str) -> list[dict[str, Any]]:
+        episodes = self.runtime.repositories.episodes.list_by_project(project_id)
+        return [episode.to_dict() for episode in episodes]
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,7 +258,7 @@ class WorkflowEventProjector:
                     "event_type": "workflow.report_available",
                     "episode_id": workspace["episode_id"],
                     "report": workspace["report"],
-                    "updated_at": workspace["report"]["created_at"],
+                    "updated_at": workspace["report"]["updated_at"],
                 }
             )
         if workspace["research"]["evidence"] or workspace["research"]["summary"] is not None:
@@ -375,6 +399,16 @@ class WorkflowEventProjector:
                         "episode_id": after["episode_id"],
                         "selected_candidate": after["design"]["selected_candidate"],
                         "updated_at": after_workflow["updated_at"],
+                    }
+                )
+        if before.get("report") != after.get("report"):
+            if after.get("report") is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.report_available",
+                        "episode_id": after["episode_id"],
+                        "report": after["report"],
+                        "updated_at": after["report"]["updated_at"],
                     }
                 )
         return events

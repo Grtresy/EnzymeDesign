@@ -13,6 +13,7 @@ function ensureWorkspace(workspace) {
     rankings: [],
     selected_candidate: null,
   };
+  workspace.report ??= null;
 }
 
 function mergeById(items, nextItem, idField) {
@@ -67,6 +68,11 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       return next;
     case "workflow.report_available":
       next.report = event.report;
+      next.workflow.summary = {
+        ...(next.workflow.summary ?? {}),
+        report_id: event.report.report_id,
+        report_status: event.report.status,
+      };
       return next;
     default:
       return next;
@@ -75,6 +81,9 @@ export function reduceWorkspaceWithEvent(workspace, event) {
 
 export function buildInitialViewState() {
   return {
+    projects: [],
+    episodes: [],
+    currentProjectId: "",
     currentEpisodeId: "",
     workspace: null,
     errorMessage: "",

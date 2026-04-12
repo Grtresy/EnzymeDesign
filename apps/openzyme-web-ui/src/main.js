@@ -18,6 +18,14 @@ async function handleCreate(formData) {
   });
 }
 
+async function handleProjectSelection(projectId) {
+  await controller.selectProject(projectId);
+}
+
+async function handleEpisodeSelection(episodeId) {
+  await controller.selectEpisode(episodeId);
+}
+
 async function handleResume() {
   if (!controller.state.currentEpisodeId) {
     return;
@@ -46,6 +54,15 @@ function bindActions() {
   document.querySelector('[data-action="reject"]')?.addEventListener("click", async () => {
     await handleApproval("rejected");
   });
+  document.querySelector("#project-select")?.addEventListener("change", async (event) => {
+    await handleProjectSelection(event.target.value);
+  });
+  document.querySelectorAll("[data-episode-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await handleEpisodeSelection(button.dataset.episodeId);
+    });
+  });
 }
 
 repaint();
+void controller.bootstrap();

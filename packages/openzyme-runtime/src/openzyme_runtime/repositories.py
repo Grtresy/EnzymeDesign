@@ -14,6 +14,8 @@ from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
 from openzyme_domain import Project
+from openzyme_domain import ReportRecord
+from openzyme_domain import ReportStatus
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
@@ -365,6 +367,108 @@ class ArtifactRecordRepository:
                 kind=ArtifactKind(row["kind"]),
                 storage_uri=row["storage_uri"],
                 created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class ReportRepository:
+    connection: sqlite3.Connection
+
+    def save(self, report: ReportRecord) -> None:
+        if report.run_id is not None:
+            _require_linked_episode_id(
+                self.connection,
+                table_name="runs",
+                id_column="run_id",
+                record_id=report.run_id,
+                expected_episode_id=report.episode_id,
+            )
+        if report.artifact_id is not None:
+            _require_linked_episode_id(
+                self.connection,
+                table_name="artifact_records",
+                id_column="artifact_id",
+                record_id=report.artifact_id,
+                expected_episode_id=report.episode_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO reports (
+                report_id,
+                episode_id,
+                run_id,
+                artifact_id,
+                status,
+                title,
+                summary,
+                stage_summary,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id) DO UPDATE SET
+                run_id = excluded.run_id,
+                artifact_id = excluded.artifact_id,
+                status = excluded.status,
+                title = excluded.title,
+                summary = excluded.summary,
+                stage_summary = excluded.stage_summary,
+                updated_at = excluded.updated_at
+            """,
+            (
+                report.report_id,
+                report.episode_id,
+                report.run_id,
+                report.artifact_id,
+                report.status.value,
+                report.title,
+                report.summary,
+                report.stage_summary,
+                report.created_at,
+                report.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, report_id: str) -> ReportRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM reports WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ReportRecord(
+            report_id=row["report_id"],
+            episode_id=row["episode_id"],
+            run_id=row["run_id"],
+            status=ReportStatus(row["status"]),
+            title=row["title"],
+            summary=row["summary"],
+            stage_summary=row["stage_summary"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            artifact_id=row["artifact_id"],
+        )
+
+    def list_by_episode(self, episode_id: str) -> list[ReportRecord]:
+        rows = self.connection.execute(
+            "SELECT * FROM reports WHERE episode_id = ? ORDER BY created_at, report_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            ReportRecord(
+                report_id=row["report_id"],
+                episode_id=row["episode_id"],
+                run_id=row["run_id"],
+                status=ReportStatus(row["status"]),
+                title=row["title"],
+                summary=row["summary"],
+                stage_summary=row["stage_summary"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                artifact_id=row["artifact_id"],
             )
             for row in rows
         ]
@@ -742,6 +846,7 @@ class PhaseBRepositories:
     approvals: ApprovalRepository
     runs: RunRepository
     artifact_records: ArtifactRecordRepository
+    reports: ReportRepository
     evidence_records: EvidenceRecordRepository
     source_refs: SourceRefRepository
     research_summaries: ResearchSummaryRepository
@@ -758,6 +863,7 @@ class PhaseBRepositories:
             approvals=ApprovalRepository(connection),
             runs=RunRepository(connection),
             artifact_records=ArtifactRecordRepository(connection),
+            reports=ReportRepository(connection),
             evidence_records=EvidenceRecordRepository(connection),
             source_refs=SourceRefRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),

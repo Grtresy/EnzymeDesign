@@ -20,6 +20,7 @@ from openzyme_runtime import RuntimeFoundation
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
 from .service import HostApiService
+from .tracing import host_request_trace_context
 
 
 GraphBuilder = Callable[[Any], Any]
@@ -85,6 +86,11 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="OpenZyme Host API", version="0.1.0")
 
+    @app.middleware("http")
+    async def add_trace_context(request, call_next):  # type: ignore[no-untyped-def]
+        with host_request_trace_context(method=request.method, path=request.url.path):
+            return await call_next(request)
+
     @app.get("/episodes/{episode_id}/workspace")
     def get_episode_workspace(episode_id: str) -> dict[str, Any]:
         loader = dependencies.build_projection_loader()
@@ -122,6 +128,31 @@ def create_app(
         loader = dependencies.build_projection_loader()
         try:
             return loader.load_artifact_projection(episode_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/episodes/{episode_id}/reports")
+    def get_reports(episode_id: str) -> list[dict[str, Any]]:
+        loader = dependencies.build_projection_loader()
+        try:
+            report = loader.load_report_projection(episode_id)
+            return [] if report is None else [report]
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/projects")
+    def get_projects() -> list[dict[str, Any]]:
+        loader = dependencies.build_projection_loader()
+        try:
+            return loader.list_projects()
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/projects/{project_id}/episodes")
+    def get_project_episodes(project_id: str) -> list[dict[str, Any]]:
+        loader = dependencies.build_projection_loader()
+        try:
+            return loader.list_project_episodes(project_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 

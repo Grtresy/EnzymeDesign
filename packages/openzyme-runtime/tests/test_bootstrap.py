@@ -43,6 +43,9 @@ class FakeProjectionLoader:
     def load_artifact_projection(self, episode_id: str) -> list[dict[str, object]]:
         return [{"episode_id": episode_id, "kind": "artifact"}]
 
+    def load_report_projection(self, episode_id: str) -> dict[str, object] | None:
+        return {"episode_id": episode_id, "kind": "report"}
+
     def load_pending_actions(self, episode_id: str) -> list[dict[str, object]]:
         return [{"episode_id": episode_id, "kind": "approval"}]
 

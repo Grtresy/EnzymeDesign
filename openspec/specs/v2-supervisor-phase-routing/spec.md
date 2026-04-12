@@ -1,16 +1,19 @@
 # v2-supervisor-phase-routing Specification
 
 ## Purpose
-TBD - created by archiving change implement-v2-supervisor-phase-routing. Update Purpose after archive.
+Define the product-facing top-level supervisor graph that routes one episode thread through the V2 workflow phases.
+
 ## Requirements
-### Requirement: V2 routes intake, research, design, and execution through one top-level supervisor graph
-The system MUST provide one episode-scoped supervisor graph that routes `intake`, `research`, `design`, and `execution` through a single top-level workflow thread.
+
+### Requirement: V2 routes intake, research, design, execution, and report review through one top-level supervisor graph
+The system MUST provide one episode-scoped supervisor graph that routes `intake`, `research`, `design`, `execution`, and `report_review` through a single top-level workflow thread.
 
 The initial supervisor implementation MUST:
 
 - compile one main graph for product-facing Host and demo entrypoints
 - keep `thread_id = episode_id` across all routed phases
 - transition between phases without switching to separate product graph builders
+- enter a final completed state only after `report_review` finishes
 
 #### Scenario: Episode starts on the unified supervisor thread
 - **WHEN** the Host creates a new episode
@@ -25,6 +28,7 @@ The initial supervisor handoff model MUST support at least:
 - intake output that decides whether the episode proceeds into research or design
 - research output that makes design inputs available through canonical or explicit handoff fields
 - design output that maps the selected candidate into the execution handoff contract
+- execution output that hands report-review structured run and artifact context
 
 #### Scenario: Research completes before design starts
 - **WHEN** the research phase completes for an episode
@@ -52,10 +56,9 @@ The initial unified projection MUST support at least:
 
 - current phase from the supervisor-controlled workflow
 - pending interrupt or approval for the routed phase
-- workflow progress that remains coherent as the episode moves from intake to research, design, and execution
+- workflow progress that remains coherent as the episode moves from intake to research, design, execution, and report review
 
 #### Scenario: Browser observes a routed multi-phase episode
 - **WHEN** an episode moves across multiple routed phases
 - **THEN** Host workspace and stream projections continue to report one coherent workflow view
 - **THEN** the browser does not need to know which specialist graph implementation produced the current phase state
-

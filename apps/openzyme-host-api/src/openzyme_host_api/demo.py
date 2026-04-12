@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 
 import uvicorn
@@ -33,12 +34,17 @@ SQLITE_DB_PATH = REPO_ROOT / ".tmp" / "openzyme-demo.sqlite3"
 
 @dataclass(slots=True)
 class DemoExecutionAdapter:
+    _episode_call_counts: dict[str, int] = field(default_factory=dict)
+
     def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+        call_count = self._episode_call_counts.get(episode_id, 0) + 1
+        self._episode_call_counts[episode_id] = call_count
+        run_id = f"run_{episode_id}_{call_count}"
         return ExecutionOutcome(
-            run_id="run_001",
+            run_id=run_id,
             status=RunStatus.SUCCEEDED,
             execution_mode="demo",
-            remote_run_dir=f"/demo/{episode_id}/run_001",
+            remote_run_dir=f"/demo/{episode_id}/{run_id}",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/openzyme-demo/stdout.log",
@@ -88,9 +94,10 @@ class InMemoryCheckpointerFactory:
         yield self._saver
 
 
-def build_demo_foundation() -> RuntimeFoundation:
-    SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = connect_sqlite(str(SQLITE_DB_PATH))
+def build_demo_foundation(*, sqlite_db_path: Path | None = None) -> RuntimeFoundation:
+    db_path = sqlite_db_path or SQLITE_DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = connect_sqlite(str(db_path))
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
     if repositories.projects.get("proj_001") is None:

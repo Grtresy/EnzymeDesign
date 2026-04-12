@@ -25,3 +25,16 @@ This app defines the Phase B Host-side API surface for:
 3. Open `http://127.0.0.1:8000/ui/`
 
 The demo preloads `proj_001` and uses sqlite, an in-memory checkpointer, and a fake execution adapter so you can exercise the Phase B closed loop without HPC setup.
+
+## Local Evals
+
+Run the routed workflow smoke evals locally:
+
+1. `cd /home/grtresy/VSCodeRepo/EnzymeDesign`
+2. `uv run python -m openzyme_host_api.evals`
+
+By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces for each seeded scenario:
+
+1. set `OPENZYME_LANGSMITH_TRACING=true`
+2. optionally set `OPENZYME_LANGSMITH_PROJECT=<project-name>`
+3. run `uv run python -m openzyme_host_api.evals --upload-results`

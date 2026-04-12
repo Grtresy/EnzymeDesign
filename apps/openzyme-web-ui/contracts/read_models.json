@@ -52,7 +52,9 @@
       "episode_id",
       "status",
       "artifact_id",
-      "created_at"
+      "summary",
+      "stage_summary",
+      "updated_at"
     ]
   },
   "phase_b_closed_loop": {
@@ -76,6 +78,14 @@
       "artifacts",
       "research",
       "design",
+      "report"
+    ]
+  },
+  "phase_d_workspace": {
+    "required_fields": [
+      "projects",
+      "episodes",
+      "workspace",
       "report"
     ]
   }

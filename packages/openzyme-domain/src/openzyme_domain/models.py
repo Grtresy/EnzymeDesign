@@ -197,8 +197,13 @@ class ArtifactRecord:
 class ReportRecord:
     report_id: str
     episode_id: str
+    run_id: str | None
     status: ReportStatus
+    title: str
+    summary: str
+    stage_summary: str
     created_at: str
+    updated_at: str
     artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

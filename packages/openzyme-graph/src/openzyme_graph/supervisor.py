@@ -21,6 +21,8 @@ from openzyme_domain import ArtifactRecord
 from openzyme_domain import CandidateRankingRecord
 from openzyme_domain import CandidateRecord
 from openzyme_domain import EvidenceRecord
+from openzyme_domain import ReportRecord
+from openzyme_domain import ReportStatus
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
@@ -31,6 +33,7 @@ from openzyme_domain import UnresolvedGapRecord
 from openzyme_research import ResearchUnit
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
 
+from .report_review import create_canonical_report
 from .state import GraphPhase
 from .state import InterruptType
 from .state import ProgressStatus
@@ -166,6 +169,8 @@ class UnifiedSupervisorState(TypedDict, total=False):
     approval_decision: dict[str, Any] | None
     run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
+    report_summary: dict[str, Any] | None
+    report_artifact_id: str | None
 
 
 class ResearchWorkerState(TypedDict):
@@ -781,9 +786,13 @@ def build_v2_supervisor_graph(inputs: GraphAssemblyInputs) -> Any:
             )
         return {
             "current_phase": GraphPhase.EXECUTION.value,
-            "recommended_next_phase": None,
+            "recommended_next_phase": (
+                GraphPhase.REPORT_REVIEW.value
+                if outcome.status is RunStatus.SUCCEEDED
+                else None
+            ),
             "status": (
-                SupervisorStatus.COMPLETED.value
+                SupervisorStatus.ACTIVE.value
                 if outcome.status is RunStatus.SUCCEEDED
                 else SupervisorStatus.FAILED.value
             ),
@@ -800,7 +809,44 @@ def build_v2_supervisor_graph(inputs: GraphAssemblyInputs) -> Any:
                 ProgressStatus.SUCCEEDED
                 if outcome.status is RunStatus.SUCCEEDED
                 else ProgressStatus.FAILED,
-                "Runner execution finished",
+                "Runner execution finished"
+                if outcome.status is not RunStatus.SUCCEEDED
+                else "Runner execution finished; handing off to report review",
+            ),
+        }
+
+    def route_after_execution(state: UnifiedSupervisorState) -> str:
+        if state.get("status") == SupervisorStatus.FAILED.value:
+            return END
+        return "prepare_report_review"
+
+    def prepare_report_review(state: UnifiedSupervisorState) -> dict[str, Any]:
+        return {
+            "current_phase": GraphPhase.REPORT_REVIEW.value,
+            "status": SupervisorStatus.ACTIVE.value,
+            "pending_interrupt": None,
+            "progress": _progress(
+                GraphPhase.REPORT_REVIEW,
+                "prepare_report_review",
+                ProgressStatus.RUNNING,
+                "Preparing final report review inputs",
+            ),
+        }
+
+    def generate_report(state: UnifiedSupervisorState) -> dict[str, Any]:
+        report, report_artifact = create_canonical_report(inputs, state)
+        return {
+            "current_phase": GraphPhase.REPORT_REVIEW.value,
+            "status": SupervisorStatus.COMPLETED.value,
+            "recommended_next_phase": None,
+            "pending_interrupt": None,
+            "report_summary": report.to_dict(),
+            "report_artifact_id": report_artifact.artifact_id,
+            "progress": _progress(
+                GraphPhase.REPORT_REVIEW,
+                "generate_report",
+                ProgressStatus.SUCCEEDED,
+                "Report review finished and canonical report persisted",
             ),
         }
 
@@ -820,6 +866,8 @@ def build_v2_supervisor_graph(inputs: GraphAssemblyInputs) -> Any:
     graph.add_node("prepare_execution_approval", prepare_execution_approval)
     graph.add_node("execution_approval_gate", execution_approval_gate)
     graph.add_node("execute_runner", execute_runner)
+    graph.add_node("prepare_report_review", prepare_report_review)
+    graph.add_node("generate_report", generate_report)
 
     graph.add_edge(START, "collect_intake")
     graph.add_conditional_edges(
@@ -856,5 +904,14 @@ def build_v2_supervisor_graph(inputs: GraphAssemblyInputs) -> Any:
     graph.add_edge("prepare_design_review", "design_review_gate")
     graph.add_edge("map_execution_handoff", "prepare_execution_approval")
     graph.add_edge("prepare_execution_approval", "execution_approval_gate")
-    graph.add_edge("execute_runner", END)
+    graph.add_conditional_edges(
+        "execute_runner",
+        route_after_execution,
+        {
+            "prepare_report_review": "prepare_report_review",
+            END: END,
+        },
+    )
+    graph.add_edge("prepare_report_review", "generate_report")
+    graph.add_edge("generate_report", END)
     return graph.compile(checkpointer=inputs.checkpointer)

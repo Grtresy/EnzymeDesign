@@ -17,6 +17,7 @@ from .repositories import EpisodeRepository
 from .repositories import OwnershipError
 from .repositories import PhaseBRepositories
 from .repositories import ProjectRepository
+from .repositories import ReportRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRepository
 from .repositories import SelectedCandidateRepository
@@ -46,6 +47,7 @@ __all__ = [
     "PostgresCheckpointerFactory",
     "ProjectionLoader",
     "ProjectRepository",
+    "ReportRepository",
     "ResearchAdapter",
     "ResearchSummaryRepository",
     "RunRepository",

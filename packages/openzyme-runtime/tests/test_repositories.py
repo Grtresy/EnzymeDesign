@@ -8,6 +8,8 @@ from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
 from openzyme_domain import Project
+from openzyme_domain import ReportRecord
+from openzyme_domain import ReportStatus
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
@@ -270,6 +272,102 @@ def test_candidate_links_must_trace_to_same_episode_evidence() -> None:
                 summary="Should fail",
                 supporting_evidence_ids=("ev_a",),
                 created_at="2026-04-11T12:01:00+00:00",
+            )
+        )
+    except OwnershipError as exc:
+        assert "belongs to episode 'ep_a'" in str(exc)
+    else:
+        raise AssertionError("expected OwnershipError")
+
+
+def test_report_repository_persists_episode_scoped_report_records() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Report project")
+    episode = Episode.create("ep_001", project.project_id, "Finalize report")
+    run = Run(
+        run_id="run_001",
+        episode_id=episode.episode_id,
+        status=RunStatus.SUCCEEDED,
+        execution_mode="demo",
+        created_at="2026-04-11T12:00:00+00:00",
+        completed_at="2026-04-11T12:01:00+00:00",
+    )
+    artifact = ArtifactRecord(
+        artifact_id="art_report",
+        episode_id=episode.episode_id,
+        run_id=run.run_id,
+        kind=ArtifactKind.REPORT,
+        storage_uri="/tmp/report.md",
+        created_at="2026-04-11T12:02:00+00:00",
+    )
+    report = ReportRecord(
+        report_id="rep_001",
+        episode_id=episode.episode_id,
+        run_id=run.run_id,
+        status=ReportStatus.READY,
+        title="Final report",
+        summary="Execution completed and the final report is ready.",
+        stage_summary="Research, design, execution, and report review completed.",
+        created_at="2026-04-11T12:03:00+00:00",
+        updated_at="2026-04-11T12:03:00+00:00",
+        artifact_id=artifact.artifact_id,
+    )
+
+    repositories.projects.save(project)
+    repositories.episodes.save(episode)
+    repositories.runs.save(run)
+    repositories.artifact_records.save(artifact)
+    repositories.reports.save(report)
+
+    assert repositories.reports.get(report.report_id) == report
+    assert repositories.reports.list_by_episode(episode.episode_id) == [report]
+
+
+def test_report_links_must_match_episode_run_and_artifact() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Report ownership project")
+    repositories.projects.save(project)
+    repositories.episodes.save(Episode.create("ep_a", project.project_id, "A"))
+    repositories.episodes.save(Episode.create("ep_b", project.project_id, "B"))
+    repositories.runs.save(
+        Run(
+            run_id="run_a",
+            episode_id="ep_a",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="demo",
+            created_at="2026-04-11T12:00:00+00:00",
+        )
+    )
+    repositories.artifact_records.save(
+        ArtifactRecord(
+            artifact_id="art_a",
+            episode_id="ep_a",
+            run_id="run_a",
+            kind=ArtifactKind.REPORT,
+            storage_uri="/tmp/report.md",
+            created_at="2026-04-11T12:01:00+00:00",
+        )
+    )
+
+    try:
+        repositories.reports.save(
+            ReportRecord(
+                report_id="rep_b",
+                episode_id="ep_b",
+                run_id="run_a",
+                status=ReportStatus.READY,
+                title="Wrong episode report",
+                summary="Should fail",
+                stage_summary="Should fail",
+                created_at="2026-04-11T12:02:00+00:00",
+                updated_at="2026-04-11T12:02:00+00:00",
+                artifact_id="art_a",
             )
         )
     except OwnershipError as exc:
