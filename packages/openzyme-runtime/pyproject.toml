@@ -5,6 +5,7 @@ description = "Phase B runtime foundation for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "langchain>=1.0,<2.0",
   "openzyme-domain",
   "openzyme-research",
   "openzyme-storage",
@@ -13,6 +14,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2.0",
+]
+openai = [
+  "langchain-openai>=1.0,<2.0",
 ]
 postgres = [
   "langgraph-checkpoint-postgres>=2.0.0",

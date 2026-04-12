@@ -18,16 +18,16 @@ from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
 from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
+from openzyme_runtime import EvidenceSynthesis
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
+from openzyme_runtime import ResearchUnitDraft
+from openzyme_runtime import ResearchUnitPlan
 
 from .state import GraphPhase
 from .state import InterruptType
 from .state import ProgressStatus
 from .state import ResearchHandoff
 from .state import SupervisorStatus
-
-
-MAX_RESEARCH_UNITS = 3
 
 
 def _utc_now_iso() -> str:
@@ -97,6 +97,21 @@ def _default_research_units(state: ResearchSupervisorState) -> list[ResearchUnit
     ]
 
 
+def _fallback_research_plan(state: ResearchSupervisorState) -> ResearchUnitPlan:
+    return ResearchUnitPlan(
+        units=[
+            ResearchUnitDraft(
+                unit_id=unit.unit_id,
+                topic=unit.topic,
+                query=unit.query,
+                rationale=f"Investigate {unit.topic} for the current objective.",
+            )
+            for unit in _default_research_units(state)
+        ],
+        synthesis_goal="Summarize evidence relevant to the objective and highlight remaining gaps.",
+    )
+
+
 def _build_interrupt_payload(
     interrupt_type: InterruptType,
     *,
@@ -128,12 +143,39 @@ def _unit_from_payload(payload: dict[str, Any]) -> ResearchUnit:
 
 def build_phase_c_research_graph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
     def plan_research(state: ResearchSupervisorState) -> dict[str, Any]:
+        max_research_units = max(1, inputs.settings.research.max_units)
         configured_units = [
             _unit_from_payload(payload)
             for payload in list(state.get("research_units") or [])
         ]
-        research_units = configured_units or _default_research_units(state)
-        bounded_units = research_units[:MAX_RESEARCH_UNITS]
+        if configured_units:
+            research_units = configured_units
+        elif inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="research_plan")
+            plan = invoker.invoke_structured(
+                schema=ResearchUnitPlan,
+                system_prompt=(
+                    "You plan bounded research units for an enzyme design workflow. "
+                    "Return at most three concrete units with clear search queries."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "objective": state.get("objective"),
+                    "design_brief": state.get("design_brief"),
+                    "research_brief": state.get("research_brief"),
+                },
+            )
+            research_units = [
+                ResearchUnit(
+                    unit_id=unit.unit_id,
+                    topic=unit.topic,
+                    query=unit.query,
+                )
+                for unit in plan.units
+            ]
+        else:
+            research_units = _default_research_units(state)
+        bounded_units = research_units[:max_research_units]
         research_brief = state.get("research_brief") or state.get("objective") or "OpenZyme research brief"
         return {
             "current_phase": GraphPhase.RESEARCH.value,
@@ -225,7 +267,24 @@ def build_phase_c_research_graph(inputs: GraphAssemblyInputs, *, include_checkpo
                 evidence_payloads.append(dict(finding))
             unresolved_gap_payloads.extend(str(gap) for gap in output["unresolved_gaps"])
 
-        research_summary_text = " ".join(summary_lines).strip() or "Research completed without findings."
+        if inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="research_synthesis")
+            synthesis = invoker.invoke_structured(
+                schema=EvidenceSynthesis,
+                system_prompt=(
+                    "You synthesize completed research worker outputs into a canonical summary. "
+                    "Preserve the main evidence themes and unresolved gaps."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "research_brief": state.get("research_brief"),
+                    "worker_outputs": worker_outputs,
+                },
+            )
+            research_summary_text = synthesis.summary
+            unresolved_gap_payloads = synthesis.unresolved_gaps
+        else:
+            research_summary_text = " ".join(summary_lines).strip() or "Research completed without findings."
         return {
             "current_phase": GraphPhase.RESEARCH.value,
             "status": SupervisorStatus.ACTIVE.value,

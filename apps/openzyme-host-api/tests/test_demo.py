@@ -8,7 +8,12 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_host_api.app import create_app
 from openzyme_host_api.demo import build_demo_foundation
+from openzyme_host_api.demo import build_model_factory_from_env
 from openzyme_host_api.demo import DemoExecutionAdapter
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
+from openzyme_runtime import OpenAICompatibleChatModelFactory
+from openzyme_runtime import reset_settings_cache
 
 
 def test_demo_foundation_preloads_project() -> None:
@@ -54,3 +59,52 @@ def test_demo_execution_adapter_scopes_run_ids_per_episode_and_call_count() -> N
     assert first.status is RunStatus.SUCCEEDED
     assert first.remote_run_dir == "/demo/ep_demo/run_ep_demo_1"
     assert first.artifacts[0].kind is ArtifactKind.LOG
+
+
+def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:
+    reset_settings_cache()
+    monkeypatch.delenv("OPENZYME_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("BIGMODEL_API_KEY", raising=False)
+    monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+
+    assert build_model_factory_from_env() is None
+
+
+def test_build_model_factory_from_env_uses_bigmodel_defaults(monkeypatch) -> None:
+    reset_settings_cache()
+    monkeypatch.setenv("OPENZYME_LLM_API_KEY", "test-key")
+    monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_BASE_URL", raising=False)
+
+    factory = build_model_factory_from_env()
+
+    assert isinstance(factory, OpenAICompatibleChatModelFactory)
+    assert factory.model == DEFAULT_OPENAI_COMPAT_MODEL
+    assert factory.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
+    assert factory.api_key == "test-key"
+    reset_settings_cache()
+
+
+def test_demo_main_uses_host_api_bind_settings(monkeypatch) -> None:
+    reset_settings_cache()
+    monkeypatch.setenv("OPENZYME_HOST_API_HOST", "0.0.0.0")
+    monkeypatch.setenv("OPENZYME_HOST_API_PORT", "9100")
+
+    calls: dict[str, object] = {}
+
+    def _fake_run(app, *, host: str, port: int, log_level: str) -> None:
+        calls["app"] = app
+        calls["host"] = host
+        calls["port"] = port
+        calls["log_level"] = log_level
+
+    monkeypatch.setattr("openzyme_host_api.demo.uvicorn.run", _fake_run)
+
+    from openzyme_host_api.demo import main
+
+    main()
+
+    assert calls["host"] == "0.0.0.0"
+    assert calls["port"] == 9100
+    assert calls["log_level"] == "info"
+    reset_settings_cache()

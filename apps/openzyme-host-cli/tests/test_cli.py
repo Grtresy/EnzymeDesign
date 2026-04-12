@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import StringIO
 
 from openzyme_host_cli.cli import run_cli
+from openzyme_runtime import reset_settings_cache
 
 
 class FakeSession:
@@ -70,6 +71,7 @@ def test_cli_lists_projects_in_text_mode() -> None:
 
 
 def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
+    reset_settings_cache()
     monkeypatch.setenv("OPENZYME_PROJECT_ID", "proj_001")
     stdout = StringIO()
     stderr = StringIO()
@@ -89,6 +91,7 @@ def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
         {"project_id": "proj_001", "objective": "Design a candidate"},
     )
     assert "Episode ep_001" in stdout.getvalue()
+    reset_settings_cache()
 
 
 def test_cli_json_format_renders_raw_payload() -> None:

@@ -14,6 +14,7 @@ from openzyme_host_api.tracing import build_trace_tags
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
 from openzyme_runtime import PostgresCheckpointerFactory
+from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
@@ -58,6 +59,7 @@ def _build_client(monkeypatch, recorder: RecordingTrace, tracing_recorder: Recor
         yield saver
 
     monkeypatch.setenv("OPENZYME_LANGSMITH_TRACING", "true")
+    reset_settings_cache()
     monkeypatch.setattr("openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open", _shared_open)
     monkeypatch.setattr("openzyme_host_api.tracing.trace", recorder.trace)
     monkeypatch.setattr("openzyme_host_api.tracing.tracing_context", tracing_recorder.tracing_context)
@@ -130,3 +132,4 @@ def test_tracing_hooks_do_not_break_create_episode_flow(monkeypatch) -> None:
     assert payload["workspace"]["workflow"]["current_phase"] in {"research", "design", "execution", "report_review"}
     assert any(call["name"] == "host.create_episode" for call in recorder.calls)
     assert any(call["metadata"]["request_path"] == "/commands/create_episode" for call in tracing_recorder.calls)
+    reset_settings_cache()

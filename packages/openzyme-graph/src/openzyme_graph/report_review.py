@@ -12,6 +12,7 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
 from openzyme_domain import ReportRecord
 from openzyme_domain import ReportStatus
+from openzyme_runtime import ReportDraft
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
 
 from .state import GraphPhase
@@ -59,11 +60,13 @@ class ReportReviewSubgraphState(TypedDict, total=False):
     artifact_refs: list[dict[str, Any]]
     report_summary: dict[str, Any] | None
     report_artifact_id: str | None
+    report_draft: dict[str, Any] | None
 
 
 def create_canonical_report(
     inputs: GraphAssemblyInputs,
     state: dict[str, Any],
+    draft: ReportDraft | None = None,
 ) -> tuple[ReportRecord, ArtifactRecord]:
     episode_id = str(state["episode_id"])
     objective = str(state.get("objective") or state.get("user_goal") or "OpenZyme episode")
@@ -87,16 +90,24 @@ def create_canonical_report(
         episode_id=episode_id,
         run_id=None if run_summary.get("run_id") is None else str(run_summary["run_id"]),
         status=ReportStatus.READY,
-        title=f"Final report for {objective}",
+        title=draft.title if draft is not None else f"Final report for {objective}",
         summary=(
-            f"Objective '{objective}' completed with run "
-            f"{run_summary.get('run_id', 'unknown')} in mode "
-            f"{run_summary.get('execution_mode', 'unknown')}."
+            draft.summary
+            if draft is not None
+            else (
+                f"Objective '{objective}' completed with run "
+                f"{run_summary.get('run_id', 'unknown')} in mode "
+                f"{run_summary.get('execution_mode', 'unknown')}."
+            )
         ),
         stage_summary=(
-            f"Research summary: {research_summary.get('summary', 'No research summary available.')} "
-            f"Selected candidate: {state.get('selected_candidate_id', 'none')}. "
-            f"Execution artifacts available: {len(artifact_refs)}."
+            draft.stage_summary
+            if draft is not None
+            else (
+                f"Research summary: {research_summary.get('summary', 'No research summary available.')} "
+                f"Selected candidate: {state.get('selected_candidate_id', 'none')}. "
+                f"Execution artifacts available: {len(artifact_refs)}."
+            )
         ),
         created_at=now,
         updated_at=now,
@@ -120,13 +131,32 @@ def build_report_review_subgraph(inputs: GraphAssemblyInputs, *, include_checkpo
         }
 
     def generate_report(state: ReportReviewSubgraphState) -> dict[str, Any]:
-        report, artifact = create_canonical_report(inputs, state)
+        draft: ReportDraft | None = None
+        if inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="report_review")
+            draft = invoker.invoke_structured(
+                schema=ReportDraft,
+                system_prompt=(
+                    "You write a concise final report for an enzyme design workflow. "
+                    "Summarize the outcome, execution status, and key stage transitions."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "objective": state.get("objective") or state.get("user_goal"),
+                    "research_summary": state.get("research_summary") or {},
+                    "selected_candidate_id": state.get("selected_candidate_id"),
+                    "run_summary": state.get("run_summary") or {},
+                    "artifact_refs": state.get("artifact_refs") or [],
+                },
+            )
+        report, artifact = create_canonical_report(inputs, state, draft=draft)
         return {
             "current_phase": GraphPhase.REPORT_REVIEW.value,
             "status": SupervisorStatus.COMPLETED.value,
             "pending_interrupt": None,
             "report_summary": report.to_dict(),
             "report_artifact_id": artifact.artifact_id,
+            "report_draft": None if draft is None else draft.model_dump(),
             "progress": _progress(
                 "generate_report",
                 ProgressStatus.SUCCEEDED,

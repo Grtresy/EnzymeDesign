@@ -8,7 +8,13 @@ from typing import TypedDict
 from langgraph.graph import END
 from langgraph.graph import START
 from langgraph.graph import StateGraph
+from openzyme_runtime import ConstraintItem
+from openzyme_runtime import ConstraintSet
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
+from openzyme_runtime import DesignBriefDraft
+from openzyme_runtime import IntakeClarification
+from openzyme_runtime import IntakePhaseOutput
+from openzyme_runtime import ResearchBriefDraft
 
 from .state import GraphPhase
 from .state import IntakeHandoff
@@ -46,13 +52,58 @@ class IntakeSubgraphState(TypedDict, total=False):
     run_request: dict[str, Any] | None
     recommended_next_phase: str | None
     intake_handoff: IntakeHandoff | None
+    clarification: dict[str, Any] | None
+    constraint_set: dict[str, Any] | None
+
+
+def _fallback_intake_output(state: IntakeSubgraphState) -> IntakePhaseOutput:
+    objective = state.get("objective") or state.get("user_goal") or "OpenZyme objective"
+    return IntakePhaseOutput(
+        clarification=IntakeClarification(),
+        constraint_set=ConstraintSet(
+            objective_summary=objective,
+            constraints=[
+                ConstraintItem(
+                    category="technical",
+                    description="Preserve current graph workflow boundaries while refining typed contracts.",
+                )
+            ],
+        ),
+        design_brief=DesignBriefDraft(
+            design_brief=f"Design brief for {objective}".strip(),
+            success_criteria=["Produce a candidate suitable for execution handoff."],
+        ),
+        research_brief=ResearchBriefDraft(
+            research_brief=f"Research brief for {objective}".strip(),
+            focus_areas=["relevant evidence", "unresolved gaps"],
+            expected_outputs=["canonical research summary", "evidence refs"],
+        ),
+    )
 
 
 def build_intake_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
     def collect_intake(state: IntakeSubgraphState) -> dict[str, Any]:
-        objective = state.get("objective") or state.get("user_goal") or ""
-        design_brief = state.get("design_brief") or f"Design brief for {objective}".strip()
-        research_brief = state.get("research_brief") or f"Research brief for {objective}".strip()
+        if inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="intake_collect")
+            intake_output = invoker.invoke_structured(
+                schema=IntakePhaseOutput,
+                system_prompt=(
+                    "You are the intake layer for an enzyme design workflow. "
+                    "Produce a concise constraint set, a design brief, and a research brief."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "project_id": state.get("project_id"),
+                    "objective": state.get("objective"),
+                    "user_goal": state.get("user_goal"),
+                    "project_context": state.get("project_context") or {},
+                },
+            )
+        else:
+            intake_output = _fallback_intake_output(state)
+
+        design_brief = state.get("design_brief") or intake_output.design_brief.design_brief
+        research_brief = state.get("research_brief") or intake_output.research_brief.research_brief
         if state.get("run_request"):
             next_phase = GraphPhase.EXECUTION
         elif state.get("candidate_plan"):
@@ -72,6 +123,8 @@ def build_intake_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: 
             "research_brief": research_brief,
             "recommended_next_phase": next_phase.value,
             "intake_handoff": intake_handoff,
+            "clarification": intake_output.clarification.model_dump(),
+            "constraint_set": intake_output.constraint_set.model_dump(),
             "progress": _progress(
                 "collect_intake",
                 ProgressStatus.SUCCEEDED,

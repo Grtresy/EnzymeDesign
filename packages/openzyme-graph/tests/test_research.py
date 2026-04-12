@@ -4,13 +4,23 @@ from langgraph.checkpoint.memory import InMemorySaver
 from openzyme_domain import Episode
 from openzyme_domain import Project
 from openzyme_domain import SourceRefKind
-from openzyme_graph.research import MAX_RESEARCH_UNITS
 from openzyme_graph.research import build_phase_c_research_graph
+from openzyme_runtime import EvidenceSynthesis
 from openzyme_runtime import GraphRuntimeFacade
+from openzyme_runtime import HostApiSettings
+from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
 from openzyme_runtime import PostgresCheckpointerFactory
+from openzyme_runtime import ResearchUnitDraft
+from openzyme_runtime import ResearchSettings
+from openzyme_runtime import ResearchUnitPlan
+from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import LlmSettings
+from openzyme_runtime import TracingSettings
+from openzyme_runtime import HostCliSettings
+from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import build_episode_graph_config
 from openzyme_runtime import connect_sqlite
@@ -18,6 +28,27 @@ from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
+
+
+class FakeStructuredInvoker:
+    def __init__(self, responses: dict[str, object], calls: list[str], purpose: str) -> None:
+        self._response = responses[purpose]
+        self._calls = calls
+        self._purpose = purpose
+
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+        del schema, system_prompt, user_payload
+        self._calls.append(self._purpose)
+        return self._response
+
+
+class FakeModelFactory:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self._responses = responses
+        self.calls: list[str] = []
+
+    def create_structured_invoker(self, *, purpose: str) -> FakeStructuredInvoker:
+        return FakeStructuredInvoker(self._responses, self.calls, purpose)
 
 
 class FakeResearchAdapter:
@@ -133,9 +164,10 @@ def test_phase_c_research_graph_bounds_parallel_worker_count(monkeypatch) -> Non
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 
+    max_units = 3
     research_units = [
         {"unit_id": f"unit_{index}", "topic": f"topic {index}", "query": f"query {index}"}
-        for index in range(1, MAX_RESEARCH_UNITS + 3)
+        for index in range(1, max_units + 3)
     ]
 
     with facade.compile_graph(build_phase_c_research_graph) as graph:
@@ -150,8 +182,8 @@ def test_phase_c_research_graph_bounds_parallel_worker_count(monkeypatch) -> Non
             config,
         )
 
-    assert set(adapter.calls) == {f"unit_{index}" for index in range(1, MAX_RESEARCH_UNITS + 1)}
-    assert len(adapter.calls) == MAX_RESEARCH_UNITS
+    assert set(adapter.calls) == {f"unit_{index}" for index in range(1, max_units + 1)}
+    assert len(adapter.calls) == max_units
 
 
 def test_phase_c_research_graph_projects_recoverable_failures_on_same_episode_thread(monkeypatch) -> None:
@@ -180,3 +212,106 @@ def test_phase_c_research_graph_projects_recoverable_failures_on_same_episode_th
     assert result["pending_interrupt"]["type"] == "recoverable_failure"
     assert snapshot.values["pending_interrupt"]["episode_id"] == "ep_001"
     assert foundation.repositories.evidence_records.list_by_episode("ep_001") == []
+
+
+def test_phase_c_research_graph_uses_structured_plan_and_synthesis(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation, adapter = _build_foundation()
+    foundation = RuntimeFoundation(
+        repositories=foundation.repositories,
+        checkpointer_factory=foundation.checkpointer_factory,
+        research_adapter=adapter,
+        model_factory=FakeModelFactory(
+            {
+                "research_plan": ResearchUnitPlan(
+                    units=[
+                        ResearchUnitDraft(
+                            unit_id="plan_1",
+                            topic="planned topic",
+                            query="planned query",
+                            rationale="planned rationale",
+                        )
+                    ],
+                    synthesis_goal="planned synthesis",
+                ),
+                "research_synthesis": EvidenceSynthesis(
+                    summary="Structured research summary",
+                    unresolved_gaps=["Structured gap"],
+                ),
+            }
+        ),
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_research_graph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Map enzyme thermostability evidence",
+                "research_brief": "Find public evidence and unresolved questions.",
+            },
+            config,
+        )
+
+    assert result["research_summary"]["summary"] == "Structured research summary"
+    assert result["unresolved_gaps"][0]["summary"] == "Structured gap"
+    assert adapter.calls == ["plan_1"]
+
+
+def test_phase_c_research_graph_respects_settings_max_units(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    reset_settings_cache()
+    foundation, adapter = _build_foundation()
+    foundation = RuntimeFoundation(
+        repositories=foundation.repositories,
+        checkpointer_factory=foundation.checkpointer_factory,
+        research_adapter=adapter,
+        settings=OpenZymeSettings(
+            llm=LlmSettings(
+                api_key=None,
+                model="glm-5.1",
+                base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+                timeout=None,
+                max_retries=1,
+                temperature=0.0,
+            ),
+            research=ResearchSettings(
+                max_units=1,
+                tavily_api_key=None,
+                tavily_max_results=3,
+                tavily_topic="general",
+            ),
+            tracing=TracingSettings(enabled=False, project_name="openzyme-v2"),
+            host_cli=HostCliSettings(
+                base_url="http://127.0.0.1:8000",
+                project_id=None,
+                episode_id=None,
+                output_format="text",
+            ),
+            host_api=HostApiSettings(bind_host="127.0.0.1", bind_port=8000),
+            execution=ExecutionSettings(backend="demo", hpc_runner_config=None),
+        ),
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_research_graph) as graph:
+        graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Map enzyme thermostability evidence",
+                "research_brief": "Bound worker count from settings.",
+            },
+            config,
+        )
+
+    assert adapter.calls == ["literature"]

@@ -10,6 +10,7 @@ from openzyme_host_api.app import create_app
 from openzyme_host_api.demo import build_demo_foundation
 from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_cli.cli import run_cli
+from openzyme_runtime import reset_settings_cache
 
 
 def _build_session(tmp_path: Path) -> TestClient:
@@ -24,6 +25,7 @@ def _build_session(tmp_path: Path) -> TestClient:
 
 
 def test_cli_create_approve_and_read_report(tmp_path: Path) -> None:
+    reset_settings_cache()
     stdout = StringIO()
     stderr = StringIO()
     session = _build_session(tmp_path)
@@ -81,4 +83,5 @@ def test_cli_create_approve_and_read_report(tmp_path: Path) -> None:
         assert "Reports" in stdout.getvalue()
         assert "status=ready" in stdout.getvalue()
     finally:
+        reset_settings_cache()
         session.close()

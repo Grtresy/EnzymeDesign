@@ -16,7 +16,11 @@ from openzyme_domain import ApprovalStatus
 from openzyme_domain import CandidateRankingRecord
 from openzyme_domain import CandidateRecord
 from openzyme_domain import SelectedCandidateRecord
+from openzyme_runtime import CandidateComparison
+from openzyme_runtime import CandidateDraft
+from openzyme_runtime import CandidateDraftCollection
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
+from openzyme_runtime import ExecutionRequestDraft
 
 from .state import GraphPhase
 from .state import DesignHandoff
@@ -59,6 +63,7 @@ class DesignSupervisorState(TypedDict, total=False):
     run_request: dict[str, Any] | None
     recommended_next_phase: str | None
     design_handoff: DesignHandoff | None
+    approval_summary: str | None
 
 
 def _design_interrupt(
@@ -83,8 +88,9 @@ def _build_design_approval_id(episode_id: str) -> str:
 def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
     def load_research_inputs(state: DesignSupervisorState) -> dict[str, Any]:
         episode_id = state["episode_id"]
-        summary = inputs.repositories.research_summaries.get_by_episode(episode_id)
-        evidence = inputs.repositories.evidence_records.list_by_episode(episode_id)
+        snapshot = inputs.host_toolbox.load_canonical_research(episode_id)
+        summary = snapshot.research_summary
+        evidence = snapshot.evidence_refs
         if summary is None or not evidence:
             return {
                 "current_phase": GraphPhase.DESIGN.value,
@@ -111,8 +117,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "current_phase": GraphPhase.DESIGN.value,
             "status": SupervisorStatus.ACTIVE.value,
             "pending_interrupt": None,
-            "research_summary": summary.to_dict(),
-            "evidence_refs": [record.to_dict() for record in evidence],
+            "research_summary": summary,
+            "evidence_refs": evidence,
             "progress": _progress(
                 "load_research_inputs",
                 ProgressStatus.RUNNING,
@@ -123,17 +129,35 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     def generate_candidates(state: DesignSupervisorState) -> dict[str, Any]:
         evidence_refs = list(state.get("evidence_refs") or [])
         research_summary = str((state.get("research_summary") or {}).get("summary") or "")
-        candidate_payloads: list[dict[str, Any]] = []
-        for index, evidence in enumerate(evidence_refs[:2], start=1):
-            candidate_id = f"{state['episode_id']}-candidate-{index}"
-            candidate_payloads.append(
-                {
-                    "candidate_id": candidate_id,
-                    "title": f"Candidate {index}",
-                    "summary": f"{research_summary} Focus on evidence: {evidence['summary']}",
-                    "supporting_evidence_ids": [evidence["evidence_id"]],
-                }
+        if inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="design_candidates")
+            candidate_collection = invoker.invoke_structured(
+                schema=CandidateDraftCollection,
+                system_prompt=(
+                    "You propose ranked enzyme design candidates from canonical research evidence. "
+                    "Return concise candidate drafts with supporting evidence identifiers."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "objective": state.get("objective"),
+                    "research_summary": state.get("research_summary") or {},
+                    "evidence_refs": evidence_refs,
+                },
             )
+            candidate_payloads = [candidate.model_dump() for candidate in candidate_collection.candidates[:2]]
+        else:
+            candidate_payloads = []
+            for index, evidence in enumerate(evidence_refs[:2], start=1):
+                candidate_id = f"{state['episode_id']}-candidate-{index}"
+                candidate_payloads.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "title": f"Candidate {index}",
+                        "summary": f"{research_summary} Focus on evidence: {evidence['summary']}",
+                        "supporting_evidence_ids": [evidence["evidence_id"]],
+                        "rationale": "Derived from the highest-signal research evidence.",
+                    }
+                )
         return {
             "candidate_payloads": candidate_payloads,
             "progress": _progress(
@@ -145,23 +169,56 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
 
     def rank_candidates(state: DesignSupervisorState) -> dict[str, Any]:
         candidate_payloads = list(state.get("candidate_payloads") or [])
-        ranking_payloads: list[dict[str, Any]] = []
-        for index, candidate in enumerate(candidate_payloads, start=1):
-            ranking_payloads.append(
-                {
-                    "ranking_id": f"{candidate['candidate_id']}-ranking",
-                    "candidate_id": candidate["candidate_id"],
-                    "rank": index,
-                    "rationale": f"Candidate {index} ranked from current research coverage.",
-                }
+        if inputs.model_factory is not None and candidate_payloads:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="design_ranking")
+            comparison = invoker.invoke_structured(
+                schema=CandidateComparison,
+                system_prompt=(
+                    "You compare enzyme design candidates and select the best one for execution handoff. "
+                    "Return a chosen candidate, ranking rationales, and an approval summary."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "research_summary": state.get("research_summary") or {},
+                    "candidate_payloads": candidate_payloads,
+                },
             )
-        selected_candidate = candidate_payloads[0] if candidate_payloads else None
+            ranking_payloads = [
+                {
+                    "ranking_id": f"{ranking.candidate_id}-ranking",
+                    "candidate_id": ranking.candidate_id,
+                    "rank": ranking.rank,
+                    "rationale": ranking.rationale,
+                }
+                for ranking in comparison.rankings
+            ]
+            selected_candidate_id = comparison.selected_candidate_id
+            selected_candidate_rationale = comparison.selected_candidate_rationale
+            approval_summary = comparison.approval_summary
+        else:
+            ranking_payloads = []
+            for index, candidate in enumerate(candidate_payloads, start=1):
+                ranking_payloads.append(
+                    {
+                        "ranking_id": f"{candidate['candidate_id']}-ranking",
+                        "candidate_id": candidate["candidate_id"],
+                        "rank": index,
+                        "rationale": f"Candidate {index} ranked from current research coverage.",
+                    }
+                )
+            selected_candidate = candidate_payloads[0] if candidate_payloads else None
+            selected_candidate_id = None if selected_candidate is None else selected_candidate["candidate_id"]
+            selected_candidate_rationale = (
+                None
+                if selected_candidate is None
+                else "Top-ranked candidate selected from canonical research evidence."
+            )
+            approval_summary = "Approve the top-ranked candidate for execution handoff."
         return {
             "ranking_payloads": ranking_payloads,
-            "selected_candidate_id": None if selected_candidate is None else selected_candidate["candidate_id"],
-            "selected_candidate_rationale": None
-            if selected_candidate is None
-            else "Top-ranked candidate selected from canonical research evidence.",
+            "selected_candidate_id": selected_candidate_id,
+            "selected_candidate_rationale": selected_candidate_rationale,
+            "approval_summary": approval_summary,
             "progress": _progress(
                 "rank_candidates",
                 ProgressStatus.RUNNING,
@@ -203,7 +260,9 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
 
     def prepare_design_review(state: DesignSupervisorState) -> dict[str, Any]:
         approval_id = state.get("approval_id") or _build_design_approval_id(state["episode_id"])
-        requested_action = f"Approve selected candidate {state['selected_candidate_id']} for execution handoff"
+        requested_action = state.get("approval_summary") or (
+            f"Approve selected candidate {state['selected_candidate_id']} for execution handoff"
+        )
         inputs.repositories.approvals.save(
             Approval(
                 approval_id=approval_id,
@@ -290,24 +349,28 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         if candidate is None:
             msg = f"candidate {selected.candidate_id!r} does not exist"
             raise RuntimeError(msg)
-        candidate_plan = {
-            "candidate_id": candidate.candidate_id,
-            "title": candidate.title,
-            "summary": candidate.summary,
-        }
-        run_request = {
-            "tool_name": "exec.run",
-            "runspec": {
-                "name": f"execution-{candidate.candidate_id}",
-                "stage": "execution",
-                "command": ["echo", candidate.title],
-                "execution_mode": "auto",
-                "metadata": {
-                    "candidate_id": candidate.candidate_id,
-                    "supporting_evidence_ids": list(candidate.supporting_evidence_ids),
+        candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], candidate.candidate_id)
+        if candidate_snapshot is None:
+            msg = f"candidate snapshot {candidate.candidate_id!r} does not exist"
+            raise RuntimeError(msg)
+        candidate_plan = candidate_snapshot.model_dump()
+        if inputs.model_factory is not None:
+            invoker = inputs.model_factory.create_structured_invoker(purpose="design_execution_request")
+            execution_request = invoker.invoke_structured(
+                schema=ExecutionRequestDraft,
+                system_prompt=(
+                    "You translate an approved candidate into an execution request. "
+                    "Return a tool name and a concrete run specification."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "candidate": candidate_snapshot.model_dump(),
+                    "research_summary": state.get("research_summary") or {},
                 },
-            },
-        }
+            )
+        else:
+            execution_request = inputs.host_toolbox.build_execution_request(candidate=candidate_snapshot)
+        run_request = execution_request.model_dump()
         return {
             "candidate_plan": candidate_plan,
             "run_request": run_request,

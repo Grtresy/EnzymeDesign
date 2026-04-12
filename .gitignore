@@ -3,6 +3,10 @@
 .snakemake/
 
 .venv/
+.env
+.env.test
+.env.local
+.env.*.local
 
 .pytest_cache/
 

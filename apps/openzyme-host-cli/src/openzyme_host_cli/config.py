@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
-
-
-DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
+from openzyme_runtime import DEFAULT_HOST_BASE_URL
+from openzyme_runtime import get_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,9 +14,10 @@ class HostCliConfig:
 
     @classmethod
     def from_env(cls) -> "HostCliConfig":
+        settings = get_settings()
         return cls(
-            base_url=os.getenv("OPENZYME_HOST_BASE_URL", DEFAULT_HOST_BASE_URL),
-            project_id=os.getenv("OPENZYME_PROJECT_ID") or None,
-            episode_id=os.getenv("OPENZYME_EPISODE_ID") or None,
-            output_format=os.getenv("OPENZYME_OUTPUT_FORMAT", "text"),
+            base_url=settings.host_cli.base_url,
+            project_id=settings.host_cli.project_id,
+            episode_id=settings.host_cli.episode_id,
+            output_format=settings.host_cli.output_format,
         )

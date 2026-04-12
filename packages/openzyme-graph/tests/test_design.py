@@ -7,6 +7,12 @@ from openzyme_domain import EvidenceRecord
 from openzyme_domain import Project
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_graph.design import build_phase_c_design_graph
+from openzyme_runtime import CandidateComparison
+from openzyme_runtime import CandidateDraft
+from openzyme_runtime import CandidateDraftCollection
+from openzyme_runtime import CandidateRankingDraft
+from openzyme_runtime import ExecutionRequestDraft
+from openzyme_runtime import ExecutionRunSpecDraft
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
@@ -15,6 +21,27 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import build_episode_graph_config
 from openzyme_runtime import connect_sqlite
+
+
+class FakeStructuredInvoker:
+    def __init__(self, responses: dict[str, object], calls: list[str], purpose: str) -> None:
+        self._response = responses[purpose]
+        self._calls = calls
+        self._purpose = purpose
+
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+        del schema, system_prompt, user_payload
+        self._calls.append(self._purpose)
+        return self._response
+
+
+class FakeModelFactory:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self._responses = responses
+        self.calls: list[str] = []
+
+    def create_structured_invoker(self, *, purpose: str) -> FakeStructuredInvoker:
+        return FakeStructuredInvoker(self._responses, self.calls, purpose)
 
 
 @contextmanager
@@ -145,3 +172,68 @@ def test_phase_c_design_graph_requires_research_outputs_before_design(monkeypatc
 
     assert result["status"] == "interrupted"
     assert result["pending_interrupt"]["type"] == "recoverable_failure"
+
+
+def test_phase_c_design_graph_uses_structured_candidate_and_execution_outputs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation = _build_foundation()
+    foundation = RuntimeFoundation(
+        repositories=foundation.repositories,
+        checkpointer_factory=foundation.checkpointer_factory,
+        model_factory=FakeModelFactory(
+            {
+                "design_candidates": CandidateDraftCollection(
+                    candidates=[
+                        CandidateDraft(
+                            candidate_id="cand_structured",
+                            title="Structured candidate",
+                            summary="Structured candidate summary",
+                            supporting_evidence_ids=["ev_001"],
+                            rationale="Structured rationale",
+                        )
+                    ]
+                ),
+                "design_ranking": CandidateComparison(
+                    selected_candidate_id="cand_structured",
+                    selected_candidate_rationale="Structured selected rationale",
+                    approval_summary="Approve structured candidate",
+                    rankings=[
+                        CandidateRankingDraft(
+                            candidate_id="cand_structured",
+                            rank=1,
+                            rationale="Best structured option",
+                        )
+                    ],
+                ),
+                "design_execution_request": ExecutionRequestDraft(
+                    tool_name="exec.run",
+                    runspec=ExecutionRunSpecDraft(
+                        name="structured-run",
+                        stage="execution",
+                        command=["echo", "structured"],
+                        execution_mode="auto",
+                        metadata={"candidate_id": "cand_structured"},
+                    ),
+                ),
+            }
+        ),
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_design_graph) as graph:
+        graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Design a thermostable variant",
+            },
+            config,
+        )
+        result = graph.invoke(Command(resume={"approved": True}), config)
+
+    assert result["candidate_plan"]["candidate_id"] == "cand_structured"
+    assert result["run_request"]["runspec"]["name"] == "structured-run"

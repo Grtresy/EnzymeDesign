@@ -2,23 +2,20 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextlib import nullcontext
-import os
 from typing import Any
 from typing import Iterator
 
 from langsmith import trace
 from langsmith import tracing_context
+from openzyme_runtime import get_settings
 
 
 def tracing_enabled() -> bool:
-    value = os.getenv("OPENZYME_LANGSMITH_TRACING") or os.getenv("LANGSMITH_TRACING")
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on", "local"}
+    return get_settings().tracing.enabled
 
 
 def tracing_project_name() -> str:
-    return os.getenv("OPENZYME_LANGSMITH_PROJECT") or os.getenv("LANGSMITH_PROJECT") or "openzyme-v2"
+    return get_settings().tracing.project_name
 
 
 def build_trace_tags(

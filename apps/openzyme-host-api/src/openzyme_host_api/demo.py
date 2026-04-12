@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
-from pathlib import Path
 
 import uvicorn
 from langgraph.checkpoint.memory import InMemorySaver
@@ -14,7 +13,10 @@ from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_runtime import get_settings
+from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import PhaseBRepositories
+from openzyme_runtime import REPO_ROOT
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
@@ -27,7 +29,6 @@ from .app import HostApiDependencies
 from .app import create_app
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
 UI_DIST_DIR = REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
 SQLITE_DB_PATH = REPO_ROOT / ".tmp" / "openzyme-demo.sqlite3"
 
@@ -94,7 +95,23 @@ class InMemoryCheckpointerFactory:
         yield self._saver
 
 
-def build_demo_foundation(*, sqlite_db_path: Path | None = None) -> RuntimeFoundation:
+def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
+    settings = get_settings()
+    if not settings.llm.enabled or settings.llm.api_key is None:
+        return None
+
+    return OpenAICompatibleChatModelFactory(
+        model=settings.llm.model,
+        api_key=settings.llm.api_key,
+        base_url=settings.llm.base_url,
+        temperature=settings.llm.temperature,
+        timeout=settings.llm.timeout,
+        max_retries=settings.llm.max_retries,
+    )
+
+
+def build_demo_foundation(*, sqlite_db_path=None) -> RuntimeFoundation:
+    settings = get_settings()
     db_path = sqlite_db_path or SQLITE_DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = connect_sqlite(str(db_path))
@@ -113,10 +130,13 @@ def build_demo_foundation(*, sqlite_db_path: Path | None = None) -> RuntimeFound
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DemoExecutionAdapter(),
         research_adapter=DemoResearchAdapter(),
+        model_factory=build_model_factory_from_env(),
+        settings=settings,
     )
 
 
 def main() -> None:
+    settings = get_settings()
     app = create_app(
         HostApiDependencies(
             foundation=build_demo_foundation(),
@@ -124,7 +144,12 @@ def main() -> None:
         ),
         ui_dist_dir=UI_DIST_DIR if UI_DIST_DIR.exists() else None,
     )
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(
+        app,
+        host=settings.host_api.bind_host,
+        port=settings.host_api.bind_port,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":
