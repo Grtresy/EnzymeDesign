@@ -27,14 +27,16 @@ V2 目标蓝图见：[docs/OpenZyme V2 LangChain重写蓝图.md](/home/grtresy/V
 - `database/`
 - `docs/`
 - `openspec/`
-- V2 预留骨架目录：
+- 已进入 V2 主线实现的目录：
   - `apps/openzyme-host-api`
   - `apps/openzyme-web-ui`
   - `packages/openzyme-graph`
   - `packages/openzyme-domain`
+  - `packages/openzyme-runtime`
   - `packages/openzyme-storage`
   - `packages/openzyme-tools`
   - `packages/openzyme-execution`
+  - `packages/openzyme-research`
 
 已经迁入 `legacy/v1/` 的旧主线包括：
 
@@ -156,7 +158,12 @@ Persistence + Infra
 - `mcp-hpc-runner` 仍在主线，可独立测试与运行
 - `containers/` 与 `database/` 仍作为共享基础资产保留
 - V2 设计蓝图已落盘
-- V2 目录骨架已创建，但尚未进入实质实现阶段
+- `openzyme-domain`、`openzyme-storage`、`openzyme-runtime` 已提供最小 typed contracts、仓储层与 checkpointer/runtime 装配
+- `openzyme-graph` 已提供基于 LangGraph 的最小 supervisor / phase graph 骨架，并跑通 `thread_id = episode_id`、interrupt / resume、approval、report 的闭环
+- `openzyme-host-api` 已提供最小 Host query / command / projection / stream 接口
+- `openzyme-web-ui` 已提供最小 browser workspace shell，可消费 Host projections 与 workflow events
+- `openzyme-host-cli` 已作为 Host API 的 thin client 落地
+- 当前主线已具备一条可运行、可测试的 V2 最小闭环，不再只是目录骨架
 
 ### 5.2 已归档到 legacy
 
@@ -168,15 +175,14 @@ Persistence + Infra
 
 这些内容仍可在 `legacy/v1/` 中查看、运行和测试，但不再代表根仓库当前实现。
 
-### 5.3 尚未开始或待重开
+### 5.3 待继续收敛与补齐
 
-- `openzyme-host-api`
-- `openzyme-web-ui`
-- `openzyme-graph`
-- `openzyme-domain`
-- `openzyme-storage`
-- `openzyme-tools`
-- `openzyme-execution`
+- 将当前统一大图收敛为 `Supervisor + 5 个固定子图`
+- 为 `intake`、`research`、`design`、`report_review` 补齐 LangChain model / tool / structured output 层
+- 将 Host API 与 stream contract 从最小闭环形态收敛到蓝图定义的稳定接口
+- 将当前最小 Web UI 升级为 React 产品壳
+- 补齐 research / design / execution / report 的产品级业务语义，而不是继续停留于 demo 占位逻辑
+- 清理包边界与依赖方向，避免 graph/runtime 层循环耦合
 - 任何基于 V2 架构重新定义的 bio-research / knowledge / structure-workbench 主线实现
 
 ---
@@ -221,7 +227,7 @@ Persistence + Infra
 
 - 主线已经不再继续承载 V1 Host 实现
 - 主线保留 HPC 执行基础设施与共享资产
-- OpenZyme 将以 V2-first 的方式重建上层 Host、状态层和前端
+- OpenZyme 已经开始以 V2-first 的方式重建上层 Host、状态层和前端，并具备最小闭环骨架
 - V1 相关系统以 `legacy/v1/` 形式冻结保留
 
-因此，任何后续主线实现、OpenSpec change 或架构讨论，都应默认以 V2 重写边界为前提，而不是再把根仓库视为 V1 Host 的延续实现目录。
+因此，任何后续主线实现、OpenSpec change 或架构讨论，都应默认以“当前代码为迁移基线、蓝图为目标态”这一前提推进，而不是再把根仓库视为 V1 Host 的延续实现目录，也不应再把 V2 主线误判为尚未开始。

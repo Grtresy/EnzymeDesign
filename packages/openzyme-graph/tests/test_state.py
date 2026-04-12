@@ -88,6 +88,10 @@ def test_subgraph_contracts_cover_all_fixed_phases() -> None:
         "user_goal",
         "project_context",
     )
+    assert contracts[GraphPhase.INTAKE].completion_outputs == ("intake_handoff",)
+    assert contracts[GraphPhase.RESEARCH].completion_outputs == ("research_handoff",)
+    assert contracts[GraphPhase.DESIGN].completion_outputs == ("design_handoff",)
+    assert contracts[GraphPhase.EXECUTION].completion_outputs == ("execution_handoff",)
     assert InterruptType.APPROVAL in contracts[GraphPhase.EXECUTION].interrupt_types
 
 

@@ -6,8 +6,6 @@ from typing import Any
 from typing import Callable
 from typing import Iterator
 
-from openzyme_graph.state import GRAPH_THREAD_KEY
-from openzyme_graph.state import build_langgraph_config
 from openzyme_storage import GRAPH_STATE_DEPENDENCY_EXPECTATIONS
 from openzyme_storage import HOST_UI_DEPENDENCY_EXPECTATIONS
 from openzyme_storage import RELATIONAL_RECORDS
@@ -20,6 +18,7 @@ from .seams import ResearchAdapter
 
 
 GraphBuilder = Callable[["GraphAssemblyInputs"], Any]
+GRAPH_THREAD_KEY = "episode_id"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,7 @@ class GraphRuntimeFacade:
 
 
 def build_episode_graph_config(episode_id: str) -> dict[str, dict[str, str]]:
-    return build_langgraph_config(episode_id)
+    return {"configurable": {"thread_id": episode_id}}
 
 
 def validate_runtime_foundation_support() -> None:

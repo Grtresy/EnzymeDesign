@@ -39,6 +39,17 @@ def _derive_episode_status(workflow: dict[str, Any]) -> EpisodeStatus:
     return EpisodeStatus.ACTIVE
 
 
+def _extract_nested_workflow_state(snapshot: Any) -> dict[str, Any] | None:
+    for task in getattr(snapshot, "tasks", ()):
+        nested = getattr(task, "state", None)
+        if nested is None:
+            continue
+        nested_values = getattr(nested, "values", None)
+        if nested_values:
+            return dict(nested_values)
+    return None
+
+
 def _build_workflow_summary(
     workflow: dict[str, Any],
     research: dict[str, Any],
@@ -85,9 +96,17 @@ class HostProjectionLoader(ProjectionLoader):
 
         pending = self.runtime.repositories.approvals.list_pending_by_episode(episode_id)
         with self.runtime.compile_graph(self.graph_builder) as graph:
-            snapshot = graph.get_state(self.runtime.build_episode_graph_config(episode_id))
+            snapshot = graph.get_state(
+                self.runtime.build_episode_graph_config(episode_id),
+                subgraphs=True,
+            )
 
         values = dict(snapshot.values)
+        nested_values = _extract_nested_workflow_state(snapshot)
+        if nested_values is not None:
+            for key in ("current_phase", "status", "progress", "pending_interrupt"):
+                if nested_values.get(key) is not None:
+                    values[key] = nested_values[key]
         progress = values.get("progress") or _default_progress(episode.updated_at)
         workflow = {
             "episode_id": episode.episode_id,

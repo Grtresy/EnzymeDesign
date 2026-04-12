@@ -19,6 +19,7 @@ from openzyme_domain import SelectedCandidateRecord
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
 
 from .state import GraphPhase
+from .state import DesignHandoff
 from .state import InterruptType
 from .state import ProgressStatus
 from .state import SupervisorStatus
@@ -57,6 +58,7 @@ class DesignSupervisorState(TypedDict, total=False):
     candidate_plan: dict[str, Any] | None
     run_request: dict[str, Any] | None
     recommended_next_phase: str | None
+    design_handoff: DesignHandoff | None
 
 
 def _design_interrupt(
@@ -78,7 +80,7 @@ def _build_design_approval_id(episode_id: str) -> str:
     return f"{episode_id}-design-approval"
 
 
-def build_phase_c_design_graph(inputs: GraphAssemblyInputs) -> Any:
+def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
     def load_research_inputs(state: DesignSupervisorState) -> dict[str, Any]:
         episode_id = state["episode_id"]
         summary = inputs.repositories.research_summaries.get_by_episode(episode_id)
@@ -310,6 +312,12 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs) -> Any:
             "candidate_plan": candidate_plan,
             "run_request": run_request,
             "recommended_next_phase": GraphPhase.EXECUTION.value,
+            "design_handoff": {
+                "candidate_plan": candidate_plan,
+                "run_request": run_request,
+                "selected_candidate_id": candidate.candidate_id,
+                "recommended_next_phase": GraphPhase.EXECUTION.value,
+            },
             "status": SupervisorStatus.COMPLETED.value,
             "progress": _progress(
                 "map_execution_handoff",
@@ -345,4 +353,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs) -> Any:
     graph.add_edge("persist_candidates", "prepare_design_review")
     graph.add_edge("prepare_design_review", "design_review_gate")
     graph.add_edge("map_execution_handoff", END)
-    return graph.compile(checkpointer=inputs.checkpointer)
+    if include_checkpointer:
+        return graph.compile(checkpointer=inputs.checkpointer)
+    return graph.compile()

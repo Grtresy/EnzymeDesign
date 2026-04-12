@@ -78,6 +78,33 @@ class RuntimeSupervisorState(TypedDict):
     pending_interrupt: RuntimeInterruptPayload | None
 
 
+class IntakeHandoff(TypedDict):
+    design_brief: str
+    research_brief: str
+    recommended_next_phase: str
+
+
+class ResearchHandoff(TypedDict):
+    research_summary: dict[str, Any]
+    evidence_refs: list[dict[str, Any]]
+    unresolved_gaps: list[dict[str, Any]]
+    recommended_next_phase: str
+
+
+class DesignHandoff(TypedDict):
+    candidate_plan: dict[str, Any]
+    run_request: dict[str, Any]
+    selected_candidate_id: str | None
+    recommended_next_phase: str
+
+
+class ExecutionHandoff(TypedDict):
+    run_summary: dict[str, Any]
+    artifact_refs: list[dict[str, Any]]
+    latest_run_id: str | None
+    recommended_next_phase: str
+
+
 @dataclass(frozen=True, slots=True)
 class CheckpointLineage:
     thread_id: str
@@ -208,25 +235,25 @@ def build_subgraph_contracts() -> dict[GraphPhase, SubgraphContract]:
         GraphPhase.INTAKE: SubgraphContract(
             phase=GraphPhase.INTAKE,
             required_inputs=("episode_id", "user_goal", "project_context"),
-            completion_outputs=("design_brief", "recommended_next_phase"),
+            completion_outputs=("intake_handoff",),
             interrupt_types=(InterruptType.CLARIFICATION,),
         ),
         GraphPhase.RESEARCH: SubgraphContract(
             phase=GraphPhase.RESEARCH,
             required_inputs=("episode_id", "design_brief", "research_brief"),
-            completion_outputs=("research_summary", "evidence_refs", "recommended_next_phase"),
+            completion_outputs=("research_handoff",),
             interrupt_types=(InterruptType.ESCALATION, InterruptType.RECOVERABLE_FAILURE),
         ),
         GraphPhase.DESIGN: SubgraphContract(
             phase=GraphPhase.DESIGN,
             required_inputs=("episode_id", "design_brief", "research_summary"),
-            completion_outputs=("candidate_plan", "recommended_next_phase"),
+            completion_outputs=("design_handoff",),
             interrupt_types=(InterruptType.CLARIFICATION, InterruptType.APPROVAL),
         ),
         GraphPhase.EXECUTION: SubgraphContract(
             phase=GraphPhase.EXECUTION,
             required_inputs=("episode_id", "candidate_plan", "run_request"),
-            completion_outputs=("run_summary", "artifact_refs", "recommended_next_phase"),
+            completion_outputs=("execution_handoff",),
             interrupt_types=(InterruptType.APPROVAL, InterruptType.RECOVERABLE_FAILURE),
         ),
         GraphPhase.REPORT_REVIEW: SubgraphContract(

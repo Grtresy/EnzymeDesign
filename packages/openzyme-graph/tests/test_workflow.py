@@ -25,6 +25,11 @@ from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_graph.workflow import build_phase_b_supervisor_graph
 
 
+def _nested_values(snapshot):
+    nested = snapshot.tasks[0].state
+    return nested.values if hasattr(nested, "values") else {}
+
+
 class FakeExecutionAdapter:
     def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
         return ExecutionOutcome(
@@ -188,20 +193,20 @@ def test_unified_supervisor_routes_research_design_and_execution_on_one_thread(m
             },
             config,
         )
-        first_snapshot = graph.get_state(config)
+        first_snapshot = graph.get_state(config, subgraphs=True)
         second = graph.invoke(Command(resume={"approved": True}), config)
-        second_snapshot = graph.get_state(config)
+        second_snapshot = graph.get_state(config, subgraphs=True)
         third = graph.invoke(Command(resume={"approved": True}), config)
 
     assert first["__interrupt__"][0].value["phase"] == "design"
     assert first_snapshot.values["current_phase"] == "design"
-    assert first_snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-design-approval"
+    assert _nested_values(first_snapshot)["pending_interrupt"]["approval_id"] == "ep_001-design-approval"
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
     assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
 
     assert second["__interrupt__"][0].value["phase"] == "execution"
     assert second_snapshot.values["current_phase"] == "execution"
-    assert second_snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-execution-approval"
+    assert _nested_values(second_snapshot)["pending_interrupt"]["approval_id"] == "ep_001-execution-approval"
     assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
 
     assert third["status"] == "completed"
@@ -233,7 +238,7 @@ def test_unified_supervisor_only_completes_after_report_review_finishes(monkeypa
         )
         graph.invoke(Command(resume={"approved": True}), config)
         execution_resume = graph.invoke(Command(resume={"approved": True}), config)
-        final_snapshot = graph.get_state(config)
+        final_snapshot = graph.get_state(config, subgraphs=True)
 
     assert execution_resume["current_phase"] == "report_review"
     assert execution_resume["status"] == "completed"

@@ -1,5 +1,6 @@
 from .bootstrap import GraphAssemblyInputs
 from .bootstrap import GraphRuntimeFacade
+from .bootstrap import GRAPH_THREAD_KEY
 from .bootstrap import RuntimeFoundation
 from .bootstrap import build_episode_graph_config
 from .bootstrap import validate_runtime_foundation_support
@@ -39,6 +40,7 @@ __all__ = [
     "ExecutionAdapter",
     "GraphAssemblyInputs",
     "GraphRuntimeFacade",
+    "GRAPH_THREAD_KEY",
     "MIGRATION_IDS",
     "MissingLangGraphPostgresDependencyError",
     "OwnershipError",

@@ -515,7 +515,6 @@ version = "0.1.0"
 source = { editable = "packages/openzyme-runtime" }
 dependencies = [
     { name = "openzyme-domain" },
-    { name = "openzyme-graph" },
     { name = "openzyme-research" },
     { name = "openzyme-storage" },
 ]
@@ -532,7 +531,6 @@ postgres = [
 requires-dist = [
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=2.0.0" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
-    { name = "openzyme-graph", editable = "packages/openzyme-graph" },
     { name = "openzyme-research", editable = "packages/openzyme-research" },
     { name = "openzyme-storage", editable = "packages/openzyme-storage" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },

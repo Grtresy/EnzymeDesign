@@ -3,12 +3,20 @@ from __future__ import annotations
 from datetime import UTC
 from datetime import datetime
 from typing import Any
+from typing import TypedDict
 
+from langgraph.graph import END
+from langgraph.graph import START
+from langgraph.graph import StateGraph
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
 from openzyme_domain import ReportRecord
 from openzyme_domain import ReportStatus
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
+
+from .state import GraphPhase
+from .state import ProgressStatus
+from .state import SupervisorStatus
 
 
 def _utc_now_iso() -> str:
@@ -25,6 +33,32 @@ def build_report_artifact_id(episode_id: str) -> str:
 
 def _build_report_storage_uri(episode_id: str) -> str:
     return f"/tmp/openzyme-reports/{episode_id}/final-report.md"
+
+
+def _progress(active_node: str, status: ProgressStatus, message: str) -> dict[str, Any]:
+    return {
+        "phase": GraphPhase.REPORT_REVIEW.value,
+        "active_node": active_node,
+        "status": status.value,
+        "updated_at": _utc_now_iso(),
+        "message": message,
+    }
+
+
+class ReportReviewSubgraphState(TypedDict, total=False):
+    episode_id: str
+    objective: str
+    user_goal: str
+    current_phase: str
+    status: str
+    progress: dict[str, Any]
+    pending_interrupt: dict[str, Any] | None
+    research_summary: dict[str, Any] | None
+    selected_candidate_id: str | None
+    run_summary: dict[str, Any] | None
+    artifact_refs: list[dict[str, Any]]
+    report_summary: dict[str, Any] | None
+    report_artifact_id: str | None
 
 
 def create_canonical_report(
@@ -70,3 +104,42 @@ def create_canonical_report(
     )
     inputs.repositories.reports.save(report)
     return report, report_artifact
+
+
+def build_report_review_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
+    def prepare_report_review(state: ReportReviewSubgraphState) -> dict[str, Any]:
+        return {
+            "current_phase": GraphPhase.REPORT_REVIEW.value,
+            "status": SupervisorStatus.ACTIVE.value,
+            "pending_interrupt": None,
+            "progress": _progress(
+                "prepare_report_review",
+                ProgressStatus.RUNNING,
+                "Preparing final report review",
+            ),
+        }
+
+    def generate_report(state: ReportReviewSubgraphState) -> dict[str, Any]:
+        report, artifact = create_canonical_report(inputs, state)
+        return {
+            "current_phase": GraphPhase.REPORT_REVIEW.value,
+            "status": SupervisorStatus.COMPLETED.value,
+            "pending_interrupt": None,
+            "report_summary": report.to_dict(),
+            "report_artifact_id": artifact.artifact_id,
+            "progress": _progress(
+                "generate_report",
+                ProgressStatus.SUCCEEDED,
+                "Final report generated",
+            ),
+        }
+
+    graph = StateGraph(ReportReviewSubgraphState)
+    graph.add_node("prepare_report_review", prepare_report_review)
+    graph.add_node("generate_report", generate_report)
+    graph.add_edge(START, "prepare_report_review")
+    graph.add_edge("prepare_report_review", "generate_report")
+    graph.add_edge("generate_report", END)
+    if include_checkpointer:
+        return graph.compile(checkpointer=inputs.checkpointer)
+    return graph.compile()
