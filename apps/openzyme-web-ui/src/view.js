@@ -7,7 +7,7 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-const PHASE_ORDER = ["intake", "research", "design", "execution", "report_review"];
+const PHASE_ORDER = ["intake", "design", "report_review"];
 
 function buildPhaseStatusMap(workspace) {
   const currentPhase = workspace.workflow.current_phase;
@@ -185,7 +185,7 @@ function renderEvidence(workspace) {
 }
 
 function renderCandidates(workspace) {
-  const design = workspace.design ?? { candidates: [], selected_candidate: null };
+  const design = workspace.design ?? { candidates: [], selected_candidate: null, turns: [] };
   if (!design.candidates.length) {
     return '<p class="empty-state">No design candidates available yet.</p>';
   }
@@ -209,6 +209,29 @@ function renderCandidates(workspace) {
           )
           .join("")}
       </ul>
+      ${
+        design.turns?.length
+          ? `
+            <div class="stack">
+              <p><strong>Recent turns:</strong></p>
+              <ul class="data-list">
+                ${design.turns
+                  .slice(-5)
+                  .map(
+                    (turn) => `
+                      <li>
+                        <span>${escapeHtml(`#${turn.turn_index}`)}</span>
+                        <span>${escapeHtml(turn.action_kind)}</span>
+                        <span>${escapeHtml(turn.status)}</span>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </div>
+          `
+          : ""
+      }
     </div>
   `;
 }
@@ -256,7 +279,7 @@ export function renderWorkspaceShell(viewState) {
           <article class="panel intro-panel">
             <p class="eyebrow">Workspace</p>
             <h2>Select an Episode or Create a New One</h2>
-            <p>Use the project shell to inspect persisted episodes, or start a new routed workflow that will move through research, design, execution, and report review.</p>
+            <p>Use the project shell to inspect persisted episodes, or start a new routed workflow that will move through intake, design, and report review.</p>
           </article>
         </section>
       `
@@ -281,7 +304,7 @@ export function renderWorkspaceShell(viewState) {
           </article>
           <article class="panel pane workflow-pane">
             <h3>Workflow</h3>
-            <p class="helper-copy">The current node is the place where execution paused, not the whole history. Use the phase rail and panes below to inspect completed research and design outputs.</p>
+            <p class="helper-copy">The current node is the place where the workflow paused, not the whole history. Use the phase rail and panes below to inspect the current design context, runs, and final report.</p>
             <dl class="facts">
               <div><dt>Active node</dt><dd>${escapeHtml(workspace.workflow.progress.active_node)}</dd></div>
               <div><dt>Progress status</dt><dd>${escapeHtml(workspace.workflow.progress.status)}</dd></div>

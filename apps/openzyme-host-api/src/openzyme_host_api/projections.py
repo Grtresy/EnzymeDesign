@@ -169,6 +169,11 @@ class HostProjectionLoader(ProjectionLoader):
     def load_design_projection(self, episode_id: str) -> dict[str, Any]:
         candidates = [candidate.to_dict() for candidate in self.runtime.repositories.candidates.list_by_episode(episode_id)]
         rankings = [ranking.to_dict() for ranking in self.runtime.repositories.candidate_rankings.list_by_episode(episode_id)]
+        decisions = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == GraphPhase.DESIGN.value
+        ]
         selected_candidate = self.runtime.repositories.selected_candidates.get_by_episode(episode_id)
         ranking_by_candidate_id = {ranking["candidate_id"]: ranking for ranking in rankings}
         enriched_candidates: list[dict[str, Any]] = []
@@ -180,6 +185,26 @@ class HostProjectionLoader(ProjectionLoader):
             "candidates": enriched_candidates,
             "rankings": rankings,
             "selected_candidate": None if selected_candidate is None else selected_candidate.to_dict(),
+            "turns": [
+                {
+                    "turn_index": decision["turn_index"],
+                    "action_kind": decision["action_kind"],
+                    "status": decision["status"],
+                    "summary": decision["summary"],
+                    "rationale": decision["rationale"],
+                    "target_candidate_id": None
+                    if decision.get("action_payload") is None
+                    else decision["action_payload"].get("target_candidate_id"),
+                    "observation_summary": None
+                    if decision.get("observation_payload") is None
+                    else (
+                        decision["observation_payload"].get("summary")
+                        or decision["observation_payload"].get("message")
+                    ),
+                    "created_at": decision["created_at"],
+                }
+                for decision in decisions
+            ],
         }
 
     def load_episode_workspace(self, episode_id: str) -> dict[str, Any]:
@@ -307,6 +332,15 @@ class WorkflowEventProjector:
                     "updated_at": workflow["updated_at"],
                 }
             )
+        for turn in workspace["design"].get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.design_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
         return events
 
     def project_delta_events(
@@ -418,6 +452,17 @@ class WorkflowEventProjector:
                         "episode_id": after["episode_id"],
                         "selected_candidate": after["design"]["selected_candidate"],
                         "updated_at": after_workflow["updated_at"],
+                    }
+                )
+        if before["design"].get("turns") != after["design"].get("turns"):
+            before_count = len(before["design"].get("turns", []))
+            for turn in after["design"].get("turns", [])[before_count:]:
+                events.append(
+                    {
+                        "event_type": "workflow.design_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
                     }
                 )
         if before.get("report") != after.get("report"):

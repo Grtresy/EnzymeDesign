@@ -91,6 +91,31 @@ class CandidateComparison(BaseModel):
     rankings: list[CandidateRankingDraft] = Field(default_factory=list)
 
 
+class DesignNextAction(BaseModel):
+    action_kind: Literal[
+        "collect_research",
+        "draft_candidates",
+        "rank_candidates",
+        "revise_candidate",
+        "run_hpc",
+        "request_run_approval",
+        "stop",
+    ]
+    summary: str
+    rationale: str
+    target_candidate_id: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    stop_reason: str | None = None
+
+
+class DesignToolCallResult(BaseModel):
+    tool_name: str
+    summary: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    canonical_updates: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionRunSpecDraft(BaseModel):
     name: str
     stage: str
@@ -135,6 +160,8 @@ __all__ = [
     "CanonicalResearchSnapshot",
     "ConstraintItem",
     "ConstraintSet",
+    "DesignNextAction",
+    "DesignToolCallResult",
     "DesignBriefDraft",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",

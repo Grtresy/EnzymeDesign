@@ -14,6 +14,7 @@ from .models import ArtifactRecord
 from .models import CandidateRankingRecord
 from .models import CandidateRecord
 from .models import Decision
+from .models import DecisionStatus
 from .models import EvidenceRecord
 from .models import Episode
 from .models import EpisodeStatus
@@ -45,6 +46,7 @@ __all__ = [
     "CandidateRankingRecord",
     "CandidateRecord",
     "Decision",
+    "DecisionStatus",
     "EvidenceRecord",
     "Episode",
     "EpisodeStatus",

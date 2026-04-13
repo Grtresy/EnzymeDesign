@@ -19,9 +19,7 @@ from openzyme_graph.state import validate_domain_and_storage_alignment
 def test_fixed_phases_are_stable() -> None:
     assert FIXED_PHASES == (
         "intake",
-        "research",
         "design",
-        "execution",
         "report_review",
     )
 
@@ -56,12 +54,12 @@ def test_interrupt_envelope_is_normalized_for_resume() -> None:
     envelope = InterruptEnvelope(
         type=InterruptType.APPROVAL,
         episode_id="ep_001",
-        phase=GraphPhase.EXECUTION,
+        phase=GraphPhase.DESIGN,
         resume_anchor=ResumeAnchor(
             episode_id="ep_001",
             checkpoint=CheckpointLineage(
                 thread_id="ep_001",
-                checkpoint_ns="execution",
+                checkpoint_ns="design",
                 checkpoint_id="chk_002",
             ),
             active_state_version=4,
@@ -71,28 +69,31 @@ def test_interrupt_envelope_is_normalized_for_resume() -> None:
 
     payload = envelope.to_dict()
     assert payload["type"] == "approval"
-    assert payload["phase"] == "execution"
+    assert payload["phase"] == "design"
     assert payload["resume_anchor"]["active_state_version"] == 4
 
     runtime_payload = envelope.to_runtime_interrupt_payload()
-    assert runtime_payload["checkpoint_ns"] == "execution"
+    assert runtime_payload["checkpoint_ns"] == "design"
     assert runtime_payload["active_state_version"] == 4
 
 
 def test_subgraph_contracts_cover_all_fixed_phases() -> None:
     contracts = build_subgraph_contracts()
 
-    assert set(contracts.keys()) == set(GraphPhase)
+    assert tuple(contracts.keys()) == (
+        GraphPhase.INTAKE,
+        GraphPhase.DESIGN,
+        GraphPhase.REPORT_REVIEW,
+    )
     assert contracts[GraphPhase.INTAKE].required_inputs == (
         "episode_id",
         "user_goal",
         "project_context",
     )
     assert contracts[GraphPhase.INTAKE].completion_outputs == ("intake_handoff",)
-    assert contracts[GraphPhase.RESEARCH].completion_outputs == ("research_handoff",)
     assert contracts[GraphPhase.DESIGN].completion_outputs == ("design_handoff",)
-    assert contracts[GraphPhase.EXECUTION].completion_outputs == ("execution_handoff",)
-    assert InterruptType.APPROVAL in contracts[GraphPhase.EXECUTION].interrupt_types
+    assert contracts[GraphPhase.REPORT_REVIEW].required_inputs == ("episode_id", "design_handoff")
+    assert InterruptType.APPROVAL in contracts[GraphPhase.DESIGN].interrupt_types
 
 
 def test_graph_projection_alignment_is_explicit() -> None:
@@ -121,15 +122,15 @@ def test_langgraph_runtime_helpers_follow_official_thread_and_resume_shape() -> 
 def test_supervisor_runtime_state_is_projection_friendly() -> None:
     state = SupervisorState(
         episode_id="ep_001",
-        current_phase=GraphPhase.EXECUTION,
+        current_phase=GraphPhase.DESIGN,
         status=SupervisorStatus.INTERRUPTED,
         checkpoint=CheckpointLineage(
             thread_id="ep_001",
-            checkpoint_ns="execution",
+            checkpoint_ns="design",
             checkpoint_id="chk_010",
         ),
         progress=NodeProgress(
-            phase=GraphPhase.EXECUTION,
+            phase=GraphPhase.DESIGN,
             active_node="await_approval",
             status=ProgressStatus.WAITING,
             updated_at="2026-04-11T12:10:00+00:00",
@@ -137,5 +138,5 @@ def test_supervisor_runtime_state_is_projection_friendly() -> None:
     )
 
     runtime_state = state.to_runtime_state()
-    assert runtime_state["current_phase"] == "execution"
+    assert runtime_state["current_phase"] == "design"
     assert runtime_state["checkpoint_id"] == "chk_010"

@@ -91,27 +91,27 @@ def test_trace_helpers_include_episode_scoped_metadata() -> None:
         action="resolve_approval",
         project_id="proj_001",
         episode_id="ep_001",
-        phase="execution",
+        phase="design",
         approval_id="approval_001",
     ) == [
         "action:resolve_approval",
         "project:proj_001",
         "episode:ep_001",
-        "phase:execution",
+        "phase:design",
         "approval:approval_001",
     ]
     assert build_trace_metadata(
         action="create_episode",
         project_id="proj_001",
         episode_id="ep_001",
-        phase="research",
+        phase="design",
         request_method="POST",
         request_path="/commands/create_episode",
     ) == {
         "action": "create_episode",
         "project_id": "proj_001",
         "episode_id": "ep_001",
-        "phase": "research",
+        "phase": "design",
         "request_method": "POST",
         "request_path": "/commands/create_episode",
     }
@@ -129,7 +129,7 @@ def test_tracing_hooks_do_not_break_create_episode_flow(monkeypatch) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workspace"]["workflow"]["current_phase"] in {"research", "design", "execution", "report_review"}
+    assert payload["workspace"]["workflow"]["current_phase"] in {"design", "report_review"}
     assert any(call["name"] == "host.create_episode" for call in recorder.calls)
     assert any(call["metadata"]["request_path"] == "/commands/create_episode" for call in tracing_recorder.calls)
     reset_settings_cache()

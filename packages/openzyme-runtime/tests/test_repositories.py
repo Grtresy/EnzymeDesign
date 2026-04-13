@@ -4,6 +4,8 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
 from openzyme_domain import CandidateRankingRecord
 from openzyme_domain import CandidateRecord
+from openzyme_domain import Decision
+from openzyme_domain import DecisionStatus
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
@@ -70,6 +72,35 @@ def test_phase_b_repositories_persist_canonical_records() -> None:
     assert repositories.approvals.list_pending_by_episode(episode.episode_id) == [approval]
     assert repositories.runs.list_by_episode(episode.episode_id) == [run]
     assert repositories.artifact_records.list_by_episode(episode.episode_id) == [artifact]
+
+
+def test_decision_repository_persists_design_turn_ledger() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+
+    project = Project.create("proj_001", "Decision project")
+    episode = Episode.create("ep_001", project.project_id, "Track design loop decisions")
+    decision = Decision(
+        decision_id="dec_001",
+        episode_id=episode.episode_id,
+        project_id=project.project_id,
+        phase="design",
+        turn_index=1,
+        action_kind="collect_research",
+        status=DecisionStatus.COMPLETED,
+        summary="Collect supporting evidence.",
+        rationale="No evidence exists yet.",
+        action_payload={"action_kind": "collect_research"},
+        observation_payload={"summary": "Collected 2 evidence items."},
+        created_at="2026-04-13T12:00:00+00:00",
+    )
+
+    repositories.projects.save(project)
+    repositories.episodes.save(episode)
+    repositories.decisions.save(decision)
+
+    assert repositories.decisions.list_by_episode(episode.episode_id) == [decision]
 
 
 def test_research_repositories_persist_episode_scoped_evidence_outputs() -> None:

@@ -100,25 +100,6 @@ def test_live_supervisor_e2e_reaches_report(tmp_path) -> None:
             _raise_for_status_with_body(approved_design, step="approve_design")
             _log_phase("design approval submitted")
 
-            _log_phase("loading second pending actions")
-            second_pending = client.get(f"/episodes/{episode_id}/pending-actions")
-            _raise_for_status_with_body(second_pending, step="load_second_pending_actions")
-            second_actions = second_pending.json()
-            assert second_actions
-            _log_phase(f"second approval ready: {second_actions[0]['approval_id']}")
-
-            _log_phase("approving execution phase")
-            approved_execution = client.post(
-                "/commands/resolve_approval",
-                json={
-                    "episode_id": episode_id,
-                    "approval_id": second_actions[0]["approval_id"],
-                    "decision": "approved",
-                },
-            )
-            _raise_for_status_with_body(approved_execution, step="approve_execution")
-            _log_phase("execution approval submitted")
-
             _log_phase("loading final workspace")
             workspace = client.get(f"/episodes/{episode_id}/workspace")
             _raise_for_status_with_body(workspace, step="load_final_workspace")

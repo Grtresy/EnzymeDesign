@@ -14,9 +14,8 @@ from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
-from openzyme_graph.supervisor import build_v2_supervisor_graph
-from openzyme_graph.research import build_phase_c_research_graph
 from openzyme_graph.design import build_phase_c_design_graph
+from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_runtime import GraphRuntimeFacade
@@ -31,7 +30,6 @@ from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_domain import ArtifactKind
-from openzyme_domain import SourceRefKind
 from openzyme_domain import RunStatus
 
 
@@ -59,17 +57,7 @@ class FakeExecutionAdapter:
 
 
 class FakeResearchAdapter:
-    mode = "success"
-
     def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
-        if self.mode == "failure":
-            return ResearchUnitResult(
-                unit_id=unit.unit_id,
-                summary="",
-                findings=(),
-                unresolved_gaps=("Retry the primary query",),
-                error_message="search timeout",
-            )
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} supports the brief.",
@@ -128,44 +116,6 @@ def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     )
 
 
-def _build_research_client(monkeypatch, mode: str = "success") -> tuple[TestClient, RuntimeFoundation]:
-    saver = InMemorySaver()
-
-    @contextmanager
-    def _shared_open(self: PostgresCheckpointerFactory):
-        yield saver
-
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _shared_open,
-    )
-
-    connection = connect_sqlite(":memory:")
-    apply_sqlite_migrations(connection)
-    repositories = PhaseBRepositories.from_connection(connection)
-    repositories.projects.save(Project.create("proj_001", "Thermostability project"))
-    research_adapter = FakeResearchAdapter()
-    research_adapter.mode = mode
-    foundation = RuntimeFoundation(
-        repositories=repositories,
-        checkpointer_factory=PostgresCheckpointerFactory(
-            PostgresCheckpointerConfig(conn_string="postgresql://phase-c/memory")
-        ),
-        research_adapter=research_adapter,
-    )
-    return (
-        TestClient(
-            create_app(
-                HostApiDependencies(
-                    foundation=foundation,
-                    graph_builder=build_phase_c_research_graph,
-                )
-            )
-        ),
-        foundation,
-    )
-
-
 def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     saver = InMemorySaver()
 
@@ -216,6 +166,7 @@ def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         checkpointer_factory=PostgresCheckpointerFactory(
             PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
         ),
+        execution_adapter=FakeExecutionAdapter(),
     )
     runtime = GraphRuntimeFacade(foundation)
     with runtime.compile_graph(build_phase_c_design_graph) as graph:
@@ -267,7 +218,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     episode_id = payload["episode_id"]
     workspace = client.get(f"/episodes/{episode_id}/workspace")
     assert workspace.status_code == 200
-    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].endswith("-design-approval")
+    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(f"{episode_id}-design-approval-")
 
 
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
@@ -290,28 +241,18 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     )
     assert first_response.status_code == 200
     first_payload = first_response.json()
-    assert first_payload["workspace"]["workflow"]["current_phase"] == "execution"
-    assert first_payload["workspace"]["workflow"]["episode_status"] == "interrupted"
-    assert first_payload["workspace"]["pending_actions"][0]["approval_id"].endswith("-execution-approval")
+    assert first_payload["workspace"]["workflow"]["current_phase"] == "report_review"
+    assert first_payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert first_payload["workspace"]["pending_actions"] == []
     assert first_payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith(f"{episode_id}-candidate-")
     assert {event["event_type"] for event in first_payload["events"]} >= {
         "workflow.phase_changed",
         "workflow.summary_updated",
-        "workflow.selected_candidate_changed",
-        "workflow.approval_pending",
+        "workflow.design_turn_recorded",
+        "workflow.run_status_changed",
+        "workflow.report_available",
     }
-
-    response = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": first_payload["workspace"]["pending_actions"][0]["approval_id"],
-            "decision": "approved",
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
+    payload = first_payload
     assert payload["workspace"]["workflow"]["episode_status"] == "completed"
     assert payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert payload["workspace"]["pending_actions"] == []
@@ -352,15 +293,6 @@ def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> N
         },
     )
     assert resumed.status_code == 200
-
-    resumed_again = client.post(
-        "/commands/resume_episode",
-        json={
-            "episode_id": episode_id,
-            "resume_payload": {"approved": True},
-        },
-    )
-    assert resumed_again.status_code == 200
 
     stream_response = client.get(f"/episodes/{episode_id}/stream")
     assert stream_response.status_code == 200
@@ -432,21 +364,6 @@ def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> Non
     assert research["unresolved_gaps"][0]["summary"].startswith("Missing structure-backed")
 
 
-def test_phase_c_workflow_queries_project_research_progress_and_failures(monkeypatch) -> None:
-    client, _ = _build_research_client(monkeypatch, mode="failure")
-
-    created = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
-    )
-
-    assert created.status_code == 200
-    payload = created.json()
-    assert payload["workspace"]["workflow"]["current_phase"] == "research"
-    assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "recoverable_failure"
-    assert payload["workspace"]["workflow"]["progress"]["phase"] == "research"
-
-
 def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
 
@@ -467,25 +384,10 @@ def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(
     )
     assert design_resume.status_code == 200
     design_payload = design_resume.json()
-    assert design_payload["workspace"]["workflow"]["current_phase"] == "execution"
-    assert design_payload["workspace"]["pending_actions"][0]["approval_id"].endswith("-execution-approval")
-
-    execution_resume = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": design_payload["workspace"]["pending_actions"][0]["approval_id"],
-            "decision": "approved",
-        },
-    )
-
-    assert execution_resume.status_code == 200
-    execution_payload = execution_resume.json()
-    assert execution_payload["workspace"]["workflow"]["episode_status"] == "completed"
-    assert execution_payload["workspace"]["workflow"]["current_phase"] == "report_review"
-    assert execution_payload["workspace"]["pending_actions"] == []
-    assert execution_payload["workspace"]["runs"][0]["episode_id"] == episode_id
-    assert execution_payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
+    assert design_payload["workspace"]["workflow"]["current_phase"] == "report_review"
+    assert design_payload["workspace"]["pending_actions"] == []
+    assert design_payload["workspace"]["runs"][0]["episode_id"] == episode_id
+    assert design_payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
 
 
 def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> None:
@@ -513,7 +415,7 @@ def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> No
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.summary_updated",
         "workflow.candidate_updated",
-        "workflow.selected_candidate_changed",
+        "workflow.design_turn_recorded",
     }
 
 
@@ -536,18 +438,7 @@ def test_report_query_and_projection_become_available_after_supervisor_completio
         },
     ).json()
 
-    execution_approval_id = design_resume["workspace"]["pending_actions"][0]["approval_id"]
-    completed = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": execution_approval_id,
-            "decision": "approved",
-        },
-    )
-
-    assert completed.status_code == 200
-    workspace = completed.json()["workspace"]
+    workspace = design_resume["workspace"]
     report = workspace["report"]
     assert report["summary"].startswith("Objective")
     assert report["stage_summary"].startswith("Research summary:")

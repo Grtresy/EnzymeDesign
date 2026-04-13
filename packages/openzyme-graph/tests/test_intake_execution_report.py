@@ -9,7 +9,6 @@ from openzyme_domain import Run
 from openzyme_domain import RunStatus
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
-from openzyme_graph.execution import build_execution_subgraph
 from openzyme_graph.intake import build_intake_subgraph
 from openzyme_graph.report_review import build_report_review_subgraph
 from openzyme_runtime import ConstraintItem
@@ -120,7 +119,7 @@ def test_intake_subgraph_emits_explicit_handoff(monkeypatch) -> None:
         )
 
     assert result["status"] == "active"
-    assert result["intake_handoff"]["recommended_next_phase"] == "research"
+    assert result["intake_handoff"]["recommended_next_phase"] == "design"
     assert result["intake_handoff"]["design_brief"].startswith("Design brief")
 
 
@@ -166,33 +165,6 @@ def test_intake_subgraph_uses_structured_model_output_when_available(monkeypatch
     assert result["constraint_set"]["objective_summary"] == "Structured objective"
 
 
-def test_execution_subgraph_approves_and_emits_execution_handoff(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _memory_checkpointer_open,
-    )
-    foundation = _build_foundation()
-    facade = GraphRuntimeFacade(foundation)
-    config = build_episode_graph_config("ep_001")
-
-    with facade.compile_graph(build_execution_subgraph) as graph:
-        first = graph.invoke(
-            {
-                "episode_id": "ep_001",
-                "project_id": "proj_001",
-                "candidate_plan": {"candidate_id": "cand_001"},
-                "run_request": {"tool_name": "exec.run", "runspec": {"name": "test", "command": ["echo", "ok"]}},
-            },
-            config,
-        )
-        result = graph.invoke(Command(resume={"approved": True}), config)
-
-    assert first["__interrupt__"][0].value["type"] == "approval"
-    assert result["status"] == "completed"
-    assert result["execution_handoff"]["latest_run_id"] == "run_001"
-    assert result["execution_handoff"]["recommended_next_phase"] == "report_review"
-
-
 def test_report_review_subgraph_persists_final_report(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
@@ -219,9 +191,17 @@ def test_report_review_subgraph_persists_final_report(monkeypatch) -> None:
                 "episode_id": "ep_001",
                 "objective": "Extract specialist subgraphs",
                 "selected_candidate_id": "cand_001",
-                "research_summary": {"summary": "Research completed."},
-                "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
-                "artifact_refs": [{"artifact_id": "art_001"}],
+                "design_handoff": {
+                    "candidate_plan": {"candidate_id": "cand_001", "title": "Candidate A"},
+                    "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
+                    "artifact_refs": [{"artifact_id": "art_001"}],
+                    "design_summary": {
+                        "message": "Design loop completed.",
+                        "research_summary": {"summary": "Research completed."},
+                    },
+                    "selected_candidate_id": "cand_001",
+                    "recommended_next_phase": "report_review",
+                },
             },
             config,
         )
@@ -272,9 +252,17 @@ def test_report_review_subgraph_uses_structured_report_draft(monkeypatch) -> Non
                 "episode_id": "ep_001",
                 "objective": "Structured report",
                 "selected_candidate_id": "cand_001",
-                "research_summary": {"summary": "Research completed."},
-                "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
-                "artifact_refs": [{"artifact_id": "art_001"}],
+                "design_handoff": {
+                    "candidate_plan": {"candidate_id": "cand_001", "title": "Candidate A"},
+                    "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
+                    "artifact_refs": [{"artifact_id": "art_001"}],
+                    "design_summary": {
+                        "message": "Design loop completed.",
+                        "research_summary": {"summary": "Research completed."},
+                    },
+                    "selected_candidate_id": "cand_001",
+                    "recommended_next_phase": "report_review",
+                },
             },
             config,
         )

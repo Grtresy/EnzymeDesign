@@ -12,9 +12,7 @@ from openzyme_storage import CHECKPOINT_STATE_FIELDS
 
 class GraphPhase(StrEnum):
     INTAKE = "intake"
-    RESEARCH = "research"
     DESIGN = "design"
-    EXECUTION = "execution"
     REPORT_REVIEW = "report_review"
 
 
@@ -40,7 +38,11 @@ class ProgressStatus(StrEnum):
     FAILED = "failed"
 
 
-FIXED_PHASES: tuple[str, ...] = tuple(phase.value for phase in GraphPhase)
+FIXED_PHASES: tuple[str, ...] = (
+    GraphPhase.INTAKE.value,
+    GraphPhase.DESIGN.value,
+    GraphPhase.REPORT_REVIEW.value,
+)
 GRAPH_THREAD_KEY = "episode_id"
 RESUMABLE_STATUSES: frozenset[SupervisorStatus] = frozenset(
     {SupervisorStatus.ACTIVE, SupervisorStatus.INTERRUPTED},
@@ -84,24 +86,13 @@ class IntakeHandoff(TypedDict):
     recommended_next_phase: str
 
 
-class ResearchHandoff(TypedDict):
-    research_summary: dict[str, Any]
-    evidence_refs: list[dict[str, Any]]
-    unresolved_gaps: list[dict[str, Any]]
-    recommended_next_phase: str
-
-
 class DesignHandoff(TypedDict):
     candidate_plan: dict[str, Any]
-    run_request: dict[str, Any]
-    selected_candidate_id: str | None
-    recommended_next_phase: str
-
-
-class ExecutionHandoff(TypedDict):
-    run_summary: dict[str, Any]
+    run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
-    latest_run_id: str | None
+    design_summary: dict[str, Any]
+    selected_candidate_id: str | None
+    recent_turns: list[dict[str, Any]]
     recommended_next_phase: str
 
 
@@ -238,29 +229,17 @@ def build_subgraph_contracts() -> dict[GraphPhase, SubgraphContract]:
             completion_outputs=("intake_handoff",),
             interrupt_types=(InterruptType.CLARIFICATION,),
         ),
-        GraphPhase.RESEARCH: SubgraphContract(
-            phase=GraphPhase.RESEARCH,
-            required_inputs=("episode_id", "design_brief", "research_brief"),
-            completion_outputs=("research_handoff",),
-            interrupt_types=(InterruptType.ESCALATION, InterruptType.RECOVERABLE_FAILURE),
-        ),
         GraphPhase.DESIGN: SubgraphContract(
             phase=GraphPhase.DESIGN,
-            required_inputs=("episode_id", "design_brief", "research_summary"),
+            required_inputs=("episode_id", "design_brief"),
             completion_outputs=("design_handoff",),
             interrupt_types=(InterruptType.CLARIFICATION, InterruptType.APPROVAL),
         ),
-        GraphPhase.EXECUTION: SubgraphContract(
-            phase=GraphPhase.EXECUTION,
-            required_inputs=("episode_id", "candidate_plan", "run_request"),
-            completion_outputs=("execution_handoff",),
-            interrupt_types=(InterruptType.APPROVAL, InterruptType.RECOVERABLE_FAILURE),
-        ),
         GraphPhase.REPORT_REVIEW: SubgraphContract(
             phase=GraphPhase.REPORT_REVIEW,
-            required_inputs=("episode_id", "run_summary", "artifact_refs"),
+            required_inputs=("episode_id", "design_handoff"),
             completion_outputs=("report_summary", "report_artifact_id"),
-            interrupt_types=(InterruptType.CLARIFICATION,),
+            interrupt_types=(),
         ),
     }
 

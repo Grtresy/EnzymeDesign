@@ -22,7 +22,6 @@ from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_graph.supervisor import build_v2_supervisor_graph
-from openzyme_graph.workflow import build_phase_b_supervisor_graph
 
 
 def _nested_values(snapshot):
@@ -104,77 +103,7 @@ def _build_foundation() -> RuntimeFoundation:
     )
 
 
-def test_phase_b_graph_interrupts_for_approval_and_keeps_phase_projectable(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _memory_checkpointer_open,
-    )
-    foundation = _build_foundation()
-    facade = GraphRuntimeFacade(foundation)
-    config = build_episode_graph_config("ep_001")
-
-    with facade.compile_graph(build_phase_b_supervisor_graph) as graph:
-        first = graph.invoke(
-            {
-                "episode_id": "ep_001",
-                "project_id": "proj_001",
-                "objective": "Improve thermostability",
-                "user_goal": "Run the first HPC-backed execution",
-            },
-            config,
-        )
-        approval = first["__interrupt__"][0].value
-
-        assert approval["type"] == "approval"
-        assert approval["episode_id"] == "ep_001"
-
-        snapshot = graph.get_state(config)
-        assert snapshot.values["current_phase"] == "execution"
-        assert snapshot.values["progress"]["phase"] == "execution"
-        assert snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-execution-approval"
-
-        pending = foundation.repositories.approvals.list_pending_by_episode("ep_001")
-        assert len(pending) == 1
-        assert pending[0].approval_id == "ep_001-execution-approval"
-
-
-def test_phase_b_graph_resumes_on_same_episode_thread_and_persists_run_and_artifacts(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _memory_checkpointer_open,
-    )
-    foundation = _build_foundation()
-    facade = GraphRuntimeFacade(foundation)
-    config = build_episode_graph_config("ep_001")
-
-    with facade.compile_graph(build_phase_b_supervisor_graph) as graph:
-        graph.invoke(
-            {
-                "episode_id": "ep_001",
-                "project_id": "proj_001",
-                "objective": "Improve thermostability",
-                "user_goal": "Run the first HPC-backed execution",
-            },
-            config,
-        )
-        result = graph.invoke(Command(resume={"approved": True}), config)
-
-    assert result["status"] == "completed"
-    assert result["current_phase"] == "execution"
-    assert result["run_summary"]["run_id"] == "run_001"
-    assert len(result["artifact_refs"]) == 2
-
-    runs = foundation.repositories.runs.list_by_episode("ep_001")
-    artifacts = foundation.repositories.artifact_records.list_by_episode("ep_001")
-    approvals = foundation.repositories.approvals.list_pending_by_episode("ep_001")
-
-    assert len(runs) == 1
-    assert runs[0].status is RunStatus.SUCCEEDED
-    assert len(artifacts) == 2
-    assert approvals == []
-
-
-def test_unified_supervisor_routes_research_design_and_execution_on_one_thread(monkeypatch) -> None:
+def test_unified_supervisor_routes_design_and_report_review_on_one_thread(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -195,25 +124,19 @@ def test_unified_supervisor_routes_research_design_and_execution_on_one_thread(m
         )
         first_snapshot = graph.get_state(config, subgraphs=True)
         second = graph.invoke(Command(resume={"approved": True}), config)
-        second_snapshot = graph.get_state(config, subgraphs=True)
-        third = graph.invoke(Command(resume={"approved": True}), config)
 
     assert first["__interrupt__"][0].value["phase"] == "design"
     assert first_snapshot.values["current_phase"] == "design"
-    assert _nested_values(first_snapshot)["pending_interrupt"]["approval_id"] == "ep_001-design-approval"
+    assert _nested_values(first_snapshot)["pending_interrupt"]["approval_id"].startswith("ep_001-design-approval-")
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
     assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
 
-    assert second["__interrupt__"][0].value["phase"] == "execution"
-    assert second_snapshot.values["current_phase"] == "execution"
-    assert _nested_values(second_snapshot)["pending_interrupt"]["approval_id"] == "ep_001-execution-approval"
     assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
-
-    assert third["status"] == "completed"
-    assert third["current_phase"] == "report_review"
-    assert third["run_summary"]["run_id"] == "run_001"
-    assert len(third["artifact_refs"]) == 2
-    assert third["report_summary"]["report_id"] == "ep_001-report"
+    assert second["status"] == "completed"
+    assert second["current_phase"] == "report_review"
+    assert second["run_summary"]["run_id"] == "run_001"
+    assert len(second["artifact_refs"]) == 2
+    assert second["report_summary"]["report_id"] == "ep_001-report"
     assert foundation.repositories.reports.get("ep_001-report") is not None
 
 
@@ -236,13 +159,12 @@ def test_unified_supervisor_only_completes_after_report_review_finishes(monkeypa
             },
             config,
         )
-        graph.invoke(Command(resume={"approved": True}), config)
-        execution_resume = graph.invoke(Command(resume={"approved": True}), config)
+        design_resume = graph.invoke(Command(resume={"approved": True}), config)
         final_snapshot = graph.get_state(config, subgraphs=True)
 
-    assert execution_resume["current_phase"] == "report_review"
-    assert execution_resume["status"] == "completed"
-    assert execution_resume["report_artifact_id"] == "ep_001-report-artifact"
+    assert design_resume["current_phase"] == "report_review"
+    assert design_resume["status"] == "completed"
+    assert design_resume["report_artifact_id"] == "ep_001-report-artifact"
     assert final_snapshot.values["current_phase"] == "report_review"
     assert final_snapshot.values["status"] == "completed"
     assert foundation.repositories.reports.list_by_episode("ep_001")[0].artifact_id == "ep_001-report-artifact"

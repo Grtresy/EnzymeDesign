@@ -40,6 +40,7 @@ def test_workflow_stream_events_are_workflow_aware() -> None:
         "workflow.evidence_updated",
         "workflow.candidate_updated",
         "workflow.selected_candidate_changed",
+        "workflow.design_turn_recorded",
         "workflow.report_available",
     )
 

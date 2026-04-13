@@ -2,10 +2,14 @@ from contextlib import contextmanager
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from openzyme_domain import ArtifactKind
 from openzyme_domain import Episode
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import Project
 from openzyme_domain import ResearchSummaryRecord
+from openzyme_domain import RunStatus
+from openzyme_execution import ExecutionArtifactRef
+from openzyme_execution import ExecutionOutcome
 from openzyme_graph.design import build_phase_c_design_graph
 from openzyme_runtime import CandidateComparison
 from openzyme_runtime import CandidateDraft
@@ -19,6 +23,25 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import build_episode_graph_config
 from openzyme_runtime import connect_sqlite
+
+
+class FakeExecutionAdapter:
+    def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+        del payload
+        return ExecutionOutcome(
+            run_id="run_001",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="ssh",
+            remote_run_dir=f"/remote/{episode_id}/run_001",
+            artifacts=(
+                ExecutionArtifactRef(
+                    storage_uri="/tmp/result.json",
+                    relative_path="result.json",
+                    kind=ArtifactKind.RESULT,
+                ),
+            ),
+            raw_result={"status": "completed"},
+        )
 
 
 class FakeStructuredInvoker:
@@ -92,6 +115,7 @@ def _build_foundation(*, with_research: bool = True) -> RuntimeFoundation:
         checkpointer_factory=PostgresCheckpointerFactory(
             PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
         ),
+        execution_adapter=FakeExecutionAdapter(),
     )
 
 
@@ -117,12 +141,12 @@ def test_phase_c_design_graph_persists_candidates_and_waits_for_review(monkeypat
 
     assert first["__interrupt__"][0].value["type"] == "approval"
     assert snapshot.values["current_phase"] == "design"
-    assert snapshot.values["pending_interrupt"]["approval_id"] == "ep_001-design-approval"
+    assert snapshot.values["pending_interrupt"]["approval_id"].startswith("ep_001-design-approval-")
     assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
     assert len(foundation.repositories.candidate_rankings.list_by_episode("ep_001")) == 2
 
 
-def test_phase_c_design_graph_resumes_review_and_maps_execution_handoff(monkeypatch) -> None:
+def test_phase_c_design_graph_resumes_review_executes_run_and_builds_report_handoff(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -143,13 +167,15 @@ def test_phase_c_design_graph_resumes_review_and_maps_execution_handoff(monkeypa
         result = graph.invoke(Command(resume={"approved": True}), config)
 
     assert result["status"] == "completed"
-    assert result["recommended_next_phase"] == "execution"
+    assert result["recommended_next_phase"] == "report_review"
     assert result["candidate_plan"]["candidate_id"].startswith("ep_001-candidate-")
     assert result["run_request"]["runspec"]["metadata"]["candidate_id"] == result["candidate_plan"]["candidate_id"]
+    assert result["run_summary"]["run_id"] == "run_001"
+    assert result["design_handoff"]["run_summary"]["run_id"] == "run_001"
     assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
 
 
-def test_phase_c_design_graph_requires_research_outputs_before_design(monkeypatch) -> None:
+def test_phase_c_design_graph_collects_research_inside_design_when_missing(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -168,8 +194,9 @@ def test_phase_c_design_graph_requires_research_outputs_before_design(monkeypatc
             config,
         )
 
-    assert result["status"] == "interrupted"
-    assert result["pending_interrupt"]["type"] == "recoverable_failure"
+    assert result["__interrupt__"][0].value["type"] == "approval"
+    assert foundation.repositories.research_summaries.get_by_episode("ep_001") is not None
+    assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) >= 1
 
 
 def test_phase_c_design_graph_uses_structured_candidate_outputs_and_deterministic_execution_request(monkeypatch) -> None:
@@ -181,6 +208,7 @@ def test_phase_c_design_graph_uses_structured_candidate_outputs_and_deterministi
     foundation = RuntimeFoundation(
         repositories=foundation.repositories,
         checkpointer_factory=foundation.checkpointer_factory,
+        execution_adapter=foundation.execution_adapter,
         model_factory=FakeModelFactory(
             {
                 "design_candidates": CandidateDraftCollection(
@@ -227,3 +255,4 @@ def test_phase_c_design_graph_uses_structured_candidate_outputs_and_deterministi
     assert result["run_request"]["tool_name"] == "exec.run"
     assert result["run_request"]["runspec"]["name"] == "execution-cand_structured"
     assert result["run_request"]["runspec"]["command"] == ["echo", "Structured candidate"]
+    assert result["run_summary"]["run_id"] == "run_001"

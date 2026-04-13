@@ -10,10 +10,10 @@ function buildPendingWorkspace() {
       episode_id: "ep_001",
       project_id: "proj_001",
       objective: "Improve thermostability",
-      current_phase: "execution",
+      current_phase: "design",
       episode_status: "interrupted",
       progress: {
-        phase: "execution",
+        phase: "design",
         active_node: "approval_gate",
         status: "waiting",
         updated_at: "2026-04-11T00:00:00+00:00",
@@ -22,11 +22,11 @@ function buildPendingWorkspace() {
       pending_interrupt: { type: "approval", approval_id: "appr_001" },
       pending_approval: {
         approval_id: "appr_001",
-        requested_action: "Approve execution submission",
+        requested_action: "Approve selected candidate for a design run",
         created_at: "2026-04-11T00:00:00+00:00",
       },
       summary: {
-        current_phase: "execution",
+        current_phase: "design",
         workflow_status: "interrupted",
         active_node: "approval_gate",
         message: "Waiting for approval",
@@ -42,7 +42,7 @@ function buildPendingWorkspace() {
     pending_actions: [
       {
         approval_id: "appr_001",
-        requested_action: "Approve execution submission",
+        requested_action: "Approve selected candidate for a design run",
         status: "pending",
         created_at: "2026-04-11T00:00:00+00:00",
       },
@@ -137,7 +137,7 @@ function buildCompletedWorkspace(episodeId = "ep_001") {
       selected_candidate: {
         episode_id: episodeId,
         candidate_id: "cand_001",
-        rationale: "Selected for execution handoff.",
+        rationale: "Selected for the design run.",
         selected_at: "2026-04-11T00:01:30+00:00",
       },
     },
@@ -148,8 +148,8 @@ function buildCompletedWorkspace(episodeId = "ep_001") {
       artifact_id: "art_report",
       artifact_storage_uri: "/tmp/report.md",
       title: "Final report",
-      summary: "Execution completed and report review is ready.",
-      stage_summary: "Research, design, execution, and report review are complete.",
+      summary: "Design loop completed and report review is ready.",
+      stage_summary: "Intake, design, and report review are complete.",
       updated_at: "2026-04-11T00:02:10+00:00",
     },
   };

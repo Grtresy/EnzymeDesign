@@ -82,7 +82,7 @@ def build_episode_graph_config(episode_id: str) -> dict[str, dict[str, str]]:
 
 
 def validate_runtime_foundation_support() -> None:
-    required_records = {"projects", "episodes", "approvals", "runs", "artifact_records"}
+    required_records = {"projects", "episodes", "decisions", "approvals", "runs", "artifact_records"}
     assert required_records.issubset(set(RELATIONAL_RECORDS))
     assert GRAPH_THREAD_KEY == "episode_id"
     assert any("graph anchor" in item for item in GRAPH_STATE_DEPENDENCY_EXPECTATIONS)

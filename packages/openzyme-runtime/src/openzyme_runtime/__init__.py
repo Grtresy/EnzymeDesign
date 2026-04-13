@@ -19,6 +19,8 @@ from .contracts import CandidateSnapshot
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
 from .contracts import ConstraintSet
+from .contracts import DesignNextAction
+from .contracts import DesignToolCallResult
 from .contracts import DesignBriefDraft
 from .contracts import EvidenceSynthesis
 from .contracts import EvidenceSynthesisItem
@@ -39,6 +41,7 @@ from .migration_assets import get_migration_sql
 from .repositories import ArtifactRecordRepository
 from .repositories import CandidateRankingRepository
 from .repositories import CandidateRecordRepository
+from .repositories import DecisionRepository
 from .repositories import EvidenceRecordRepository
 from .repositories import EpisodeRepository
 from .repositories import OwnershipError
@@ -53,6 +56,8 @@ from .repositories import UnresolvedGapRepository
 from .repositories import ApprovalRepository
 from .repositories import connect_sqlite
 from .seams import ExecutionAdapter
+from .seams import DesignTool
+from .seams import DesignToolContext
 from .seams import ProjectionLoader
 from .seams import ResearchAdapter
 from .settings import DEFAULT_HOST_BASE_URL
@@ -96,11 +101,16 @@ __all__ = [
     "ChatModelFactory",
     "ConstraintItem",
     "ConstraintSet",
+    "DesignNextAction",
+    "DesignTool",
+    "DesignToolCallResult",
+    "DesignToolContext",
     "DesignBriefDraft",
     "ApprovalRepository",
     "ArtifactRecordRepository",
     "CandidateRankingRepository",
     "CandidateRecordRepository",
+    "DecisionRepository",
     "EvidenceRecordRepository",
     "EpisodeRepository",
     "ExecutionAdapter",

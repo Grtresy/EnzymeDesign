@@ -9,6 +9,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "002_phase_c_research_evidence_foundation",
     "003_phase_c_design_candidate_selection",
     "004_phase_d_report_review_workflow",
+    "005_phase_d_design_turn_ledger",
 )
 
 

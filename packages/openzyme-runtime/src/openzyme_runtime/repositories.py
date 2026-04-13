@@ -10,6 +10,8 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
 from openzyme_domain import CandidateRankingRecord
 from openzyme_domain import CandidateRecord
+from openzyme_domain import Decision
+from openzyme_domain import DecisionStatus
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
@@ -154,6 +156,86 @@ class EpisodeRepository:
                 status=EpisodeStatus(row["status"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+            )
+            for row in rows
+        ]
+
+
+@dataclass(slots=True)
+class DecisionRepository:
+    connection: sqlite3.Connection
+
+    def save(self, decision: Decision) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO decisions (
+                decision_id,
+                episode_id,
+                project_id,
+                phase,
+                turn_index,
+                action_kind,
+                status,
+                summary,
+                rationale,
+                action_payload_json,
+                observation_payload_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(decision_id) DO UPDATE SET
+                project_id = excluded.project_id,
+                phase = excluded.phase,
+                turn_index = excluded.turn_index,
+                action_kind = excluded.action_kind,
+                status = excluded.status,
+                summary = excluded.summary,
+                rationale = excluded.rationale,
+                action_payload_json = excluded.action_payload_json,
+                observation_payload_json = excluded.observation_payload_json
+            """,
+            (
+                decision.decision_id,
+                decision.episode_id,
+                decision.project_id,
+                decision.phase,
+                decision.turn_index,
+                decision.action_kind,
+                decision.status.value,
+                decision.summary,
+                decision.rationale,
+                None if decision.action_payload is None else json.dumps(decision.action_payload, sort_keys=True),
+                None
+                if decision.observation_payload is None
+                else json.dumps(decision.observation_payload, sort_keys=True),
+                decision.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_episode(self, episode_id: str) -> list[Decision]:
+        rows = self.connection.execute(
+            "SELECT * FROM decisions WHERE episode_id = ? ORDER BY turn_index, created_at, decision_id",
+            (episode_id,),
+        ).fetchall()
+        return [
+            Decision(
+                decision_id=row["decision_id"],
+                episode_id=row["episode_id"],
+                project_id=row["project_id"],
+                phase=row["phase"],
+                turn_index=row["turn_index"],
+                action_kind=row["action_kind"],
+                status=DecisionStatus(row["status"]),
+                summary=row["summary"],
+                rationale=row["rationale"],
+                action_payload=None
+                if row["action_payload_json"] is None
+                else json.loads(row["action_payload_json"]),
+                observation_payload=None
+                if row["observation_payload_json"] is None
+                else json.loads(row["observation_payload_json"]),
+                created_at=row["created_at"],
             )
             for row in rows
         ]
@@ -843,6 +925,7 @@ class SelectedCandidateRepository:
 class PhaseBRepositories:
     projects: ProjectRepository
     episodes: EpisodeRepository
+    decisions: DecisionRepository
     approvals: ApprovalRepository
     runs: RunRepository
     artifact_records: ArtifactRecordRepository
@@ -860,6 +943,7 @@ class PhaseBRepositories:
         return cls(
             projects=ProjectRepository(connection),
             episodes=EpisodeRepository(connection),
+            decisions=DecisionRepository(connection),
             approvals=ApprovalRepository(connection),
             runs=RunRepository(connection),
             artifact_records=ArtifactRecordRepository(connection),

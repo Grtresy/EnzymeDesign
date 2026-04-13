@@ -26,7 +26,7 @@ function buildWorkspace() {
       },
       pending_approval: {
         approval_id: "appr_001",
-        requested_action: "Approve execution submission",
+        requested_action: "Approve selected candidate for a design run",
         created_at: "2026-04-11T00:00:00+00:00",
       },
       summary: {
@@ -46,7 +46,7 @@ function buildWorkspace() {
     pending_actions: [
       {
         approval_id: "appr_001",
-        requested_action: "Approve execution submission",
+        requested_action: "Approve selected candidate for a design run",
         status: "pending",
         created_at: "2026-04-11T00:00:00+00:00",
       },
@@ -102,9 +102,8 @@ test("workspace render explains auto-run phases instead of looking skipped", () 
   });
 
   assert.match(html, /Create Episode will auto-run the workflow until the next approval gate/);
-  assert.match(html, /research/);
   assert.match(html, /design/);
-  assert.match(html, /The current node is the place where execution paused, not the whole history/);
+  assert.match(html, /The current node is the place where the workflow paused, not the whole history/);
 });
 
 test("workflow stream events update the host workspace projection in place", () => {
@@ -112,11 +111,11 @@ test("workflow stream events update the host workspace projection in place", () 
   workspace = reduceWorkspaceWithEvent(workspace, {
     event_type: "workflow.progress_updated",
     progress: {
-      phase: "execution",
+      phase: "design",
       active_node: "execute_runner",
       status: "running",
       updated_at: "2026-04-11T00:01:00+00:00",
-      message: "Executing runner",
+      message: "Executing the design run",
     },
     updated_at: "2026-04-11T00:01:00+00:00",
   });
@@ -147,7 +146,7 @@ test("workflow stream events update the host workspace projection in place", () 
     selected_candidate: {
       episode_id: "ep_001",
       candidate_id: "cand_001",
-      rationale: "Selected for execution handoff.",
+      rationale: "Selected for the design run.",
       selected_at: "2026-04-11T00:03:00+00:00",
     },
   });
@@ -160,8 +159,8 @@ test("workflow stream events update the host workspace projection in place", () 
       artifact_id: "art_report",
       artifact_storage_uri: "/tmp/report.md",
       title: "Final report",
-      summary: "Execution completed and report review is ready.",
-      stage_summary: "Research, design, execution, and report review are complete.",
+      summary: "Design loop completed and report review is ready.",
+      stage_summary: "Intake, design, and report review are complete.",
       updated_at: "2026-04-11T00:04:00+00:00",
     },
   });
@@ -181,7 +180,7 @@ test("workflow stream events update the host workspace projection in place", () 
     errorMessage: "",
     busy: false,
   });
-  assert.match(html, /Approve execution submission/);
+  assert.match(html, /Approve selected candidate for a design run/);
   assert.match(html, /run_001/);
   assert.match(html, /art_001/);
   assert.match(html, /Scaffold A is promising/);

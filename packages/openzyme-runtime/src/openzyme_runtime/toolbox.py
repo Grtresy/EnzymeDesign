@@ -44,12 +44,13 @@ class OpenZymeHostToolbox:
         execution_mode: str = "auto",
         command: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        tool_name: str = "exec.run",
     ) -> ExecutionRequestDraft:
         merged_metadata = dict(metadata or {})
         merged_metadata.setdefault("candidate_id", candidate.candidate_id)
         merged_metadata.setdefault("supporting_evidence_ids", list(candidate.supporting_evidence_ids))
         return ExecutionRequestDraft(
-            tool_name="exec.run",
+            tool_name=tool_name,
             runspec=ExecutionRunSpecDraft(
                 name=f"execution-{candidate.candidate_id}",
                 stage="execution",

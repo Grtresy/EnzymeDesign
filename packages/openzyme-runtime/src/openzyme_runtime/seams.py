@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from typing import Protocol
 
@@ -30,4 +31,27 @@ class ProjectionLoader(Protocol):
     def load_design_projection(self, episode_id: str) -> dict[str, Any]: ...
 
 
-__all__ = ["ExecutionAdapter", "ProjectionLoader", "ResearchAdapter"]
+@dataclass(frozen=True, slots=True)
+class DesignToolContext:
+    episode_id: str
+    project_id: str | None
+    objective: str | None
+    design_brief: str | None
+    research_brief: str | None
+    current_action: dict[str, Any]
+
+
+class DesignTool(Protocol):
+    name: str
+    requires_approval: bool
+
+    def invoke(self, context: DesignToolContext) -> dict[str, Any]: ...
+
+
+__all__ = [
+    "DesignTool",
+    "DesignToolContext",
+    "ExecutionAdapter",
+    "ProjectionLoader",
+    "ResearchAdapter",
+]

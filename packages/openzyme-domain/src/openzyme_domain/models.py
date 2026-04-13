@@ -60,6 +60,13 @@ class ReportStatus(StrEnum):
         return self in {self.PUBLISHED, self.FAILED}
 
 
+class DecisionStatus(StrEnum):
+    PROPOSED = "proposed"
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+
 class ArtifactKind(StrEnum):
     LOG = "log"
     STRUCTURE = "structure"
@@ -137,13 +144,21 @@ class Episode:
 class Decision:
     decision_id: str
     episode_id: str
+    phase: str
+    turn_index: int
+    action_kind: str
+    status: DecisionStatus
     summary: str
     rationale: str
     created_at: str
+    action_payload: dict[str, Any] | None = None
+    observation_payload: dict[str, Any] | None = None
     project_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["status"] = self.status.value
+        return data
 
 
 @dataclass(frozen=True, slots=True)

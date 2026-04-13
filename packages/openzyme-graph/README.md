@@ -16,9 +16,7 @@ This package defines the Phase A graph-side contract for:
 ## Fixed phases
 
 - `intake`
-- `research`
 - `design`
-- `execution`
 - `report_review`
 
 ## Cross-package rules

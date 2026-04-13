@@ -104,12 +104,7 @@ def build_intake_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: 
 
         design_brief = state.get("design_brief") or intake_output.design_brief.design_brief
         research_brief = state.get("research_brief") or intake_output.research_brief.research_brief
-        if state.get("run_request"):
-            next_phase = GraphPhase.EXECUTION
-        elif state.get("candidate_plan"):
-            next_phase = GraphPhase.EXECUTION
-        else:
-            next_phase = GraphPhase.RESEARCH
+        next_phase = GraphPhase.DESIGN
         intake_handoff: IntakeHandoff = {
             "design_brief": design_brief,
             "research_brief": research_brief,

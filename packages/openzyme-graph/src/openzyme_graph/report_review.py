@@ -58,6 +58,7 @@ class ReportReviewSubgraphState(TypedDict, total=False):
     selected_candidate_id: str | None
     run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
+    design_handoff: dict[str, Any] | None
     report_summary: dict[str, Any] | None
     report_artifact_id: str | None
     report_draft: dict[str, Any] | None
@@ -70,9 +71,14 @@ def create_canonical_report(
 ) -> tuple[ReportRecord, ArtifactRecord]:
     episode_id = str(state["episode_id"])
     objective = str(state.get("objective") or state.get("user_goal") or "OpenZyme episode")
-    run_summary = dict(state.get("run_summary") or {})
-    artifact_refs = list(state.get("artifact_refs") or [])
+    design_handoff = dict(state.get("design_handoff") or {})
+    run_summary = dict(state.get("run_summary") or design_handoff.get("run_summary") or {})
+    artifact_refs = list(state.get("artifact_refs") or design_handoff.get("artifact_refs") or [])
+    recent_turns = list(design_handoff.get("recent_turns") or [])
     research_summary = dict(state.get("research_summary") or {})
+    if not research_summary:
+        design_summary = dict(design_handoff.get("design_summary") or {})
+        research_summary = dict(design_summary.get("research_summary") or {})
     now = _utc_now_iso()
 
     report_artifact = ArtifactRecord(
@@ -106,7 +112,8 @@ def create_canonical_report(
             else (
                 f"Research summary: {research_summary.get('summary', 'No research summary available.')} "
                 f"Selected candidate: {state.get('selected_candidate_id', 'none')}. "
-                f"Execution artifacts available: {len(artifact_refs)}."
+                f"Execution artifacts available: {len(artifact_refs)}. "
+                f"Recent design turns recorded: {len(recent_turns)}."
             )
         ),
         created_at=now,
@@ -147,6 +154,7 @@ def build_report_review_subgraph(inputs: GraphAssemblyInputs, *, include_checkpo
                     "selected_candidate_id": state.get("selected_candidate_id"),
                     "run_summary": state.get("run_summary") or {},
                     "artifact_refs": state.get("artifact_refs") or [],
+                    "design_handoff": state.get("design_handoff") or {},
                 },
             )
         report, artifact = create_canonical_report(inputs, state, draft=draft)
