@@ -13,6 +13,7 @@ from .contracts import WorkflowStreamEventContract
 from .contracts import build_host_api_contract
 from .app import HostApiDependencies
 from .app import create_app
+from .foundation import build_configured_foundation
 from .demo import build_demo_foundation
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
@@ -39,6 +40,7 @@ __all__ = [
     "WorkflowProjection",
     "WorkflowStreamEventContract",
     "build_host_api_contract",
+    "build_configured_foundation",
     "build_trace_metadata",
     "build_trace_tags",
     "build_demo_foundation",

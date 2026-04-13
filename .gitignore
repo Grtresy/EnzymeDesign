@@ -53,3 +53,5 @@ node_modules/
 playgrounds/
 
 database/
+
+skills-lock.json

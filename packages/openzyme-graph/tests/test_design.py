@@ -11,8 +11,6 @@ from openzyme_runtime import CandidateComparison
 from openzyme_runtime import CandidateDraft
 from openzyme_runtime import CandidateDraftCollection
 from openzyme_runtime import CandidateRankingDraft
-from openzyme_runtime import ExecutionRequestDraft
-from openzyme_runtime import ExecutionRunSpecDraft
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
@@ -174,7 +172,7 @@ def test_phase_c_design_graph_requires_research_outputs_before_design(monkeypatc
     assert result["pending_interrupt"]["type"] == "recoverable_failure"
 
 
-def test_phase_c_design_graph_uses_structured_candidate_and_execution_outputs(monkeypatch) -> None:
+def test_phase_c_design_graph_uses_structured_candidate_outputs_and_deterministic_execution_request(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -208,16 +206,6 @@ def test_phase_c_design_graph_uses_structured_candidate_and_execution_outputs(mo
                         )
                     ],
                 ),
-                "design_execution_request": ExecutionRequestDraft(
-                    tool_name="exec.run",
-                    runspec=ExecutionRunSpecDraft(
-                        name="structured-run",
-                        stage="execution",
-                        command=["echo", "structured"],
-                        execution_mode="auto",
-                        metadata={"candidate_id": "cand_structured"},
-                    ),
-                ),
             }
         ),
     )
@@ -236,4 +224,6 @@ def test_phase_c_design_graph_uses_structured_candidate_and_execution_outputs(mo
         result = graph.invoke(Command(resume={"approved": True}), config)
 
     assert result["candidate_plan"]["candidate_id"] == "cand_structured"
-    assert result["run_request"]["runspec"]["name"] == "structured-run"
+    assert result["run_request"]["tool_name"] == "exec.run"
+    assert result["run_request"]["runspec"]["name"] == "execution-cand_structured"
+    assert result["run_request"]["runspec"]["command"] == ["echo", "Structured candidate"]

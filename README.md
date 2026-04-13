@@ -65,5 +65,32 @@ Intended use:
 - `.env`: shared local defaults for running the Host API, CLI, and demo flows
 - `.env.local`: machine-local overrides you do not want to share
 - `.env.test`: test-only overrides, such as smaller fan-out or tracing disabled
+- Live external dependency suites stay opt-in. Enable them with `OPENZYME_TEST_ENABLE_LIVE_*` flags in `.env.test`.
+- `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD` controls the default schema enforcement strategy. For OpenAI-compatible `glm-5.1`, the default is `function_calling`.
+- `OPENZYME_LLM_EXTRA_BODY` can pass provider-specific JSON fields to OpenAI-compatible endpoints.
+- `OPENZYME_LLM_MAX_TOKENS` and `OPENZYME_LLM_<PURPOSE>_*` can override output budget, timeout, retries, and structured-output policy for `intake`, `research`, `design`, and `report_review` calls.
+- `OPENZYME_TEST_LIVE_LLM_*` lets live LLM smoke tests use a different timeout/retry budget from the main app runtime.
 
 The HPC runner keeps its own independent TOML config under `apps/mcp-hpc-runner/config/` and is not folded into the main OpenZyme `.env` settings.
+
+## Live Test Commands
+
+Default `uv run pytest` remains local and deterministic. Real LLM, Tavily, HPC, and end-to-end tests are skipped unless explicitly enabled.
+
+Examples:
+
+```bash
+uv run pytest -m "integration and live_llm"
+uv run pytest -m "integration and live_tavily"
+uv run pytest -m "integration and live_hpc"
+uv run pytest -m "integration and live_e2e"
+uv run pytest -m quality_eval
+```
+
+Recommended `.env.test` toggles:
+
+- `OPENZYME_TEST_ENABLE_LIVE_LLM=true` for real structured-output model tests
+- `OPENZYME_TEST_ENABLE_LIVE_TAVILY=true` for live Tavily adapter tests
+- `OPENZYME_TEST_ENABLE_LIVE_HPC=true` plus `OPENZYME_EXECUTION_BACKEND=hpc` for runner-backed tests
+- `OPENZYME_TEST_ENABLE_LIVE_E2E=true` for Host API workflows that combine real LLM, Tavily, and HPC
+- `OPENZYME_TEST_ENABLE_QUALITY_EVAL=true` for costlier seeded eval runs

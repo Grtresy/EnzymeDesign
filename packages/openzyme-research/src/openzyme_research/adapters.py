@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
-import os
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -107,16 +106,24 @@ class TavilyResearchAdapter:
     api_key: str | None = None
     max_results: int = 3
     topic: str = "general"
+    include_raw_content: bool = True
     search_callable: SearchCallable | None = None
 
     def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+        del episode_id, research_brief
+        response = self.search(unit.query)
+        return self.normalize_response(unit=unit, response=response)
+
+    def search(self, query: str) -> dict[str, Any]:
         search = self.search_callable or self._load_search_callable()
-        response = search(
-            query=unit.query,
+        return search(
+            query=query,
             max_results=self.max_results,
-            include_raw_content=True,
+            include_raw_content=self.include_raw_content,
             topic=self.topic,
         )
+
+    def normalize_response(self, *, unit: ResearchUnit, response: dict[str, Any]) -> ResearchUnitResult:
         raw_results = list(response.get("results", []))
         if not raw_results:
             return ResearchUnitResult(
@@ -158,7 +165,7 @@ class TavilyResearchAdapter:
         )
 
     def _load_search_callable(self) -> SearchCallable:
-        api_key = self.api_key or os.getenv("TAVILY_API_KEY")
+        api_key = self.api_key
         if not api_key:
             raise MissingTavilyApiKeyError("TavilyResearchAdapter requires TAVILY_API_KEY")
         try:

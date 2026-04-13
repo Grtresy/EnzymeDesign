@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any
 from typing import Protocol
 from typing import TypeVar
@@ -41,6 +43,9 @@ class ChatModelFactory(Protocol):
 @dataclass(frozen=True, slots=True)
 class LangChainStructuredInvoker:
     model: Any
+    structured_output_method: str = "json_schema"
+    max_attempts: int = 1
+    retry_backoff_seconds: float = 1.0
 
     def invoke_structured(
         self,
@@ -57,20 +62,35 @@ class LangChainStructuredInvoker:
                 "Install langchain to invoke structured model calls."
             ) from exc
 
-        structured_model = self.model.with_structured_output(schema)
-        response = structured_model.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(
-                    content=json.dumps(
-                        user_payload,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        default=str,
-                    )
-                ),
-            ]
+        structured_model = self.model.with_structured_output(
+            schema,
+            method=self.structured_output_method,
         )
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(
+                content=json.dumps(
+                    user_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    default=str,
+                )
+            ),
+        ]
+        response: Any | None = None
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                response = structured_model.invoke(messages)
+                last_error = None
+                break
+            except Exception as exc:
+                if not _is_retryable_openai_error(exc) or attempt >= self.max_attempts:
+                    raise
+                last_error = exc
+                time.sleep(self.retry_backoff_seconds * attempt)
+        if response is None and last_error is not None:
+            raise last_error
         if isinstance(response, schema):
             return response
         if isinstance(response, BaseModel):
@@ -82,6 +102,9 @@ class LangChainStructuredInvoker:
 class LangChainModelFactory:
     model: str
     model_kwargs: dict[str, Any] | None = None
+    structured_output_method: str = "json_schema"
+    structured_output_max_attempts: int = 1
+    structured_output_retry_backoff_seconds: float = 1.0
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
         del purpose
@@ -100,7 +123,12 @@ class LangChainModelFactory:
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
             ) from exc
-        return LangChainStructuredInvoker(model=chat_model)
+        return LangChainStructuredInvoker(
+            model=chat_model,
+            structured_output_method=self.structured_output_method,
+            max_attempts=self.structured_output_max_attempts,
+            retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,30 +136,79 @@ class OpenAICompatibleChatModelFactory:
     model: str
     api_key: str
     base_url: str
+    extra_body: dict[str, Any] | None = None
+    max_tokens: int | None = None
     temperature: float = 0.0
     timeout: float | None = None
     max_retries: int = 1
     model_kwargs: dict[str, Any] | None = None
+    structured_output_method: str = "function_calling"
+    structured_output_max_attempts: int = 3
+    structured_output_retry_backoff_seconds: float = 1.0
+    purpose_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
-        del purpose
         try:
-            from langchain_openai import ChatOpenAI
+            from langchain.chat_models import init_chat_model
         except ImportError as exc:  # pragma: no cover - exercised only in environments missing provider package
             raise MissingLangChainProviderDependencyError(
-                "Install langchain-openai to use OpenAI-compatible chat models."
+                "Install langchain and langchain-openai to use OpenAI-compatible chat models."
             ) from exc
 
-        chat_model = ChatOpenAI(
+        policy = self._resolve_policy(purpose)
+        chat_model = init_chat_model(
             model=self.model,
+            model_provider="openai",
             api_key=self.api_key,
             base_url=self.base_url,
+            extra_body=self.extra_body,
+            max_tokens=policy["max_tokens"],
             temperature=self.temperature,
-            timeout=self.timeout,
-            max_retries=self.max_retries,
-            model_kwargs=self.model_kwargs or {},
+            timeout=policy["timeout"],
+            max_retries=policy["max_retries"],
+            **(self.model_kwargs or {}),
         )
-        return LangChainStructuredInvoker(model=chat_model)
+        return LangChainStructuredInvoker(
+            model=chat_model,
+            structured_output_method=policy["structured_output_method"],
+            max_attempts=policy["structured_output_max_attempts"],
+            retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
+        )
+
+    def _resolve_policy(self, purpose: str) -> dict[str, Any]:
+        override = self.purpose_policies.get(purpose, {})
+        return {
+            "max_tokens": override.get("max_tokens", self.max_tokens),
+            "timeout": override.get("timeout", self.timeout),
+            "max_retries": override.get("max_retries", self.max_retries),
+            "structured_output_method": override.get(
+                "structured_output_method",
+                self.structured_output_method,
+            ),
+            "structured_output_max_attempts": override.get(
+                "structured_output_max_attempts",
+                self.structured_output_max_attempts,
+            ),
+            "structured_output_retry_backoff_seconds": override.get(
+                "structured_output_retry_backoff_seconds",
+                self.structured_output_retry_backoff_seconds,
+            ),
+        }
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    try:
+        from openai import APIStatusError
+        from openai import APIConnectionError
+        from openai import APITimeoutError
+        from openai import RateLimitError
+    except ImportError:
+        return False
+    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in {429, 500, 502, 503, 504}
+    return False
 
 
 __all__ = [

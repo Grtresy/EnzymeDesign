@@ -17,7 +17,7 @@ from mcp_hpc_runner.staging import StagingManager
 from mcp_hpc_runner.store import ArtifactStore
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live_hpc]
 
 
 def _project_root() -> Path:

@@ -27,3 +27,7 @@ packages = ["src/openzyme_research"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+  "integration: opt-in tests requiring real external integrations",
+  "live_tavily: opt-in tests that call the real Tavily API",
+]

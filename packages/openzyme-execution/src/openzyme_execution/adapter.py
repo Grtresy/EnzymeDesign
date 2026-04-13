@@ -9,6 +9,8 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_runtime.seams import ExecutionAdapter
 
+_SUPPORTED_EXECUTION_TOOLS = frozenset({"exec.run"})
+
 
 def _artifact_kind_from_uri(storage_uri: str) -> ArtifactKind:
     path = storage_uri.lower()
@@ -61,11 +63,18 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             self.server = MCPHpcServer(self.config_path)
 
     def submit_execution(self, episode_id: str, payload: dict[str, Any]) -> ExecutionOutcome:
-        tool_name = str(payload.get("tool_name", "exec.run"))
+        requested_tool_name = str(payload.get("tool_name", "exec.run"))
+        tool_name = (
+            requested_tool_name
+            if requested_tool_name in _SUPPORTED_EXECUTION_TOOLS
+            else "exec.run"
+        )
         runspec = dict(payload["runspec"])
         metadata = dict(runspec.get("metadata", {}))
         metadata.setdefault("openzyme", {})
         metadata["openzyme"]["episode_id"] = episode_id
+        if tool_name != requested_tool_name:
+            metadata["openzyme"]["requested_tool_name"] = requested_tool_name
         runspec["metadata"] = metadata
         result = self.server.call_tool(tool_name, {"runspec": runspec})
         return self._normalize_result(result)

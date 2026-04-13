@@ -58,19 +58,32 @@ from .seams import ResearchAdapter
 from .settings import DEFAULT_HOST_BASE_URL
 from .settings import DEFAULT_HOST_API_BIND_HOST
 from .settings import DEFAULT_HOST_API_BIND_PORT
+from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
+from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS
+from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from .settings import DEFAULT_OPENAI_COMPAT_BASE_URL
 from .settings import DEFAULT_OPENAI_COMPAT_MODEL
 from .settings import ExecutionSettings
 from .settings import HostApiSettings
 from .settings import HostCliSettings
+from .settings import LiveLlmTestSettings
+from .settings import LlmPurposePolicy
 from .settings import LlmSettings
 from .settings import OpenZymeSettings
 from .settings import REPO_ROOT
+from .settings import ResolvedLlmPolicy
 from .settings import ResearchSettings
+from .settings import TestSettings
 from .settings import TracingSettings
 from .settings import get_settings
 from .settings import load_env_files
 from .settings import reset_settings_cache
+from .test_gates import live_e2e_skip_reason
+from .test_gates import live_hpc_skip_reason
+from .test_gates import live_llm_skip_reason
+from .test_gates import live_tavily_skip_reason
+from .test_gates import load_current_settings
+from .test_gates import quality_eval_skip_reason
 from .toolbox import OpenZymeHostToolbox
 
 __all__ = [
@@ -105,6 +118,8 @@ __all__ = [
     "IntakeClarification",
     "IntakePhaseOutput",
     "LangChainModelFactory",
+    "LiveLlmTestSettings",
+    "LlmPurposePolicy",
     "LlmSettings",
     "MIGRATION_IDS",
     "MissingLangChainDependencyError",
@@ -121,10 +136,12 @@ __all__ = [
     "ProjectionLoader",
     "ProjectRepository",
     "ReportRepository",
+    "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",
     "REPO_ROOT",
     "ResearchSettings",
+    "TestSettings",
     "ResearchSummaryRepository",
     "ResearchUnitDraft",
     "ResearchUnitPlan",
@@ -140,6 +157,9 @@ __all__ = [
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
     "DEFAULT_OPENAI_COMPAT_MODEL",
     "apply_sqlite_migrations",
@@ -147,5 +167,11 @@ __all__ = [
     "connect_sqlite",
     "get_migration_sql",
     "load_env_files",
+    "load_current_settings",
+    "live_e2e_skip_reason",
+    "live_hpc_skip_reason",
+    "live_llm_skip_reason",
+    "live_tavily_skip_reason",
+    "quality_eval_skip_reason",
     "validate_runtime_foundation_support",
 ]

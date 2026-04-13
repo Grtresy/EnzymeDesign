@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ENV_FILES = (".env", ".env.local")
 DEFAULT_OPENAI_COMPAT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4"
 DEFAULT_OPENAI_COMPAT_MODEL = "glm-5.1"
+DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD = "function_calling"
+DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS = 3
+DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_HOST_API_BIND_HOST = "127.0.0.1"
 DEFAULT_HOST_API_BIND_PORT = 8000
+LLM_PURPOSES = ("intake", "research", "design", "report_review")
 
 
 def _parse_bool(value: str | None, default: bool = False) -> bool:
@@ -37,6 +43,15 @@ def _parse_optional_float(value: str | None) -> float | None:
     if value in {None, ""}:
         return None
     return float(value)
+
+
+def _parse_json_object(value: str | None) -> dict[str, Any] | None:
+    if value in {None, ""}:
+        return None
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("Expected a JSON object.")
+    return parsed
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -75,17 +90,66 @@ def load_env_files(file_names: tuple[str, ...] = DEFAULT_ENV_FILES) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedLlmPolicy:
+    max_tokens: int | None
+    timeout: float | None
+    max_retries: int
+    structured_output_method: str
+    structured_output_max_attempts: int
+    structured_output_retry_backoff_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class LlmPurposePolicy:
+    max_tokens: int | None = None
+    timeout: float | None = None
+    max_retries: int | None = None
+    structured_output_method: str | None = None
+    structured_output_max_attempts: int | None = None
+    structured_output_retry_backoff_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class LlmSettings:
     api_key: str | None
     model: str
     base_url: str
+    extra_body: dict[str, Any] | None
+    max_tokens: int | None
     timeout: float | None
     max_retries: int
     temperature: float
+    structured_output_method: str
+    structured_output_max_attempts: int
+    structured_output_retry_backoff_seconds: float
+    purpose_policies: dict[str, LlmPurposePolicy]
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
+
+    def policy_for_purpose(self, purpose: str | None) -> ResolvedLlmPolicy:
+        override = self.purpose_policies.get(purpose or "", LlmPurposePolicy())
+        return ResolvedLlmPolicy(
+            max_tokens=self.max_tokens if override.max_tokens is None else override.max_tokens,
+            timeout=self.timeout if override.timeout is None else override.timeout,
+            max_retries=self.max_retries if override.max_retries is None else override.max_retries,
+            structured_output_method=(
+                self.structured_output_method
+                if override.structured_output_method is None
+                else override.structured_output_method
+            ),
+            structured_output_max_attempts=(
+                self.structured_output_max_attempts
+                if override.structured_output_max_attempts is None
+                else override.structured_output_max_attempts
+            ),
+            structured_output_retry_backoff_seconds=(
+                self.structured_output_retry_backoff_seconds
+                if override.structured_output_retry_backoff_seconds is None
+                else override.structured_output_retry_backoff_seconds
+            ),
+        )
 
     @classmethod
     def from_env(cls) -> "LlmSettings":
@@ -93,15 +157,81 @@ class LlmSettings:
             os.getenv("OPENZYME_LLM_API_KEY")
             or os.getenv("BIGMODEL_API_KEY")
             or os.getenv("ZHIPUAI_API_KEY")
+            or None
         )
         return cls(
             api_key=api_key,
             model=os.getenv("OPENZYME_LLM_MODEL", DEFAULT_OPENAI_COMPAT_MODEL),
             base_url=os.getenv("OPENZYME_LLM_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL),
+            extra_body=_parse_json_object(os.getenv("OPENZYME_LLM_EXTRA_BODY")),
+            max_tokens=(
+                None
+                if os.getenv("OPENZYME_LLM_MAX_TOKENS") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_LLM_MAX_TOKENS"), 0)
+            ),
             timeout=_parse_optional_float(os.getenv("OPENZYME_LLM_TIMEOUT")),
             max_retries=_parse_int(os.getenv("OPENZYME_LLM_MAX_RETRIES"), 1),
             temperature=_parse_float(os.getenv("OPENZYME_LLM_TEMPERATURE"), 0.0),
+            structured_output_method=os.getenv(
+                "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",
+                DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD,
+            ),
+            structured_output_max_attempts=_parse_int(
+                os.getenv("OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS"),
+                DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS,
+            ),
+            structured_output_retry_backoff_seconds=_parse_float(
+                os.getenv("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
+                DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS,
+            ),
+            purpose_policies=_load_llm_purpose_policies(),
         )
+
+
+def _load_llm_purpose_policies() -> dict[str, LlmPurposePolicy]:
+    policies: dict[str, LlmPurposePolicy] = {}
+    for purpose in LLM_PURPOSES:
+        env_prefix = f"OPENZYME_LLM_{purpose.upper()}_"
+        policy = LlmPurposePolicy(
+            max_tokens=(
+                None
+                if os.getenv(f"{env_prefix}MAX_TOKENS") in {None, ""}
+                else _parse_int(os.getenv(f"{env_prefix}MAX_TOKENS"), 0)
+            ),
+            timeout=_parse_optional_float(os.getenv(f"{env_prefix}TIMEOUT")),
+            max_retries=(
+                None
+                if os.getenv(f"{env_prefix}MAX_RETRIES") in {None, ""}
+                else _parse_int(os.getenv(f"{env_prefix}MAX_RETRIES"), 0)
+            ),
+            structured_output_method=os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_METHOD") or None,
+            structured_output_max_attempts=(
+                None
+                if os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_MAX_ATTEMPTS") in {None, ""}
+                else _parse_int(os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_MAX_ATTEMPTS"), 0)
+            ),
+            structured_output_retry_backoff_seconds=(
+                None
+                if os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS") in {None, ""}
+                else _parse_float(
+                    os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
+                    0.0,
+                )
+            ),
+        )
+        if any(
+            value is not None
+            for value in (
+                policy.timeout,
+                policy.max_tokens,
+                policy.max_retries,
+                policy.structured_output_method,
+                policy.structured_output_max_attempts,
+                policy.structured_output_retry_backoff_seconds,
+            )
+        ):
+            policies[purpose] = policy
+    return policies
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,7 +314,77 @@ class ExecutionSettings:
     def from_env(cls) -> "ExecutionSettings":
         return cls(
             backend=os.getenv("OPENZYME_EXECUTION_BACKEND", "demo"),
-            hpc_runner_config=os.getenv("OPENZYME_HPC_RUNNER_CONFIG") or None,
+            hpc_runner_config=(
+                os.getenv("OPENZYME_HPC_RUNNER_CONFIG")
+                or os.getenv("HPC_RUNNER_CONFIG")
+                or None
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LiveLlmTestSettings:
+    max_tokens: int | None
+    timeout: float | None
+    max_retries: int | None
+    structured_output_method: str | None
+    structured_output_max_attempts: int | None
+    structured_output_retry_backoff_seconds: float | None
+
+    @classmethod
+    def from_env(cls) -> "LiveLlmTestSettings":
+        return cls(
+            max_tokens=(
+                None
+                if os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS"), 0)
+            ),
+            timeout=_parse_optional_float(os.getenv("OPENZYME_TEST_LIVE_LLM_TIMEOUT")),
+            max_retries=(
+                None
+                if os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES"), 0)
+            ),
+            structured_output_method=(
+                os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD") or None
+            ),
+            structured_output_max_attempts=(
+                None
+                if os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS"), 0)
+            ),
+            structured_output_retry_backoff_seconds=(
+                None
+                if os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS")
+                in {None, ""}
+                else _parse_float(
+                    os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
+                    0.0,
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TestSettings:
+    enable_live_llm: bool
+    enable_live_tavily: bool
+    enable_live_hpc: bool
+    enable_live_e2e: bool
+    enable_quality_eval: bool
+    upload_langsmith: bool
+    live_llm: LiveLlmTestSettings
+
+    @classmethod
+    def from_env(cls) -> "TestSettings":
+        return cls(
+            enable_live_llm=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_LLM")),
+            enable_live_tavily=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_TAVILY")),
+            enable_live_hpc=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_HPC")),
+            enable_live_e2e=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_LIVE_E2E")),
+            enable_quality_eval=_parse_bool(os.getenv("OPENZYME_TEST_ENABLE_QUALITY_EVAL")),
+            upload_langsmith=_parse_bool(os.getenv("OPENZYME_TEST_UPLOAD_LANGSMITH")),
+            live_llm=LiveLlmTestSettings.from_env(),
         )
 
 
@@ -196,6 +396,7 @@ class OpenZymeSettings:
     host_cli: HostCliSettings
     host_api: HostApiSettings
     execution: ExecutionSettings
+    test: TestSettings
 
     @classmethod
     def from_env(cls) -> "OpenZymeSettings":
@@ -207,6 +408,7 @@ class OpenZymeSettings:
             host_cli=HostCliSettings.from_env(),
             host_api=HostApiSettings.from_env(),
             execution=ExecutionSettings.from_env(),
+            test=TestSettings.from_env(),
         )
 
 
@@ -223,14 +425,20 @@ __all__ = [
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
+    "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
     "DEFAULT_OPENAI_COMPAT_MODEL",
     "ExecutionSettings",
     "HostApiSettings",
     "HostCliSettings",
+    "LiveLlmTestSettings",
+    "LlmPurposePolicy",
     "LlmSettings",
     "OpenZymeSettings",
     "REPO_ROOT",
+    "ResolvedLlmPolicy",
     "ResearchSettings",
     "TracingSettings",
     "get_settings",

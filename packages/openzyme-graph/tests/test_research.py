@@ -17,6 +17,8 @@ from openzyme_runtime import ResearchSettings
 from openzyme_runtime import ResearchUnitPlan
 from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import LiveLlmTestSettings as RuntimeLiveLlmTestSettings
+from openzyme_runtime import TestSettings as RuntimeTestSettings
 from openzyme_runtime import LlmSettings
 from openzyme_runtime import TracingSettings
 from openzyme_runtime import HostCliSettings
@@ -160,6 +162,8 @@ def test_phase_c_research_graph_bounds_parallel_worker_count(monkeypatch) -> Non
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
+    monkeypatch.setenv("OPENZYME_RESEARCH_MAX_UNITS", "3")
+    reset_settings_cache()
     foundation, adapter = _build_foundation()
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
@@ -279,9 +283,15 @@ def test_phase_c_research_graph_respects_settings_max_units(monkeypatch) -> None
                 api_key=None,
                 model="glm-5.1",
                 base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+                extra_body=None,
+                max_tokens=None,
                 timeout=None,
                 max_retries=1,
                 temperature=0.0,
+                structured_output_method="function_calling",
+                structured_output_max_attempts=3,
+                structured_output_retry_backoff_seconds=1.0,
+                purpose_policies={},
             ),
             research=ResearchSettings(
                 max_units=1,
@@ -298,6 +308,22 @@ def test_phase_c_research_graph_respects_settings_max_units(monkeypatch) -> None
             ),
             host_api=HostApiSettings(bind_host="127.0.0.1", bind_port=8000),
             execution=ExecutionSettings(backend="demo", hpc_runner_config=None),
+            test=RuntimeTestSettings(
+                enable_live_llm=False,
+                enable_live_tavily=False,
+                enable_live_hpc=False,
+                enable_live_e2e=False,
+                enable_quality_eval=False,
+                upload_langsmith=False,
+                live_llm=RuntimeLiveLlmTestSettings(
+                    max_tokens=None,
+                    timeout=None,
+                    max_retries=None,
+                    structured_output_method=None,
+                    structured_output_max_attempts=None,
+                    structured_output_retry_backoff_seconds=None,
+                ),
+            ),
         ),
     )
     facade = GraphRuntimeFacade(foundation)

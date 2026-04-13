@@ -612,6 +612,16 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 - 本地 evals 从最小闭环扩展到 research / design / execution / report 全链路场景
 - 增加 research escalation、design rejection、execution recoverable failure、resume after restart 等回归用例
 
+#### Step 7：为 design -> research 补研回路补齐受控回退机制
+
+- 允许 `design` 在 canonical research outputs 不足以支撑候选生成、比较或审批时，显式请求回到 `research`
+- 该回退必须通过结构化 handoff / interrupt 表达，例如 `insufficient_research`、缺失证据类型、建议新增的 research units、当前设计无法继续的原因
+- `Supervisor Graph` 负责决定是否接受该回退，并在同一 `episode_id` 线程上将流程重新路由到 `research`
+- 回退后的 `research` 应被视为补研轮次，而不是一次新的独立 episode；其输出仍需通过 canonical evidence / summary 与显式 handoff 返回 `design`
+- 必须限制补研回路的最大轮数、失败策略与 stop reason，避免 `research <-> design` 无约束往返
+- UI / decision log / report 应能看见该回退曾发生过，以及补研解决了哪些 gap、是否仍有 unresolved gaps
+- 不允许让 LLM 直接绕过 supervisor 自由跳回 `research`；phase 回退控制仍应由确定性 supervisor policy 承担
+
 
 ---
 

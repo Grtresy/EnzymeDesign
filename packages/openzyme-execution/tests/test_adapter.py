@@ -56,3 +56,30 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
     assert outcome.execution_mode == "ssh"
     assert outcome.artifacts[0].storage_uri == "/tmp/stdout.log"
     assert outcome.artifacts[0].kind.value == "log"
+
+
+def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+
+    adapter.submit_execution(
+        "ep_001",
+        {
+            "tool_name": "protein_engineering_pipeline",
+            "runspec": {
+                "name": "pipeline-run",
+                "stage": "execution",
+                "command": ["echo", "ok"],
+                "execution_mode": "auto",
+                "metadata": {},
+            },
+        },
+    )
+
+    assert server.calls[0][0] == "exec.run"
+    sent_runspec = server.calls[0][1]["runspec"]
+    assert sent_runspec["metadata"]["openzyme"]["episode_id"] == "ep_001"
+    assert (
+        sent_runspec["metadata"]["openzyme"]["requested_tool_name"]
+        == "protein_engineering_pipeline"
+    )

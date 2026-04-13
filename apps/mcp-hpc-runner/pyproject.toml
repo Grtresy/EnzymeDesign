@@ -26,5 +26,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
 markers = [
-  "integration: opt-in tests requiring reachable HPC resources",
+  "integration: opt-in tests requiring real external integrations",
+  "live_hpc: opt-in tests that call a reachable HPC runner or cluster",
+  "slow: longer-running tests that are not part of fast default feedback loops",
 ]

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 from typing import Any
+from typing import Callable
 
 from fastapi.testclient import TestClient
 from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import get_settings
 
 from .app import HostApiDependencies
 from .app import create_app
+from .foundation import build_configured_foundation
 from .demo import build_demo_foundation
 from .tracing import workflow_trace
 
@@ -45,9 +50,31 @@ SEEDED_SCENARIOS: tuple[EvalScenario, ...] = (
 )
 
 
-def _run_scenario(scenario: EvalScenario) -> dict[str, Any]:
+FoundationBuilder = Callable[[Path], RuntimeFoundation]
+
+
+def build_local_eval_foundation(sqlite_db_path: Path) -> RuntimeFoundation:
+    settings = get_settings()
+    return build_demo_foundation(
+        sqlite_db_path=sqlite_db_path,
+        settings=replace(
+            settings,
+            llm=replace(settings.llm, api_key=None),
+        ),
+    )
+
+
+def build_live_eval_foundation(sqlite_db_path: Path) -> RuntimeFoundation:
+    return build_configured_foundation(sqlite_db_path=sqlite_db_path)
+
+
+def _run_scenario(
+    scenario: EvalScenario,
+    *,
+    foundation_builder: FoundationBuilder,
+) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="openzyme-eval-") as temp_dir:
-        foundation = build_demo_foundation(sqlite_db_path=Path(temp_dir) / "eval.sqlite3")
+        foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
@@ -108,7 +135,11 @@ def _run_scenario(scenario: EvalScenario) -> dict[str, Any]:
     }
 
 
-def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
+def run_workflow_evals(
+    *,
+    foundation_builder: FoundationBuilder,
+    upload_results: bool = False,
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for scenario in SEEDED_SCENARIOS:
         with workflow_trace(
@@ -119,7 +150,7 @@ def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
             inputs={"scenario_id": scenario.scenario_id, "objective": scenario.objective},
             enabled=upload_results,
         ) as run:
-            result = _run_scenario(scenario)
+            result = _run_scenario(scenario, foundation_builder=foundation_builder)
             if run is not None:
                 run.end(outputs=result)
             results.append(result)
@@ -131,6 +162,20 @@ def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
         "upload_results": upload_results,
         "results": results,
     }
+
+
+def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
+    return run_workflow_evals(
+        foundation_builder=build_local_eval_foundation,
+        upload_results=upload_results,
+    )
+
+
+def run_live_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
+    return run_workflow_evals(
+        foundation_builder=build_live_eval_foundation,
+        upload_results=upload_results,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

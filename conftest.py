@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parent
 ENV_FILES = (".env", ".env.test")
@@ -41,3 +43,34 @@ def _load_env_files() -> None:
 
 
 _load_env_files()
+
+
+def _get_settings():
+    from openzyme_runtime import load_current_settings
+
+    return load_current_settings()
+
+
+def _skip_if_needed(reason: str | None) -> None:
+    if reason is not None:
+        pytest.skip(reason)
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    from openzyme_runtime import live_e2e_skip_reason
+    from openzyme_runtime import live_hpc_skip_reason
+    from openzyme_runtime import live_llm_skip_reason
+    from openzyme_runtime import live_tavily_skip_reason
+    from openzyme_runtime import quality_eval_skip_reason
+
+    settings = _get_settings()
+    if item.get_closest_marker("live_llm"):
+        _skip_if_needed(live_llm_skip_reason(settings))
+    if item.get_closest_marker("live_tavily"):
+        _skip_if_needed(live_tavily_skip_reason(settings))
+    if item.get_closest_marker("live_hpc"):
+        _skip_if_needed(live_hpc_skip_reason(settings))
+    if item.get_closest_marker("live_e2e"):
+        _skip_if_needed(live_e2e_skip_reason(settings))
+    if item.get_closest_marker("quality_eval"):
+        _skip_if_needed(quality_eval_skip_reason(settings))

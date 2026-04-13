@@ -63,9 +63,9 @@ def test_demo_execution_adapter_scopes_run_ids_per_episode_and_call_count() -> N
 
 def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:
     reset_settings_cache()
-    monkeypatch.delenv("OPENZYME_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("BIGMODEL_API_KEY", raising=False)
-    monkeypatch.delenv("ZHIPUAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENZYME_LLM_API_KEY", "")
+    monkeypatch.setenv("BIGMODEL_API_KEY", "")
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "")
 
     assert build_model_factory_from_env() is None
 

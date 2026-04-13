@@ -354,22 +354,10 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             msg = f"candidate snapshot {candidate.candidate_id!r} does not exist"
             raise RuntimeError(msg)
         candidate_plan = candidate_snapshot.model_dump()
-        if inputs.model_factory is not None:
-            invoker = inputs.model_factory.create_structured_invoker(purpose="design_execution_request")
-            execution_request = invoker.invoke_structured(
-                schema=ExecutionRequestDraft,
-                system_prompt=(
-                    "You translate an approved candidate into an execution request. "
-                    "Return a tool name and a concrete run specification."
-                ),
-                user_payload={
-                    "episode_id": state.get("episode_id"),
-                    "candidate": candidate_snapshot.model_dump(),
-                    "research_summary": state.get("research_summary") or {},
-                },
-            )
-        else:
-            execution_request = inputs.host_toolbox.build_execution_request(candidate=candidate_snapshot)
+        # Execution requests are compiled deterministically from the approved
+        # candidate. Letting the LLM emit raw tool names or shell commands makes
+        # downstream runner behavior flaky and unsafe.
+        execution_request = inputs.host_toolbox.build_execution_request(candidate=candidate_snapshot)
         run_request = execution_request.model_dump()
         return {
             "candidate_plan": candidate_plan,
