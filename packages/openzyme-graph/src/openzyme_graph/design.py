@@ -33,11 +33,13 @@ from openzyme_runtime import CandidateDraftCollection
 from openzyme_runtime import DesignNextAction
 from openzyme_runtime import DesignTool
 from openzyme_runtime import DesignToolContext
+from openzyme_runtime import ExecutionResultHandoff
 from openzyme_runtime import ResearchDossier
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
 
 from .deep_research import run_deep_research
 from .state import DesignHandoff
+from .state import ExecutionHandoff
 from .state import GraphPhase
 from .state import InterruptType
 from .state import ProgressStatus
@@ -56,10 +58,6 @@ def _progress(active_node: str, status: ProgressStatus, message: str) -> dict[st
         "updated_at": _utc_now_iso(),
         "message": message,
     }
-
-
-def _build_design_approval_id(episode_id: str, turn_index: int) -> str:
-    return f"{episode_id}-design-approval-{turn_index}"
 
 
 def _build_artifact_id(run_id: str, index: int) -> str:
@@ -111,6 +109,10 @@ def _recent_turns(inputs: GraphAssemblyInputs, episode_id: str, limit: int = 10)
 
 
 def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
+    latest_execution_result = dict(state.get("execution_result_handoff") or {})
+    latest_findings = dict(latest_execution_result.get("structured_findings") or {})
+    design_signal = str(latest_findings.get("design_signal") or "")
+    execution_iteration_count = int(state.get("execution_iteration_count") or 0)
     if (
         state.get("latest_turn_action_kind") == "collect_research"
         and state.get("latest_turn_status") == DecisionStatus.FAILED.value
@@ -123,14 +125,22 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
             arguments={},
         )
     if (
-        state.get("latest_turn_action_kind") == "run_hpc"
-        and state.get("latest_turn_status") in {DecisionStatus.REJECTED.value, DecisionStatus.FAILED.value}
+        state.get("latest_turn_action_kind") == "request_execution"
+        and state.get("latest_turn_status") == DecisionStatus.FAILED.value
     ):
         return DesignNextAction(
             action_kind="stop",
-            summary="Stop after the latest HPC action did not complete successfully.",
-            rationale="The last HPC action was rejected or failed, so the loop should hand off the current state.",
-            stop_reason="run_hpc_not_completed",
+            summary="Stop after the latest execution request did not complete successfully.",
+            rationale="The last execution request failed validation, so the loop should hand off the current state.",
+            stop_reason="request_execution_not_completed",
+            arguments={},
+        )
+    if execution_iteration_count >= 3:
+        return DesignNextAction(
+            action_kind="stop",
+            summary="Stop after reaching the execution iteration limit.",
+            rationale="Execution results have already been reviewed multiple times; avoid another loop without new evidence.",
+            stop_reason="execution_iteration_limit",
             arguments={},
         )
     if not state.get("evidence_refs"):
@@ -154,10 +164,33 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
             rationale="Candidates exist but no selected candidate is recorded.",
             arguments={},
         )
-    if not state.get("run_summary") and not state.get("approval_requested"):
+    if design_signal == "revise":
         return DesignNextAction(
-            action_kind="run_hpc",
-            summary="Run the selected candidate through the HPC execution tool.",
+            action_kind="revise_candidate",
+            summary="Revise the selected candidate based on the latest execution findings.",
+            rationale="The latest execution findings indicate the selected candidate should be improved before reporting.",
+            target_candidate_id=state.get("selected_candidate_id"),
+            arguments={"revision_goal": str(latest_findings.get("revision_goal") or "Address the latest execution issues.")},
+        )
+    if design_signal == "rerank" and len(state.get("candidate_payloads") or []) > 1:
+        return DesignNextAction(
+            action_kind="rank_candidates",
+            summary="Rerank the current candidates using the latest execution findings.",
+            rationale="Execution findings are available and should influence candidate ranking.",
+            arguments={},
+        )
+    if design_signal == "rerun":
+        return DesignNextAction(
+            action_kind="request_execution",
+            summary="Request a follow-up execution run using a different evaluator or configuration.",
+            rationale="The latest execution findings require another evaluation step before design can conclude.",
+            target_candidate_id=state.get("selected_candidate_id"),
+            arguments={"execution_goal": str(latest_execution_result.get("result_summary") or "Follow up the latest execution finding.")},
+        )
+    if not state.get("run_summary"):
+        return DesignNextAction(
+            action_kind="request_execution",
+            summary="Route the selected candidate into execution for HPC evaluation.",
             rationale="A selected candidate exists and no execution result has been recorded.",
             target_candidate_id=state.get("selected_candidate_id"),
             arguments={},
@@ -246,66 +279,6 @@ def _research_collect_result_from_dossier(
     }
 
 
-@dataclass(frozen=True, slots=True)
-class HpcRunTool:
-    inputs: GraphAssemblyInputs
-    name: str = "hpc.run"
-    requires_approval: bool = True
-
-    def invoke(self, context: DesignToolContext) -> dict[str, Any]:
-        candidate_id = context.current_action.get("target_candidate_id")
-        if candidate_id is None:
-            return {
-                "summary": "No candidate is available for HPC execution.",
-                "status": "failed",
-                "message": "Missing selected candidate.",
-            }
-        candidate_snapshot = self.inputs.host_toolbox.load_candidate(context.episode_id, str(candidate_id))
-        if candidate_snapshot is None:
-            return {
-                "summary": f"Selected candidate {candidate_id} could not be loaded for execution.",
-                "status": "failed",
-                "message": "Missing candidate snapshot.",
-            }
-        arguments = dict(context.current_action.get("arguments") or {})
-        execution_request = self.inputs.host_toolbox.build_execution_request(
-            candidate=candidate_snapshot,
-            execution_mode=str(arguments.get("execution_mode") or "auto"),
-            command=list(arguments.get("command") or ["echo", candidate_snapshot.title]),
-            metadata=dict(arguments.get("metadata") or {}),
-            tool_name=str(arguments.get("tool_name") or "exec.run"),
-        )
-        run_request = execution_request.model_dump()
-        if self.inputs.execution_adapter is None:
-            return {
-                "summary": "Execution adapter unavailable; skipping HPC submission.",
-                "status": "failed",
-                "message": "execution_adapter is not configured",
-                "candidate_plan": candidate_snapshot.model_dump(),
-                "run_request": run_request,
-            }
-        outcome = self.inputs.execution_adapter.submit_execution(context.episode_id, run_request)
-        return {
-            "summary": "Design HPC run finished.",
-            "status": outcome.status.value,
-            "candidate_plan": candidate_snapshot.model_dump(),
-            "run_request": run_request,
-            "run_summary": {
-                "run_id": outcome.run_id,
-                "status": outcome.status.value,
-                "execution_mode": outcome.execution_mode,
-                "remote_run_dir": outcome.remote_run_dir,
-            },
-            "artifacts": [
-                {
-                    "kind": artifact.kind.value,
-                    "storage_uri": artifact.storage_uri,
-                }
-                for artifact in outcome.artifacts
-            ],
-        }
-
-
 class DesignSupervisorState(TypedDict, total=False):
     episode_id: str
     project_id: str
@@ -322,11 +295,6 @@ class DesignSupervisorState(TypedDict, total=False):
     current_tool_requires_clarification: bool
     action_status: str | None
     action_error: str | None
-    action_requires_approval: bool
-    approval_requested: bool
-    approval_id: str | None
-    approval_summary: str | None
-    approval_decision: dict[str, Any] | None
     research_summary: dict[str, Any] | None
     evidence_refs: list[dict[str, Any]]
     unresolved_gaps: list[dict[str, Any]]
@@ -341,6 +309,9 @@ class DesignSupervisorState(TypedDict, total=False):
     observation_payload: dict[str, Any] | None
     design_summary: dict[str, Any] | None
     design_handoff: DesignHandoff | None
+    execution_handoff: ExecutionHandoff | None
+    execution_result_handoff: ExecutionResultHandoff | None
+    execution_iteration_count: int
     recommended_next_phase: str | None
     latest_turn_action_kind: str | None
     latest_turn_status: str | None
@@ -349,7 +320,6 @@ class DesignSupervisorState(TypedDict, total=False):
 def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
     tools: dict[str, DesignTool] = {
         "collect_research": ResearchCollectTool(inputs),
-        "run_hpc": HpcRunTool(inputs),
     }
 
     def load_design_context(state: DesignSupervisorState) -> dict[str, Any]:
@@ -362,6 +332,9 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         latest_run = None if not runs else runs[-1]
         design_turns = [
             turn for turn in inputs.repositories.decisions.list_by_episode(episode_id) if turn.phase == GraphPhase.DESIGN.value
+        ]
+        execution_turns = [
+            turn for turn in inputs.repositories.decisions.list_by_episode(episode_id) if turn.phase == GraphPhase.EXECUTION.value
         ]
         turn_count = len(design_turns)
         latest_turn = None if not design_turns else design_turns[-1]
@@ -378,6 +351,10 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "status": SupervisorStatus.ACTIVE.value,
             "pending_interrupt": state.get("pending_interrupt"),
             "turn_index": turn_count,
+            "current_action": None,
+            "current_tool_name": None,
+            "action_status": None,
+            "observation_payload": None,
             "research_summary": snapshot.research_summary,
             "evidence_refs": snapshot.evidence_refs,
             "unresolved_gaps": snapshot.unresolved_gaps,
@@ -387,6 +364,9 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "selected_candidate_rationale": None if selected_candidate is None else selected_candidate.rationale,
             "run_summary": None if latest_run is None else latest_run.to_dict(),
             "artifact_refs": artifact_refs,
+            "execution_handoff": None,
+            "execution_result_handoff": state.get("execution_result_handoff"),
+            "execution_iteration_count": len(execution_turns),
             "latest_turn_action_kind": None if latest_turn is None else latest_turn.action_kind,
             "latest_turn_status": None if latest_turn is None else latest_turn.status.value,
             "progress": _progress(
@@ -397,7 +377,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         }
 
     def diagnose_next_action(state: DesignSupervisorState) -> dict[str, Any]:
-        if state.get("approval_requested") and state.get("current_action") is not None:
+        if state.get("current_action") is not None:
             action = DesignNextAction.model_validate(state["current_action"])
         elif inputs.model_factory is not None:
             try:
@@ -420,7 +400,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                         "ranking_payloads": state.get("ranking_payloads") or [],
                         "selected_candidate_id": state.get("selected_candidate_id"),
                         "run_summary": state.get("run_summary") or {},
-                        "approval_requested": state.get("approval_requested", False),
+                        "execution_result_handoff": state.get("execution_result_handoff") or {},
+                        "execution_iteration_count": state.get("execution_iteration_count") or 0,
                     },
                 )
             except Exception:
@@ -441,7 +422,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
 
     def validate_action(
         state: DesignSupervisorState,
-    ) -> Command[Literal["prepare_approval", "dispatch_action", "persist_turn", "finalize_design"]]:
+    ) -> Command[Literal["dispatch_action", "persist_turn", "finalize_design"]]:
         action = DesignNextAction.model_validate(state.get("current_action") or _fallback_next_action(state).model_dump())
         selected_candidate_id = state.get("selected_candidate_id")
         candidate_ids = {str(item["candidate_id"]) for item in state.get("candidate_payloads") or []}
@@ -472,17 +453,16 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 goto="persist_turn",
             )
 
-        if action.action_kind in {"run_hpc", "request_run_approval"}:
+        if action.action_kind == "request_execution":
             target_candidate_id = action.target_candidate_id or selected_candidate_id
             if target_candidate_id is None:
                 observation = {
-                    "summary": "Cannot submit HPC work without a selected candidate.",
+                    "summary": "Cannot request execution without a selected candidate.",
                     "message": "no selected candidate",
                 }
                 action_status = DecisionStatus.FAILED
             else:
                 action.target_candidate_id = target_candidate_id
-                tool_name = "run_hpc"
         elif action.action_kind == "collect_research":
             tool_name = "collect_research"
         elif action.action_kind == "draft_candidates":
@@ -531,123 +511,15 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 goto="persist_turn",
             )
 
-        requires_approval = False if tool_name is None else tools[tool_name].requires_approval
-        if requires_approval and not state.get("approval_requested"):
-            return Command(
-                update={
-                    "current_action": action.model_dump(),
-                "current_tool_name": tool_name,
-                "current_tool_requires_clarification": False,
-                "action_requires_approval": True,
-                "approval_requested": False,
-                    "progress": _progress(
-                        "validate_action",
-                        ProgressStatus.WAITING,
-                        f"{tool_name} requires approval before execution",
-                    ),
-                },
-                goto="prepare_approval",
-            )
         return Command(
             update={
                 "current_action": action.model_dump(),
                 "current_tool_name": tool_name,
                 "current_tool_requires_clarification": False,
-                "action_requires_approval": requires_approval,
-                "approval_requested": state.get("approval_requested", False),
                 "progress": _progress(
                     "validate_action",
                     ProgressStatus.RUNNING,
                     f"Validated action {action.action_kind}",
-                ),
-            },
-            goto="dispatch_action",
-        )
-
-    def prepare_approval(state: DesignSupervisorState) -> dict[str, Any]:
-        next_turn = int(state.get("turn_index", 0)) + 1
-        approval_id = state.get("approval_id") or _build_design_approval_id(state["episode_id"], next_turn)
-        action = DesignNextAction.model_validate(state["current_action"])
-        requested_action = (
-            action.summary
-            if action.action_kind != "request_run_approval"
-            else f"Approve HPC execution for candidate {action.target_candidate_id}"
-        )
-        inputs.repositories.approvals.save(
-            Approval(
-                approval_id=approval_id,
-                episode_id=state["episode_id"],
-                status=ApprovalStatus.PENDING,
-                requested_action=requested_action,
-                created_at=_utc_now_iso(),
-            )
-        )
-        return {
-            "approval_id": approval_id,
-            "approval_summary": requested_action,
-            "approval_requested": True,
-            "status": SupervisorStatus.INTERRUPTED.value,
-            "pending_interrupt": {
-                "type": InterruptType.APPROVAL.value,
-                "episode_id": state["episode_id"],
-                "phase": GraphPhase.DESIGN.value,
-                "approval_id": approval_id,
-                "requested_action": requested_action,
-            },
-            "progress": _progress(
-                "approval_gate",
-                ProgressStatus.WAITING,
-                "Waiting for tool approval",
-            ),
-        }
-
-    def approval_gate(
-        state: DesignSupervisorState,
-    ) -> Command[Literal["dispatch_action", "persist_turn"]]:
-        approval_id = str(state["approval_id"])
-        decision = interrupt(state["pending_interrupt"])
-        approved = bool(decision.get("approved")) if isinstance(decision, dict) else bool(decision)
-        requested_action = str(state.get("approval_summary") or "Approve design tool action")
-        inputs.repositories.approvals.save(
-            Approval(
-                approval_id=approval_id,
-                episode_id=state["episode_id"],
-                status=ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
-                requested_action=requested_action,
-                created_at=_utc_now_iso(),
-                resolved_at=_utc_now_iso(),
-            )
-        )
-        if not approved:
-            return Command(
-                update={
-                    "approval_decision": {"approved": False},
-                    "pending_interrupt": None,
-                    "status": SupervisorStatus.ACTIVE.value,
-                    "approval_requested": False,
-                    "action_status": DecisionStatus.REJECTED.value,
-                    "observation_payload": {
-                        "summary": "Requested tool action was rejected during review.",
-                        "message": requested_action,
-                    },
-                    "progress": _progress(
-                        "approval_gate",
-                        ProgressStatus.FAILED,
-                        "Tool approval rejected",
-                    ),
-                },
-                goto="persist_turn",
-            )
-        return Command(
-            update={
-                "approval_decision": {"approved": True},
-                "pending_interrupt": None,
-                "status": SupervisorStatus.ACTIVE.value,
-                "approval_requested": True,
-                "progress": _progress(
-                    "approval_gate",
-                    ProgressStatus.RUNNING,
-                    "Tool approval received; dispatching action",
                 ),
             },
             goto="dispatch_action",
@@ -841,6 +713,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     candidate.to_dict()
                     for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
                 ],
+                "execution_result_handoff": None,
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
@@ -913,6 +786,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "ranking_payloads": [ranking.to_dict() for ranking in ranking_records],
                 "selected_candidate_id": selected_candidate_id,
                 "selected_candidate_rationale": selected_candidate_rationale,
+                "execution_result_handoff": None,
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
@@ -952,82 +826,41 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     candidate.to_dict()
                     for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
                 ],
+                "execution_result_handoff": None,
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
             }, goto="persist_turn")
 
-        if current_tool_name == "run_hpc":
-            context = DesignToolContext(
-                episode_id=state["episode_id"],
-                project_id=state.get("project_id"),
-                objective=state.get("objective"),
-                design_brief=state.get("design_brief"),
-                research_brief=state.get("research_brief"),
-                current_action=action.model_dump(),
-            )
-            tool_result = tools[current_tool_name].invoke(context)
-            if tool_result.get("run_summary") is None:
+        if action.action_kind == "request_execution":
+            candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], str(action.target_candidate_id))
+            if candidate_snapshot is None:
                 return Command(update={
-                    "candidate_plan": tool_result.get("candidate_plan"),
-                    "run_request": tool_result.get("run_request"),
                     "action_status": DecisionStatus.FAILED.value,
                     "observation_payload": {
-                        "summary": str(tool_result.get("summary") or "HPC execution could not be submitted."),
-                        "message": str(tool_result.get("message") or "execution failed"),
+                        "summary": "Could not load candidate for execution handoff.",
+                        "message": "missing candidate snapshot",
                     },
-                    "design_summary": {
-                        "outcome": "execution_unavailable",
-                        "message": str(tool_result.get("summary") or "Execution unavailable."),
-                    },
-                    "progress": _progress("dispatch_action", ProgressStatus.FAILED, "HPC execution did not start"),
+                    "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Execution handoff failed"),
                 }, goto="persist_turn")
-            created_at = _utc_now_iso()
-            run_summary = dict(tool_result["run_summary"])
-            inputs.repositories.runs.save(
-                Run(
-                    run_id=str(run_summary["run_id"]),
-                    episode_id=state["episode_id"],
-                    approval_id=state.get("approval_id"),
-                    status=RunStatus(str(run_summary["status"])),
-                    execution_mode=str(run_summary["execution_mode"]),
-                    created_at=created_at,
-                    completed_at=created_at if RunStatus(str(run_summary["status"])).is_terminal else None,
-                )
-            )
-            artifact_refs: list[dict[str, Any]] = []
-            for index, artifact in enumerate(tool_result.get("artifacts", []), start=1):
-                record = ArtifactRecord(
-                    artifact_id=_build_artifact_id(str(run_summary["run_id"]), index),
-                    episode_id=state["episode_id"],
-                    run_id=str(run_summary["run_id"]),
-                    kind=_resolve_artifact_kind(str(artifact["kind"])),
-                    storage_uri=str(artifact["storage_uri"]),
-                    created_at=_utc_now_iso(),
-                )
-                inputs.repositories.artifact_records.save(record)
-                artifact_refs.append(record.to_dict())
-            run_status = RunStatus(str(run_summary["status"]))
-            observation = {
-                "summary": "Submitted HPC execution and recorded the resulting run.",
-                "tool_result": tool_result,
+            execution_handoff: ExecutionHandoff = {
+                "candidate_plan": candidate_snapshot.model_dump(),
+                "execution_goal": str(action.arguments.get("execution_goal") or "Evaluate the selected candidate with an HPC tool."),
+                "question_to_answer": str(action.arguments.get("question_to_answer") or "Which fast evaluator should run next for this candidate?"),
+                "preferred_stage_tags": list(action.arguments.get("preferred_stage_tags") or ["execution", "evaluator"]),
+                "preferred_capability_tags": list(action.arguments.get("preferred_capability_tags") or ["pocket_detection"]),
+                "recommended_next_phase": GraphPhase.EXECUTION.value,
             }
             return Command(update={
-                "candidate_plan": tool_result.get("candidate_plan"),
-                "run_request": tool_result.get("run_request"),
-                "run_summary": run_summary,
-                "artifact_refs": artifact_refs,
-                "observation_payload": observation,
-                "action_status": (DecisionStatus.COMPLETED if run_status is RunStatus.SUCCEEDED else DecisionStatus.FAILED).value,
-                "design_summary": {
-                    "outcome": "run_completed" if run_status is RunStatus.SUCCEEDED else "run_failed",
-                    "message": "Design run completed." if run_status is RunStatus.SUCCEEDED else "Design run failed.",
+                "candidate_plan": candidate_snapshot.model_dump(),
+                "execution_handoff": execution_handoff,
+                "execution_result_handoff": None,
+                "observation_payload": {
+                    "summary": "Prepared execution handoff for the selected candidate.",
+                    "execution_goal": execution_handoff["execution_goal"],
                 },
-                "progress": _progress(
-                    "dispatch_action",
-                    ProgressStatus.SUCCEEDED if run_status is RunStatus.SUCCEEDED else ProgressStatus.FAILED,
-                    observation["summary"],
-                ),
+                "action_status": DecisionStatus.COMPLETED.value,
+                "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, "Prepared execution handoff"),
             }, goto="persist_turn")
 
         return Command(update={
@@ -1094,9 +927,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         inputs.repositories.decisions.save(decision)
         return {
             "turn_index": turn_index,
-            "approval_id": None,
-            "approval_summary": None,
-            "approval_requested": False,
             "pending_interrupt": None,
             "status": SupervisorStatus.ACTIVE.value,
             "current_tool_requires_clarification": False,
@@ -1112,12 +942,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         action_status = DecisionStatus(str(state.get("action_status") or DecisionStatus.COMPLETED.value))
         if action.action_kind == "stop":
             return "finalize_design"
-        if state.get("run_summary") is not None and action.action_kind == "run_hpc" and action_status is DecisionStatus.COMPLETED:
+        if state.get("execution_handoff") is not None and action.action_kind == "request_execution" and action_status is DecisionStatus.COMPLETED:
             return "finalize_design"
-        if action_status is DecisionStatus.REJECTED:
-            return "load_design_context"
-        if action_status is DecisionStatus.FAILED and action.action_kind == "run_hpc":
-            return "load_design_context"
         return "load_design_context"
 
     def finalize_design(state: DesignSupervisorState) -> dict[str, Any]:
@@ -1126,6 +952,19 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         if candidate_plan is None and selected_candidate_id is not None:
             candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], selected_candidate_id)
             candidate_plan = None if candidate_snapshot is None else candidate_snapshot.model_dump()
+
+        if state.get("execution_handoff") is not None:
+            return {
+                "candidate_plan": candidate_plan,
+                "execution_handoff": state["execution_handoff"],
+                "recommended_next_phase": GraphPhase.EXECUTION.value,
+                "status": SupervisorStatus.COMPLETED.value,
+                "progress": _progress(
+                    "finalize_design",
+                    ProgressStatus.SUCCEEDED,
+                    "Prepared design-to-execution handoff",
+                ),
+            }
 
         design_summary = state.get("design_summary") or {
             "outcome": "ready_for_report",
@@ -1161,8 +1000,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     graph.add_node("load_design_context", load_design_context)
     graph.add_node("diagnose_next_action", diagnose_next_action)
     graph.add_node("validate_action", validate_action)
-    graph.add_node("prepare_approval", prepare_approval)
-    graph.add_node("approval_gate", approval_gate)
     graph.add_node("dispatch_action", dispatch_action)
     graph.add_node("clarification_gate", clarification_gate)
     graph.add_node("persist_turn", persist_turn)
@@ -1171,7 +1008,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     graph.add_edge(START, "load_design_context")
     graph.add_edge("load_design_context", "diagnose_next_action")
     graph.add_edge("diagnose_next_action", "validate_action")
-    graph.add_edge("prepare_approval", "approval_gate")
     graph.add_conditional_edges(
         "persist_turn",
         finalize_or_continue,

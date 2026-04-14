@@ -4,6 +4,7 @@ from .state import RESUMABLE_STATUSES
 from .state import ApprovalPayload
 from .state import CheckpointLineage
 from .state import DesignHandoff
+from .state import ExecutionHandoff
 from .state import GraphPhase
 from .state import IntakeHandoff
 from .state import InterruptEnvelope
@@ -30,6 +31,7 @@ __all__ = [
     "ApprovalPayload",
     "CheckpointLineage",
     "DesignHandoff",
+    "ExecutionHandoff",
     "GraphPhase",
     "IntakeHandoff",
     "InterruptEnvelope",

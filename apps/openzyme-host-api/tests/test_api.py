@@ -25,6 +25,8 @@ from openzyme_runtime import PostgresCheckpointerFactory
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
+from openzyme_tools import DefaultHpcExecutionRegistry
+from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
@@ -79,6 +81,23 @@ class FakeResearchAdapter:
         )
 
 
+def _resolve_next_approval(client: TestClient, episode_id: str, decision: str = "approved") -> dict[str, object]:
+    pending = client.get(f"/episodes/{episode_id}/pending-actions")
+    assert pending.status_code == 200
+    pending_actions = pending.json()
+    assert pending_actions
+    response = client.post(
+        "/commands/resolve_approval",
+        json={
+            "episode_id": episode_id,
+            "approval_id": pending_actions[0]["approval_id"],
+            "decision": decision,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     saver = InMemorySaver()
 
@@ -101,6 +120,8 @@ def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-b/memory")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=FakeResearchAdapter(),
     )
     return (
@@ -167,6 +188,8 @@ def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
     )
     runtime = GraphRuntimeFacade(foundation)
     with runtime.compile_graph(build_phase_c_design_graph) as graph:
@@ -201,7 +224,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workspace"]["workflow"]["current_phase"] == "design"
+    assert payload["workspace"]["workflow"]["current_phase"] == "execution"
     assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "approval"
     assert payload["workspace"]["pending_actions"][0]["status"] == "pending"
     assert payload["workspace"]["workflow"]["summary"]["evidence_count"] == 2
@@ -220,7 +243,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     episode_id = payload["episode_id"]
     workspace = client.get(f"/episodes/{episode_id}/workspace")
     assert workspace.status_code == 200
-    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(f"{episode_id}-design-approval-")
+    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(f"{episode_id}-execution-approval-")
 
 
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
@@ -231,26 +254,14 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
         json={"project_id": "proj_001", "objective": "Improve thermostability"},
     ).json()
     episode_id = created["episode_id"]
-    approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
-
-    first_response = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": approval_id,
-            "decision": "approved",
-        },
-    )
-    assert first_response.status_code == 200
-    first_payload = first_response.json()
-    assert first_payload["workspace"]["workflow"]["current_phase"] == "report_review"
+    first_payload = _resolve_next_approval(client, episode_id)
     assert first_payload["workspace"]["workflow"]["episode_status"] == "completed"
+    assert first_payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert first_payload["workspace"]["pending_actions"] == []
     assert first_payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith(f"{episode_id}-candidate-")
     assert {event["event_type"] for event in first_payload["events"]} >= {
         "workflow.phase_changed",
         "workflow.summary_updated",
-        "workflow.design_turn_recorded",
         "workflow.run_status_changed",
         "workflow.report_available",
     }
@@ -374,18 +385,9 @@ def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(
         json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
     ).json()
     episode_id = created["episode_id"]
-    design_approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
+    assert created["workspace"]["workflow"]["current_phase"] == "execution"
 
-    design_resume = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": design_approval_id,
-            "decision": "approved",
-        },
-    )
-    assert design_resume.status_code == 200
-    design_payload = design_resume.json()
+    design_payload = _resolve_next_approval(client, episode_id)
     assert design_payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert design_payload["workspace"]["pending_actions"] == []
     assert design_payload["workspace"]["runs"][0]["episode_id"] == episode_id
@@ -397,28 +399,10 @@ def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> No
 
     created = client.get("/episodes/ep_design/workspace")
     assert created.json()["workflow"]["summary"]["candidate_count"] == 2
-    approval_id = created.json()["pending_actions"][0]["approval_id"]
-
-    resumed = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": "ep_design",
-            "approval_id": approval_id,
-            "decision": "approved",
-        },
-    )
-
-    assert resumed.status_code == 200
-    payload = resumed.json()
-    assert payload["workspace"]["workflow"]["episode_status"] == "completed"
-    assert payload["workspace"]["pending_actions"] == []
-    assert len(payload["workspace"]["design"]["candidates"]) == 2
-    assert payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith("ep_design-candidate-")
-    assert {event["event_type"] for event in payload["events"]} >= {
-        "workflow.summary_updated",
-        "workflow.candidate_updated",
-        "workflow.design_turn_recorded",
-    }
+    assert created.json()["workflow"]["current_phase"] == "design"
+    assert created.json()["pending_actions"] == []
+    assert len(created.json()["design"]["candidates"]) == 2
+    assert created.json()["design"]["selected_candidate"]["candidate_id"].startswith("ep_design-candidate-")
 
 
 def test_report_query_and_projection_become_available_after_supervisor_completion(monkeypatch) -> None:
@@ -429,16 +413,7 @@ def test_report_query_and_projection_become_available_after_supervisor_completio
         json={"project_id": "proj_001", "objective": "Improve thermostability"},
     ).json()
     episode_id = created["episode_id"]
-    design_approval_id = created["workspace"]["pending_actions"][0]["approval_id"]
-
-    design_resume = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": design_approval_id,
-            "decision": "approved",
-        },
-    ).json()
+    design_resume = _resolve_next_approval(client, episode_id)
 
     workspace = design_resume["workspace"]
     report = workspace["report"]

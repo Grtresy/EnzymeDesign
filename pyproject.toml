@@ -9,6 +9,7 @@ members = [
   "packages/openzyme-research",
   "packages/openzyme-runtime",
   "packages/openzyme-storage",
+  "packages/openzyme-tools",
 ]
 
 [tool.uv.sources]
@@ -21,6 +22,7 @@ openzyme-graph = { workspace = true }
 openzyme-research = { workspace = true }
 openzyme-runtime = { workspace = true }
 openzyme-storage = { workspace = true }
+openzyme-tools = { workspace = true }
 
 [dependency-groups]
 dev = []

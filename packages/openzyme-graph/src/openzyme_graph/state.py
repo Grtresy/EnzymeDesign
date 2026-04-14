@@ -13,6 +13,7 @@ from openzyme_storage import CHECKPOINT_STATE_FIELDS
 class GraphPhase(StrEnum):
     INTAKE = "intake"
     DESIGN = "design"
+    EXECUTION = "execution"
     REPORT_REVIEW = "report_review"
 
 
@@ -41,6 +42,7 @@ class ProgressStatus(StrEnum):
 FIXED_PHASES: tuple[str, ...] = (
     GraphPhase.INTAKE.value,
     GraphPhase.DESIGN.value,
+    GraphPhase.EXECUTION.value,
     GraphPhase.REPORT_REVIEW.value,
 )
 GRAPH_THREAD_KEY = "episode_id"
@@ -93,6 +95,15 @@ class DesignHandoff(TypedDict):
     design_summary: dict[str, Any]
     selected_candidate_id: str | None
     recent_turns: list[dict[str, Any]]
+    recommended_next_phase: str
+
+
+class ExecutionHandoff(TypedDict):
+    candidate_plan: dict[str, Any]
+    execution_goal: str
+    question_to_answer: str
+    preferred_stage_tags: list[str]
+    preferred_capability_tags: list[str]
     recommended_next_phase: str
 
 
@@ -232,8 +243,14 @@ def build_subgraph_contracts() -> dict[GraphPhase, SubgraphContract]:
         GraphPhase.DESIGN: SubgraphContract(
             phase=GraphPhase.DESIGN,
             required_inputs=("episode_id", "design_brief"),
-            completion_outputs=("design_handoff",),
-            interrupt_types=(InterruptType.CLARIFICATION, InterruptType.APPROVAL),
+            completion_outputs=("design_handoff", "execution_handoff"),
+            interrupt_types=(InterruptType.CLARIFICATION,),
+        ),
+        GraphPhase.EXECUTION: SubgraphContract(
+            phase=GraphPhase.EXECUTION,
+            required_inputs=("episode_id", "execution_handoff"),
+            completion_outputs=("execution_result_handoff",),
+            interrupt_types=(InterruptType.APPROVAL,),
         ),
         GraphPhase.REPORT_REVIEW: SubgraphContract(
             phase=GraphPhase.REPORT_REVIEW,

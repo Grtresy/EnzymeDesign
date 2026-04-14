@@ -18,6 +18,8 @@ from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import RuntimeFoundation
+from openzyme_tools import DefaultHpcExecutionRegistry
+from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
@@ -213,6 +215,8 @@ def build_demo_foundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DemoExecutionAdapter(),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,
@@ -238,6 +242,8 @@ def build_configured_foundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=_build_execution_adapter(effective_settings),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,

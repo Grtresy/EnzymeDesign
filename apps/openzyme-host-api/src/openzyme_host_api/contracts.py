@@ -37,6 +37,8 @@ STREAM_EVENT_TYPES: tuple[str, ...] = (
     "workflow.candidate_updated",
     "workflow.selected_candidate_changed",
     "workflow.design_turn_recorded",
+    "workflow.execution_turn_recorded",
+    "workflow.execution_result_updated",
     "workflow.report_available",
 )
 
@@ -192,6 +194,18 @@ def build_host_api_contract() -> HostApiContract:
             "Projected when a design-loop decision turn is persisted to the canonical ledger.",
         ),
         WorkflowStreamEventContract(
+            "workflow.execution_turn_recorded",
+            ("episode_id", "turn", "updated_at"),
+            "updates",
+            "Projected when an execution-loop decision turn is persisted to the canonical ledger.",
+        ),
+        WorkflowStreamEventContract(
+            "workflow.execution_result_updated",
+            ("episode_id", "execution", "updated_at"),
+            "updates",
+            "Projected when a structured execution result becomes available to design and host projections.",
+        ),
+        WorkflowStreamEventContract(
             "workflow.report_available",
             ("episode_id", "report", "updated_at"),
             "updates",
@@ -238,5 +252,6 @@ def validate_contract_alignment() -> None:
     assert "episodes" in RELATIONAL_RECORDS
     assert "reports" in RELATIONAL_RECORDS
     assert "design" in FIXED_PHASES
+    assert "execution" in FIXED_PHASES
     assert "report_review" in FIXED_PHASES
     assert any("frontend read models" in item for item in HOST_UI_DEPENDENCY_EXPECTATIONS)

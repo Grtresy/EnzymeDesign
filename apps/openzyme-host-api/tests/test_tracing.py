@@ -18,6 +18,8 @@ from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
+from openzyme_tools import DefaultHpcExecutionRegistry
+from openzyme_tools import RepoBackedHpcCatalogProvider
 
 
 class FakeExecutionAdapter:
@@ -74,6 +76,8 @@ def _build_client(monkeypatch, recorder: RecordingTrace, tracing_recorder: Recor
             PostgresCheckpointerConfig(conn_string="postgresql://tracing/test")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=DemoResearchAdapter(),
     )
     return TestClient(
@@ -129,7 +133,7 @@ def test_tracing_hooks_do_not_break_create_episode_flow(monkeypatch) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["workspace"]["workflow"]["current_phase"] in {"design", "report_review"}
+    assert payload["workspace"]["workflow"]["current_phase"] in {"design", "execution", "report_review"}
     assert any(call["name"] == "host.create_episode" for call in recorder.calls)
     assert any(call["metadata"]["request_path"] == "/commands/create_episode" for call in tracing_recorder.calls)
     reset_settings_cache()

@@ -133,8 +133,7 @@ class DesignNextAction(BaseModel):
         "draft_candidates",
         "rank_candidates",
         "revise_candidate",
-        "run_hpc",
-        "request_run_approval",
+        "request_execution",
         "stop",
     ]
     summary: str
@@ -163,6 +162,44 @@ class ExecutionRunSpecDraft(BaseModel):
 class ExecutionRequestDraft(BaseModel):
     tool_name: str
     runspec: ExecutionRunSpecDraft
+
+
+class HpcCatalogEntrySummary(BaseModel):
+    tool_id: str
+    display_name: str
+    summary: str
+    stage_tags: list[str] = Field(default_factory=list)
+    capability_tags: list[str] = Field(default_factory=list)
+    execution_support: Literal["runnable", "query_only"] = "query_only"
+    skill_ref: str
+
+
+class ExecutionHandoff(BaseModel):
+    candidate_plan: dict[str, Any]
+    execution_goal: str
+    question_to_answer: str
+    preferred_stage_tags: list[str] = Field(default_factory=list)
+    preferred_capability_tags: list[str] = Field(default_factory=list)
+    recommended_next_phase: str = "execution"
+
+
+class ExecutionPlanDraft(BaseModel):
+    catalog_tool_id: str
+    rationale: str
+    tool_inputs: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: str = "auto"
+    expected_result_summary: str
+    planner_summary: str | None = None
+
+
+class ExecutionResultHandoff(BaseModel):
+    catalog_tool_id: str
+    result_summary: str
+    run_summary: dict[str, Any] | None = None
+    artifact_refs: list[dict[str, Any]] = Field(default_factory=list)
+    structured_findings: dict[str, Any] = Field(default_factory=dict)
+    status: str = "completed"
+    recommended_next_phase: str = "design"
 
 
 class ReportDraft(BaseModel):
@@ -201,8 +238,12 @@ __all__ = [
     "DesignBriefDraft",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
+    "ExecutionHandoff",
+    "ExecutionPlanDraft",
+    "ExecutionResultHandoff",
     "ResearchDossier",
     "ResearchSourceItem",
+    "HpcCatalogEntrySummary",
     "ResearchTurnRecord",
     "ExecutionRequestDraft",
     "ExecutionRunSpecDraft",

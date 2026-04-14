@@ -14,6 +14,8 @@ from .ai import ChatModelFactory
 from .checkpointer import PostgresCheckpointerFactory
 from .repositories import PhaseBRepositories
 from .seams import ExecutionAdapter
+from .seams import HpcCatalogProvider
+from .seams import HpcExecutionRegistry
 from .seams import ProjectionLoader
 from .seams import ResearchAdapter
 from .seams import ResearchToolProvider
@@ -31,6 +33,8 @@ class RuntimeFoundation:
     repositories: PhaseBRepositories
     checkpointer_factory: PostgresCheckpointerFactory
     execution_adapter: ExecutionAdapter | None = None
+    hpc_catalog_provider: HpcCatalogProvider | None = None
+    hpc_execution_registry: HpcExecutionRegistry | None = None
     research_adapter: ResearchAdapter | None = None
     research_tool_provider: ResearchToolProvider | None = None
     projection_loader: ProjectionLoader | None = None
@@ -43,6 +47,8 @@ class GraphAssemblyInputs:
     repositories: PhaseBRepositories
     checkpointer: Any
     execution_adapter: ExecutionAdapter | None
+    hpc_catalog_provider: HpcCatalogProvider | None
+    hpc_execution_registry: HpcExecutionRegistry | None
     research_adapter: ResearchAdapter | None
     research_tool_provider: ResearchToolProvider | None
     projection_loader: ProjectionLoader | None
@@ -71,6 +77,8 @@ class GraphRuntimeFacade:
                     repositories=self._foundation.repositories,
                     checkpointer=checkpointer,
                     execution_adapter=self._foundation.execution_adapter,
+                    hpc_catalog_provider=self._foundation.hpc_catalog_provider,
+                    hpc_execution_registry=self._foundation.hpc_execution_registry,
                     research_adapter=self._foundation.research_adapter,
                     research_tool_provider=self._foundation.research_tool_provider,
                     projection_loader=self._foundation.projection_loader,

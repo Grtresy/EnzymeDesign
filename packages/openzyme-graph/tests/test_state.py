@@ -20,6 +20,7 @@ def test_fixed_phases_are_stable() -> None:
     assert FIXED_PHASES == (
         "intake",
         "design",
+        "execution",
         "report_review",
     )
 
@@ -83,6 +84,7 @@ def test_subgraph_contracts_cover_all_fixed_phases() -> None:
     assert tuple(contracts.keys()) == (
         GraphPhase.INTAKE,
         GraphPhase.DESIGN,
+        GraphPhase.EXECUTION,
         GraphPhase.REPORT_REVIEW,
     )
     assert contracts[GraphPhase.INTAKE].required_inputs == (
@@ -91,9 +93,10 @@ def test_subgraph_contracts_cover_all_fixed_phases() -> None:
         "project_context",
     )
     assert contracts[GraphPhase.INTAKE].completion_outputs == ("intake_handoff",)
-    assert contracts[GraphPhase.DESIGN].completion_outputs == ("design_handoff",)
+    assert contracts[GraphPhase.DESIGN].completion_outputs == ("design_handoff", "execution_handoff")
+    assert contracts[GraphPhase.EXECUTION].required_inputs == ("episode_id", "execution_handoff")
     assert contracts[GraphPhase.REPORT_REVIEW].required_inputs == ("episode_id", "design_handoff")
-    assert InterruptType.APPROVAL in contracts[GraphPhase.DESIGN].interrupt_types
+    assert InterruptType.APPROVAL in contracts[GraphPhase.EXECUTION].interrupt_types
 
 
 def test_graph_projection_alignment_is_explicit() -> None:

@@ -24,10 +24,14 @@ from .contracts import DesignToolCallResult
 from .contracts import DesignBriefDraft
 from .contracts import EvidenceSynthesis
 from .contracts import EvidenceSynthesisItem
+from .contracts import ExecutionHandoff
+from .contracts import ExecutionPlanDraft
+from .contracts import ExecutionResultHandoff
 from .contracts import ResearchDossier
 from .contracts import ResearchSourceItem
 from .contracts import ExecutionRequestDraft
 from .contracts import ExecutionRunSpecDraft
+from .contracts import HpcCatalogEntrySummary
 from .contracts import IntakeClarification
 from .contracts import IntakePhaseOutput
 from .contracts import ReportDraft
@@ -42,6 +46,7 @@ from .checkpointer import PostgresCheckpointerFactory
 from .migration_assets import MIGRATION_IDS
 from .migration_assets import apply_sqlite_migrations
 from .migration_assets import get_migration_sql
+from .hpc_catalog import RepoBackedHpcCatalogProvider
 from .repositories import ArtifactRecordRepository
 from .repositories import CandidateRankingRepository
 from .repositories import CandidateRecordRepository
@@ -69,6 +74,9 @@ from .research_tools import ThinkToolArgs
 from .seams import ExecutionAdapter
 from .seams import DesignTool
 from .seams import DesignToolContext
+from .seams import HpcCatalogProvider
+from .seams import HpcCatalogQuery
+from .seams import HpcExecutionRegistry
 from .seams import ProjectionLoader
 from .seams import ResearchAdapter
 from .seams import ResearchTool
@@ -131,6 +139,9 @@ __all__ = [
     "ExecutionAdapter",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
+    "ExecutionHandoff",
+    "ExecutionPlanDraft",
+    "ExecutionResultHandoff",
     "ResearchDossier",
     "ResearchSourceItem",
     "ExecutionRequestDraft",
@@ -142,6 +153,10 @@ __all__ = [
     "get_settings",
     "HostApiSettings",
     "HostCliSettings",
+    "HpcCatalogEntrySummary",
+    "HpcCatalogProvider",
+    "HpcCatalogQuery",
+    "HpcExecutionRegistry",
     "IntakeClarification",
     "IntakePhaseOutput",
     "LangChainModelFactory",
@@ -163,6 +178,7 @@ __all__ = [
     "ProjectionLoader",
     "ProjectRepository",
     "CompositeResearchToolProvider",
+    "RepoBackedHpcCatalogProvider",
     "ResearchAdapterSearchTool",
     "ReportRepository",
     "ResolvedLlmPolicy",

@@ -54,9 +54,11 @@ def _build_workflow_summary(
     workflow: dict[str, Any],
     research: dict[str, Any],
     design: dict[str, Any],
+    execution: dict[str, Any],
     report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     selected_candidate = design.get("selected_candidate")
+    latest_result = execution.get("latest_result") or {}
     return {
         "current_phase": workflow["current_phase"],
         "workflow_status": workflow["status"],
@@ -68,6 +70,9 @@ def _build_workflow_summary(
         "selected_candidate_id": None
         if selected_candidate is None
         else selected_candidate["candidate_id"],
+        "last_execution_tool_id": latest_result.get("catalog_tool_id"),
+        "last_execution_status": latest_result.get("status"),
+        "execution_iteration_count": len(execution.get("turns", [])),
         "report_id": None if report is None else report["report_id"],
         "report_status": None if report is None else report["status"],
     }
@@ -245,13 +250,63 @@ class HostProjectionLoader(ProjectionLoader):
             ],
         }
 
+    def load_execution_projection(self, episode_id: str) -> dict[str, Any]:
+        decisions = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == GraphPhase.EXECUTION.value
+        ]
+        latest_result = None
+        if decisions:
+            latest_decision = decisions[-1]
+            latest_result = {
+                "catalog_tool_id": None if latest_decision.get("action_payload") is None else latest_decision["action_payload"].get("catalog_tool_id"),
+                "status": latest_decision["status"],
+                "summary": None
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("summary"),
+                "structured_findings": {}
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("structured_findings") or {},
+                "planner_trace": {}
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("planner_trace") or {},
+            }
+        return {
+            "latest_result": latest_result,
+            "turns": [
+                {
+                    "turn_index": decision["turn_index"],
+                    "action_kind": decision["action_kind"],
+                    "status": decision["status"],
+                    "summary": decision["summary"],
+                    "rationale": decision["rationale"],
+                    "catalog_tool_id": None
+                    if decision.get("action_payload") is None
+                    else decision["action_payload"].get("catalog_tool_id"),
+                    "planner_trace": {}
+                    if decision.get("observation_payload") is None
+                    else decision["observation_payload"].get("planner_trace") or {},
+                    "observation_summary": None
+                    if decision.get("observation_payload") is None
+                    else (
+                        decision["observation_payload"].get("summary")
+                        or decision["observation_payload"].get("message")
+                    ),
+                    "created_at": decision["created_at"],
+                }
+                for decision in decisions
+            ],
+        }
+
     def load_episode_workspace(self, episode_id: str) -> dict[str, Any]:
         workflow = self.load_workflow_projection(episode_id)
         workflow["episode_status"] = _derive_episode_status(workflow).value
         research = self.load_research_projection(episode_id)
         design = self.load_design_projection(episode_id)
+        execution = self.load_execution_projection(episode_id)
         report = self.load_report_projection(episode_id)
-        workflow["summary"] = _build_workflow_summary(workflow, research, design, report)
+        workflow["summary"] = _build_workflow_summary(workflow, research, design, execution, report)
         return {
             "episode_id": episode_id,
             "workflow": workflow,
@@ -260,6 +315,7 @@ class HostProjectionLoader(ProjectionLoader):
             "artifacts": self.load_artifact_projection(episode_id),
             "research": research,
             "design": design,
+            "execution": execution,
             "report": report,
         }
 
@@ -383,6 +439,24 @@ class WorkflowEventProjector:
             events.append(
                 {
                     "event_type": "workflow.design_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
+        if workspace.get("execution", {}).get("latest_result") is not None:
+            events.append(
+                {
+                    "event_type": "workflow.execution_result_updated",
+                    "episode_id": workspace["episode_id"],
+                    "execution": workspace["execution"]["latest_result"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        for turn in workspace.get("execution", {}).get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.execution_turn_recorded",
                     "episode_id": workspace["episode_id"],
                     "turn": turn,
                     "updated_at": turn["created_at"],
@@ -522,6 +596,27 @@ class WorkflowEventProjector:
                 events.append(
                     {
                         "event_type": "workflow.design_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
+                    }
+                )
+        if before.get("execution") != after.get("execution"):
+            latest_result = after.get("execution", {}).get("latest_result")
+            if latest_result is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.execution_result_updated",
+                        "episode_id": after["episode_id"],
+                        "execution": latest_result,
+                        "updated_at": after_workflow["updated_at"],
+                    }
+                )
+            before_count = len(before.get("execution", {}).get("turns", []))
+            for turn in after.get("execution", {}).get("turns", [])[before_count:]:
+                events.append(
+                    {
+                        "event_type": "workflow.execution_turn_recorded",
                         "episode_id": after["episode_id"],
                         "turn": turn,
                         "updated_at": turn["created_at"],

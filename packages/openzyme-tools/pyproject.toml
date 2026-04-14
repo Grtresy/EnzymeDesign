@@ -1,17 +1,12 @@
 [project]
-name = "openzyme-graph"
+name = "openzyme-tools"
 version = "0.1.0"
-description = "V2 graph contracts for OpenZyme"
+description = "HPC catalog, compiler, and parser implementations for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "langgraph>=1.0,<2.0",
-  "openzyme-domain",
-  "openzyme-execution",
-  "openzyme-research",
   "openzyme-runtime",
-  "openzyme-storage",
-  "openzyme-tools",
+  "pydantic>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +19,7 @@ requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/openzyme_graph"]
+packages = ["src/openzyme_tools"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

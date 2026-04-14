@@ -17,6 +17,8 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import build_episode_graph_config
 from openzyme_runtime import connect_sqlite
+from openzyme_tools import DefaultHpcExecutionRegistry
+from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
@@ -48,7 +50,7 @@ class FakeExecutionAdapter:
                     kind=ArtifactKind.RESULT,
                 ),
             ),
-            raw_result={"status": "completed"},
+            raw_result={"status": "completed", "pockets_found": 1},
         )
 
 
@@ -99,11 +101,13 @@ def _build_foundation() -> RuntimeFoundation:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-b/memory")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=FakeResearchAdapter(),
     )
 
 
-def test_unified_supervisor_routes_design_and_report_review_on_one_thread(monkeypatch) -> None:
+def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thread(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -125,9 +129,8 @@ def test_unified_supervisor_routes_design_and_report_review_on_one_thread(monkey
         first_snapshot = graph.get_state(config, subgraphs=True)
         second = graph.invoke(Command(resume={"approved": True}), config)
 
-    assert first["__interrupt__"][0].value["phase"] == "design"
-    assert first_snapshot.values["current_phase"] == "design"
-    assert _nested_values(first_snapshot)["pending_interrupt"]["approval_id"].startswith("ep_001-design-approval-")
+    assert first["recommended_next_phase"] == "execution"
+    assert first_snapshot.values["current_phase"] == "execution"
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
     assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
 

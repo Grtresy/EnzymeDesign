@@ -91,6 +91,11 @@ def _run_scenario(
             episode_id = payload["episode_id"]
 
             for decision in scenario.decisions:
+                workspace_response = client.get(f"/episodes/{episode_id}/workspace")
+                workspace_response.raise_for_status()
+                workspace = workspace_response.json()
+                if workspace["workflow"]["status"] in {"completed", "failed"}:
+                    break
                 pending = client.get(f"/episodes/{episode_id}/pending-actions")
                 pending.raise_for_status()
                 pending_actions = pending.json()

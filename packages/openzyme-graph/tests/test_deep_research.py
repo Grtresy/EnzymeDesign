@@ -68,6 +68,8 @@ def test_run_deep_research_returns_normalized_dossier() -> None:
         repositories=foundation.repositories,
         checkpointer=InMemorySaver(),
         execution_adapter=None,
+        hpc_catalog_provider=None,
+        hpc_execution_registry=None,
         research_adapter=foundation.research_adapter,
         research_tool_provider=DefaultResearchToolProvider(foundation.research_adapter),
         projection_loader=None,
