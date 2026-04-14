@@ -53,17 +53,53 @@ class ResearchUnitPlan(BaseModel):
     synthesis_goal: str
 
 
+class ResearchSupervisorAction(BaseModel):
+    action_kind: Literal["conduct_research", "complete"]
+    rationale: str
+    unit_plan: ResearchUnitPlan | None = None
+
+
+class ResearchSourceItem(BaseModel):
+    title: str
+    locator: str
+    kind: str
+    snippet: str | None = None
+
+
 class EvidenceSynthesisItem(BaseModel):
     summary: str
     query: str
     confidence_label: str | None = None
-    source_titles: list[str] = Field(default_factory=list)
+    sources: list[ResearchSourceItem] = Field(default_factory=list)
 
 
 class EvidenceSynthesis(BaseModel):
     summary: str
     evidence_items: list[EvidenceSynthesisItem] = Field(default_factory=list)
     unresolved_gaps: list[str] = Field(default_factory=list)
+
+
+class ResearchTurnRecord(BaseModel):
+    turn_index: int
+    action_kind: str
+    status: str
+    summary: str
+    rationale: str
+    tool_names: list[str] = Field(default_factory=list)
+    observation_summary: str | None = None
+    created_at: str
+
+
+class ResearchDossier(BaseModel):
+    status: Literal["completed", "partial", "needs_clarification", "failed"] = "completed"
+    completion_reason: str = "research_completed"
+    clarification_question: str | None = None
+    research_brief: str
+    summary: str
+    evidence_items: list[EvidenceSynthesisItem] = Field(default_factory=list)
+    unresolved_gaps: list[str] = Field(default_factory=list)
+    raw_notes: list[str] = Field(default_factory=list)
+    recent_turns: list[ResearchTurnRecord] = Field(default_factory=list)
 
 
 class CandidateDraft(BaseModel):
@@ -165,12 +201,16 @@ __all__ = [
     "DesignBriefDraft",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
+    "ResearchDossier",
+    "ResearchSourceItem",
+    "ResearchTurnRecord",
     "ExecutionRequestDraft",
     "ExecutionRunSpecDraft",
     "IntakeClarification",
     "IntakePhaseOutput",
     "ReportDraft",
     "ResearchBriefDraft",
+    "ResearchSupervisorAction",
     "ResearchUnitDraft",
     "ResearchUnitPlan",
 ]

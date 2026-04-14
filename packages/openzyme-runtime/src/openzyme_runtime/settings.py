@@ -18,7 +18,16 @@ DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_HOST_API_BIND_HOST = "127.0.0.1"
 DEFAULT_HOST_API_BIND_PORT = 8000
-LLM_PURPOSES = ("intake", "research", "design", "report_review")
+LLM_PURPOSES = (
+    "intake",
+    "research",
+    "design",
+    "report_review",
+    "deep_research_brief",
+    "deep_research_supervisor",
+    "deep_research_researcher",
+    "deep_research_synthesis",
+)
 
 
 def _parse_bool(value: str | None, default: bool = False) -> bool:
@@ -237,9 +246,15 @@ def _load_llm_purpose_policies() -> dict[str, LlmPurposePolicy]:
 @dataclass(frozen=True, slots=True)
 class ResearchSettings:
     max_units: int
+    allow_clarification: bool
+    max_research_iterations: int
+    max_react_tool_calls: int
+    max_concurrent_research_units: int
     tavily_api_key: str | None
     tavily_max_results: int
     tavily_topic: str
+    mcp_enabled: bool
+    mcp_tool_allowlist: tuple[str, ...] = ()
 
     @property
     def tavily_enabled(self) -> bool:
@@ -249,9 +264,19 @@ class ResearchSettings:
     def from_env(cls) -> "ResearchSettings":
         return cls(
             max_units=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_UNITS"), 3),
+            allow_clarification=_parse_bool(os.getenv("OPENZYME_RESEARCH_ALLOW_CLARIFICATION"), False),
+            max_research_iterations=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_ITERATIONS"), 3),
+            max_react_tool_calls=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_REACT_TOOL_CALLS"), 4),
+            max_concurrent_research_units=_parse_int(os.getenv("OPENZYME_RESEARCH_MAX_CONCURRENT_UNITS"), 3),
             tavily_api_key=os.getenv("TAVILY_API_KEY"),
             tavily_max_results=_parse_int(os.getenv("OPENZYME_TAVILY_MAX_RESULTS"), 3),
             tavily_topic=os.getenv("OPENZYME_TAVILY_TOPIC", "general"),
+            mcp_enabled=_parse_bool(os.getenv("OPENZYME_RESEARCH_MCP_ENABLED"), False),
+            mcp_tool_allowlist=tuple(
+                item.strip()
+                for item in (os.getenv("OPENZYME_RESEARCH_MCP_TOOL_ALLOWLIST") or "").split(",")
+                if item.strip()
+            ),
         )
 
 

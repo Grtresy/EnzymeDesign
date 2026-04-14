@@ -16,6 +16,7 @@ from .repositories import PhaseBRepositories
 from .seams import ExecutionAdapter
 from .seams import ProjectionLoader
 from .seams import ResearchAdapter
+from .seams import ResearchToolProvider
 from .settings import OpenZymeSettings
 from .settings import get_settings
 from .toolbox import OpenZymeHostToolbox
@@ -31,6 +32,7 @@ class RuntimeFoundation:
     checkpointer_factory: PostgresCheckpointerFactory
     execution_adapter: ExecutionAdapter | None = None
     research_adapter: ResearchAdapter | None = None
+    research_tool_provider: ResearchToolProvider | None = None
     projection_loader: ProjectionLoader | None = None
     model_factory: ChatModelFactory | None = None
     settings: OpenZymeSettings | None = None
@@ -42,6 +44,7 @@ class GraphAssemblyInputs:
     checkpointer: Any
     execution_adapter: ExecutionAdapter | None
     research_adapter: ResearchAdapter | None
+    research_tool_provider: ResearchToolProvider | None
     projection_loader: ProjectionLoader | None
     model_factory: ChatModelFactory | None
     host_toolbox: OpenZymeHostToolbox
@@ -69,6 +72,7 @@ class GraphRuntimeFacade:
                     checkpointer=checkpointer,
                     execution_adapter=self._foundation.execution_adapter,
                     research_adapter=self._foundation.research_adapter,
+                    research_tool_provider=self._foundation.research_tool_provider,
                     projection_loader=self._foundation.projection_loader,
                     model_factory=self._foundation.model_factory,
                     host_toolbox=OpenZymeHostToolbox(self._foundation.repositories),

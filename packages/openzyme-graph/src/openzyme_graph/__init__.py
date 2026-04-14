@@ -20,6 +20,8 @@ from .state import SupervisorStatus
 from .state import build_langgraph_config
 from .state import build_resume_command_payload
 from .state import build_subgraph_contracts
+from .deep_research import build_deep_research_subgraph
+from .deep_research import run_deep_research
 
 __all__ = [
     "FIXED_PHASES",
@@ -41,7 +43,9 @@ __all__ = [
     "SubgraphContract",
     "SupervisorState",
     "SupervisorStatus",
+    "build_deep_research_subgraph",
     "build_langgraph_config",
     "build_resume_command_payload",
     "build_subgraph_contracts",
+    "run_deep_research",
 ]

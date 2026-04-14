@@ -36,8 +36,20 @@ class StructuredOutputInvoker(Protocol):
     ) -> SchemaT: ...
 
 
+class ToolCallingInvoker(Protocol):
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[Any],
+    ) -> Any: ...
+
+
 class ChatModelFactory(Protocol):
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker: ...
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +111,27 @@ class LangChainStructuredInvoker:
 
 
 @dataclass(frozen=True, slots=True)
+class LangChainToolCallingInvoker:
+    model: Any
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[Any],
+    ) -> Any:
+        try:
+            from langchain_core.messages import SystemMessage
+        except ImportError as exc:  # pragma: no cover - exercised only in environments missing LangChain
+            raise MissingLangChainDependencyError(
+                "Install langchain to invoke tool-calling model calls."
+            ) from exc
+        runnable = self.model.bind_tools(tools)
+        return runnable.invoke([SystemMessage(content=system_prompt), *messages])
+
+
+@dataclass(frozen=True, slots=True)
 class LangChainModelFactory:
     model: str
     model_kwargs: dict[str, Any] | None = None
@@ -129,6 +162,24 @@ class LangChainModelFactory:
             max_attempts=self.structured_output_max_attempts,
             retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
         )
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker:
+        del purpose
+        if not self.model:
+            raise MissingLlmConfigurationError("LangChainModelFactory requires a non-empty model name.")
+        try:
+            from langchain.chat_models import init_chat_model
+        except ImportError as exc:  # pragma: no cover - exercised only in environments missing LangChain
+            raise MissingLangChainDependencyError(
+                "Install langchain to create a chat model factory."
+            ) from exc
+        try:
+            chat_model = init_chat_model(self.model, **(self.model_kwargs or {}))
+        except ImportError as exc:  # pragma: no cover - provider package missing
+            raise MissingLangChainProviderDependencyError(
+                f"Missing provider dependency while initializing model {self.model!r}."
+            ) from exc
+        return LangChainToolCallingInvoker(model=chat_model)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +226,29 @@ class OpenAICompatibleChatModelFactory:
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
         )
 
+    def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker:
+        try:
+            from langchain.chat_models import init_chat_model
+        except ImportError as exc:  # pragma: no cover - exercised only in environments missing provider package
+            raise MissingLangChainProviderDependencyError(
+                "Install langchain and langchain-openai to use OpenAI-compatible chat models."
+            ) from exc
+
+        policy = self._resolve_policy(purpose)
+        chat_model = init_chat_model(
+            model=self.model,
+            model_provider="openai",
+            api_key=self.api_key,
+            base_url=self.base_url,
+            extra_body=self.extra_body,
+            max_tokens=policy["max_tokens"],
+            temperature=self.temperature,
+            timeout=policy["timeout"],
+            max_retries=policy["max_retries"],
+            **(self.model_kwargs or {}),
+        )
+        return LangChainToolCallingInvoker(model=chat_model)
+
     def _resolve_policy(self, purpose: str) -> dict[str, Any]:
         override = self.purpose_policies.get(purpose, {})
         return {
@@ -216,8 +290,10 @@ __all__ = [
     "LangChainModelFactory",
     "OpenAICompatibleChatModelFactory",
     "LangChainStructuredInvoker",
+    "LangChainToolCallingInvoker",
     "MissingLangChainDependencyError",
     "MissingLangChainProviderDependencyError",
     "MissingLlmConfigurationError",
     "StructuredOutputInvoker",
+    "ToolCallingInvoker",
 ]

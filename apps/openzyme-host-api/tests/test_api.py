@@ -205,6 +205,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "approval"
     assert payload["workspace"]["pending_actions"][0]["status"] == "pending"
     assert payload["workspace"]["workflow"]["summary"]["evidence_count"] == 2
+    assert len(payload["workspace"]["research"]["turns"]) >= 1
     assert payload["workspace"]["workflow"]["summary"]["candidate_count"] == 2
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.phase_changed",
@@ -212,6 +213,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
         "workflow.interrupt_pending",
         "workflow.approval_pending",
         "workflow.evidence_updated",
+        "workflow.research_turn_recorded",
         "workflow.candidate_updated",
     }
 

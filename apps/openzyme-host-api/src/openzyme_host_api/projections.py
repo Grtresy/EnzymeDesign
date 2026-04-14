@@ -151,6 +151,16 @@ class HostProjectionLoader(ProjectionLoader):
         evidence_records = self.runtime.repositories.evidence_records.list_by_episode(episode_id)
         source_refs = self.runtime.repositories.source_refs.list_by_episode(episode_id)
         grouped_source_refs = _group_source_refs_by_evidence(source_refs)
+        research_turns = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == "research"
+        ]
+        latest_research_collect = None
+        for decision in reversed(self.runtime.repositories.decisions.list_by_episode(episode_id)):
+            if decision.phase == GraphPhase.DESIGN.value and decision.action_kind == "collect_research":
+                latest_research_collect = decision.to_dict()
+                break
         evidence: list[dict[str, Any]] = []
         for record in evidence_records:
             item = record.to_dict()
@@ -159,11 +169,39 @@ class HostProjectionLoader(ProjectionLoader):
 
         summary = self.runtime.repositories.research_summaries.get_by_episode(episode_id)
         unresolved_gaps = self.runtime.repositories.unresolved_gaps.list_by_episode(episode_id)
+        latest_observation = (
+            {}
+            if latest_research_collect is None or latest_research_collect.get("observation_payload") is None
+            else latest_research_collect["observation_payload"]
+        )
         return {
+            "status": latest_observation.get("status") or ("completed" if evidence or summary is not None else "idle"),
+            "completion_reason": latest_observation.get("completion_reason"),
+            "clarification_question": latest_observation.get("clarification_question") or latest_observation.get("question"),
             "summary": None if summary is None else summary.to_dict(),
             "evidence": evidence,
             "source_refs": [source_ref.to_dict() for source_ref in source_refs],
             "unresolved_gaps": [gap.to_dict() for gap in unresolved_gaps],
+            "turns": [
+                {
+                    "turn_index": turn["turn_index"],
+                    "action_kind": turn["action_kind"],
+                    "status": turn["status"],
+                    "summary": turn["summary"],
+                    "rationale": turn["rationale"],
+                    "tool_names": []
+                    if turn.get("action_payload") is None
+                    else list(turn["action_payload"].get("tool_names") or []),
+                    "observation_summary": None
+                    if turn.get("observation_payload") is None
+                    else (
+                        turn["observation_payload"].get("summary")
+                        or turn["observation_payload"].get("message")
+                    ),
+                    "created_at": turn["created_at"],
+                }
+                for turn in research_turns
+            ],
         }
 
     def load_design_projection(self, episode_id: str) -> dict[str, Any]:
@@ -314,6 +352,15 @@ class WorkflowEventProjector:
                     "updated_at": workflow["updated_at"],
                 }
             )
+        for turn in workspace["research"].get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.research_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
         if workspace["design"]["candidates"] or workspace["design"]["selected_candidate"] is not None:
             events.append(
                 {
@@ -435,6 +482,21 @@ class WorkflowEventProjector:
                     "updated_at": after_workflow["updated_at"],
                 }
             )
+        before_research_turn_ids = {
+            (turn["turn_index"], turn["action_kind"], turn["created_at"])
+            for turn in before["research"].get("turns", [])
+        }
+        for turn in after["research"].get("turns", []):
+            key = (turn["turn_index"], turn["action_kind"], turn["created_at"])
+            if key not in before_research_turn_ids:
+                events.append(
+                    {
+                        "event_type": "workflow.research_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
+                    }
+                )
         if before["design"] != after["design"]:
             events.append(
                 {

@@ -100,10 +100,14 @@ function renderPendingApproval(workspace) {
   if (!approval && !interrupt) {
     return '<p class="empty-state">No pending approval or interrupt.</p>';
   }
+  const interruptQuestion = interrupt?.details?.question
+    ? `<p><strong>Question:</strong> ${escapeHtml(interrupt.details.question)}</p>`
+    : "";
   return `
     <div class="callout">
       <p><strong>Pending approval:</strong> ${escapeHtml(approval?.requested_action ?? "None")}</p>
       <p><strong>Interrupt type:</strong> ${escapeHtml(interrupt?.type ?? "none")}</p>
+      ${interruptQuestion}
       <div class="action-row">
         <button type="button" data-action="approve">Approve</button>
         <button type="button" class="secondary" data-action="reject">Reject</button>
@@ -155,12 +159,29 @@ function renderArtifacts(workspace) {
 }
 
 function renderEvidence(workspace) {
-  const research = workspace.research ?? { evidence: [], unresolved_gaps: [], summary: null };
+  const research = workspace.research ?? {
+    status: "idle",
+    completion_reason: null,
+    clarification_question: null,
+    evidence: [],
+    unresolved_gaps: [],
+    summary: null,
+    turns: [],
+  };
   if (!research.evidence.length && !research.summary) {
-    return '<p class="empty-state">No research evidence loaded yet.</p>';
+    return `
+      <div class="stack">
+        <p class="empty-state">No research evidence loaded yet.</p>
+        <p><strong>Status:</strong> ${escapeHtml(research.status ?? "idle")}</p>
+        ${research.clarification_question ? `<p><strong>Clarification:</strong> ${escapeHtml(research.clarification_question)}</p>` : ""}
+      </div>
+    `;
   }
   return `
     <div class="stack">
+      <p><strong>Status:</strong> ${escapeHtml(research.status ?? "completed")}</p>
+      ${research.completion_reason ? `<p><strong>Completion reason:</strong> ${escapeHtml(research.completion_reason)}</p>` : ""}
+      ${research.clarification_question ? `<p><strong>Clarification:</strong> ${escapeHtml(research.clarification_question)}</p>` : ""}
       ${research.summary ? `<p><strong>Summary:</strong> ${escapeHtml(research.summary.summary)}</p>` : ""}
       <ul class="data-list">
         ${research.evidence
@@ -170,11 +191,35 @@ function renderEvidence(workspace) {
                 <span>${escapeHtml(evidence.evidence_id)}</span>
                 <span>${escapeHtml(evidence.summary)}</span>
                 <span>${escapeHtml(evidence.query)}</span>
+                <span>${escapeHtml((evidence.source_refs ?? []).map((source) => source.locator).join(" | ") || "no sources")}</span>
               </li>
             `,
           )
           .join("")}
       </ul>
+      ${
+        research.turns?.length
+          ? `
+            <div class="stack">
+              <p><strong>Recent research turns:</strong></p>
+              <ul class="data-list">
+                ${research.turns
+                  .slice(-5)
+                  .map(
+                    (turn) => `
+                      <li>
+                        <span>${escapeHtml(`#${turn.turn_index}`)}</span>
+                        <span>${escapeHtml(turn.action_kind)}</span>
+                        <span>${escapeHtml(turn.status)}</span>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </div>
+          `
+          : ""
+      }
       ${
         research.unresolved_gaps.length
           ? `<p><strong>Open gaps:</strong> ${escapeHtml(research.unresolved_gaps.map((gap) => gap.summary).join(" | "))}</p>`

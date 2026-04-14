@@ -8,6 +8,7 @@ from openzyme_domain import EvidenceRecord
 from openzyme_domain import Project
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import RunStatus
+from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_graph.design import build_phase_c_design_graph
@@ -44,6 +45,34 @@ class FakeExecutionAdapter:
         )
 
 
+class FakeResearchAdapter:
+    def conduct(self, *, episode_id: str, research_brief: str, unit) -> object:
+        del episode_id, research_brief
+        from openzyme_research import ResearchFinding
+        from openzyme_research import ResearchSource
+        from openzyme_research import ResearchUnitResult
+
+        return ResearchUnitResult(
+            unit_id=unit.unit_id,
+            summary=f"{unit.topic} supports the design objective.",
+            findings=(
+                ResearchFinding(
+                    summary=f"Finding for {unit.query}",
+                    query=unit.query,
+                    confidence_label="high",
+                    sources=(
+                        ResearchSource(
+                            title=f"Source for {unit.unit_id}",
+                            locator=f"https://example.org/{unit.unit_id}",
+                            kind=SourceRefKind.WEB_PAGE,
+                        ),
+                    ),
+                ),
+            ),
+            unresolved_gaps=("Need follow-up validation.",),
+        )
+
+
 class FakeStructuredInvoker:
     def __init__(self, responses: dict[str, object], calls: list[str], purpose: str) -> None:
         self._response = responses[purpose]
@@ -70,7 +99,7 @@ def _memory_checkpointer_open(self: PostgresCheckpointerFactory):
     yield InMemorySaver()
 
 
-def _build_foundation(*, with_research: bool = True) -> RuntimeFoundation:
+def _build_foundation(*, with_research: bool = True, with_research_adapter: bool = False) -> RuntimeFoundation:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
@@ -116,6 +145,7 @@ def _build_foundation(*, with_research: bool = True) -> RuntimeFoundation:
             PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
         ),
         execution_adapter=FakeExecutionAdapter(),
+        research_adapter=FakeResearchAdapter() if with_research_adapter else None,
     )
 
 
@@ -180,7 +210,7 @@ def test_phase_c_design_graph_collects_research_inside_design_when_missing(monke
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
-    foundation = _build_foundation(with_research=False)
+    foundation = _build_foundation(with_research=False, with_research_adapter=True)
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 

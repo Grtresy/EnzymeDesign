@@ -18,6 +18,7 @@ from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
 from openzyme_runtime import get_settings
@@ -207,11 +208,17 @@ def build_demo_foundation(
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
     repositories = _connect_demo_database(sqlite_db_path)
+    research_adapter = DemoResearchAdapter()
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DemoExecutionAdapter(),
-        research_adapter=DemoResearchAdapter(),
+        research_adapter=research_adapter,
+        research_tool_provider=DefaultResearchToolProvider(
+            research_adapter,
+            mcp_enabled=effective_settings.research.mcp_enabled,
+            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+        ),
         model_factory=build_model_factory_from_settings(effective_settings),
         settings=effective_settings,
     )
@@ -226,11 +233,17 @@ def build_configured_foundation(
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
         effective_settings = apply_live_llm_test_budget(effective_settings)
     repositories = _connect_demo_database(sqlite_db_path)
+    research_adapter = _build_research_adapter(effective_settings)
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=_build_execution_adapter(effective_settings),
-        research_adapter=_build_research_adapter(effective_settings),
+        research_adapter=research_adapter,
+        research_tool_provider=DefaultResearchToolProvider(
+            research_adapter,
+            mcp_enabled=effective_settings.research.mcp_enabled,
+            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+        ),
         model_factory=build_model_factory_from_settings(effective_settings),
         settings=effective_settings,
     )

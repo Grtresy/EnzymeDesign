@@ -37,9 +37,14 @@ def _settings() -> OpenZymeSettings:
         ),
         research=ResearchSettings(
             max_units=3,
+            allow_clarification=False,
+            max_research_iterations=3,
+            max_react_tool_calls=4,
+            max_concurrent_research_units=3,
             tavily_api_key=None,
             tavily_max_results=3,
             tavily_topic="general",
+            mcp_enabled=False,
         ),
         tracing=TracingSettings(enabled=False, project_name="openzyme-test"),
         host_cli=HostCliSettings(
@@ -85,9 +90,14 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
         _settings(),
         research=ResearchSettings(
             max_units=5,
+            allow_clarification=False,
+            max_research_iterations=3,
+            max_react_tool_calls=4,
+            max_concurrent_research_units=3,
             tavily_api_key="tavily-key",
             tavily_max_results=4,
             tavily_topic="news",
+            mcp_enabled=False,
         ),
         execution=ExecutionSettings(backend="hpc", hpc_runner_config="/tmp/hpc.toml"),
     )

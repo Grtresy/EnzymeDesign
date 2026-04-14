@@ -24,12 +24,16 @@ from .contracts import DesignToolCallResult
 from .contracts import DesignBriefDraft
 from .contracts import EvidenceSynthesis
 from .contracts import EvidenceSynthesisItem
+from .contracts import ResearchDossier
+from .contracts import ResearchSourceItem
 from .contracts import ExecutionRequestDraft
 from .contracts import ExecutionRunSpecDraft
 from .contracts import IntakeClarification
 from .contracts import IntakePhaseOutput
 from .contracts import ReportDraft
 from .contracts import ResearchBriefDraft
+from .contracts import ResearchSupervisorAction
+from .contracts import ResearchTurnRecord
 from .contracts import ResearchUnitDraft
 from .contracts import ResearchUnitPlan
 from .checkpointer import MissingLangGraphPostgresDependencyError
@@ -55,11 +59,22 @@ from .repositories import SourceRefRepository
 from .repositories import UnresolvedGapRepository
 from .repositories import ApprovalRepository
 from .repositories import connect_sqlite
+from .research_tools import CompositeResearchToolProvider
+from .research_tools import DefaultResearchToolProvider
+from .research_tools import ResearchAdapterSearchTool
+from .research_tools import SearchCollectArgs
+from .research_tools import StaticResearchToolProvider
+from .research_tools import ThinkResearchTool
+from .research_tools import ThinkToolArgs
 from .seams import ExecutionAdapter
 from .seams import DesignTool
 from .seams import DesignToolContext
 from .seams import ProjectionLoader
 from .seams import ResearchAdapter
+from .seams import ResearchTool
+from .seams import ResearchToolContext
+from .seams import ResearchToolProvider
+from .seams import ResearchToolResult
 from .settings import DEFAULT_HOST_BASE_URL
 from .settings import DEFAULT_HOST_API_BIND_HOST
 from .settings import DEFAULT_HOST_API_BIND_PORT
@@ -116,6 +131,8 @@ __all__ = [
     "ExecutionAdapter",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
+    "ResearchDossier",
+    "ResearchSourceItem",
     "ExecutionRequestDraft",
     "ExecutionRunSpecDraft",
     "ExecutionSettings",
@@ -145,10 +162,19 @@ __all__ = [
     "PostgresCheckpointerFactory",
     "ProjectionLoader",
     "ProjectRepository",
+    "CompositeResearchToolProvider",
+    "ResearchAdapterSearchTool",
     "ReportRepository",
     "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",
+    "ResearchSupervisorAction",
+    "SearchCollectArgs",
+    "ResearchTool",
+    "ResearchToolContext",
+    "ResearchToolProvider",
+    "ResearchToolResult",
+    "ResearchTurnRecord",
     "REPO_ROOT",
     "ResearchSettings",
     "TestSettings",
@@ -161,12 +187,16 @@ __all__ = [
     "SelectedCandidateRepository",
     "SourceRefRepository",
     "StructuredOutputInvoker",
+    "StaticResearchToolProvider",
+    "ThinkResearchTool",
+    "ThinkToolArgs",
     "TracingSettings",
     "UnresolvedGapRepository",
     "RuntimeFoundation",
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",
+    "DefaultResearchToolProvider",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",

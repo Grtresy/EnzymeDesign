@@ -28,14 +28,15 @@ from openzyme_domain import SelectedCandidateRecord
 from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
-from openzyme_research import ResearchUnit
 from openzyme_runtime import CandidateComparison
 from openzyme_runtime import CandidateDraftCollection
 from openzyme_runtime import DesignNextAction
 from openzyme_runtime import DesignTool
 from openzyme_runtime import DesignToolContext
+from openzyme_runtime import ResearchDossier
 from openzyme_runtime.bootstrap import GraphAssemblyInputs
 
+from .deep_research import run_deep_research
 from .state import DesignHandoff
 from .state import GraphPhase
 from .state import InterruptType
@@ -76,28 +77,6 @@ def _resolve_artifact_kind(value: str) -> ArtifactKind:
         return ArtifactKind.RESULT
 
 
-def _default_research_units(state: dict[str, Any], arguments: dict[str, Any] | None = None) -> list[ResearchUnit]:
-    args = arguments or {}
-    objective = (
-        args.get("query")
-        or state.get("objective")
-        or state.get("design_brief")
-        or "enzyme redesign objective"
-    )
-    return [
-        ResearchUnit(
-            unit_id="literature",
-            topic=str(args.get("topic") or "literature evidence"),
-            query=f"{objective} candidate sequence evidence",
-        ),
-        ResearchUnit(
-            unit_id="structures",
-            topic="structure and homolog evidence",
-            query=f"{objective} structural support",
-        ),
-    ]
-
-
 def _summarize_observation(observation: dict[str, Any] | None) -> str | None:
     if not observation:
         return None
@@ -132,6 +111,17 @@ def _recent_turns(inputs: GraphAssemblyInputs, episode_id: str, limit: int = 10)
 
 
 def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
+    if (
+        state.get("latest_turn_action_kind") == "collect_research"
+        and state.get("latest_turn_status") == DecisionStatus.FAILED.value
+    ):
+        return DesignNextAction(
+            action_kind="stop",
+            summary="Stop after research collection did not produce usable evidence.",
+            rationale="The latest research collection attempt failed, so the loop should hand off the current state.",
+            stop_reason="collect_research_not_completed",
+            arguments={},
+        )
     if (
         state.get("latest_turn_action_kind") == "run_hpc"
         and state.get("latest_turn_status") in {DecisionStatus.REJECTED.value, DecisionStatus.FAILED.value}
@@ -188,75 +178,72 @@ class ResearchCollectTool:
     requires_approval: bool = False
 
     def invoke(self, context: DesignToolContext) -> dict[str, Any]:
-        episode_id = context.episode_id
         now = _utc_now_iso()
-        research_brief = (
-            context.current_action.get("arguments", {}).get("brief")
-            or context.research_brief
-            or context.design_brief
-            or context.objective
-            or ""
+        dossier = run_deep_research(
+            self.inputs,
+            episode_id=context.episode_id,
+            project_id=context.project_id,
+            objective=context.objective,
+            design_brief=context.design_brief,
+            research_brief=(
+                context.current_action.get("arguments", {}).get("brief")
+                or context.research_brief
+                or context.design_brief
+                or context.objective
+            ),
         )
-        if self.inputs.research_adapter is None:
-            return {
-                "summary": "Fallback design evidence synthesized inside the design loop.",
-                "evidence_items": [
-                    {
-                        "summary": f"Fallback evidence synthesized for {context.objective or 'the design objective'}.",
-                        "query": str(context.objective or context.design_brief or "design objective"),
-                        "confidence_label": "medium",
-                        "sources": [
-                            {
-                                "title": "Fallback design brief evidence",
-                                "locator": "local://design-brief",
-                                "kind": SourceRefKind.WEB_PAGE.value,
-                            }
-                        ],
-                    }
-                ],
-                "unresolved_gaps": [],
-                "created_at": now,
-            }
+        return _research_collect_result_from_dossier(dossier, created_at=now)
 
-        evidence_items: list[dict[str, Any]] = []
-        summaries: list[str] = []
-        gaps: list[str] = []
-        for unit in _default_research_units(
+
+def _research_collect_result_from_dossier(
+    dossier: ResearchDossier,
+    *,
+    created_at: str,
+) -> dict[str, Any]:
+    evidence_items: list[dict[str, Any]] = []
+    for index, item in enumerate(dossier.evidence_items, start=1):
+        evidence_sources = item.sources or [
             {
-                "objective": context.objective,
-                "design_brief": context.design_brief,
-            },
-            context.current_action.get("arguments"),
-        ):
-            result = self.inputs.research_adapter.conduct(
-                episode_id=episode_id,
-                research_brief=research_brief,
-                unit=unit,
+                "title": f"Deep research source {index}",
+                "locator": f"local://deep-research/{index}/1",
+                "kind": SourceRefKind.WEB_PAGE.value,
+                "snippet": None,
+            }
+        ]
+        sources = []
+        for source_index, source in enumerate(evidence_sources, start=1):
+            source_payload = source.model_dump() if hasattr(source, "model_dump") else dict(source)
+            locator = str(source_payload.get("locator") or f"local://deep-research/{index}/{source_index}")
+            sources.append(
+                {
+                    "title": str(source_payload.get("title") or f"Deep research source {index}"),
+                    "locator": locator,
+                    "kind": str(source_payload.get("kind") or SourceRefKind.WEB_PAGE.value),
+                }
             )
-            summaries.append(result.summary)
-            gaps.extend(result.unresolved_gaps)
-            for finding in result.findings:
-                evidence_items.append(
-                    {
-                        "summary": finding.summary,
-                        "query": finding.query,
-                        "confidence_label": finding.confidence_label,
-                        "sources": [
-                            {
-                                "title": source.title,
-                                "locator": source.locator,
-                                "kind": source.kind.value,
-                            }
-                            for source in finding.sources
-                        ],
-                    }
-                )
-        return {
-            "summary": " ".join(item for item in summaries if item),
-            "evidence_items": evidence_items,
-            "unresolved_gaps": gaps,
-            "created_at": now,
-        }
+        evidence_items.append(
+            {
+                "summary": item.summary,
+                "query": item.query,
+                "confidence_label": item.confidence_label,
+                "sources": sources,
+            }
+        )
+    return {
+        "status": dossier.status,
+        "completion_reason": dossier.completion_reason,
+        "clarification_question": dossier.clarification_question,
+        "summary": dossier.summary,
+        "research_brief": dossier.research_brief,
+        "evidence_items": evidence_items,
+        "unresolved_gaps": list(dossier.unresolved_gaps),
+        "raw_notes": list(dossier.raw_notes),
+        "recent_turns": [
+            turn.model_dump() if hasattr(turn, "model_dump") else dict(turn)
+            for turn in dossier.recent_turns
+        ],
+        "created_at": created_at,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +319,7 @@ class DesignSupervisorState(TypedDict, total=False):
     turn_index: int
     current_action: dict[str, Any] | None
     current_tool_name: str | None
+    current_tool_requires_clarification: bool
     action_status: str | None
     action_error: str | None
     action_requires_approval: bool
@@ -548,9 +536,10 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             return Command(
                 update={
                     "current_action": action.model_dump(),
-                    "current_tool_name": tool_name,
-                    "action_requires_approval": True,
-                    "approval_requested": False,
+                "current_tool_name": tool_name,
+                "current_tool_requires_clarification": False,
+                "action_requires_approval": True,
+                "approval_requested": False,
                     "progress": _progress(
                         "validate_action",
                         ProgressStatus.WAITING,
@@ -563,6 +552,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             update={
                 "current_action": action.model_dump(),
                 "current_tool_name": tool_name,
+                "current_tool_requires_clarification": False,
                 "action_requires_approval": requires_approval,
                 "approval_requested": state.get("approval_requested", False),
                 "progress": _progress(
@@ -663,7 +653,9 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             goto="dispatch_action",
         )
 
-    def dispatch_action(state: DesignSupervisorState) -> dict[str, Any]:
+    def dispatch_action(
+        state: DesignSupervisorState,
+    ) -> Command[Literal["clarification_gate", "persist_turn"]]:
         action = DesignNextAction.model_validate(state["current_action"])
         observation: dict[str, Any]
         status = DecisionStatus.COMPLETED
@@ -679,7 +671,59 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 current_action=action.model_dump(),
             )
             tool_result = tools[current_tool_name].invoke(context)
+            if tool_result.get("status") == "needs_clarification":
+                question = str(
+                    tool_result.get("clarification_question")
+                    or "Research scope needs clarification before evidence collection can continue."
+                )
+                return Command(
+                    update={
+                        "status": SupervisorStatus.INTERRUPTED.value,
+                        "current_tool_requires_clarification": True,
+                        "pending_interrupt": {
+                            "type": InterruptType.CLARIFICATION.value,
+                            "episode_id": state["episode_id"],
+                            "phase": GraphPhase.DESIGN.value,
+                            "reason": "research clarification required",
+                            "details": {
+                                "question": question,
+                                "completion_reason": tool_result.get("completion_reason"),
+                            },
+                        },
+                        "progress": _progress(
+                            "dispatch_action",
+                            ProgressStatus.WAITING,
+                            "Research needs clarification before continuing",
+                        ),
+                    },
+                    goto="clarification_gate",
+                )
+
             now = tool_result.get("created_at", _utc_now_iso())
+            completion_status = str(tool_result.get("status") or "completed")
+            if completion_status in {"failed", "partial"} and not tool_result.get("evidence_items"):
+                return Command(
+                    update={
+                        "observation_payload": {
+                            "summary": str(tool_result.get("summary") or "Research collection failed."),
+                            "message": str(tool_result.get("completion_reason") or "research_failed"),
+                            "status": completion_status,
+                            "completion_reason": tool_result.get("completion_reason"),
+                            "clarification_question": tool_result.get("clarification_question"),
+                        },
+                        "design_summary": {
+                            "outcome": "research_failed",
+                            "message": str(tool_result.get("summary") or "Research collection failed."),
+                        },
+                        "action_status": DecisionStatus.FAILED.value,
+                        "progress": _progress(
+                            "dispatch_action",
+                            ProgressStatus.FAILED,
+                            "Research collection failed to produce usable evidence",
+                        ),
+                    },
+                    goto="persist_turn",
+                )
             evidence_index = len(state.get("evidence_refs") or [])
             for finding in tool_result.get("evidence_items", []):
                 evidence_index += 1
@@ -727,8 +771,11 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             observation = {
                 "summary": f"Collected {len(snapshot.evidence_refs)} evidence item(s) inside design.",
                 "tool_result": tool_result,
+                "status": completion_status,
+                "completion_reason": tool_result.get("completion_reason"),
+                "clarification_question": tool_result.get("clarification_question"),
             }
-            return {
+            return Command(update={
                 "research_summary": snapshot.research_summary,
                 "evidence_refs": snapshot.evidence_refs,
                 "unresolved_gaps": snapshot.unresolved_gaps,
@@ -739,7 +786,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     ProgressStatus.SUCCEEDED,
                     observation["summary"],
                 ),
-            }
+            }, goto="persist_turn")
 
         if action.action_kind == "draft_candidates":
             evidence_refs = list(state.get("evidence_refs") or [])
@@ -789,7 +836,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "summary": f"Drafted {len(candidate_payloads)} candidate option(s).",
                 "candidate_ids": [payload["candidate_id"] for payload in candidate_payloads],
             }
-            return {
+            return Command(update={
                 "candidate_payloads": [
                     candidate.to_dict()
                     for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
@@ -797,7 +844,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
-            }
+            }, goto="persist_turn")
 
         if action.action_kind == "rank_candidates":
             candidate_payloads = list(state.get("candidate_payloads") or [])
@@ -862,26 +909,26 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "summary": f"Ranked {len(ranking_records)} candidate option(s).",
                 "selected_candidate_id": selected_candidate_id,
             }
-            return {
+            return Command(update={
                 "ranking_payloads": [ranking.to_dict() for ranking in ranking_records],
                 "selected_candidate_id": selected_candidate_id,
                 "selected_candidate_rationale": selected_candidate_rationale,
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
-            }
+            }, goto="persist_turn")
 
         if action.action_kind == "revise_candidate":
             candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], str(action.target_candidate_id))
             if candidate_snapshot is None:
-                return {
+                return Command(update={
                     "action_status": DecisionStatus.FAILED.value,
                     "observation_payload": {
                         "summary": "Could not load candidate for revision.",
                         "message": "missing candidate snapshot",
                     },
                     "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Candidate revision failed"),
-                }
+                }, goto="persist_turn")
             revision_id = f"{candidate_snapshot.candidate_id}-rev-{int(state.get('turn_index', 0)) + 1}"
             revised_summary = (
                 f"{candidate_snapshot.summary} Revision focus: "
@@ -900,7 +947,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "summary": f"Created revised candidate {revision_id}.",
                 "revised_candidate_id": revision_id,
             }
-            return {
+            return Command(update={
                 "candidate_payloads": [
                     candidate.to_dict()
                     for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
@@ -908,7 +955,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
-            }
+            }, goto="persist_turn")
 
         if current_tool_name == "run_hpc":
             context = DesignToolContext(
@@ -921,7 +968,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             )
             tool_result = tools[current_tool_name].invoke(context)
             if tool_result.get("run_summary") is None:
-                return {
+                return Command(update={
                     "candidate_plan": tool_result.get("candidate_plan"),
                     "run_request": tool_result.get("run_request"),
                     "action_status": DecisionStatus.FAILED.value,
@@ -934,7 +981,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                         "message": str(tool_result.get("summary") or "Execution unavailable."),
                     },
                     "progress": _progress("dispatch_action", ProgressStatus.FAILED, "HPC execution did not start"),
-                }
+                }, goto="persist_turn")
             created_at = _utc_now_iso()
             run_summary = dict(tool_result["run_summary"])
             inputs.repositories.runs.save(
@@ -965,7 +1012,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "summary": "Submitted HPC execution and recorded the resulting run.",
                 "tool_result": tool_result,
             }
-            return {
+            return Command(update={
                 "candidate_plan": tool_result.get("candidate_plan"),
                 "run_request": tool_result.get("run_request"),
                 "run_summary": run_summary,
@@ -981,16 +1028,51 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     ProgressStatus.SUCCEEDED if run_status is RunStatus.SUCCEEDED else ProgressStatus.FAILED,
                     observation["summary"],
                 ),
-            }
+            }, goto="persist_turn")
 
-        return {
+        return Command(update={
             "action_status": DecisionStatus.FAILED.value,
             "observation_payload": {
                 "summary": f"Action {action.action_kind} could not be dispatched.",
                 "message": "dispatch failure",
             },
             "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Dispatch failed"),
-        }
+        }, goto="persist_turn")
+
+    def clarification_gate(
+        state: DesignSupervisorState,
+    ) -> Command[Literal["persist_turn"]]:
+        response = interrupt(state["pending_interrupt"])
+        if isinstance(response, dict):
+            clarification_text = str(response.get("answer") or response.get("message") or response.get("text") or "").strip()
+        else:
+            clarification_text = str(response or "").strip()
+        merged_brief = str(state.get("research_brief") or state.get("design_brief") or state.get("objective") or "")
+        if clarification_text:
+            merged_brief = f"{merged_brief}\n\nClarification: {clarification_text}".strip()
+        question = (
+            (state.get("pending_interrupt") or {}).get("details", {}) or {}
+        ).get("question")
+        return Command(
+            update={
+                "research_brief": merged_brief,
+                "pending_interrupt": None,
+                "status": SupervisorStatus.ACTIVE.value,
+                "current_tool_requires_clarification": False,
+                "action_status": DecisionStatus.COMPLETED.value,
+                "observation_payload": {
+                    "summary": "Captured research clarification and updated the research brief.",
+                    "message": clarification_text or "clarification received",
+                    "question": question,
+                },
+                "progress": _progress(
+                    "clarification_gate",
+                    ProgressStatus.SUCCEEDED,
+                    "Research clarification captured",
+                ),
+            },
+            goto="persist_turn",
+        )
 
     def persist_turn(state: DesignSupervisorState) -> dict[str, Any]:
         action = DesignNextAction.model_validate(state["current_action"])
@@ -1017,6 +1099,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "approval_requested": False,
             "pending_interrupt": None,
             "status": SupervisorStatus.ACTIVE.value,
+            "current_tool_requires_clarification": False,
             "progress": _progress(
                 "persist_turn",
                 ProgressStatus.SUCCEEDED,
@@ -1081,6 +1164,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     graph.add_node("prepare_approval", prepare_approval)
     graph.add_node("approval_gate", approval_gate)
     graph.add_node("dispatch_action", dispatch_action)
+    graph.add_node("clarification_gate", clarification_gate)
     graph.add_node("persist_turn", persist_turn)
     graph.add_node("finalize_design", finalize_design)
 
@@ -1088,7 +1172,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     graph.add_edge("load_design_context", "diagnose_next_action")
     graph.add_edge("diagnose_next_action", "validate_action")
     graph.add_edge("prepare_approval", "approval_gate")
-    graph.add_edge("dispatch_action", "persist_turn")
     graph.add_conditional_edges(
         "persist_turn",
         finalize_or_continue,

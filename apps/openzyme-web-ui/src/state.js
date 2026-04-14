@@ -3,10 +3,14 @@ function ensureWorkspace(workspace) {
     throw new Error("workspace projection is required");
   }
   workspace.research ??= {
+    status: "idle",
+    completion_reason: null,
+    clarification_question: null,
     summary: null,
     evidence: [],
     source_refs: [],
     unresolved_gaps: [],
+    turns: [],
   };
   workspace.design ??= {
     candidates: [],
@@ -59,6 +63,9 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       return next;
     case "workflow.evidence_updated":
       next.research = event.research;
+      return next;
+    case "workflow.research_turn_recorded":
+      next.research.turns = mergeById(next.research.turns ?? [], event.turn, "created_at");
       return next;
     case "workflow.candidate_updated":
       next.design = event.design;
