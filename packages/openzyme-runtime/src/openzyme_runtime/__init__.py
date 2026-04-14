@@ -11,11 +11,6 @@ from .bootstrap import GRAPH_THREAD_KEY
 from .bootstrap import RuntimeFoundation
 from .bootstrap import build_episode_graph_config
 from .bootstrap import validate_runtime_foundation_support
-from .contracts import CandidateComparison
-from .contracts import CandidateDraft
-from .contracts import CandidateDraftCollection
-from .contracts import CandidateRankingDraft
-from .contracts import CandidateSnapshot
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
 from .contracts import ConstraintSet
@@ -48,8 +43,6 @@ from .migration_assets import apply_sqlite_migrations
 from .migration_assets import get_migration_sql
 from .hpc_catalog import RepoBackedHpcCatalogProvider
 from .repositories import ArtifactRecordRepository
-from .repositories import CandidateRankingRepository
-from .repositories import CandidateRecordRepository
 from .repositories import DecisionRepository
 from .repositories import EvidenceRecordRepository
 from .repositories import EpisodeRepository
@@ -59,7 +52,6 @@ from .repositories import ProjectRepository
 from .repositories import ReportRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRepository
-from .repositories import SelectedCandidateRepository
 from .repositories import SourceRefRepository
 from .repositories import UnresolvedGapRepository
 from .repositories import ApprovalRepository
@@ -115,11 +107,6 @@ from .test_gates import quality_eval_skip_reason
 from .toolbox import OpenZymeHostToolbox
 
 __all__ = [
-    "CandidateComparison",
-    "CandidateDraft",
-    "CandidateDraftCollection",
-    "CandidateRankingDraft",
-    "CandidateSnapshot",
     "CanonicalResearchSnapshot",
     "ChatModelFactory",
     "ConstraintItem",
@@ -131,8 +118,6 @@ __all__ = [
     "DesignBriefDraft",
     "ApprovalRepository",
     "ArtifactRecordRepository",
-    "CandidateRankingRepository",
-    "CandidateRecordRepository",
     "DecisionRepository",
     "EvidenceRecordRepository",
     "EpisodeRepository",
@@ -200,7 +185,6 @@ __all__ = [
     "ReportDraft",
     "reset_settings_cache",
     "RunRepository",
-    "SelectedCandidateRepository",
     "SourceRefRepository",
     "StructuredOutputInvoker",
     "StaticResearchToolProvider",

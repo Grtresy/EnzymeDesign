@@ -89,19 +89,19 @@ class IntakeHandoff(TypedDict):
 
 
 class DesignHandoff(TypedDict):
-    candidate_plan: dict[str, Any]
+    artifact_workspace_summary: dict[str, Any]
     run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
     design_summary: dict[str, Any]
-    selected_candidate_id: str | None
     recent_turns: list[dict[str, Any]]
     recommended_next_phase: str
 
 
 class ExecutionHandoff(TypedDict):
-    candidate_plan: dict[str, Any]
     execution_goal: str
     question_to_answer: str
+    required_artifact_ids: list[str]
+    context_artifact_ids: list[str]
     preferred_stage_tags: list[str]
     preferred_capability_tags: list[str]
     recommended_next_phase: str

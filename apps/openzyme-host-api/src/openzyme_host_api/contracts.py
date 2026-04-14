@@ -34,8 +34,7 @@ STREAM_EVENT_TYPES: tuple[str, ...] = (
     "workflow.artifact_available",
     "workflow.evidence_updated",
     "workflow.research_turn_recorded",
-    "workflow.candidate_updated",
-    "workflow.selected_candidate_changed",
+    "workflow.design_workspace_updated",
     "workflow.design_turn_recorded",
     "workflow.execution_turn_recorded",
     "workflow.execution_result_updated",
@@ -176,16 +175,10 @@ def build_host_api_contract() -> HostApiContract:
             "Projected when a deep-research turn is persisted to the canonical ledger.",
         ),
         WorkflowStreamEventContract(
-            "workflow.candidate_updated",
+            "workflow.design_workspace_updated",
             ("episode_id", "design", "updated_at"),
             "updates",
-            "Projected when canonical design candidates or rankings change.",
-        ),
-        WorkflowStreamEventContract(
-            "workflow.selected_candidate_changed",
-            ("episode_id", "selected_candidate", "updated_at"),
-            "updates",
-            "Projected when the selected candidate record changes.",
+            "Projected when the artifact-first design workspace changes.",
         ),
         WorkflowStreamEventContract(
             "workflow.design_turn_recorded",

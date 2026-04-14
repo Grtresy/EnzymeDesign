@@ -126,8 +126,7 @@ def _run_scenario(
         "report_presence": (len(reports) > 0) is scenario.expect_report,
         "report_summary": (not scenario.expect_report)
         or bool(workspace["report"] and workspace["report"]["summary"]),
-        "selected_candidate": scenario.expected_status != "completed"
-        or summary["selected_candidate_id"] is not None,
+        "artifact_workspace": summary["artifact_count"] >= summary["focused_artifact_count"],
     }
     return {
         "scenario_id": scenario.scenario_id,

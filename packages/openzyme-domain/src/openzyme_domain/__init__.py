@@ -11,8 +11,6 @@ from .models import Approval
 from .models import ApprovalStatus
 from .models import ArtifactKind
 from .models import ArtifactRecord
-from .models import CandidateRankingRecord
-from .models import CandidateRecord
 from .models import Decision
 from .models import DecisionStatus
 from .models import EvidenceRecord
@@ -24,7 +22,6 @@ from .models import ReportStatus
 from .models import ResearchSummaryRecord
 from .models import Run
 from .models import RunStatus
-from .models import SelectedCandidateRecord
 from .models import SourceRef
 from .models import SourceRefKind
 from .models import UnresolvedGapRecord
@@ -43,8 +40,6 @@ __all__ = [
     "ApprovalStatus",
     "ArtifactKind",
     "ArtifactRecord",
-    "CandidateRankingRecord",
-    "CandidateRecord",
     "Decision",
     "DecisionStatus",
     "EvidenceRecord",
@@ -56,7 +51,6 @@ __all__ = [
     "ResearchSummaryRecord",
     "Run",
     "RunStatus",
-    "SelectedCandidateRecord",
     "SourceRef",
     "SourceRefKind",
     "UnresolvedGapRecord",

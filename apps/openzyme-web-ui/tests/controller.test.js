@@ -22,7 +22,7 @@ function buildPendingWorkspace() {
       pending_interrupt: { type: "approval", approval_id: "appr_001" },
       pending_approval: {
         approval_id: "appr_001",
-        requested_action: "Approve selected candidate for a design run",
+        requested_action: "Approve focused artifacts for a design run",
         created_at: "2026-04-11T00:00:00+00:00",
       },
       summary: {
@@ -32,8 +32,8 @@ function buildPendingWorkspace() {
         message: "Waiting for approval",
         wait_state: "approval",
         evidence_count: 1,
-        candidate_count: 1,
-        selected_candidate_id: null,
+        artifact_count: 1,
+        focused_artifact_count: 1,
         report_id: null,
         report_status: null,
       },
@@ -42,7 +42,7 @@ function buildPendingWorkspace() {
     pending_actions: [
       {
         approval_id: "appr_001",
-        requested_action: "Approve selected candidate for a design run",
+        requested_action: "Approve focused artifacts for a design run",
         status: "pending",
         created_at: "2026-04-11T00:00:00+00:00",
       },
@@ -56,9 +56,9 @@ function buildPendingWorkspace() {
       unresolved_gaps: [],
     },
     design: {
-      candidates: [{ candidate_id: "cand_001", title: "Candidate A", ranking: { rank: 1 } }],
-      rankings: [{ candidate_id: "cand_001", rank: 1 }],
-      selected_candidate: null,
+      artifacts: [{ artifact_id: "art_001", title: "Design option A", kind: "other", tags: ["design-option"] }],
+      artifact_workspace_summary: { artifact_count: 1, execution_ready_artifact_ids: ["art_001"] },
+      focused_artifact_ids: ["art_001"],
     },
     report: null,
   };
@@ -89,8 +89,8 @@ function buildCompletedWorkspace(episodeId = "ep_001") {
         message: "Report review finished",
         wait_state: null,
         evidence_count: 1,
-        candidate_count: 1,
-        selected_candidate_id: "cand_001",
+        artifact_count: 2,
+        focused_artifact_count: 1,
         report_id: "rep_001",
         report_status: "ready",
       },
@@ -132,14 +132,9 @@ function buildCompletedWorkspace(episodeId = "ep_001") {
       unresolved_gaps: [],
     },
     design: {
-      candidates: [{ candidate_id: "cand_001", title: "Candidate A", ranking: { rank: 1 } }],
-      rankings: [{ candidate_id: "cand_001", rank: 1 }],
-      selected_candidate: {
-        episode_id: episodeId,
-        candidate_id: "cand_001",
-        rationale: "Selected for the design run.",
-        selected_at: "2026-04-11T00:01:30+00:00",
-      },
+      artifacts: [{ artifact_id: "art_001", title: "Design option A", kind: "other", tags: ["design-option"] }],
+      artifact_workspace_summary: { artifact_count: 2, execution_ready_artifact_ids: ["art_001"] },
+      focused_artifact_ids: ["art_001"],
     },
     report: {
       report_id: "rep_001",
@@ -214,7 +209,7 @@ test("workspace controller closes the loop from create through report visibility
 
   await controller.resolveApproval("approved");
   assert.equal(controller.state.workspace.runs[0].run_id, "run_001");
-  assert.equal(controller.state.workspace.design.selected_candidate.candidate_id, "cand_001");
+  assert.equal(controller.state.workspace.design.focused_artifact_ids[0], "art_001");
   assert.equal(controller.state.workspace.report.report_id, "rep_001");
 
   streamHandler?.({

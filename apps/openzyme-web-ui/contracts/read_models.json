@@ -21,9 +21,9 @@
   },
   "design_projection": {
     "required_fields": [
-      "candidates",
-      "rankings",
-      "selected_candidate"
+      "artifacts",
+      "artifact_workspace_summary",
+      "focused_artifact_ids"
     ]
   },
   "run_projection": {

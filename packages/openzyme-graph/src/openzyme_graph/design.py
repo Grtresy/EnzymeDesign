@@ -15,21 +15,15 @@ from langgraph.types import interrupt
 from openzyme_domain import Approval
 from openzyme_domain import ApprovalStatus
 from openzyme_domain import ArtifactKind
-from openzyme_domain import ArtifactRecord
-from openzyme_domain import CandidateRankingRecord
-from openzyme_domain import CandidateRecord
 from openzyme_domain import Decision
 from openzyme_domain import DecisionStatus
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
-from openzyme_domain import SelectedCandidateRecord
 from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
-from openzyme_runtime import CandidateComparison
-from openzyme_runtime import CandidateDraftCollection
 from openzyme_runtime import DesignNextAction
 from openzyme_runtime import DesignTool
 from openzyme_runtime import DesignToolContext
@@ -68,6 +62,10 @@ def _build_decision_id(episode_id: str, turn_index: int) -> str:
     return f"{episode_id}-design-turn-{turn_index}"
 
 
+def _build_source_artifact_id(source_ref_id: str) -> str:
+    return f"{source_ref_id}-artifact"
+
+
 def _resolve_artifact_kind(value: str) -> ArtifactKind:
     try:
         return ArtifactKind(value)
@@ -87,6 +85,21 @@ def _summarize_observation(observation: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _execution_ready_artifacts(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ready: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        availability = dict(artifact.get("availability") or {})
+        if bool(availability.get("execution_input")) or artifact.get("kind") == ArtifactKind.STRUCTURE.value:
+            ready.append(artifact)
+    return ready
+
+
+def _required_execution_artifacts(artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ready = _execution_ready_artifacts(artifacts)
+    local_ready = [artifact for artifact in ready if bool((artifact.get("availability") or {}).get("local_readable"))]
+    return local_ready or ready
+
+
 def _recent_turns(inputs: GraphAssemblyInputs, episode_id: str, limit: int = 10) -> list[dict[str, Any]]:
     turns = inputs.repositories.decisions.list_by_episode(episode_id)
     design_turns = [turn for turn in turns if turn.phase == GraphPhase.DESIGN.value]
@@ -97,9 +110,9 @@ def _recent_turns(inputs: GraphAssemblyInputs, episode_id: str, limit: int = 10)
             "status": turn.status.value,
             "summary": turn.summary,
             "rationale": turn.rationale,
-            "target_candidate_id": None
+            "focused_artifact_ids": []
             if turn.action_payload is None
-            else turn.action_payload.get("target_candidate_id"),
+            else list(turn.action_payload.get("focused_artifact_ids") or turn.action_payload.get("required_artifact_ids") or []),
             "observation_summary": _summarize_observation(turn.observation_payload),
             "created_at": turn.created_at,
         }
@@ -113,6 +126,7 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
     latest_findings = dict(latest_execution_result.get("structured_findings") or {})
     design_signal = str(latest_findings.get("design_signal") or "")
     execution_iteration_count = int(state.get("execution_iteration_count") or 0)
+    execution_ready_artifacts = _execution_ready_artifacts(list(state.get("artifact_refs") or []))
     if (
         state.get("latest_turn_action_kind") == "collect_research"
         and state.get("latest_turn_status") == DecisionStatus.FAILED.value
@@ -146,37 +160,29 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
     if not state.get("evidence_refs"):
         return DesignNextAction(
             action_kind="collect_research",
-            summary="Collect research evidence before designing candidates.",
+            summary="Collect research evidence before curating the artifact workspace.",
             rationale="No canonical evidence exists for the current objective.",
             arguments={},
         )
-    if not state.get("candidate_payloads"):
+    if not state.get("artifact_workspace_summary"):
         return DesignNextAction(
-            action_kind="draft_candidates",
-            summary="Draft candidate options from the current evidence.",
-            rationale="Evidence exists but candidate drafts do not.",
-            arguments={},
-        )
-    if not state.get("selected_candidate_id"):
-        return DesignNextAction(
-            action_kind="rank_candidates",
-            summary="Rank the current candidates and pick the strongest next option.",
-            rationale="Candidates exist but no selected candidate is recorded.",
+            action_kind="curate_artifacts",
+            summary="Curate the current artifacts and references into a usable workspace.",
+            rationale="Research evidence exists, but the artifact workspace summary has not been prepared.",
             arguments={},
         )
     if design_signal == "revise":
         return DesignNextAction(
-            action_kind="revise_candidate",
-            summary="Revise the selected candidate based on the latest execution findings.",
-            rationale="The latest execution findings indicate the selected candidate should be improved before reporting.",
-            target_candidate_id=state.get("selected_candidate_id"),
-            arguments={"revision_goal": str(latest_findings.get("revision_goal") or "Address the latest execution issues.")},
+            action_kind="curate_artifacts",
+            summary="Re-curate the artifact workspace based on the latest execution findings.",
+            rationale="The latest execution findings indicate the workspace needs refinement before reporting.",
+            arguments={"curation_goal": str(latest_findings.get("revision_goal") or "Address the latest execution issues.")},
         )
-    if design_signal == "rerank" and len(state.get("candidate_payloads") or []) > 1:
+    if not execution_ready_artifacts:
         return DesignNextAction(
-            action_kind="rank_candidates",
-            summary="Rerank the current candidates using the latest execution findings.",
-            rationale="Execution findings are available and should influence candidate ranking.",
+            action_kind="curate_artifacts",
+            summary="Curate the workspace to identify execution-ready artifacts.",
+            rationale="The current workspace has no artifact explicitly marked as usable for execution.",
             arguments={},
         )
     if design_signal == "rerun":
@@ -184,21 +190,19 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
             action_kind="request_execution",
             summary="Request a follow-up execution run using a different evaluator or configuration.",
             rationale="The latest execution findings require another evaluation step before design can conclude.",
-            target_candidate_id=state.get("selected_candidate_id"),
             arguments={"execution_goal": str(latest_execution_result.get("result_summary") or "Follow up the latest execution finding.")},
         )
     if not state.get("run_summary"):
         return DesignNextAction(
             action_kind="request_execution",
-            summary="Route the selected candidate into execution for HPC evaluation.",
-            rationale="A selected candidate exists and no execution result has been recorded.",
-            target_candidate_id=state.get("selected_candidate_id"),
+            summary="Route the curated artifact workspace into execution for HPC evaluation.",
+            rationale="Execution-ready artifacts exist and no execution result has been recorded.",
             arguments={},
         )
     return DesignNextAction(
         action_kind="stop",
         summary="Stop the loop and package the current design dossier.",
-        rationale="The current design state already has a selected candidate and execution outcome.",
+        rationale="The current design state already has a curated artifact workspace and execution outcome.",
         stop_reason="design_loop_complete",
         arguments={},
     )
@@ -298,11 +302,8 @@ class DesignSupervisorState(TypedDict, total=False):
     research_summary: dict[str, Any] | None
     evidence_refs: list[dict[str, Any]]
     unresolved_gaps: list[dict[str, Any]]
-    candidate_payloads: list[dict[str, Any]]
-    ranking_payloads: list[dict[str, Any]]
-    selected_candidate_id: str | None
-    selected_candidate_rationale: str | None
-    candidate_plan: dict[str, Any] | None
+    artifact_workspace_summary: dict[str, Any] | None
+    focused_artifact_ids: list[str]
     run_request: dict[str, Any] | None
     run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
@@ -325,9 +326,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     def load_design_context(state: DesignSupervisorState) -> dict[str, Any]:
         episode_id = state["episode_id"]
         snapshot = inputs.host_toolbox.load_canonical_research(episode_id)
-        candidates = [candidate.to_dict() for candidate in inputs.repositories.candidates.list_by_episode(episode_id)]
-        rankings = [ranking.to_dict() for ranking in inputs.repositories.candidate_rankings.list_by_episode(episode_id)]
-        selected_candidate = inputs.repositories.selected_candidates.get_by_episode(episode_id)
         runs = inputs.repositories.runs.list_by_episode(episode_id)
         latest_run = None if not runs else runs[-1]
         design_turns = [
@@ -338,14 +336,20 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         ]
         turn_count = len(design_turns)
         latest_turn = None if not design_turns else design_turns[-1]
-        artifact_refs = [
-            {
-                "artifact_id": artifact.artifact_id,
-                "kind": artifact.kind.value,
-                "storage_uri": artifact.storage_uri,
-            }
-            for artifact in inputs.repositories.artifact_records.list_by_episode(episode_id)
-        ]
+        artifact_refs = inputs.host_toolbox.list_artifacts(episode_id)
+        artifact_workspace_summary = {
+            "artifact_count": len(artifact_refs),
+            "execution_ready_artifact_ids": [
+                artifact["artifact_id"]
+                for artifact in _execution_ready_artifacts(artifact_refs)
+            ],
+            "external_reference_artifact_ids": [
+                artifact["artifact_id"]
+                for artifact in artifact_refs
+                if str((artifact.get("provenance") or {}).get("source_type") or "") == "external_reference"
+            ],
+        }
+        focused_artifact_ids = list(artifact_workspace_summary["execution_ready_artifact_ids"] or [artifact["artifact_id"] for artifact in artifact_refs])
         return {
             "current_phase": GraphPhase.DESIGN.value,
             "status": SupervisorStatus.ACTIVE.value,
@@ -358,10 +362,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "research_summary": snapshot.research_summary,
             "evidence_refs": snapshot.evidence_refs,
             "unresolved_gaps": snapshot.unresolved_gaps,
-            "candidate_payloads": candidates,
-            "ranking_payloads": rankings,
-            "selected_candidate_id": None if selected_candidate is None else selected_candidate.candidate_id,
-            "selected_candidate_rationale": None if selected_candidate is None else selected_candidate.rationale,
+            "artifact_workspace_summary": artifact_workspace_summary if artifact_refs else None,
+            "focused_artifact_ids": focused_artifact_ids,
             "run_summary": None if latest_run is None else latest_run.to_dict(),
             "artifact_refs": artifact_refs,
             "execution_handoff": None,
@@ -396,9 +398,9 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                         "research_brief": state.get("research_brief"),
                         "research_summary": state.get("research_summary") or {},
                         "evidence_refs": state.get("evidence_refs") or [],
-                        "candidate_payloads": state.get("candidate_payloads") or [],
-                        "ranking_payloads": state.get("ranking_payloads") or [],
-                        "selected_candidate_id": state.get("selected_candidate_id"),
+                        "artifact_refs": state.get("artifact_refs") or [],
+                        "artifact_workspace_summary": state.get("artifact_workspace_summary") or {},
+                        "focused_artifact_ids": state.get("focused_artifact_ids") or [],
                         "run_summary": state.get("run_summary") or {},
                         "execution_result_handoff": state.get("execution_result_handoff") or {},
                         "execution_iteration_count": state.get("execution_iteration_count") or 0,
@@ -424,8 +426,6 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         state: DesignSupervisorState,
     ) -> Command[Literal["dispatch_action", "persist_turn", "finalize_design"]]:
         action = DesignNextAction.model_validate(state.get("current_action") or _fallback_next_action(state).model_dump())
-        selected_candidate_id = state.get("selected_candidate_id")
-        candidate_ids = {str(item["candidate_id"]) for item in state.get("candidate_payloads") or []}
         observation: dict[str, Any] | None = None
         action_status = DecisionStatus.PROPOSED
         tool_name: str | None = None
@@ -454,38 +454,20 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             )
 
         if action.action_kind == "request_execution":
-            target_candidate_id = action.target_candidate_id or selected_candidate_id
-            if target_candidate_id is None:
+            execution_ready_artifacts = _required_execution_artifacts(list(state.get("artifact_refs") or []))
+            if not execution_ready_artifacts:
                 observation = {
-                    "summary": "Cannot request execution without a selected candidate.",
-                    "message": "no selected candidate",
+                    "summary": "Cannot request execution without an execution-ready artifact.",
+                    "message": "no execution-ready artifact",
                 }
                 action_status = DecisionStatus.FAILED
-            else:
-                action.target_candidate_id = target_candidate_id
         elif action.action_kind == "collect_research":
             tool_name = "collect_research"
-        elif action.action_kind == "draft_candidates":
-            if not state.get("evidence_refs"):
+        elif action.action_kind == "curate_artifacts":
+            if not state.get("evidence_refs") and not state.get("artifact_refs"):
                 observation = {
-                    "summary": "Cannot draft candidates until some research evidence exists.",
-                    "message": "missing evidence",
-                }
-                action_status = DecisionStatus.FAILED
-        elif action.action_kind == "rank_candidates":
-            if not state.get("candidate_payloads"):
-                observation = {
-                    "summary": "Cannot rank candidates until candidates have been drafted.",
-                    "message": "missing candidates",
-                }
-                action_status = DecisionStatus.FAILED
-        elif action.action_kind == "revise_candidate":
-            if action.target_candidate_id is None:
-                action.target_candidate_id = selected_candidate_id
-            if action.target_candidate_id is None or action.target_candidate_id not in candidate_ids:
-                observation = {
-                    "summary": "Cannot revise a missing candidate.",
-                    "message": "missing target candidate",
+                    "summary": "Cannot curate artifacts until some evidence or artifact exists.",
+                    "message": "missing evidence and artifacts",
                 }
                 action_status = DecisionStatus.FAILED
         else:
@@ -610,16 +592,32 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 )
                 inputs.repositories.evidence_records.save(record)
                 for source_index, source in enumerate(finding.get("sources", []), start=1):
-                    inputs.repositories.source_refs.save(
-                        SourceRef(
-                            source_ref_id=f"{evidence_id}-source-{source_index}",
-                            evidence_id=evidence_id,
-                            episode_id=state["episode_id"],
-                            title=str(source["title"]),
-                            locator=str(source["locator"]),
-                            kind=SourceRefKind(str(source["kind"])),
-                            created_at=str(now),
-                        )
+                    source_ref = SourceRef(
+                        source_ref_id=f"{evidence_id}-source-{source_index}",
+                        evidence_id=evidence_id,
+                        episode_id=state["episode_id"],
+                        title=str(source["title"]),
+                        locator=str(source["locator"]),
+                        kind=SourceRefKind(str(source["kind"])),
+                        created_at=str(now),
+                    )
+                    inputs.repositories.source_refs.save(source_ref)
+                    inputs.host_toolbox.register_artifact(
+                        artifact_id=_build_source_artifact_id(source_ref.source_ref_id),
+                        episode_id=state["episode_id"],
+                        kind=ArtifactKind.RESULT,
+                        storage_uri=source_ref.locator,
+                        created_at=str(now),
+                        title=source_ref.title,
+                        description=f"External reference mirrored from research evidence {evidence_id}.",
+                        tags=["research", "reference", source_ref.kind.value],
+                        provenance={
+                            "source_type": "external_reference",
+                            "source_ref_id": source_ref.source_ref_id,
+                            "evidence_id": evidence_id,
+                        },
+                        availability={"local_readable": False, "execution_input": True},
+                        metadata={"locator": source_ref.locator, "kind": source_ref.kind.value},
                     )
             existing_gap_count = len(inputs.repositories.unresolved_gaps.list_by_episode(state["episode_id"]))
             for gap_index, gap in enumerate(tool_result.get("unresolved_gaps", []), start=1):
@@ -651,6 +649,19 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "research_summary": snapshot.research_summary,
                 "evidence_refs": snapshot.evidence_refs,
                 "unresolved_gaps": snapshot.unresolved_gaps,
+                "artifact_refs": inputs.host_toolbox.list_artifacts(state["episode_id"]),
+                "artifact_workspace_summary": {
+                    "artifact_count": len(inputs.host_toolbox.list_artifacts(state["episode_id"])),
+                    "execution_ready_artifact_ids": [
+                        artifact["artifact_id"]
+                        for artifact in _execution_ready_artifacts(inputs.host_toolbox.list_artifacts(state["episode_id"]))
+                    ],
+                    "external_reference_artifact_ids": [
+                        artifact["artifact_id"]
+                        for artifact in inputs.host_toolbox.list_artifacts(state["episode_id"])
+                        if str((artifact.get("provenance") or {}).get("source_type") or "") == "external_reference"
+                    ],
+                },
                 "observation_payload": observation,
                 "action_status": status.value,
                 "progress": _progress(
@@ -660,172 +671,29 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 ),
             }, goto="persist_turn")
 
-        if action.action_kind == "draft_candidates":
-            evidence_refs = list(state.get("evidence_refs") or [])
-            research_summary = str((state.get("research_summary") or {}).get("summary") or "")
-            if inputs.model_factory is not None:
-                invoker = inputs.model_factory.create_structured_invoker(purpose="design_candidates")
-                candidate_collection = invoker.invoke_structured(
-                    schema=CandidateDraftCollection,
-                    system_prompt=(
-                        "You propose concise enzyme design candidates from the current evidence. "
-                        "Return short candidate drafts with evidence links."
-                    ),
-                    user_payload={
-                        "episode_id": state.get("episode_id"),
-                        "objective": state.get("objective"),
-                        "design_brief": state.get("design_brief"),
-                        "research_summary": state.get("research_summary") or {},
-                        "evidence_refs": evidence_refs,
-                        "prior_candidates": state.get("candidate_payloads") or [],
-                    },
-                )
-                candidate_payloads = [candidate.model_dump() for candidate in candidate_collection.candidates[:3]]
-            else:
-                candidate_payloads = [
-                    {
-                        "candidate_id": f"{state['episode_id']}-candidate-{index}",
-                        "title": f"Candidate {index}",
-                        "summary": f"{research_summary} Focus on evidence: {evidence['summary']}",
-                        "supporting_evidence_ids": [evidence["evidence_id"]],
-                        "rationale": "Derived from the strongest current design evidence.",
-                    }
-                    for index, evidence in enumerate(evidence_refs[:2], start=1)
-                ]
-            now = _utc_now_iso()
-            for payload in candidate_payloads:
-                inputs.repositories.candidates.save(
-                    CandidateRecord(
-                        candidate_id=str(payload["candidate_id"]),
-                        episode_id=state["episode_id"],
-                        title=str(payload["title"]),
-                        summary=str(payload["summary"]),
-                        supporting_evidence_ids=tuple(str(item) for item in payload["supporting_evidence_ids"]),
-                        created_at=now,
-                    )
-                )
-            observation = {
-                "summary": f"Drafted {len(candidate_payloads)} candidate option(s).",
-                "candidate_ids": [payload["candidate_id"] for payload in candidate_payloads],
-            }
-            return Command(update={
-                "candidate_payloads": [
-                    candidate.to_dict()
-                    for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
+        if action.action_kind == "curate_artifacts":
+            artifact_refs = inputs.host_toolbox.list_artifacts(state["episode_id"])
+            execution_ready_artifacts = _execution_ready_artifacts(artifact_refs)
+            workspace_summary = {
+                "artifact_count": len(artifact_refs),
+                "execution_ready_artifact_ids": [artifact["artifact_id"] for artifact in execution_ready_artifacts],
+                "external_reference_artifact_ids": [
+                    artifact["artifact_id"]
+                    for artifact in artifact_refs
+                    if str((artifact.get("provenance") or {}).get("source_type") or "") == "external_reference"
                 ],
-                "execution_result_handoff": None,
-                "observation_payload": observation,
-                "action_status": status.value,
-                "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
-            }, goto="persist_turn")
-
-        if action.action_kind == "rank_candidates":
-            candidate_payloads = list(state.get("candidate_payloads") or [])
-            if inputs.model_factory is not None and candidate_payloads:
-                invoker = inputs.model_factory.create_structured_invoker(purpose="design_ranking")
-                comparison = invoker.invoke_structured(
-                    schema=CandidateComparison,
-                    system_prompt=(
-                        "You compare current enzyme design candidates and pick the best next candidate to run. "
-                        "Return one chosen candidate plus concise ranking rationales."
-                    ),
-                    user_payload={
-                        "episode_id": state.get("episode_id"),
-                        "objective": state.get("objective"),
-                        "research_summary": state.get("research_summary") or {},
-                        "candidate_payloads": candidate_payloads,
-                    },
-                )
-                rankings = comparison.rankings
-                selected_candidate_id = comparison.selected_candidate_id
-                selected_candidate_rationale = comparison.selected_candidate_rationale
-            else:
-                rankings = [
-                    CandidateRankingRecord(
-                        ranking_id=f"{candidate['candidate_id']}-ranking",
-                        episode_id=state["episode_id"],
-                        candidate_id=str(candidate["candidate_id"]),
-                        rank=index,
-                        rationale=f"Candidate {index} ranked from current design evidence.",
-                        created_at=_utc_now_iso(),
-                    )
-                    for index, candidate in enumerate(candidate_payloads, start=1)
-                ]
-                selected_candidate_id = None if not candidate_payloads else str(candidate_payloads[0]["candidate_id"])
-                selected_candidate_rationale = "Top-ranked candidate selected inside the design loop."
-            if rankings and not isinstance(rankings[0], CandidateRankingRecord):
-                ranking_records = [
-                    CandidateRankingRecord(
-                        ranking_id=f"{ranking.candidate_id}-ranking",
-                        episode_id=state["episode_id"],
-                        candidate_id=ranking.candidate_id,
-                        rank=ranking.rank,
-                        rationale=ranking.rationale,
-                        created_at=_utc_now_iso(),
-                    )
-                    for ranking in rankings
-                ]
-            else:
-                ranking_records = rankings  # type: ignore[assignment]
-            for record in ranking_records:
-                inputs.repositories.candidate_rankings.save(record)
-            if selected_candidate_id is not None:
-                inputs.repositories.selected_candidates.save(
-                    SelectedCandidateRecord(
-                        episode_id=state["episode_id"],
-                        candidate_id=selected_candidate_id,
-                        rationale=selected_candidate_rationale,
-                        selected_at=_utc_now_iso(),
-                    )
-                )
+                "goal": str(action.arguments.get("curation_goal") or "Prepare a reusable artifact workspace."),
+            }
             observation = {
-                "summary": f"Ranked {len(ranking_records)} candidate option(s).",
-                "selected_candidate_id": selected_candidate_id,
+                "summary": f"Curated {len(artifact_refs)} artifact(s) into the working workspace.",
+                "artifact_workspace_summary": workspace_summary,
+                "focused_artifact_ids": [artifact["artifact_id"] for artifact in execution_ready_artifacts]
+                or [artifact["artifact_id"] for artifact in artifact_refs],
             }
             return Command(update={
-                "ranking_payloads": [ranking.to_dict() for ranking in ranking_records],
-                "selected_candidate_id": selected_candidate_id,
-                "selected_candidate_rationale": selected_candidate_rationale,
-                "execution_result_handoff": None,
-                "observation_payload": observation,
-                "action_status": status.value,
-                "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
-            }, goto="persist_turn")
-
-        if action.action_kind == "revise_candidate":
-            candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], str(action.target_candidate_id))
-            if candidate_snapshot is None:
-                return Command(update={
-                    "action_status": DecisionStatus.FAILED.value,
-                    "observation_payload": {
-                        "summary": "Could not load candidate for revision.",
-                        "message": "missing candidate snapshot",
-                    },
-                    "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Candidate revision failed"),
-                }, goto="persist_turn")
-            revision_id = f"{candidate_snapshot.candidate_id}-rev-{int(state.get('turn_index', 0)) + 1}"
-            revised_summary = (
-                f"{candidate_snapshot.summary} Revision focus: "
-                f"{action.arguments.get('revision_goal') or 'improve the current design hypothesis'}."
-            )
-            revised_candidate = CandidateRecord(
-                candidate_id=revision_id,
-                episode_id=state["episode_id"],
-                title=f"{candidate_snapshot.title} Revision",
-                summary=revised_summary,
-                supporting_evidence_ids=tuple(candidate_snapshot.supporting_evidence_ids),
-                created_at=_utc_now_iso(),
-            )
-            inputs.repositories.candidates.save(revised_candidate)
-            observation = {
-                "summary": f"Created revised candidate {revision_id}.",
-                "revised_candidate_id": revision_id,
-            }
-            return Command(update={
-                "candidate_payloads": [
-                    candidate.to_dict()
-                    for candidate in inputs.repositories.candidates.list_by_episode(state["episode_id"])
-                ],
+                "artifact_refs": artifact_refs,
+                "artifact_workspace_summary": workspace_summary,
+                "focused_artifact_ids": list(observation["focused_artifact_ids"]),
                 "execution_result_handoff": None,
                 "observation_payload": observation,
                 "action_status": status.value,
@@ -833,31 +701,39 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             }, goto="persist_turn")
 
         if action.action_kind == "request_execution":
-            candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], str(action.target_candidate_id))
-            if candidate_snapshot is None:
+            artifact_refs = inputs.host_toolbox.list_artifacts(state["episode_id"])
+            focused_artifact_ids = set(state.get("focused_artifact_ids") or [])
+            focused_artifacts = [artifact for artifact in artifact_refs if artifact["artifact_id"] in focused_artifact_ids]
+            required_artifacts = _required_execution_artifacts(focused_artifacts or artifact_refs)
+            if not required_artifacts:
                 return Command(update={
                     "action_status": DecisionStatus.FAILED.value,
                     "observation_payload": {
-                        "summary": "Could not load candidate for execution handoff.",
-                        "message": "missing candidate snapshot",
+                        "summary": "Could not identify an execution-ready artifact for handoff.",
+                        "message": "missing execution-ready artifact",
                     },
                     "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Execution handoff failed"),
                 }, goto="persist_turn")
             execution_handoff: ExecutionHandoff = {
-                "candidate_plan": candidate_snapshot.model_dump(),
-                "execution_goal": str(action.arguments.get("execution_goal") or "Evaluate the selected candidate with an HPC tool."),
-                "question_to_answer": str(action.arguments.get("question_to_answer") or "Which fast evaluator should run next for this candidate?"),
+                "execution_goal": str(action.arguments.get("execution_goal") or "Evaluate the focused artifact set with an HPC tool."),
+                "question_to_answer": str(action.arguments.get("question_to_answer") or "Which fast evaluator should run next for this artifact set?"),
+                "required_artifact_ids": [artifact["artifact_id"] for artifact in required_artifacts],
+                "context_artifact_ids": [
+                    artifact["artifact_id"]
+                    for artifact in artifact_refs
+                    if artifact["artifact_id"] not in {item["artifact_id"] for item in required_artifacts}
+                ],
                 "preferred_stage_tags": list(action.arguments.get("preferred_stage_tags") or ["execution", "evaluator"]),
                 "preferred_capability_tags": list(action.arguments.get("preferred_capability_tags") or ["pocket_detection"]),
                 "recommended_next_phase": GraphPhase.EXECUTION.value,
             }
             return Command(update={
-                "candidate_plan": candidate_snapshot.model_dump(),
                 "execution_handoff": execution_handoff,
                 "execution_result_handoff": None,
                 "observation_payload": {
-                    "summary": "Prepared execution handoff for the selected candidate.",
+                    "summary": "Prepared execution handoff for the curated artifact workspace.",
                     "execution_goal": execution_handoff["execution_goal"],
+                    "required_artifact_ids": execution_handoff["required_artifact_ids"],
                 },
                 "action_status": DecisionStatus.COMPLETED.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, "Prepared execution handoff"),
@@ -920,7 +796,10 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             status=DecisionStatus(str(state.get("action_status") or DecisionStatus.COMPLETED.value)),
             summary=action.summary,
             rationale=action.rationale,
-            action_payload=action.model_dump(),
+            action_payload={
+                **action.model_dump(),
+                "focused_artifact_ids": list(state.get("focused_artifact_ids") or []),
+            },
             observation_payload=state.get("observation_payload"),
             created_at=_utc_now_iso(),
         )
@@ -947,15 +826,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         return "load_design_context"
 
     def finalize_design(state: DesignSupervisorState) -> dict[str, Any]:
-        selected_candidate_id = state.get("selected_candidate_id")
-        candidate_plan = state.get("candidate_plan")
-        if candidate_plan is None and selected_candidate_id is not None:
-            candidate_snapshot = inputs.host_toolbox.load_candidate(state["episode_id"], selected_candidate_id)
-            candidate_plan = None if candidate_snapshot is None else candidate_snapshot.model_dump()
-
         if state.get("execution_handoff") is not None:
             return {
-                "candidate_plan": candidate_plan,
                 "execution_handoff": state["execution_handoff"],
                 "recommended_next_phase": GraphPhase.EXECUTION.value,
                 "status": SupervisorStatus.COMPLETED.value,
@@ -972,7 +844,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         }
         recent_turns = _recent_turns(inputs, state["episode_id"])
         design_handoff: DesignHandoff = {
-            "candidate_plan": candidate_plan or {},
+            "artifact_workspace_summary": dict(state.get("artifact_workspace_summary") or {}),
             "run_summary": state.get("run_summary"),
             "artifact_refs": list(state.get("artifact_refs") or []),
             "design_summary": {
@@ -980,12 +852,10 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "research_summary": state.get("research_summary"),
                 "unresolved_gaps": list(state.get("unresolved_gaps") or []),
             },
-            "selected_candidate_id": selected_candidate_id,
             "recent_turns": recent_turns,
             "recommended_next_phase": GraphPhase.REPORT_REVIEW.value,
         }
         return {
-            "candidate_plan": candidate_plan,
             "design_handoff": design_handoff,
             "recommended_next_phase": GraphPhase.REPORT_REVIEW.value,
             "status": SupervisorStatus.COMPLETED.value,

@@ -39,9 +39,10 @@ def test_workflow_stream_events_are_workflow_aware() -> None:
         "workflow.artifact_available",
         "workflow.evidence_updated",
         "workflow.research_turn_recorded",
-        "workflow.candidate_updated",
-        "workflow.selected_candidate_changed",
+        "workflow.design_workspace_updated",
         "workflow.design_turn_recorded",
+        "workflow.execution_turn_recorded",
+        "workflow.execution_result_updated",
         "workflow.report_available",
     )
 

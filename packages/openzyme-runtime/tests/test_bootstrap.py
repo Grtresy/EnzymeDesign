@@ -59,7 +59,7 @@ class FakeProjectionLoader:
         return {"episode_id": episode_id, "evidence": []}
 
     def load_design_projection(self, episode_id: str) -> dict[str, object]:
-        return {"episode_id": episode_id, "candidates": []}
+        return {"episode_id": episode_id, "artifacts": [], "focused_artifact_ids": []}
 
 
 class FakeStructuredInvoker:

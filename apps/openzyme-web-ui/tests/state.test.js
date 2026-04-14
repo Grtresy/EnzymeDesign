@@ -26,7 +26,7 @@ function buildWorkspace() {
       },
       pending_approval: {
         approval_id: "appr_001",
-        requested_action: "Approve selected candidate for a design run",
+        requested_action: "Approve focused artifacts for a design run",
         created_at: "2026-04-11T00:00:00+00:00",
       },
       summary: {
@@ -36,8 +36,8 @@ function buildWorkspace() {
         message: "Building final report",
         wait_state: "approval",
         evidence_count: 1,
-        candidate_count: 1,
-        selected_candidate_id: null,
+        artifact_count: 1,
+        focused_artifact_count: 1,
         report_id: null,
         report_status: null,
       },
@@ -46,7 +46,7 @@ function buildWorkspace() {
     pending_actions: [
       {
         approval_id: "appr_001",
-        requested_action: "Approve selected candidate for a design run",
+        requested_action: "Approve focused artifacts for a design run",
         status: "pending",
         created_at: "2026-04-11T00:00:00+00:00",
       },
@@ -67,15 +67,16 @@ function buildWorkspace() {
       unresolved_gaps: [{ gap_id: "gap_001", summary: "Need structural confirmation." }],
     },
     design: {
-      candidates: [
+      artifacts: [
         {
-          candidate_id: "cand_001",
-          title: "Candidate A",
-          ranking: { rank: 1 },
+          artifact_id: "art_001",
+          title: "Design option A",
+          kind: "other",
+          tags: ["design-option"],
         },
       ],
-      rankings: [{ candidate_id: "cand_001", rank: 1 }],
-      selected_candidate: null,
+      artifact_workspace_summary: { artifact_count: 1, execution_ready_artifact_ids: ["art_001"] },
+      focused_artifact_ids: ["art_001"],
     },
     report: null,
   };
@@ -142,12 +143,10 @@ test("workflow stream events update the host workspace projection in place", () 
     },
   });
   workspace = reduceWorkspaceWithEvent(workspace, {
-    event_type: "workflow.selected_candidate_changed",
-    selected_candidate: {
-      episode_id: "ep_001",
-      candidate_id: "cand_001",
-      rationale: "Selected for the design run.",
-      selected_at: "2026-04-11T00:03:00+00:00",
+    event_type: "workflow.design_workspace_updated",
+    design: {
+      ...workspace.design,
+      focused_artifact_ids: ["art_001"],
     },
   });
   workspace = reduceWorkspaceWithEvent(workspace, {
@@ -168,7 +167,7 @@ test("workflow stream events update the host workspace projection in place", () 
   assert.equal(workspace.workflow.progress.active_node, "execute_runner");
   assert.equal(workspace.runs[0].run_id, "run_001");
   assert.equal(workspace.artifacts[0].artifact_id, "art_001");
-  assert.equal(workspace.design.selected_candidate.candidate_id, "cand_001");
+  assert.equal(workspace.design.focused_artifact_ids[0], "art_001");
   assert.equal(workspace.report.report_id, "rep_001");
 
   const html = renderApp({
@@ -180,10 +179,10 @@ test("workflow stream events update the host workspace projection in place", () 
     errorMessage: "",
     busy: false,
   });
-  assert.match(html, /Approve selected candidate for a design run/);
+  assert.match(html, /Approve focused artifacts for a design run/);
   assert.match(html, /run_001/);
   assert.match(html, /art_001/);
   assert.match(html, /Scaffold A is promising/);
-  assert.match(html, /Candidate A/);
+  assert.match(html, /Design option A/);
   assert.match(html, /Final report/);
 });

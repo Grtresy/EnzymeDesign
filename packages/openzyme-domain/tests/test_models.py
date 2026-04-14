@@ -3,8 +3,8 @@ from openzyme_domain import CORE_ENTITY_NAMES
 from openzyme_domain import DECISION_EXTENSION_TARGETS
 from openzyme_domain import DESIGN_EXTENSION_TARGETS
 from openzyme_domain import EPISODE_EXTENSION_TARGETS
-from openzyme_domain import CandidateRankingRecord
-from openzyme_domain import CandidateRecord
+from openzyme_domain import ArtifactKind
+from openzyme_domain import ArtifactRecord
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import Episode
 from openzyme_domain import EpisodeStatus
@@ -12,7 +12,6 @@ from openzyme_domain import RESEARCH_EXTENSION_TARGETS
 from openzyme_domain import ReportRecord
 from openzyme_domain import ReportStatus
 from openzyme_domain import RunStatus
-from openzyme_domain import SelectedCandidateRecord
 from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
@@ -34,7 +33,7 @@ def test_episode_create_uses_stable_status_enum() -> None:
     episode = Episode.create(
         episode_id="ep_001",
         project_id="proj_001",
-        objective="Design a new enzyme candidate",
+        objective="Design a new enzyme workflow",
     )
 
     assert episode.status is EpisodeStatus.DRAFT
@@ -88,34 +87,22 @@ def test_research_records_use_normalized_serializable_fields() -> None:
     assert "EvidenceRecord" in RESEARCH_EXTENSION_TARGETS
 
 
-def test_design_records_capture_candidate_traceability_and_selection() -> None:
-    candidate = CandidateRecord(
-        candidate_id="cand_001",
+def test_design_extensions_use_artifact_manifests_as_work_objects() -> None:
+    artifact = ArtifactRecord(
+        artifact_id="art_design_001",
         episode_id="ep_001",
-        title="Thermostable scaffold A",
-        summary="Prioritize scaffold A with the highest evidence support.",
-        supporting_evidence_ids=("ev_001", "ev_002"),
+        kind=ArtifactKind.OTHER,
+        storage_uri="artifact://design-option/art_design_001",
         created_at="2026-04-11T12:00:00+00:00",
-    )
-    ranking = CandidateRankingRecord(
-        ranking_id="rank_001",
-        episode_id="ep_001",
-        candidate_id=candidate.candidate_id,
-        rank=1,
-        rationale="Most evidence-backed scaffold.",
-        created_at="2026-04-11T12:01:00+00:00",
-    )
-    selected = SelectedCandidateRecord(
-        episode_id="ep_001",
-        candidate_id=candidate.candidate_id,
-        rationale="Approved for execution handoff.",
-        selected_at="2026-04-11T12:02:00+00:00",
+        title="Thermostable scaffold A",
+        description="Prioritize scaffold A with the highest evidence support.",
+        tags=("design-option",),
+        metadata={"semantic_type": "design_option", "supporting_evidence_ids": ["ev_001", "ev_002"]},
     )
 
-    assert candidate.to_dict()["supporting_evidence_ids"] == ["ev_001", "ev_002"]
-    assert ranking.to_dict()["rank"] == 1
-    assert selected.to_dict()["candidate_id"] == "cand_001"
-    assert "CandidateRecord" in DESIGN_EXTENSION_TARGETS
+    assert artifact.to_dict()["metadata"]["semantic_type"] == "design_option"
+    assert artifact.to_dict()["tags"] == ["design-option"]
+    assert DESIGN_EXTENSION_TARGETS == frozenset({"Episode", "ArtifactRecord", "Decision"})
 
 
 def test_report_records_expose_report_review_summary_fields() -> None:

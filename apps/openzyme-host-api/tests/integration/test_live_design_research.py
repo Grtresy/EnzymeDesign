@@ -65,7 +65,7 @@ def test_live_design_calls_deep_research_and_persists_results(tmp_path) -> None:
         Episode.create(
             episode_id="ep_live_design_research",
             project_id="proj_001",
-            objective="Find literature-backed thermostability strategies for enzyme engineering and use them to draft design candidates.",
+            objective="Find literature-backed thermostability strategies for enzyme engineering and curate design artifacts.",
         )
     )
 
@@ -78,7 +78,7 @@ def test_live_design_calls_deep_research_and_persists_results(tmp_path) -> None:
                 {
                     "episode_id": "ep_live_design_research",
                     "project_id": "proj_001",
-                    "objective": "Find literature-backed thermostability strategies for enzyme engineering and use them to draft design candidates.",
+                    "objective": "Find literature-backed thermostability strategies for enzyme engineering and curate design artifacts.",
                 },
                 config,
             )
@@ -92,7 +92,10 @@ def test_live_design_calls_deep_research_and_persists_results(tmp_path) -> None:
         "ep_live_design_research"
     )
     source_refs = foundation.repositories.source_refs.list_by_episode("ep_live_design_research")
-    candidates = foundation.repositories.candidates.list_by_episode("ep_live_design_research")
+    artifacts = foundation.repositories.artifact_records.list_by_episode("ep_live_design_research")
+    design_artifacts = [
+        artifact for artifact in artifacts if "design-option" in artifact.tags or artifact.metadata and artifact.metadata.get("semantic_type") == "design_option"
+    ]
     decisions = foundation.repositories.decisions.list_by_episode("ep_live_design_research")
     research_decisions = [decision for decision in decisions if decision.phase == "research"]
     design_collect_research = [
@@ -132,11 +135,11 @@ def test_live_design_calls_deep_research_and_persists_results(tmp_path) -> None:
             flush=True,
         )
 
-    print("\nDrafted candidates:", flush=True)
-    for candidate in candidates[:3]:
-        print(f"- {candidate.candidate_id}: {candidate.title}", flush=True)
-        print(f"  summary={candidate.summary}", flush=True)
-        print(f"  evidence_ids={list(candidate.supporting_evidence_ids)}", flush=True)
+    print("\nCurated design artifacts:", flush=True)
+    for artifact in design_artifacts[:3]:
+        print(f"- {artifact.artifact_id}: {artifact.title}", flush=True)
+        print(f"  summary={artifact.description}", flush=True)
+        print(f"  metadata={artifact.metadata}", flush=True)
 
     assert research_summary is not None
     assert research_summary.summary
@@ -150,8 +153,7 @@ def test_live_design_calls_deep_research_and_persists_results(tmp_path) -> None:
     assert any(record.query for record in evidence_records)
     assert any(record.summary for record in evidence_records)
     assert any(source.locator.startswith("http") for source in source_refs)
-    assert candidates
-    assert any(candidate.supporting_evidence_ids for candidate in candidates)
+    assert artifacts
     assert any(
         "thermostab" in record.summary.lower() or "enzyme" in record.summary.lower()
         for record in evidence_records

@@ -48,7 +48,6 @@ class IntakeSubgraphState(TypedDict, total=False):
     pending_interrupt: dict[str, Any] | None
     design_brief: str
     research_brief: str
-    candidate_plan: dict[str, Any] | None
     run_request: dict[str, Any] | None
     recommended_next_phase: str | None
     intake_handoff: IntakeHandoff | None
@@ -71,7 +70,7 @@ def _fallback_intake_output(state: IntakeSubgraphState) -> IntakePhaseOutput:
         ),
         design_brief=DesignBriefDraft(
             design_brief=f"Design brief for {objective}".strip(),
-            success_criteria=["Produce a candidate suitable for execution handoff."],
+            success_criteria=["Produce an artifact workspace suitable for execution handoff."],
         ),
         research_brief=ResearchBriefDraft(
             research_brief=f"Research brief for {objective}".strip(),

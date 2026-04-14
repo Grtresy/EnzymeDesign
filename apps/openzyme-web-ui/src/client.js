@@ -12,8 +12,7 @@ const workflowEventTypes = [
   "workflow.run_status_changed",
   "workflow.artifact_available",
   "workflow.evidence_updated",
-  "workflow.candidate_updated",
-  "workflow.selected_candidate_changed",
+  "workflow.design_workspace_updated",
   "workflow.report_available",
 ];
 

@@ -14,4 +14,4 @@ def test_repo_backed_hpc_catalog_provider_filters_and_reads_skills() -> None:
     skill = provider.read_skill("fpocket")
     assert skill.tool_id == "fpocket"
     assert "structure_path" in skill.required_inputs
-    assert skill.example_invocation_shape["structure_path"] == "candidate_001.pdb"
+    assert skill.example_invocation_shape["structure_path"] == "artifact_001.pdb"

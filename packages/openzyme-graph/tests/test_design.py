@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 from langgraph.checkpoint.memory import InMemorySaver
 from openzyme_domain import ArtifactKind
+from openzyme_domain import ArtifactRecord
 from openzyme_domain import Episode
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import Project
@@ -11,10 +12,7 @@ from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_graph.design import build_phase_c_design_graph
-from openzyme_runtime import CandidateComparison
-from openzyme_runtime import CandidateDraft
-from openzyme_runtime import CandidateDraftCollection
-from openzyme_runtime import CandidateRankingDraft
+from openzyme_runtime import DesignNextAction
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
@@ -140,6 +138,20 @@ def _build_foundation(*, with_research: bool = True, with_research_adapter: bool
                 created_at="2026-04-11T12:02:00+00:00",
             )
         )
+        repositories.artifact_records.save(
+            ArtifactRecord(
+                artifact_id="art_input_structure",
+                episode_id="ep_001",
+                kind=ArtifactKind.STRUCTURE,
+                storage_uri="/tmp/input_structure.pdb",
+                created_at="2026-04-11T12:03:00+00:00",
+                title="Input structure",
+                description="Local structure artifact for execution.",
+                tags=("input", "structure"),
+                availability={"local_readable": True, "execution_input": True},
+                provenance={"source_type": "imported"},
+            )
+        )
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=PostgresCheckpointerFactory(
@@ -152,7 +164,7 @@ def _build_foundation(*, with_research: bool = True, with_research_adapter: bool
     )
 
 
-def test_phase_c_design_graph_persists_candidates_and_prepares_execution_handoff(monkeypatch) -> None:
+def test_phase_c_design_graph_curates_artifacts_and_prepares_execution_handoff(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -172,12 +184,11 @@ def test_phase_c_design_graph_persists_candidates_and_prepares_execution_handoff
         )
     assert first["status"] == "completed"
     assert first["recommended_next_phase"] == "execution"
-    assert first["execution_handoff"]["candidate_plan"]["candidate_id"].startswith("ep_001-candidate-")
-    assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
-    assert len(foundation.repositories.candidate_rankings.list_by_episode("ep_001")) == 2
+    assert first["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
+    assert first["artifact_workspace_summary"]["artifact_count"] >= 1
 
 
-def test_phase_c_design_graph_routes_selected_candidate_into_execution(monkeypatch) -> None:
+def test_phase_c_design_graph_routes_curated_artifacts_into_execution(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -198,9 +209,8 @@ def test_phase_c_design_graph_routes_selected_candidate_into_execution(monkeypat
 
     assert result["status"] == "completed"
     assert result["recommended_next_phase"] == "execution"
-    assert result["candidate_plan"]["candidate_id"].startswith("ep_001-candidate-")
-    assert result["execution_handoff"]["candidate_plan"]["candidate_id"] == result["candidate_plan"]["candidate_id"]
-    assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
+    assert result["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
+    assert "art_input_structure" in result["artifact_workspace_summary"]["execution_ready_artifact_ids"]
 
 
 def test_phase_c_design_graph_collects_research_inside_design_when_missing(monkeypatch) -> None:
@@ -227,7 +237,7 @@ def test_phase_c_design_graph_collects_research_inside_design_when_missing(monke
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) >= 1
 
 
-def test_phase_c_design_graph_uses_structured_candidate_outputs_and_builds_execution_handoff(monkeypatch) -> None:
+def test_phase_c_design_graph_uses_structured_next_action_output(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -241,28 +251,14 @@ def test_phase_c_design_graph_uses_structured_candidate_outputs_and_builds_execu
         hpc_execution_registry=foundation.hpc_execution_registry,
         model_factory=FakeModelFactory(
             {
-                "design_candidates": CandidateDraftCollection(
-                    candidates=[
-                        CandidateDraft(
-                            candidate_id="cand_structured",
-                            title="Structured candidate",
-                            summary="Structured candidate summary",
-                            supporting_evidence_ids=["ev_001"],
-                            rationale="Structured rationale",
-                        )
-                    ]
-                ),
-                "design_ranking": CandidateComparison(
-                    selected_candidate_id="cand_structured",
-                    selected_candidate_rationale="Structured selected rationale",
-                    approval_summary="Approve structured candidate",
-                    rankings=[
-                        CandidateRankingDraft(
-                            candidate_id="cand_structured",
-                            rank=1,
-                            rationale="Best structured option",
-                        )
-                    ],
+                "design_next_action": DesignNextAction(
+                    action_kind="request_execution",
+                    summary="Use the curated structure artifact for execution.",
+                    rationale="The structure artifact is already marked execution-ready.",
+                    arguments={
+                        "execution_goal": "Run a fast structure-based evaluator.",
+                        "preferred_stage_tags": ["execution", "evaluator"],
+                    },
                 ),
             }
         ),
@@ -280,6 +276,6 @@ def test_phase_c_design_graph_uses_structured_candidate_outputs_and_builds_execu
             config,
         )
 
-    assert result["candidate_plan"]["candidate_id"] == "cand_structured"
     assert result["execution_handoff"]["recommended_next_phase"] == "execution"
+    assert result["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
     assert result["execution_handoff"]["preferred_stage_tags"] == ["execution", "evaluator"]

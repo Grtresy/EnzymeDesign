@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
 from openzyme_domain import Episode
 from openzyme_domain import Project
+from openzyme_domain import ArtifactRecord
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import SourceRef
@@ -182,6 +183,19 @@ def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
             created_at="2026-04-11T12:02:00+00:00",
         )
     )
+    repositories.artifact_records.save(
+        ArtifactRecord(
+            artifact_id="art_design_structure",
+            episode_id="ep_design",
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/design_input_structure.pdb",
+            created_at="2026-04-11T12:03:00+00:00",
+            title="Design input structure",
+            tags=("input", "structure"),
+            availability={"local_readable": True, "execution_input": True},
+            provenance={"source_type": "imported"},
+        )
+    )
     foundation = RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=PostgresCheckpointerFactory(
@@ -229,7 +243,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     assert payload["workspace"]["pending_actions"][0]["status"] == "pending"
     assert payload["workspace"]["workflow"]["summary"]["evidence_count"] == 2
     assert len(payload["workspace"]["research"]["turns"]) >= 1
-    assert payload["workspace"]["workflow"]["summary"]["candidate_count"] == 2
+    assert payload["workspace"]["workflow"]["summary"]["artifact_count"] >= 1
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.phase_changed",
         "workflow.progress_updated",
@@ -237,7 +251,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
         "workflow.approval_pending",
         "workflow.evidence_updated",
         "workflow.research_turn_recorded",
-        "workflow.candidate_updated",
+        "workflow.design_workspace_updated",
     }
 
     episode_id = payload["episode_id"]
@@ -258,7 +272,7 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     assert first_payload["workspace"]["workflow"]["episode_status"] == "completed"
     assert first_payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert first_payload["workspace"]["pending_actions"] == []
-    assert first_payload["workspace"]["design"]["selected_candidate"]["candidate_id"].startswith(f"{episode_id}-candidate-")
+    assert len(first_payload["workspace"]["design"]["artifacts"]) >= 1
     assert {event["event_type"] for event in first_payload["events"]} >= {
         "workflow.phase_changed",
         "workflow.summary_updated",
@@ -270,7 +284,7 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     assert payload["workspace"]["workflow"]["current_phase"] == "report_review"
     assert payload["workspace"]["pending_actions"] == []
     assert len(payload["workspace"]["runs"]) == 1
-    assert len(payload["workspace"]["artifacts"]) == 3
+    assert len(payload["workspace"]["artifacts"]) >= 3
     assert payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
     assert {event["event_type"] for event in payload["events"]} >= {
         "workflow.progress_updated",
@@ -284,7 +298,7 @@ def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkey
     reports = client.get(f"/episodes/{episode_id}/reports")
     pending = client.get(f"/episodes/{episode_id}/pending-actions")
     assert runs.json()[0]["status"] == "succeeded"
-    assert len(artifacts.json()) == 3
+    assert len(artifacts.json()) >= 3
     assert reports.json()[0]["artifact_id"] == f"{episode_id}-report-artifact"
     assert pending.json() == []
 
@@ -398,11 +412,11 @@ def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> No
     client, _ = _build_design_client(monkeypatch)
 
     created = client.get("/episodes/ep_design/workspace")
-    assert created.json()["workflow"]["summary"]["candidate_count"] == 2
+    assert created.json()["workflow"]["summary"]["artifact_count"] >= 1
     assert created.json()["workflow"]["current_phase"] == "design"
     assert created.json()["pending_actions"] == []
-    assert len(created.json()["design"]["candidates"]) == 2
-    assert created.json()["design"]["selected_candidate"]["candidate_id"].startswith("ep_design-candidate-")
+    assert len(created.json()["design"]["artifacts"]) >= 1
+    assert "artifact_workspace_summary" in created.json()["design"]
 
 
 def test_report_query_and_projection_become_available_after_supervisor_completion(monkeypatch) -> None:

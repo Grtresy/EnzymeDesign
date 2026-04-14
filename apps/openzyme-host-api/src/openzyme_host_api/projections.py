@@ -57,8 +57,8 @@ def _build_workflow_summary(
     execution: dict[str, Any],
     report: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    selected_candidate = design.get("selected_candidate")
     latest_result = execution.get("latest_result") or {}
+    artifact_workspace_summary = design.get("artifact_workspace_summary") or {}
     return {
         "current_phase": workflow["current_phase"],
         "workflow_status": workflow["status"],
@@ -66,10 +66,9 @@ def _build_workflow_summary(
         "message": workflow["progress"]["message"],
         "wait_state": None if workflow["pending_interrupt"] is None else workflow["pending_interrupt"]["type"],
         "evidence_count": len(research.get("evidence", [])),
-        "candidate_count": len(design.get("candidates", [])),
-        "selected_candidate_id": None
-        if selected_candidate is None
-        else selected_candidate["candidate_id"],
+        "artifact_count": artifact_workspace_summary.get("artifact_count", len(design.get("artifacts", []))),
+        "execution_ready_artifact_count": len(artifact_workspace_summary.get("execution_ready_artifact_ids", [])),
+        "focused_artifact_count": len(design.get("focused_artifact_ids", [])),
         "last_execution_tool_id": latest_result.get("catalog_tool_id"),
         "last_execution_status": latest_result.get("status"),
         "execution_iteration_count": len(execution.get("turns", [])),
@@ -210,24 +209,21 @@ class HostProjectionLoader(ProjectionLoader):
         }
 
     def load_design_projection(self, episode_id: str) -> dict[str, Any]:
-        candidates = [candidate.to_dict() for candidate in self.runtime.repositories.candidates.list_by_episode(episode_id)]
-        rankings = [ranking.to_dict() for ranking in self.runtime.repositories.candidate_rankings.list_by_episode(episode_id)]
         decisions = [
             decision.to_dict()
             for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
             if decision.phase == GraphPhase.DESIGN.value
         ]
-        selected_candidate = self.runtime.repositories.selected_candidates.get_by_episode(episode_id)
-        ranking_by_candidate_id = {ranking["candidate_id"]: ranking for ranking in rankings}
-        enriched_candidates: list[dict[str, Any]] = []
-        for candidate in candidates:
-            item = dict(candidate)
-            item["ranking"] = ranking_by_candidate_id.get(candidate["candidate_id"])
-            enriched_candidates.append(item)
+        artifact_workspace_summary = {}
+        if decisions:
+            latest_observation = decisions[-1].get("observation_payload") or {}
+            artifact_workspace_summary = dict(latest_observation.get("artifact_workspace_summary") or {})
         return {
-            "candidates": enriched_candidates,
-            "rankings": rankings,
-            "selected_candidate": None if selected_candidate is None else selected_candidate.to_dict(),
+            "artifacts": self.load_artifact_projection(episode_id),
+            "artifact_workspace_summary": artifact_workspace_summary,
+            "focused_artifact_ids": []
+            if not decisions
+            else list((decisions[-1].get("action_payload") or {}).get("focused_artifact_ids") or []),
             "turns": [
                 {
                     "turn_index": decision["turn_index"],
@@ -235,9 +231,12 @@ class HostProjectionLoader(ProjectionLoader):
                     "status": decision["status"],
                     "summary": decision["summary"],
                     "rationale": decision["rationale"],
-                    "target_candidate_id": None
+                    "required_artifact_ids": []
                     if decision.get("action_payload") is None
-                    else decision["action_payload"].get("target_candidate_id"),
+                    else list(decision["action_payload"].get("required_artifact_ids") or []),
+                    "focused_artifact_ids": []
+                    if decision.get("action_payload") is None
+                    else list(decision["action_payload"].get("focused_artifact_ids") or []),
                     "observation_summary": None
                     if decision.get("observation_payload") is None
                     else (
@@ -268,12 +267,24 @@ class HostProjectionLoader(ProjectionLoader):
                 "structured_findings": {}
                 if latest_decision.get("observation_payload") is None
                 else latest_decision["observation_payload"].get("structured_findings") or {},
+                "output_artifact_ids": []
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("output_artifact_ids") or [],
+                "input_artifact_ids": []
+                if latest_decision.get("action_payload") is None
+                else latest_decision["action_payload"].get("required_artifact_ids") or [],
                 "planner_trace": {}
                 if latest_decision.get("observation_payload") is None
                 else latest_decision["observation_payload"].get("planner_trace") or {},
             }
         return {
             "latest_result": latest_result,
+            "latest_input_artifact_ids": []
+            if latest_result is None
+            else list(latest_result.get("input_artifact_ids") or []),
+            "latest_output_artifact_ids": []
+            if latest_result is None
+            else list(latest_result.get("output_artifact_ids") or []),
             "turns": [
                 {
                     "turn_index": decision["turn_index"],
@@ -417,21 +428,12 @@ class WorkflowEventProjector:
                     "updated_at": turn["created_at"],
                 }
             )
-        if workspace["design"]["candidates"] or workspace["design"]["selected_candidate"] is not None:
+        if workspace["design"].get("artifacts") or workspace["design"].get("artifact_workspace_summary"):
             events.append(
                 {
-                    "event_type": "workflow.candidate_updated",
+                    "event_type": "workflow.design_workspace_updated",
                     "episode_id": workspace["episode_id"],
                     "design": workspace["design"],
-                    "updated_at": workflow["updated_at"],
-                }
-            )
-        if workspace["design"]["selected_candidate"] is not None:
-            events.append(
-                {
-                    "event_type": "workflow.selected_candidate_changed",
-                    "episode_id": workspace["episode_id"],
-                    "selected_candidate": workspace["design"]["selected_candidate"],
                     "updated_at": workflow["updated_at"],
                 }
             )
@@ -574,22 +576,12 @@ class WorkflowEventProjector:
         if before["design"] != after["design"]:
             events.append(
                 {
-                    "event_type": "workflow.candidate_updated",
+                    "event_type": "workflow.design_workspace_updated",
                     "episode_id": after["episode_id"],
                     "design": after["design"],
                     "updated_at": after_workflow["updated_at"],
                 }
             )
-        if before["design"].get("selected_candidate") != after["design"].get("selected_candidate"):
-            if after["design"].get("selected_candidate") is not None:
-                events.append(
-                    {
-                        "event_type": "workflow.selected_candidate_changed",
-                        "episode_id": after["episode_id"],
-                        "selected_candidate": after["design"]["selected_candidate"],
-                        "updated_at": after_workflow["updated_at"],
-                    }
-                )
         if before["design"].get("turns") != after["design"].get("turns"):
             before_count = len(before["design"].get("turns", []))
             for turn in after["design"].get("turns", [])[before_count:]:

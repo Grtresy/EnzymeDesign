@@ -31,12 +31,12 @@ class FakeSession:
                         "updated_at": "2026-04-12T00:00:00+00:00",
                         "progress": {
                             "active_node": "design_review_gate",
-                            "message": "Waiting for candidate review approval",
+                            "message": "Waiting for design workspace review approval",
                         },
                         "summary": {
                             "evidence_count": 2,
-                            "candidate_count": 2,
-                            "selected_candidate_id": "cand_001",
+                            "artifact_count": 3,
+                            "focused_artifact_count": 2,
                             "report_id": None,
                             "report_status": None,
                         },
@@ -78,7 +78,7 @@ def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
     session = FakeSession()
 
     exit_code = run_cli(
-        ["episodes", "create", "--objective", "Design a candidate"],
+        ["episodes", "create", "--objective", "Design an artifact workspace"],
         session=session,
         stdout=stdout,
         stderr=stderr,
@@ -88,7 +88,7 @@ def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
     assert session.calls[-1] == (
         "POST",
         "/commands/create_episode",
-        {"project_id": "proj_001", "objective": "Design a candidate"},
+        {"project_id": "proj_001", "objective": "Design an artifact workspace"},
     )
     assert "Episode ep_001" in stdout.getvalue()
     reset_settings_cache()

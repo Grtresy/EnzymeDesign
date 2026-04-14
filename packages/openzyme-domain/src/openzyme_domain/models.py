@@ -201,10 +201,17 @@ class ArtifactRecord:
     storage_uri: str
     created_at: str
     run_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: tuple[str, ...] = ()
+    provenance: dict[str, Any] | None = None
+    availability: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["kind"] = self.kind.value
+        data["tags"] = list(self.tags)
         return data
 
 
@@ -278,45 +285,6 @@ class UnresolvedGapRecord:
         return asdict(self)
 
 
-@dataclass(frozen=True, slots=True)
-class CandidateRecord:
-    candidate_id: str
-    episode_id: str
-    title: str
-    summary: str
-    supporting_evidence_ids: tuple[str, ...]
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["supporting_evidence_ids"] = list(self.supporting_evidence_ids)
-        return data
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateRankingRecord:
-    ranking_id: str
-    episode_id: str
-    candidate_id: str
-    rank: int
-    rationale: str
-    created_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class SelectedCandidateRecord:
-    episode_id: str
-    candidate_id: str
-    rationale: str
-    selected_at: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
 CORE_ENTITY_NAMES: tuple[str, ...] = (
     "Project",
     "Episode",
@@ -337,6 +305,4 @@ REPORT_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "Run", "ReportR
 RESEARCH_EXTENSION_TARGETS: frozenset[str] = frozenset(
     {"Episode", "EvidenceRecord", "SourceRef", "ResearchSummaryRecord", "UnresolvedGapRecord"}
 )
-DESIGN_EXTENSION_TARGETS: frozenset[str] = frozenset(
-    {"Episode", "CandidateRecord", "CandidateRankingRecord", "SelectedCandidateRecord"}
-)
+DESIGN_EXTENSION_TARGETS: frozenset[str] = frozenset({"Episode", "ArtifactRecord", "Decision"})

@@ -13,9 +13,10 @@ function ensureWorkspace(workspace) {
     turns: [],
   };
   workspace.design ??= {
-    candidates: [],
-    rankings: [],
-    selected_candidate: null,
+    artifacts: [],
+    artifact_workspace_summary: {},
+    focused_artifact_ids: [],
+    turns: [],
   };
   workspace.report ??= null;
 }
@@ -67,11 +68,8 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "workflow.research_turn_recorded":
       next.research.turns = mergeById(next.research.turns ?? [], event.turn, "created_at");
       return next;
-    case "workflow.candidate_updated":
+    case "workflow.design_workspace_updated":
       next.design = event.design;
-      return next;
-    case "workflow.selected_candidate_changed":
-      next.design.selected_candidate = event.selected_candidate;
       return next;
     case "workflow.report_available":
       next.report = event.report;

@@ -83,9 +83,9 @@ def test_live_llm_generates_structured_report_draft() -> None:
             ),
             user_payload={
                 "episode_id": "ep_live_llm",
-                "objective": "Produce a concise final report for a thermostable candidate",
+                "objective": "Produce a concise final report for a thermostable artifact workspace",
                 "research_summary": {"summary": "Two scaffold families show thermostability evidence."},
-                "selected_candidate_id": "cand_live_001",
+                "focused_artifact_ids": ["artifact_live_001"],
                 "run_summary": {
                     "status": "succeeded",
                     "execution_mode": "demo",

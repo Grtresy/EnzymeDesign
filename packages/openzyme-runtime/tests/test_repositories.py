@@ -2,8 +2,6 @@ from openzyme_domain import Approval
 from openzyme_domain import ApprovalStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ArtifactRecord
-from openzyme_domain import CandidateRankingRecord
-from openzyme_domain import CandidateRecord
 from openzyme_domain import Decision
 from openzyme_domain import DecisionStatus
 from openzyme_domain import EvidenceRecord
@@ -15,7 +13,6 @@ from openzyme_domain import ReportStatus
 from openzyme_domain import ResearchSummaryRecord
 from openzyme_domain import Run
 from openzyme_domain import RunStatus
-from openzyme_domain import SelectedCandidateRecord
 from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord
@@ -226,56 +223,33 @@ def test_source_ref_links_must_match_evidence_episode() -> None:
         raise AssertionError("expected OwnershipError")
 
 
-def test_candidate_repositories_persist_rankings_and_selected_candidate() -> None:
+def test_artifact_repository_persists_design_option_manifests() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
 
     project = Project.create("proj_001", "Design project")
-    episode = Episode.create("ep_001", project.project_id, "Design candidate selection")
-    evidence = EvidenceRecord(
-        evidence_id="ev_001",
+    episode = Episode.create("ep_001", project.project_id, "Curate design artifacts")
+    artifact = ArtifactRecord(
+        artifact_id="art_001",
         episode_id=episode.episode_id,
-        summary="Evidence A",
-        query="query A",
-        created_at="2026-04-11T12:00:00+00:00",
-    )
-    candidate = CandidateRecord(
-        candidate_id="cand_001",
-        episode_id=episode.episode_id,
-        title="Candidate A",
-        summary="Highest-scoring design candidate.",
-        supporting_evidence_ids=(evidence.evidence_id,),
+        kind=ArtifactKind.OTHER,
+        storage_uri="artifact://design-option/art_001",
         created_at="2026-04-11T12:01:00+00:00",
-    )
-    ranking = CandidateRankingRecord(
-        ranking_id="rank_001",
-        episode_id=episode.episode_id,
-        candidate_id=candidate.candidate_id,
-        rank=1,
-        rationale="Most evidence-backed candidate.",
-        created_at="2026-04-11T12:02:00+00:00",
-    )
-    selected = SelectedCandidateRecord(
-        episode_id=episode.episode_id,
-        candidate_id=candidate.candidate_id,
-        rationale="Selected for execution handoff.",
-        selected_at="2026-04-11T12:03:00+00:00",
+        title="Design option A",
+        description="Evidence-backed design option.",
+        tags=("design-option",),
+        metadata={"semantic_type": "design_option", "supporting_evidence_ids": ["ev_001"]},
     )
 
     repositories.projects.save(project)
     repositories.episodes.save(episode)
-    repositories.evidence_records.save(evidence)
-    repositories.candidates.save(candidate)
-    repositories.candidate_rankings.save(ranking)
-    repositories.selected_candidates.save(selected)
+    repositories.artifact_records.save(artifact)
 
-    assert repositories.candidates.list_by_episode(episode.episode_id) == [candidate]
-    assert repositories.candidate_rankings.list_by_episode(episode.episode_id) == [ranking]
-    assert repositories.selected_candidates.get_by_episode(episode.episode_id) == selected
+    assert repositories.artifact_records.list_by_episode(episode.episode_id) == [artifact]
 
 
-def test_candidate_links_must_trace_to_same_episode_evidence() -> None:
+def test_artifact_links_must_trace_to_same_episode_run() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
@@ -284,24 +258,24 @@ def test_candidate_links_must_trace_to_same_episode_evidence() -> None:
     repositories.projects.save(project)
     repositories.episodes.save(Episode.create("ep_a", project.project_id, "A"))
     repositories.episodes.save(Episode.create("ep_b", project.project_id, "B"))
-    repositories.evidence_records.save(
-        EvidenceRecord(
-            evidence_id="ev_a",
+    repositories.runs.save(
+        Run(
+            run_id="run_a",
             episode_id="ep_a",
-            summary="Evidence A",
-            query="query A",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="hpc",
             created_at="2026-04-11T12:00:00+00:00",
         )
     )
 
     try:
-        repositories.candidates.save(
-            CandidateRecord(
-                candidate_id="cand_b",
+        repositories.artifact_records.save(
+            ArtifactRecord(
+                artifact_id="art_b",
                 episode_id="ep_b",
-                title="Wrong episode candidate",
-                summary="Should fail",
-                supporting_evidence_ids=("ev_a",),
+                run_id="run_a",
+                kind=ArtifactKind.RESULT,
+                storage_uri="/tmp/wrong.out",
                 created_at="2026-04-11T12:01:00+00:00",
             )
         )

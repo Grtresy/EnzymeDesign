@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from openzyme_domain import ArtifactKind
+from openzyme_domain import ArtifactRecord
 from openzyme_domain import Episode
 from openzyme_domain import Project
 from openzyme_domain import RunStatus
@@ -60,6 +61,19 @@ def _build_foundation() -> RuntimeFoundation:
             objective="Evaluate the selected candidate",
         )
     )
+    repositories.artifact_records.save(
+        ArtifactRecord(
+            artifact_id="art_input_structure",
+            episode_id="ep_001",
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/input_structure.pdb",
+            created_at="2026-04-11T12:00:00+00:00",
+            title="Input structure",
+            tags=("input", "structure"),
+            availability={"local_readable": True, "execution_input": True},
+            provenance={"source_type": "imported"},
+        )
+    )
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=PostgresCheckpointerFactory(
@@ -86,15 +100,10 @@ def test_execution_subgraph_discovers_fpocket_and_submits_after_approval(monkeyp
                 "episode_id": "ep_001",
                 "project_id": "proj_001",
                 "execution_handoff": {
-                    "candidate_plan": {
-                        "episode_id": "ep_001",
-                        "candidate_id": "cand_001",
-                        "title": "Pocket candidate",
-                        "summary": "Candidate summary",
-                        "supporting_evidence_ids": ["ev_001"],
-                    },
                     "execution_goal": "Run a fast pocket evaluator",
                     "question_to_answer": "Which evaluator should run first?",
+                    "required_artifact_ids": ["art_input_structure"],
+                    "context_artifact_ids": [],
                     "preferred_stage_tags": ["execution", "evaluator"],
                     "preferred_capability_tags": ["pocket_detection"],
                     "recommended_next_phase": "execution",
@@ -107,5 +116,6 @@ def test_execution_subgraph_discovers_fpocket_and_submits_after_approval(monkeyp
     assert first["__interrupt__"][0].value["phase"] == "execution"
     assert result["recommended_next_phase"] == "design"
     assert result["execution_result_handoff"]["catalog_tool_id"] == "fpocket"
+    assert result["execution_result_handoff"]["output_artifact_ids"] == ["run_001-artifact-1"]
     assert result["execution_result_handoff"]["run_summary"]["run_id"] == "run_001"
     assert len(foundation.repositories.runs.list_by_episode("ep_001")) == 1

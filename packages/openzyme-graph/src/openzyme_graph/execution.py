@@ -173,57 +173,16 @@ def _fallback_execution_plan(state: ExecutionSubgraphState) -> ExecutionPlanDraf
         None,
     )
     tool_id = "fpocket" if preferred is None else str(preferred["tool_id"])
-    candidate_plan = dict((state.get("execution_handoff") or {}).get("candidate_plan") or {})
-    candidate_id = str(candidate_plan.get("candidate_id") or "candidate")
+    required_artifact_ids = list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
+    primary_ref = None if not required_artifact_ids else required_artifact_ids[0]
     return ExecutionPlanDraft(
         catalog_tool_id=tool_id,
         rationale="Use the runnable pocket-detection evaluator as the default execution path.",
-        tool_inputs={"structure_path": f"{candidate_id}.pdb"},
+        tool_inputs={"structure_path": f"{str(primary_ref or 'input_structure')}.pdb"},
         execution_mode="auto",
-        expected_result_summary="Return a quick evaluator run for the selected candidate.",
+        expected_result_summary="Return a quick evaluator run for the selected artifact set.",
         planner_summary="Fallback planner selected the default runnable evaluator.",
     )
-
-
-def _compile_execution_request(
-    inputs: GraphAssemblyInputs,
-    *,
-    handoff: dict[str, Any],
-    plan: ExecutionPlanDraft,
-) -> dict[str, Any]:
-    @dataclass(frozen=True, slots=True)
-    class CandidateStub:
-        candidate_id: str
-        title: str
-        supporting_evidence_ids: list[str]
-
-    candidate_plan = dict(handoff.get("candidate_plan") or {})
-    catalog_provider = inputs.hpc_catalog_provider
-    if catalog_provider is None or not hasattr(catalog_provider, "get_entry"):
-        raise ValueError("HPC catalog provider is unavailable for compilation.")
-    entry = catalog_provider.get_entry(plan.catalog_tool_id)  # type: ignore[attr-defined]
-    if entry is None:
-        raise ValueError(f"Unknown HPC catalog tool: {plan.catalog_tool_id}")
-    if str(entry.get("execution_support")) != "runnable":
-        raise ValueError(f"HPC catalog tool {plan.catalog_tool_id} is discovery-only in V1.")
-    candidate_id = str(candidate_plan.get("candidate_id") or "candidate")
-    command = ["fpocket", "-f", str(plan.tool_inputs.get("structure_path") or f"{candidate_id}.pdb")]
-    request = inputs.host_toolbox.build_execution_request(
-        candidate=CandidateStub(
-            candidate_id=candidate_id,
-            title=str(candidate_plan.get("title") or candidate_id),
-            supporting_evidence_ids=list(candidate_plan.get("supporting_evidence_ids") or []),
-        ),
-        execution_mode=plan.execution_mode,
-        command=command,
-        metadata={
-            "catalog_tool_id": plan.catalog_tool_id,
-            "execution_goal": handoff.get("execution_goal"),
-            "tool_contract": {"adapter_id": str(entry.get("adapter_id") or plan.catalog_tool_id)},
-        },
-        tool_name="exec.run",
-    )
-    return request.model_dump()
 
 
 def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
@@ -276,11 +235,16 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                         "role": "user",
                         "content": json.dumps(
                             {
-                                "execution_handoff": state.get("execution_handoff") or {},
-                                "discovered_tools": state.get("discovered_tools") or [],
-                            },
-                            ensure_ascii=True,
-                            sort_keys=True,
+                        "execution_handoff": state.get("execution_handoff") or {},
+                        "discovered_tools": state.get("discovered_tools") or [],
+                        "available_artifacts": inputs.host_toolbox.resolve_artifacts(
+                            state["episode_id"],
+                            list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
+                            + list((state.get("execution_handoff") or {}).get("context_artifact_ids") or []),
+                        ),
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
                         ),
                     }
                 ]
@@ -321,6 +285,11 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                     user_payload={
                         "execution_handoff": state.get("execution_handoff") or {},
                         "discovered_tools": state.get("discovered_tools") or [],
+                        "available_artifacts": inputs.host_toolbox.resolve_artifacts(
+                            state["episode_id"],
+                            list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
+                            + list((state.get("execution_handoff") or {}).get("context_artifact_ids") or []),
+                        ),
                         "selected_skill": selected_skill,
                     },
                 )
@@ -384,10 +353,12 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
         if previous_execution_turns:
             latest_turn = previous_execution_turns[-1]
             latest_payload = dict(latest_turn.action_payload or {})
-            same_candidate = str(((state.get("execution_handoff") or {}).get("candidate_plan") or {}).get("candidate_id") or "") == str(latest_payload.get("candidate_id") or "")
+            same_required_artifacts = list((state.get("execution_handoff") or {}).get("required_artifact_ids") or []) == list(
+                latest_payload.get("required_artifact_ids") or []
+            )
             same_tool = str(latest_payload.get("catalog_tool_id") or "") == plan.catalog_tool_id
             same_inputs = dict(latest_payload.get("tool_inputs") or {}) == dict(plan.tool_inputs)
-            if latest_turn.status is DecisionStatus.COMPLETED and same_candidate and same_tool and same_inputs:
+            if latest_turn.status is DecisionStatus.COMPLETED and same_required_artifacts and same_tool and same_inputs:
                 return Command(
                     update={
                         "current_plan": plan.model_dump(),
@@ -474,7 +445,7 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
             request = inputs.hpc_execution_registry.compile_request(
                 tool_id=plan.catalog_tool_id,
                 plan=plan,
-                handoff=dict(state["execution_handoff"] or {}),
+                handoff={"episode_id": state["episode_id"], **dict(state["execution_handoff"] or {})},
                 host_toolbox=inputs.host_toolbox,
             )
         except Exception as exc:
@@ -504,6 +475,7 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                 },
                 goto="finalize_execution",
             )
+        plan = ExecutionPlanDraft.model_validate(state["current_plan"])
         outcome = inputs.execution_adapter.submit_execution(state["episode_id"], dict(state["run_request"] or {}))
         created_at = _utc_now_iso()
         run_summary = {
@@ -532,19 +504,26 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                 kind=_artifact_kind_from_path(artifact.storage_uri),
                 storage_uri=artifact.storage_uri,
                 created_at=created_at,
+                title=artifact.relative_path,
+                description=f"Execution output artifact {artifact.relative_path} from run {outcome.run_id}.",
+                tags=("execution", "generated", plan.catalog_tool_id),
+                provenance={"source_type": "generated", "catalog_tool_id": plan.catalog_tool_id, "run_id": outcome.run_id},
+                availability={"local_readable": True, "execution_input": False},
+                metadata={"relative_path": artifact.relative_path},
             )
             inputs.repositories.artifact_records.save(record)
             artifact_refs.append(record.to_dict())
+        output_artifact_ids = [artifact["artifact_id"] for artifact in artifact_refs]
         parsed_result = (
             inputs.hpc_execution_registry.parse_result(
-                tool_id=ExecutionPlanDraft.model_validate(state["current_plan"]).catalog_tool_id,
+                tool_id=plan.catalog_tool_id,
                 outcome=outcome,
-                plan=ExecutionPlanDraft.model_validate(state["current_plan"]),
+                plan=plan,
                 artifact_refs=artifact_refs,
             )
             if inputs.hpc_execution_registry is not None
             else ExecutionResultHandoff(
-                catalog_tool_id=ExecutionPlanDraft.model_validate(state["current_plan"]).catalog_tool_id,
+                catalog_tool_id=plan.catalog_tool_id,
                 result_summary="Execution submitted and recorded.",
                 structured_findings={"design_signal": "proceed"},
             )
@@ -558,6 +537,7 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                     "summary": parsed_result.result_summary,
                     "planner_trace": dict(state.get("planner_trace") or {}),
                     "structured_findings": parsed_result.structured_findings,
+                    "output_artifact_ids": output_artifact_ids,
                 },
                 "progress": _progress("submit_execution", ProgressStatus.SUCCEEDED, "Execution submitted"),
             },
@@ -574,6 +554,7 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                 "result_summary": str(observation.get("summary") or "Execution finished."),
                 "run_summary": state.get("run_summary"),
                 "artifact_refs": list(state.get("artifact_refs") or []),
+                "output_artifact_ids": list(observation.get("output_artifact_ids") or []),
                 "structured_findings": dict(observation.get("structured_findings") or {}),
                 "status": status,
                 "recommended_next_phase": GraphPhase.DESIGN.value,
@@ -601,7 +582,8 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                 if not plan
                 else {
                     **plan,
-                    "candidate_id": str(((state.get("execution_handoff") or {}).get("candidate_plan") or {}).get("candidate_id") or ""),
+                    "required_artifact_ids": list((state.get("execution_handoff") or {}).get("required_artifact_ids") or []),
+                    "context_artifact_ids": list((state.get("execution_handoff") or {}).get("context_artifact_ids") or []),
                 },
                 observation_payload={
                     **dict(state.get("observation_payload") or {}),

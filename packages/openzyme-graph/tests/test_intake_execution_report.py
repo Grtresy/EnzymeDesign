@@ -190,16 +190,14 @@ def test_report_review_subgraph_persists_final_report(monkeypatch) -> None:
             {
                 "episode_id": "ep_001",
                 "objective": "Extract specialist subgraphs",
-                "selected_candidate_id": "cand_001",
                 "design_handoff": {
-                    "candidate_plan": {"candidate_id": "cand_001", "title": "Candidate A"},
+                    "artifact_workspace_summary": {"artifact_count": 1, "execution_ready_artifact_ids": ["art_001"]},
                     "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
                     "artifact_refs": [{"artifact_id": "art_001"}],
                     "design_summary": {
                         "message": "Design loop completed.",
                         "research_summary": {"summary": "Research completed."},
                     },
-                    "selected_candidate_id": "cand_001",
                     "recommended_next_phase": "report_review",
                 },
             },
@@ -251,16 +249,14 @@ def test_report_review_subgraph_uses_structured_report_draft(monkeypatch) -> Non
             {
                 "episode_id": "ep_001",
                 "objective": "Structured report",
-                "selected_candidate_id": "cand_001",
                 "design_handoff": {
-                    "candidate_plan": {"candidate_id": "cand_001", "title": "Candidate A"},
+                    "artifact_workspace_summary": {"artifact_count": 1, "execution_ready_artifact_ids": ["art_001"]},
                     "run_summary": {"run_id": "run_001", "execution_mode": "ssh"},
                     "artifact_refs": [{"artifact_id": "art_001"}],
                     "design_summary": {
                         "message": "Design loop completed.",
                         "research_summary": {"summary": "Research completed."},
                     },
-                    "selected_candidate_id": "cand_001",
                     "recommended_next_phase": "report_review",
                 },
             },

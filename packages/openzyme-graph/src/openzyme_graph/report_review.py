@@ -55,7 +55,6 @@ class ReportReviewSubgraphState(TypedDict, total=False):
     progress: dict[str, Any]
     pending_interrupt: dict[str, Any] | None
     research_summary: dict[str, Any] | None
-    selected_candidate_id: str | None
     run_summary: dict[str, Any] | None
     artifact_refs: list[dict[str, Any]]
     design_handoff: dict[str, Any] | None
@@ -74,6 +73,7 @@ def create_canonical_report(
     design_handoff = dict(state.get("design_handoff") or {})
     run_summary = dict(state.get("run_summary") or design_handoff.get("run_summary") or {})
     artifact_refs = list(state.get("artifact_refs") or design_handoff.get("artifact_refs") or [])
+    artifact_workspace_summary = dict(state.get("artifact_workspace_summary") or design_handoff.get("artifact_workspace_summary") or {})
     recent_turns = list(design_handoff.get("recent_turns") or [])
     research_summary = dict(state.get("research_summary") or {})
     if not research_summary:
@@ -111,7 +111,7 @@ def create_canonical_report(
             if draft is not None
             else (
                 f"Research summary: {research_summary.get('summary', 'No research summary available.')} "
-                f"Selected candidate: {state.get('selected_candidate_id', 'none')}. "
+                f"Curated artifacts: {artifact_workspace_summary.get('artifact_count', len(artifact_refs))}. "
                 f"Execution artifacts available: {len(artifact_refs)}. "
                 f"Recent design turns recorded: {len(recent_turns)}."
             )
@@ -151,7 +151,9 @@ def build_report_review_subgraph(inputs: GraphAssemblyInputs, *, include_checkpo
                     "episode_id": state.get("episode_id"),
                     "objective": state.get("objective") or state.get("user_goal"),
                     "research_summary": state.get("research_summary") or {},
-                    "selected_candidate_id": state.get("selected_candidate_id"),
+                    "artifact_workspace_summary": state.get("artifact_workspace_summary")
+                    or (state.get("design_handoff") or {}).get("artifact_workspace_summary")
+                    or {},
                     "run_summary": state.get("run_summary") or {},
                     "artifact_refs": state.get("artifact_refs") or [],
                     "design_handoff": state.get("design_handoff") or {},

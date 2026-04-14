@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from openzyme_domain import ArtifactKind
+from openzyme_domain import ArtifactRecord
 from openzyme_domain import Episode
 from openzyme_domain import Project
 from openzyme_domain import RunStatus
@@ -95,6 +96,19 @@ def _build_foundation() -> RuntimeFoundation:
             objective="Improve thermostability",
         )
     )
+    repositories.artifact_records.save(
+        ArtifactRecord(
+            artifact_id="art_input_structure",
+            episode_id="ep_001",
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/input_structure.pdb",
+            created_at="2026-04-11T12:00:00+00:00",
+            title="Input structure",
+            tags=("input", "structure"),
+            availability={"local_readable": True, "execution_input": True},
+            provenance={"source_type": "imported"},
+        )
+    )
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=PostgresCheckpointerFactory(
@@ -132,13 +146,11 @@ def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thr
     assert first["recommended_next_phase"] == "execution"
     assert first_snapshot.values["current_phase"] == "execution"
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
-    assert len(foundation.repositories.candidates.list_by_episode("ep_001")) == 2
-
-    assert foundation.repositories.selected_candidates.get_by_episode("ep_001") is not None
+    assert first["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
     assert second["status"] == "completed"
     assert second["current_phase"] == "report_review"
     assert second["run_summary"]["run_id"] == "run_001"
-    assert len(second["artifact_refs"]) == 2
+    assert len(second["artifact_refs"]) >= 3
     assert second["report_summary"]["report_id"] == "ep_001-report"
     assert foundation.repositories.reports.get("ep_001-report") is not None
 

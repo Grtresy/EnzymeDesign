@@ -39,8 +39,8 @@ def render_workspace(workspace: dict[str, Any]) -> str:
         f"Updated at: {workflow['updated_at']}",
         "Summary",
         f"- Evidence: {workflow['summary']['evidence_count']}",
-        f"- Candidates: {workflow['summary']['candidate_count']}",
-        f"- Selected candidate: {workflow['summary']['selected_candidate_id'] or '-'}",
+        f"- Artifacts: {workflow['summary']['artifact_count']}",
+        f"- Focused artifacts: {workflow['summary']['focused_artifact_count']}",
         f"- Report: {workflow['summary']['report_id'] or '-'} ({workflow['summary']['report_status'] or 'pending'})",
     ]
     pending = workspace.get("pending_actions") or []

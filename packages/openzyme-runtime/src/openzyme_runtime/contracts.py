@@ -102,43 +102,15 @@ class ResearchDossier(BaseModel):
     recent_turns: list[ResearchTurnRecord] = Field(default_factory=list)
 
 
-class CandidateDraft(BaseModel):
-    candidate_id: str
-    title: str
-    summary: str
-    supporting_evidence_ids: list[str] = Field(default_factory=list)
-    rationale: str
-
-
-class CandidateDraftCollection(BaseModel):
-    candidates: list[CandidateDraft] = Field(default_factory=list)
-
-
-class CandidateRankingDraft(BaseModel):
-    candidate_id: str
-    rank: int
-    rationale: str
-
-
-class CandidateComparison(BaseModel):
-    selected_candidate_id: str
-    selected_candidate_rationale: str
-    approval_summary: str
-    rankings: list[CandidateRankingDraft] = Field(default_factory=list)
-
-
 class DesignNextAction(BaseModel):
     action_kind: Literal[
         "collect_research",
-        "draft_candidates",
-        "rank_candidates",
-        "revise_candidate",
+        "curate_artifacts",
         "request_execution",
         "stop",
     ]
     summary: str
     rationale: str
-    target_candidate_id: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
     stop_reason: str | None = None
 
@@ -175,9 +147,10 @@ class HpcCatalogEntrySummary(BaseModel):
 
 
 class ExecutionHandoff(BaseModel):
-    candidate_plan: dict[str, Any]
     execution_goal: str
     question_to_answer: str
+    required_artifact_ids: list[str] = Field(default_factory=list)
+    context_artifact_ids: list[str] = Field(default_factory=list)
     preferred_stage_tags: list[str] = Field(default_factory=list)
     preferred_capability_tags: list[str] = Field(default_factory=list)
     recommended_next_phase: str = "execution"
@@ -197,9 +170,25 @@ class ExecutionResultHandoff(BaseModel):
     result_summary: str
     run_summary: dict[str, Any] | None = None
     artifact_refs: list[dict[str, Any]] = Field(default_factory=list)
+    output_artifact_ids: list[str] = Field(default_factory=list)
     structured_findings: dict[str, Any] = Field(default_factory=dict)
     status: str = "completed"
     recommended_next_phase: str = "design"
+
+
+class ArtifactManifest(BaseModel):
+    artifact_id: str
+    episode_id: str
+    kind: str
+    storage_uri: str
+    created_at: str
+    run_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    availability: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportDraft(BaseModel):
@@ -216,20 +205,8 @@ class CanonicalResearchSnapshot(BaseModel):
     unresolved_gaps: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class CandidateSnapshot(BaseModel):
-    episode_id: str
-    candidate_id: str
-    title: str
-    summary: str
-    supporting_evidence_ids: list[str] = Field(default_factory=list)
-
-
 __all__ = [
-    "CandidateComparison",
-    "CandidateDraft",
-    "CandidateDraftCollection",
-    "CandidateRankingDraft",
-    "CandidateSnapshot",
+    "ArtifactManifest",
     "CanonicalResearchSnapshot",
     "ConstraintItem",
     "ConstraintSet",

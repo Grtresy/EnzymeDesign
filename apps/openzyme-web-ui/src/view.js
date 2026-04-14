@@ -229,26 +229,22 @@ function renderEvidence(workspace) {
   `;
 }
 
-function renderCandidates(workspace) {
-  const design = workspace.design ?? { candidates: [], selected_candidate: null, turns: [] };
-  if (!design.candidates.length) {
-    return '<p class="empty-state">No design candidates available yet.</p>';
+function renderDesignWorkspace(workspace) {
+  const design = workspace.design ?? { artifacts: [], focused_artifact_ids: [], turns: [] };
+  if (!design.artifacts.length) {
+    return '<p class="empty-state">No design artifacts available yet.</p>';
   }
   return `
     <div class="stack">
-      ${
-        design.selected_candidate
-          ? `<p><strong>Selected:</strong> ${escapeHtml(design.selected_candidate.candidate_id)} · ${escapeHtml(design.selected_candidate.rationale)}</p>`
-          : '<p class="empty-state">No selected candidate yet.</p>'
-      }
+      <p><strong>Focused artifacts:</strong> ${escapeHtml((design.focused_artifact_ids ?? []).join(" | ") || "none")}</p>
       <ul class="data-list">
-        ${design.candidates
+        ${design.artifacts
           .map(
-            (candidate) => `
+            (artifact) => `
               <li>
-                <span>${escapeHtml(candidate.candidate_id)}</span>
-                <span>${escapeHtml(candidate.title)}</span>
-                <span>${escapeHtml(candidate.ranking?.rank ?? "n/a")}</span>
+                <span>${escapeHtml(artifact.artifact_id)}</span>
+                <span>${escapeHtml(artifact.title ?? artifact.kind)}</span>
+                <span>${escapeHtml((artifact.tags ?? []).join(", ") || "n/a")}</span>
               </li>
             `,
           )
@@ -338,7 +334,7 @@ export function renderWorkspaceShell(viewState) {
             ${
               workspace.workflow.summary
                 ? `<p><strong>Summary:</strong> ${escapeHtml(
-                    `Evidence ${workspace.workflow.summary.evidence_count}, candidates ${workspace.workflow.summary.candidate_count}, report ${workspace.workflow.summary.report_status ?? "pending"}`,
+                    `Evidence ${workspace.workflow.summary.evidence_count}, artifacts ${workspace.workflow.summary.artifact_count}, report ${workspace.workflow.summary.report_status ?? "pending"}`,
                   )}</p>`
                 : ""
             }
@@ -377,8 +373,8 @@ export function renderWorkspaceShell(viewState) {
                 ${renderArtifacts(workspace)}
               </section>
               <section>
-                <h4>Candidates</h4>
-                ${renderCandidates(workspace)}
+                <h4>Design Workspace</h4>
+                ${renderDesignWorkspace(workspace)}
               </section>
             </div>
           </article>
