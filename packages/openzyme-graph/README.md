@@ -19,6 +19,8 @@ This package defines the Phase A graph-side contract for:
 - `design`
 - `report_review`
 
+Research and execution may still run as graph-backed capabilities, but they are design-owned internal steps rather than fixed top-level supervisor phases.
+
 ## Cross-package rules
 
 - `thread_id = episode_id`

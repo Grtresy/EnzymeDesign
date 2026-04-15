@@ -52,7 +52,7 @@ The domain model MUST distinguish terminal states from non-terminal states.
 - **THEN** the consumer does not need to infer resumability from ad hoc flags
 
 ### Requirement: Phase C domain concerns remain extensible without renaming core entities
-The system MUST reserve extension space for later research and design concerns such as evidence and candidate comparison without requiring the Phase A core entity set to be renamed or restructured.
+The system MUST reserve extension space for later research and design concerns such as evidence and artifact-workspace semantics without requiring the Phase A core entity set to be renamed or restructured.
 
 The domain model MUST allow future domain objects to associate with at least:
 
@@ -60,7 +60,7 @@ The domain model MUST allow future domain objects to associate with at least:
 - `Decision`
 - `Run`
 
-#### Scenario: A later change introduces evidence records
-- **WHEN** a later change defines evidence or candidate entities
+#### Scenario: A later change introduces evidence or artifact-workspace records
+- **WHEN** a later change defines evidence or artifact-workspace entities
 - **THEN** those entities can attach to existing episode, decision, or run identifiers
 - **THEN** the Phase A core entity set remains valid without a breaking rename

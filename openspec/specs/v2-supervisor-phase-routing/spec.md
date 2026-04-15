@@ -5,8 +5,8 @@ Define the product-facing top-level supervisor graph that routes one episode thr
 
 ## Requirements
 
-### Requirement: V2 routes intake, research, design, execution, and report review through one top-level supervisor graph
-The system MUST provide one episode-scoped supervisor graph that routes `intake`, `research`, `design`, `execution`, and `report_review` through a single top-level workflow thread.
+### Requirement: V2 routes intake, design, and report review through one top-level supervisor graph
+The system MUST provide one episode-scoped supervisor graph that routes `intake`, `design`, and `report_review` through a single top-level workflow thread.
 
 The initial supervisor implementation MUST:
 
@@ -25,15 +25,15 @@ The system MUST route between specialist subgraphs using explicit handoff contra
 
 The initial supervisor handoff model MUST support at least:
 
-- intake output that decides whether the episode proceeds into research or design
-- research output that makes design inputs available through canonical or explicit handoff fields
-- design output that maps the selected candidate into the execution handoff contract
-- execution output that hands report-review structured run and artifact context
+- intake output that decides whether the episode proceeds into `design`
+- design output that carries the structured brief, design workspace state, and any loop status needed for continuation
+- design-internal research and execution results becoming visible to later design iterations through canonical records or explicit loop-local handoff fields
+- design output that hands report-review structured artifact, run, and rationale context
 
-#### Scenario: Research completes before design starts
-- **WHEN** the research phase completes for an episode
-- **THEN** the supervisor can continue into the design phase using structured handoff data
-- **THEN** the design phase does not need to reconstruct its inputs from raw internal research buffers
+#### Scenario: Design continues after an internal research or execution step
+- **WHEN** the design loop finishes one internal research or execution step for an episode
+- **THEN** the design phase can continue using structured handoff data and canonical records
+- **THEN** the top-level supervisor does not need to expose research or execution as separate routed phases
 
 ### Requirement: Host product entrypoints use the unified supervisor builder
 The system MUST make the top-level supervisor graph the default builder for Host API, workspace loading, and local demo execution.
@@ -44,7 +44,7 @@ The initial product-facing integration MUST:
 - resume interrupted work on the supervisor graph thread
 - stop relying on phase-specific product graph builders for normal Host behavior
 
-#### Scenario: Host resumes a design or execution approval on the supervisor graph
+#### Scenario: Host resumes a design-loop approval on the supervisor graph
 - **WHEN** a user resolves a pending approval through the Host command path
 - **THEN** the Host resumes the same episode on the unified supervisor graph
 - **THEN** the resumed workflow continues from the correct routed phase instead of re-entering a phase-specific top-level graph
@@ -56,7 +56,7 @@ The initial unified projection MUST support at least:
 
 - current phase from the supervisor-controlled workflow
 - pending interrupt or approval for the routed phase
-- workflow progress that remains coherent as the episode moves from intake to research, design, execution, and report review
+- workflow progress that remains coherent as the episode moves from intake into design, performs design-internal research or execution work, and then finishes in report review
 
 #### Scenario: Browser observes a routed multi-phase episode
 - **WHEN** an episode moves across multiple routed phases

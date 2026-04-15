@@ -20,17 +20,17 @@ The initial canonical report model MUST support at least:
 - **THEN** the runtime writes a canonical report record for that episode
 - **THEN** Host consumers can later query the report without reading raw checkpoint state
 
-### Requirement: Supervisor routes execution into report review before completion
-The system MUST route successful execution into the `report_review` phase and only enter the final completed state after report review finishes.
+### Requirement: Supervisor routes completed design work into report review before completion
+The system MUST route successful completion of the design loop into the `report_review` phase and only enter the final completed state after report review finishes.
 
 The initial report-review routing MUST support at least:
 
-- execution-to-report handoff using structured run and artifact context
+- design-to-report handoff using structured artifact, run, and rationale context
 - `thread_id = episode_id` continuity across the report-review phase
 - an explicit final workflow state after report generation completes
 
 #### Scenario: Episode completes through report review
-- **WHEN** execution finishes successfully for an episode
+- **WHEN** the design phase reaches its completion condition for an episode
 - **THEN** the supervisor continues into `report_review` on the same episode thread
 - **THEN** the episode is not marked complete until report review has finished
 

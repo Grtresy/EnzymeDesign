@@ -6,9 +6,7 @@ The system MUST define a supervisor graph state model with a fixed phase set rat
 The fixed phase set MUST include:
 
 - `intake`
-- `research`
 - `design`
-- `execution`
 - `report_review`
 
 The top-level graph state MUST include the current phase and enough state to determine whether the workflow is active, interrupted, or terminal.
@@ -35,7 +33,7 @@ The graph state contract MUST ensure that:
 ### Requirement: Each fixed subgraph has an explicit supervisor-facing contract
 The system MUST define supervisor-facing input and output contracts for each fixed subgraph.
 
-For each of `intake`, `research`, `design`, `execution`, and `report_review`, the contract MUST define at least:
+For each of `intake`, `design`, and `report_review`, the contract MUST define at least:
 
 - the minimum structured input required to enter the subgraph
 - the structured output returned to the supervisor on normal completion
@@ -45,6 +43,20 @@ For each of `intake`, `research`, `design`, `execution`, and `report_review`, th
 - **WHEN** the intake subgraph finishes without interruption
 - **THEN** it returns a structured output that the supervisor can evaluate for routing
 - **THEN** the supervisor does not depend on ad hoc prompt text to decide the next phase
+
+### Requirement: Design-owned research and execution steps use explicit loop-local contracts
+The system MUST define explicit loop-local contracts for `research` and `execution` when they are invoked from the `design` phase.
+
+The loop-local contract MUST define at least:
+
+- the minimum structured input required from the design workspace
+- the normalized outputs returned to the design loop
+- the interrupt or approval shapes that may be surfaced to Host clients while the episode remains in `design`
+
+#### Scenario: Design invokes research without changing top-level phase
+- **WHEN** the design loop invokes an internal research step
+- **THEN** the top-level supervisor phase remains `design`
+- **THEN** the design loop still receives structured research outputs and resumable interrupt data
 
 ### Requirement: Interrupt and approval states use a normalized resumable envelope
 The system MUST represent clarification, approval, escalation, and recoverable failure handoff using a normalized resumable envelope in graph state.
@@ -58,8 +70,8 @@ Each pending envelope MUST include at least:
 - a freshness or checkpoint anchor sufficient for safe resumption
 
 #### Scenario: Approval pending can be resumed consistently
-- **WHEN** the execution phase pauses for human approval
-- **THEN** the graph state records a normalized pending approval envelope
+- **WHEN** a design-owned execution step pauses for human approval
+- **THEN** the graph state records a normalized pending approval envelope owned by the current episode and top-level phase
 - **THEN** a caller can later resume that episode using the saved resume data and freshness anchor
 
 ### Requirement: Durable graph state exposes structured progress for projection

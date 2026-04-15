@@ -25,7 +25,7 @@ The execution and artifact projections MUST be able to represent at least:
 - artifact lists associated with an episode or run
 - artifact retrieval handles or links
 
-#### Scenario: User reviews outputs from the execution phase
+#### Scenario: User reviews outputs from a design-owned execution step
 - **WHEN** a run completes and artifacts become available
 - **THEN** the frontend can read run and artifact projections shaped for UI display
 - **THEN** it does not need to parse raw storage metadata records directly

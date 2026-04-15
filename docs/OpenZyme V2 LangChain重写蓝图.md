@@ -84,17 +84,13 @@ FastAPI Host API
 LangGraph Supervisor Graph
   |
   +--> Intake Subgraph
-  +--> Research Subgraph
   +--> Design Subgraph
-  +--> Execution Subgraph
   +--> Report/Review Subgraph
   |
   v
 Typed Tools / Application Services
   |
-  +--> Preprocess Service
   +--> Research Service
-  +--> Design Service
   +--> Execution Compiler / Dispatcher
   +--> Reporting Service
   |
@@ -125,7 +121,7 @@ Persistence + Infra
 
 主图采用：
 
-- **Supervisor + specialist subgraphs**
+- **Supervisor + 3 个固定顶层子图**
 
 而不是：
 
@@ -135,19 +131,17 @@ Persistence + Infra
 
 ### 5.2 固定子图
 
-V2 默认只保留 5 个固定子图：
+V2 默认只保留 3 个固定顶层子图：
 
 1. `intake`
-2. `research`
-3. `design`
-4. `execution`
-5. `report_review`
+2. `design`
+3. `report_review`
 
 这样做的目的：
 
 - 保持系统的领域可解释性
 - 让前端能够稳定映射 graph phase
-- 限制 agent 自由度，降低不可控复杂度
+- 把 `research` 与 `execution` 明确收回到 `design` agent loop 内部，避免顶层 phase 语义膨胀
 
 ### 5.3 各子图职责
 
@@ -158,41 +152,13 @@ V2 默认只保留 5 个固定子图：
 - 生成初始 `DesignBrief`
 - 在信息不足时触发 clarification interrupt
 
-#### `research`
-
-- 检索外部研究证据
-- 归一化 evidence
-- 形成可追溯的 evidence refs
-- 为 design/execution 阶段提供结构化输入
-
-`research` 子图可以参考 `~/VSCodeRepo/26/open_deep_research` 的 LangGraph 拆法，但默认采用“参考并重写”而不是直接集成。可吸收的主要是：
-
-- `research_brief -> supervisor -> 并行 researcher -> compression` 的结构模式
-- supervisor fan-out / researcher fan-in 的并行研究组织方式
-- researcher 内部“工具调用 -> 压缩汇总”的收束思路
-
-不直接复用其完整主图，原因是：
-
-- 其中的 `clarify_with_user` 在 OpenZyme 中属于 `intake`
-- 其中的 `final_report_generation` 在 OpenZyme 中属于 `report_review`
-- 其当前输出更偏 `compressed_research / notes / raw_notes / final_report`，不符合 OpenZyme 对 `EvidenceRecord`、source refs 和结构化 research output 的边界要求
-- 其工具与部署假设包含 Tavily、MCP adapter、OAP/Supabase 等通用 deep research 场景依赖，不应直接带入 V2 主线
-
 #### `design`
 
-- 生成设计候选
-- 比较候选优先级
-- 形成下一步实验或计算建议
+- 维护 artifact-first 的设计工作区
+- 消费 canonical research outputs
+- 在 loop 内部调用 `research` 与 `execution` 能力
+- 形成下一步实验、计算建议或停止条件
 - 在必要时请求人类确认或加约束
-
-#### `execution`
-
-- 调用预处理能力
-- 编译 execution request / RunSpec
-- 提交执行
-- 轮询状态
-- 抓取 artifact
-- 处理失败、重试和人工审批
 
 #### `report_review`
 
@@ -200,6 +166,25 @@ V2 默认只保留 5 个固定子图：
 - 生成面向用户的说明
 - 写入 decision trace
 - 产出阶段总结与最终 report
+
+#### `design` 内部能力
+
+`research` 与 `execution` 仍然是重要能力，但它们默认不是顶层 phase，而是 `design` agent loop 内部可调用的 graph-backed tools / subgraphs。
+
+`research` 负责：
+
+- 检索外部研究证据
+- 归一化 evidence
+- 形成可追溯的 evidence refs
+- 为后续 design iteration 提供结构化输入
+
+`execution` 负责：
+
+- 编译 execution request / RunSpec
+- 提交执行
+- 轮询状态
+- 抓取 artifact
+- 将 run/artifact 结果返回给 design loop 继续决策
 
 ### 5.4 中断与恢复
 
@@ -234,10 +219,10 @@ V2 不再以项目工作区文件树作为长期状态真源，而是采用：
 - episodes
 - decisions
 - evidence
-- candidates
 - runs
 - approvals
-- projections
+- artifact_records
+- reports
 
 #### 图执行状态
 
@@ -411,7 +396,6 @@ V2 统一使用 typed domain model，建议核心对象固定为：
 - `DesignBrief`
 - `ConstraintSet`
 - `EvidenceRecord`
-- `CandidateRecord`
 - `ExecutionRequest`
 - `ExecutionRunRecord`
 - `ApprovalRequest`
@@ -430,7 +414,6 @@ V2 统一使用 typed domain model，建议核心对象固定为：
 - episode_id
 - current_goal
 - phase
-- selected_candidate_id
 - latest_run_id
 - pending_interrupt
 - active_approval
@@ -441,14 +424,12 @@ V2 统一使用 typed domain model，建议核心对象固定为：
 按子图拆分：
 
 - intake state
-- research state
 - design state
-- execution state
 - report state
 
 避免一个巨型共享 state 承担所有语义。
 
-其中 `research state` 的对外可观察产出应优先结构化为：
+其中 design 内部 `research` step 的对外可观察产出应优先结构化为：
 
 - `EvidenceRecord[]`
 - research summary
@@ -528,7 +509,8 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 
 - 创建 episode
 - intake 澄清
-- 进入 research 或 design
+- 进入 design
+- 在 design 中按需触发 research 或 execution
 - 提交 execution
 - 处理中断或审批
 - 查看 artifact
@@ -563,27 +545,27 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 
 #### Step 1：先修正图架构形状
 
-- 将当前单一 `UnifiedSupervisorState` + 大图实现，收敛为 `Supervisor + 5 个 specialist subgraphs`
-- 固定保留 `intake`、`research`、`design`、`execution`、`report_review`
+- 将当前单一 `UnifiedSupervisorState` + 大图实现，收敛为 `Supervisor + 3 个固定顶层子图`
+- 固定保留 `intake`、`design`、`report_review`
 - Supervisor 只负责 phase 路由、全局 interrupt、resume、stop reason 与恢复控制
 - phase-local state 按子图拆分，避免巨型共享 state
-- 让现有 `research.py`、`design.py`、`report_review.py` 真正进入 supervisor 组合路径，而不是仅作为平行实现存在
+- 让 `research` 与 `execution` 以 design-owned graph-backed tools / subgraphs 的形式稳定存在，而不是作为顶层 phase 泄漏到 Host/UI contract
 - 同步修正包边界，消除 `openzyme-graph` 与 `openzyme-runtime` 的循环依赖
 
 #### Step 2：补齐 LangChain primitives 层
 
-- 在 `intake`、`research`、`design`、`report_review` 中明确引入 LangChain 的 model、tool、structured output 层
+- 在 `intake`、`design`、`report_review` 中明确引入 LangChain 的 model、tool、structured output 层
 - OpenZyme 的主控仍由 LangGraph 承担，不改为 `create_agent()` 主框架
 - 但每个需要模型推理的阶段，应通过 typed schema 承接 LLM 输出，而不是继续依赖自由文本拼装
 - 领域内自有能力优先收敛为 Host 内部 typed tools / service adapters，而不是继续以 MCP 作为主调用路径
-- `research` 子图在这一阶段仍可参考 `~/VSCodeRepo/26/open_deep_research` 的 fan-out / fan-in 组织方式，但只吸收结构，不直接带入其完整 app 形态、Tavily/MCP/OAP/Supabase 假设或主图流程
+- design 内部 `research` 子图在这一阶段仍可参考 `~/VSCodeRepo/26/open_deep_research` 的 fan-out / fan-in 组织方式，但只吸收结构，不直接带入其完整 app 形态、Tavily/MCP/OAP/Supabase 假设或主图流程
 
 #### Step 3：补齐业务语义，不再停留于 demo 占位逻辑
 
 - `intake`：补上 clarification interrupt、约束提取、成功标准提取与结构化 `DesignBrief`
-- `research`：从 demo query 扩展为可规划 research units、结构化 `EvidenceRecord` / `SourceRef` / unresolved gaps
-- `design`：从占位 candidate/ranking 扩展为基于 canonical research outputs 的候选生成、比较、排序与审批摘要
-- `execution`：补齐 execution request / RunSpec 编译、状态轮询、失败分类、可恢复失败 handoff、artifact 抓取与重试入口
+- design 内部 `research`：从 demo query 扩展为可规划 research units、结构化 `EvidenceRecord` / `SourceRef` / unresolved gaps
+- `design`：以 artifact-first workspace 作为主业务语义，围绕 artifact 编排、聚焦、注释、执行准备和审批摘要展开
+- design 内部 `execution`：补齐 execution request / RunSpec 编译、状态轮询、失败分类、可恢复失败 handoff、artifact 抓取与重试入口
 - `report_review`：补齐 decision trace、阶段总结和面向用户的最终 report，而不是只拼接 summary
 - 域模型与持久化层同步补齐 `EpisodeCheckpointRef`、`DesignBrief`、`ConstraintSet`、`ExecutionRequest`、`ExecutionRunRecord`、`ApprovalRequest`、`DecisionLogEntry`
 
@@ -616,11 +598,11 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 
 - 允许 `design` 在 canonical research outputs 不足以支撑候选生成、比较或审批时，显式请求回到 `research`
 - 该回退必须通过结构化 handoff / interrupt 表达，例如 `insufficient_research`、缺失证据类型、建议新增的 research units、当前设计无法继续的原因
-- `Supervisor Graph` 负责决定是否接受该回退，并在同一 `episode_id` 线程上将流程重新路由到 `research`
-- 回退后的 `research` 应被视为补研轮次，而不是一次新的独立 episode；其输出仍需通过 canonical evidence / summary 与显式 handoff 返回 `design`
+- `design` loop policy 负责决定是否触发新的补研轮次，并在同一 `episode_id` 线程上执行
+- 回退后的 `research` 应被视为 design 内部补研轮次，而不是一次新的独立 top-level phase；其输出仍需通过 canonical evidence / summary 与显式 handoff 返回 `design`
 - 必须限制补研回路的最大轮数、失败策略与 stop reason，避免 `research <-> design` 无约束往返
 - UI / decision log / report 应能看见该回退曾发生过，以及补研解决了哪些 gap、是否仍有 unresolved gaps
-- 不允许让 LLM 直接绕过 supervisor 自由跳回 `research`；phase 回退控制仍应由确定性 supervisor policy 承担
+- 不允许让 LLM 直接绕过 design policy 自由跳回 `research`；loop 回退控制仍应由确定性 policy 承担
 
 
 ---
@@ -633,7 +615,7 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 - 下层基础：LangChain
 - Deep Agents：仅局部可选
 - 当前实现基线：仓库内已存在可运行的 V2 最小闭环骨架，不再按“空白重写”推进
-- 主图组织目标：Supervisor + 5 个固定 specialist subgraphs
+- 主图组织目标：Supervisor + 3 个固定顶层子图，`research` / `execution` 为 design-owned capabilities
 - 产品入口：Web 为主，CLI 为辅
 - 状态真源：数据库 + LangGraph checkpointer
 - 能力边界：多数收回 Host 内部 typed tools
@@ -648,8 +630,8 @@ CLI 应改为这些接口的 thin client，而不是维持一套独立 runtime �
 
 基于当前仓库状态，下一步最值得推进的不是重新定义一套新的零基线 Phase A/B/C/D，而是优先完成以下修补项：
 
-1. 将当前统一大图拆为 `Supervisor + 5 个固定子图`，同时收缩 supervisor state，消除巨型共享 state
-2. 为 `intake`、`research`、`design`、`report_review` 明确补上 LangChain model/tool/structured output 层
+1. 将当前统一大图拆为 `Supervisor + 3 个固定顶层子图`，同时收缩 supervisor state，消除巨型共享 state
+2. 为 `intake`、`design`、`report_review` 明确补上 LangChain model/tool/structured output 层，并把 `research` / `execution` 收口为 design-owned graph-backed capabilities
 3. 将 Host API 与 stream contract 从当前 `/commands/*` + snapshot replay 形态收敛到 episode-centered REST + 持续流
 4. 将当前最小 Web UI 升级为 React 产品壳，并补齐 workflow pane、chat/operator pane、evidence/run pane、report pane
 5. 扩展 LangSmith tracing、本地 evals 和失败场景回归，覆盖 research/design/execution/report 全链路
