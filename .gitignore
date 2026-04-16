@@ -9,6 +9,7 @@
 .env.*.local
 
 .pytest_cache/
+.tmp/
 
 .mcp_hpc_runner/
 

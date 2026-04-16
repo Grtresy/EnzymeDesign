@@ -10,6 +10,15 @@ The repository has been hard-cut to a V2-first mainline.
 Current root workspace members:
 
 - `apps/mcp-hpc-runner`
+- `apps/openzyme-host-api`
+- `apps/openzyme-host-cli`
+- `packages/openzyme-domain`
+- `packages/openzyme-execution`
+- `packages/openzyme-graph`
+- `packages/openzyme-research`
+- `packages/openzyme-runtime`
+- `packages/openzyme-storage`
+- `packages/openzyme-tools`
 
 Mainline reference documents:
 
@@ -19,6 +28,9 @@ Mainline reference documents:
 Current retained assets:
 
 - `apps/mcp-hpc-runner`: SSH/Slurm execution infrastructure
+- `apps/openzyme-host-api`: Host API contracts, projections, and eval harness
+- `apps/openzyme-host-cli`: thin CLI over the Host API
+- `apps/openzyme-web-ui`: browser workspace shell and Node-side tests/build
 - `containers/`: runtime container assets
 - `database/`: structured biology datasets and examples
 - `openspec/`: mainline specs and future V2 changes
@@ -40,9 +52,11 @@ Run V1 commands from `legacy/v1`, not from the repository root.
 ## Mainline Commands
 
 ```bash
+uv sync
+./scripts/check-mainline.sh
+uv run python -m openzyme_host_api.evals
+cd apps/openzyme-web-ui && npm test && npm run build
 cp apps/mcp-hpc-runner/config/hpc_runner.example.toml apps/mcp-hpc-runner/config/hpc_runner.toml
-uv --project apps/mcp-hpc-runner sync --extra dev
-uv --project apps/mcp-hpc-runner run pytest -m "not integration"
 uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve --config apps/mcp-hpc-runner/config/hpc_runner.toml
 ```
 
@@ -50,7 +64,7 @@ uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve --config apps/mcp-hpc-
 
 OpenZyme now uses a shared runtime settings layer for mainline app configuration.
 
-- Copy [`.env.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.example) to `.env` for normal local development and demo runs.
+- Copy [`.env.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.example) to `.env` for normal local development and local eval runs.
 - Copy [`.env.test.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.test.example) to `.env.test` for pytest-specific overrides.
 
 Load order:
@@ -62,7 +76,7 @@ Load order:
 
 Intended use:
 
-- `.env`: shared local defaults for running the Host API, CLI, and demo flows
+- `.env`: shared local defaults for running the Host API, CLI, and local eval flows
 - `.env.local`: machine-local overrides you do not want to share
 - `.env.test`: test-only overrides, such as smaller fan-out or tracing disabled
 - Live external dependency suites stay opt-in. Enable them with `OPENZYME_TEST_ENABLE_LIVE_*` flags in `.env.test`.
@@ -72,6 +86,16 @@ Intended use:
 - `OPENZYME_TEST_LIVE_LLM_*` lets live LLM smoke tests use a different timeout/retry budget from the main app runtime.
 
 The HPC runner keeps its own independent TOML config under `apps/mcp-hpc-runner/config/` and is not folded into the main OpenZyme `.env` settings.
+
+## Verification
+
+Use the repository-level verification script as the default mainline gate:
+
+```bash
+./scripts/check-mainline.sh
+```
+
+It runs Python lint, Python non-integration tests, and the `openzyme-web-ui` Node test/build steps.
 
 ## Live Test Commands
 

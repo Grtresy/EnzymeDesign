@@ -11,5 +11,6 @@ def test_local_eval_harness_covers_report_and_rejection_paths() -> None:
     by_id = {result["scenario_id"]: result for result in summary["results"]}
     assert by_id["happy_path_report"]["report_count"] == 1
     assert by_id["happy_path_report"]["checks"]["report_summary"] is True
-    assert by_id["design_rejected"]["workflow_status"] == "failed"
+    assert by_id["design_rejected"]["workflow_status"] == "interrupted"
+    assert by_id["design_rejected"]["phase"] == "execution"
     assert by_id["design_rejected"]["report_count"] == 0

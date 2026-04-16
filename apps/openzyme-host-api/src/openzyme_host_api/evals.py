@@ -16,7 +16,7 @@ from openzyme_runtime import get_settings
 from .app import HostApiDependencies
 from .app import create_app
 from .foundation import build_configured_foundation
-from .demo import build_demo_foundation
+from .foundation import build_local_eval_foundation
 from .tracing import workflow_trace
 
 
@@ -41,11 +41,11 @@ SEEDED_SCENARIOS: tuple[EvalScenario, ...] = (
     ),
     EvalScenario(
         scenario_id="design_rejected",
-        objective="Design a candidate but reject the design review",
+        objective="Design a candidate but reject the first approval gate",
         decisions=("rejected",),
-        expected_status="failed",
+        expected_status="interrupted",
         expect_report=False,
-        expected_phase="design",
+        expected_phase="execution",
     ),
 )
 
@@ -53,9 +53,9 @@ SEEDED_SCENARIOS: tuple[EvalScenario, ...] = (
 FoundationBuilder = Callable[[Path], RuntimeFoundation]
 
 
-def build_local_eval_foundation(sqlite_db_path: Path) -> RuntimeFoundation:
+def build_local_eval_runtime(sqlite_db_path: Path) -> RuntimeFoundation:
     settings = get_settings()
-    return build_demo_foundation(
+    return build_local_eval_foundation(
         sqlite_db_path=sqlite_db_path,
         settings=replace(
             settings,
@@ -170,7 +170,7 @@ def run_workflow_evals(
 
 def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
     return run_workflow_evals(
-        foundation_builder=build_local_eval_foundation,
+        foundation_builder=build_local_eval_runtime,
         upload_results=upload_results,
     )
 

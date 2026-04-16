@@ -31,13 +31,13 @@ from openzyme_research import ResearchUnitResult
 from openzyme_research import TavilyResearchAdapter
 
 
-DEFAULT_DEMO_PROJECT_ID = "proj_001"
-DEFAULT_DEMO_PROJECT_NAME = "Thermostability demo project"
-DEFAULT_DEMO_PROJECT_DESCRIPTION = "Preloaded project for the local Phase B workspace demo."
+DEFAULT_PROJECT_ID = "proj_001"
+DEFAULT_PROJECT_NAME = "Thermostability local project"
+DEFAULT_PROJECT_DESCRIPTION = "Preloaded project for local OpenZyme Host API workflows."
 
 
 @dataclass(slots=True)
-class DemoExecutionAdapter:
+class DeterministicExecutionAdapter:
     _episode_call_counts: dict[str, int] = field(default_factory=dict)
 
     def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
@@ -48,15 +48,15 @@ class DemoExecutionAdapter:
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
             execution_mode="demo",
-            remote_run_dir=f"/demo/{episode_id}/{run_id}",
+            remote_run_dir=f"/local/{episode_id}/{run_id}",
             artifacts=(
                 ExecutionArtifactRef(
-                    storage_uri="/tmp/openzyme-demo/stdout.log",
+                    storage_uri="/tmp/openzyme-local/stdout.log",
                     relative_path="stdout.log",
                     kind=ArtifactKind.LOG,
                 ),
                 ExecutionArtifactRef(
-                    storage_uri="/tmp/openzyme-demo/result.json",
+                    storage_uri="/tmp/openzyme-local/result.json",
                     relative_path="result.json",
                     kind=ArtifactKind.RESULT,
                 ),
@@ -66,20 +66,20 @@ class DemoExecutionAdapter:
 
 
 @dataclass(slots=True)
-class DemoResearchAdapter:
+class DeterministicResearchAdapter:
     def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
         return ResearchUnitResult(
             unit_id=unit.unit_id,
-            summary=f"{unit.topic} supports the demo objective.",
+            summary=f"{unit.topic} supports the current design objective.",
             findings=(
                 ResearchFinding(
-                    summary=f"Demo finding for {unit.query}",
+                    summary=f"Deterministic finding for {unit.query}",
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
-                            title=f"Demo source for {unit.unit_id}",
-                            locator=f"https://example.org/demo/{unit.unit_id}",
+                            title=f"Reference source for {unit.unit_id}",
+                            locator=f"https://example.org/reference/{unit.unit_id}",
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
@@ -166,20 +166,20 @@ def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
     return build_model_factory_from_settings(get_settings())
 
 
-def _connect_demo_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
+def _connect_sqlite_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
     db_path = sqlite_db_path
     if db_path is None:
-        raise ValueError("sqlite_db_path is required for demo foundations")
+        raise ValueError("sqlite_db_path is required for local foundations")
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = connect_sqlite(str(db_path))
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
-    if repositories.projects.get(DEFAULT_DEMO_PROJECT_ID) is None:
+    if repositories.projects.get(DEFAULT_PROJECT_ID) is None:
         repositories.projects.save(
             Project.create(
-                DEFAULT_DEMO_PROJECT_ID,
-                DEFAULT_DEMO_PROJECT_NAME,
-                DEFAULT_DEMO_PROJECT_DESCRIPTION,
+                DEFAULT_PROJECT_ID,
+                DEFAULT_PROJECT_NAME,
+                DEFAULT_PROJECT_DESCRIPTION,
             )
         )
     return repositories
@@ -187,7 +187,7 @@ def _connect_demo_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
 
 def _build_execution_adapter(settings: OpenZymeSettings):
     if settings.execution.backend == "demo":
-        return DemoExecutionAdapter()
+        return DeterministicExecutionAdapter()
     if settings.execution.backend == "hpc":
         return HpcRunnerExecutionAdapter(config_path=settings.execution.hpc_runner_config)
     raise ValueError(f"Unsupported execution backend: {settings.execution.backend}")
@@ -200,21 +200,21 @@ def _build_research_adapter(settings: OpenZymeSettings):
             max_results=settings.research.tavily_max_results,
             topic=settings.research.tavily_topic,
         )
-    return DemoResearchAdapter()
+    return DeterministicResearchAdapter()
 
 
-def build_demo_foundation(
+def build_local_eval_foundation(
     *,
     sqlite_db_path: Path | None,
     settings: OpenZymeSettings | None = None,
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
-    repositories = _connect_demo_database(sqlite_db_path)
-    research_adapter = DemoResearchAdapter()
+    repositories = _connect_sqlite_database(sqlite_db_path)
+    research_adapter = DeterministicResearchAdapter()
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
-        execution_adapter=DemoExecutionAdapter(),
+        execution_adapter=DeterministicExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
         research_adapter=research_adapter,
@@ -236,7 +236,7 @@ def build_configured_foundation(
     effective_settings = settings or get_settings()
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
         effective_settings = apply_live_llm_test_budget(effective_settings)
-    repositories = _connect_demo_database(sqlite_db_path)
+    repositories = _connect_sqlite_database(sqlite_db_path)
     research_adapter = _build_research_adapter(effective_settings)
     return RuntimeFoundation(
         repositories=repositories,

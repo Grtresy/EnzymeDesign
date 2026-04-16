@@ -25,4 +25,7 @@ openzyme-storage = { workspace = true }
 openzyme-tools = { workspace = true }
 
 [dependency-groups]
-dev = []
+dev = [
+  "pytest>=9.0.0",
+  "ruff>=0.11.0",
+]

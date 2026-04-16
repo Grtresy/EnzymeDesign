@@ -12,15 +12,11 @@ from langgraph.graph import START
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 from langgraph.types import interrupt
-from openzyme_domain import Approval
-from openzyme_domain import ApprovalStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import Decision
 from openzyme_domain import DecisionStatus
 from openzyme_domain import EvidenceRecord
 from openzyme_domain import ResearchSummaryRecord
-from openzyme_domain import Run
-from openzyme_domain import RunStatus
 from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
 from openzyme_domain import UnresolvedGapRecord

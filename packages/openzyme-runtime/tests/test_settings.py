@@ -46,6 +46,24 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     ):
         monkeypatch.delenv(key, raising=False)
+    for key in (
+        "OPENZYME_TEST_ENABLE_LIVE_LLM",
+        "OPENZYME_TEST_ENABLE_LIVE_TAVILY",
+        "OPENZYME_TEST_ENABLE_LIVE_HPC",
+        "OPENZYME_TEST_ENABLE_LIVE_E2E",
+        "OPENZYME_TEST_ENABLE_QUALITY_EVAL",
+        "OPENZYME_TEST_UPLOAD_LANGSMITH",
+    ):
+        monkeypatch.setenv(key, "false")
+    for key in (
+        "OPENZYME_TEST_LIVE_LLM_TIMEOUT",
+        "OPENZYME_TEST_LIVE_LLM_MAX_TOKENS",
+        "OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",
+        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
+        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
+        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+    ):
+        monkeypatch.setenv(key, "")
 
     reset_settings_cache()
     settings = get_settings()

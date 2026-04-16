@@ -8,7 +8,7 @@ from openzyme_domain import Project
 from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import create_app
-from openzyme_host_api.demo import DemoResearchAdapter
+from openzyme_host_api.foundation import DeterministicResearchAdapter
 from openzyme_host_api.tracing import build_trace_metadata
 from openzyme_host_api.tracing import build_trace_tags
 from openzyme_runtime import PhaseBRepositories
@@ -69,7 +69,7 @@ def _build_client(monkeypatch, recorder: RecordingTrace, tracing_recorder: Recor
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
-    repositories.projects.save(Project.create("proj_001", "Tracing demo project"))
+    repositories.projects.save(Project.create("proj_001", "Tracing local project"))
     foundation = RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=PostgresCheckpointerFactory(
@@ -78,7 +78,7 @@ def _build_client(monkeypatch, recorder: RecordingTrace, tracing_recorder: Recor
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
-        research_adapter=DemoResearchAdapter(),
+        research_adapter=DeterministicResearchAdapter(),
     )
     return TestClient(
         create_app(
