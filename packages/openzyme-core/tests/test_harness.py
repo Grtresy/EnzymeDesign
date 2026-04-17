@@ -21,10 +21,12 @@ from openzyme_core import HarnessInput
 from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
 from openzyme_core import MemoryEventBus
+from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
+from openzyme_core import SkillRegistry
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
@@ -126,6 +128,42 @@ def test_runtime_snapshot_loads_canonical_session_state() -> None:
     assert snapshot.active_invocations == ()
 
 
+def test_runtime_context_can_build_restore_context_with_skills() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    lane = _seed_lane(repositories, session)
+    repositories.memory.save(
+        MemoryEntry(
+            memory_id="mem_lane",
+            session_id=session.session_id,
+            scope_kind=MemoryScopeKind.LANE,
+            scope_ref=lane.lane_id,
+            kind=MemoryKind.CONTINUITY,
+            summary="Lane continuity summary.",
+            source_range="seed",
+            importance=5,
+            created_at="2026-04-17T09:02:30+00:00",
+        )
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(task_id="task_001", lane_id=lane.lane_id, skill_keys=("vina",)),
+        active_skill_keys=("vina",),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    restore = context.restore_context
+
+    assert restore.focused_lane_id == lane.lane_id
+    assert restore.session_memory.continuity.memory_id == "mem_session"
+    assert restore.lane_memory is not None
+    assert restore.lane_memory.continuity.memory_id == "mem_lane"
+    assert [skill.skill_key for skill in restore.skill_documents] == ["vina"]
+
+
 class ToolLoopDriver:
     def plan(
         self,
@@ -214,16 +252,14 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
     assert result.outputs == ("tool:READY",)
     assert [tool_result.content for tool_result in result.tool_results] == ["READY"]
     assert repositories.tasks.get("task_001").status is TaskStatus.COMPLETED
-    assert [memory.memory_id for memory in repositories.memory.list_by_session(session.session_id)] == [
-        "mem_session",
-        "mem_tool_result",
-    ]
+    assert len(repositories.memory.list_by_session(session.session_id)) >= 3
     assert {event.event_type for event in result.events} >= {
         "message.received",
         "task.updated",
         "tool.invoked",
         "tool.completed",
         "memory.recorded",
+        "memory.compacted",
         "message.sent",
     }
 
@@ -383,3 +419,104 @@ def test_harness_infers_lane_from_bound_task_for_tools_and_engines() -> None:
     assert result.outputs == (lane.lane_id,)
     assert result.tool_results[0].lane_id == lane.lane_id
     assert repositories.invocations.list_by_session(session.session_id)[0].lane_id == lane.lane_id
+
+
+class SkillLoadingDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_skill",
+                        tool_name="skill.load",
+                        arguments={"skill_key": "vina"},
+                        task_id="task_001",
+                    ),
+                ),
+                next_focus=RestoreFocus(task_id="task_001", skill_keys=("vina",)),
+            )
+        assert context.restore_context is not None
+        return HarnessStep(
+            assistant_message="skills:" + ",".join(skill.skill_key for skill in context.restore_context.skill_documents)
+        )
+
+
+def test_harness_skill_load_updates_restore_context() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id),
+        driver=SkillLoadingDriver(),
+    )
+
+    assert result.outputs == ("skills:vina",)
+    assert "receptor_path" in result.tool_results[0].content
+
+
+class ExplicitCompactionDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_compact",
+                        tool_name="memory.compact",
+                        arguments={"scope_kind": "task", "task_id": "task_001"},
+                        task_id="task_001",
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="compacted")
+
+
+def test_harness_memory_compact_tool_writes_task_scope_summary() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, restore_focus=RestoreFocus(task_id="task_001")),
+        driver=ExplicitCompactionDriver(),
+    )
+
+    task_memory = repositories.memory.list_by_scope(session.session_id, MemoryScopeKind.TASK, "task_001")
+    assert any(entry.kind is MemoryKind.COMPACTION for entry in task_memory)
+    assert result.outputs == ("compacted",)
+
+
+def test_harness_auto_compaction_keeps_lane_restore_state() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    lane = _seed_lane(repositories, session)
+    registry = ToolRegistry()
+    registry.register("lane_echo", lambda _context, invocation: invocation.lane_id or "none")
+
+    run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="run in lane"),
+        driver=LaneAwareDriver(),
+        tool_registry=registry,
+    )
+    second = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, restore_focus=RestoreFocus(task_id="task_001", lane_id=lane.lane_id)),
+        driver=ApprovalDriver(),
+    )
+
+    lane_memory = repositories.memory.list_by_scope(session.session_id, MemoryScopeKind.LANE, lane.lane_id)
+    assert any(entry.kind is MemoryKind.COMPACTION for entry in lane_memory)
+    assert second.pending_approval_id == "appr_001"

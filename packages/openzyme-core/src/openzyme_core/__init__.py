@@ -7,6 +7,7 @@ from .harness import HarnessResult
 from .harness import HarnessStatus
 from .harness import HarnessStep
 from .harness import MemoryEventBus
+from .harness import RestoreFocus
 from .harness import ResumeDecision
 from .harness import ResumeEnvelope
 from .harness import SessionRuntimeContext
@@ -22,6 +23,10 @@ from .lane_manager import LaneManager
 from .lane_manager import LaneProjection
 from .lane_manager import LaneProjectionItem
 from .lane_manager import register_lane_tools
+from .memory import MemoryService
+from .memory import ScopedMemorySummary
+from .memory import SessionRestoreContext
+from .memory import register_memory_tools
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
 from .repositories import EngineInvocationRepository
@@ -35,6 +40,10 @@ from .repositories import LaneRepository
 from .repositories import TaskRepository
 from .repositories import ApprovalRequestRepository
 from .repositories import connect_sqlite
+from .skills import SkillDescriptor
+from .skills import SkillDocument
+from .skills import SkillRegistry
+from .skills import register_skill_tools
 from .task_board import TaskBoardBucket
 from .task_board import TaskBoardItem
 from .task_board import TaskBoardProjection
@@ -64,13 +73,20 @@ __all__ = [
     "LaneProjectionItem",
     "MIGRATION_IDS",
     "MemoryEventBus",
+    "MemoryService",
     "MemoryEntryRepository",
     "OwnershipError",
+    "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",
+    "ScopedMemorySummary",
     "SessionRepository",
+    "SessionRestoreContext",
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
+    "SkillDescriptor",
+    "SkillDocument",
+    "SkillRegistry",
     "TaskRepository",
     "TaskBoardBucket",
     "TaskBoardItem",
@@ -83,6 +99,8 @@ __all__ = [
     "apply_sqlite_migrations",
     "connect_sqlite",
     "get_migration_sql",
+    "register_memory_tools",
+    "register_skill_tools",
     "register_task_board_tools",
     "register_lane_tools",
     "run_agent_harness_loop",

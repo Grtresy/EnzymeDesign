@@ -17,10 +17,12 @@ from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
 from openzyme_domain import MemoryEntry
+from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
 from .repositories import CoreRepositories
@@ -34,6 +36,20 @@ class ResumeDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreFocus:
+    task_id: str | None = None
+    lane_id: str | None = None
+    skill_keys: tuple[str, ...] = ()
+
+    def normalized(self) -> "RestoreFocus":
+        return RestoreFocus(
+            task_id=self.task_id,
+            lane_id=self.lane_id,
+            skill_keys=tuple(dict.fromkeys(self.skill_keys)),
+        )
 
 
 class HarnessStatus(StrEnum):
@@ -116,6 +132,7 @@ class HarnessInput:
     max_steps: int = 8
     sender: str = "user"
     sender_kind: InboxParticipantKind = InboxParticipantKind.USER
+    restore_focus: RestoreFocus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +183,7 @@ class HarnessStep:
     engine_invocations: tuple[EngineInvocation, ...] = ()
     delegation_requests: tuple[DelegationRequest, ...] = ()
     session_status: SessionStatus | None = None
+    next_focus: RestoreFocus | None = None
 
 
 class HarnessDriver(Protocol):
@@ -220,9 +238,14 @@ class SessionRuntimeContext:
     event_sink: EventSink
     snapshot: SessionRuntimeSnapshot
     tool_registry: ToolRegistry
+    restore_focus: RestoreFocus
+    restore_context: Any | None = None
+    active_skill_keys: tuple[str, ...] = ()
+    skill_registry: Any | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(self.repositories, self.snapshot.session.session_id)
+        self.refresh_restore_context()
         return self.snapshot
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> HarnessEvent:
@@ -235,6 +258,46 @@ class SessionRuntimeContext:
         )
         self.event_sink.emit(event)
         return event
+
+    def build_restore_context(
+        self,
+        *,
+        lane_id: str | None = None,
+        task_id: str | None = None,
+        skill_keys: tuple[str, ...] = (),
+        skill_registry: Any | None = None,
+    ) -> Any:
+        from .memory import MemoryService
+
+        return MemoryService(self.repositories).build_restore_context(
+            self.snapshot.session.session_id,
+            lane_id=lane_id,
+            task_id=task_id,
+            skill_keys=skill_keys or self.active_skill_keys,
+            skill_registry=skill_registry or self.skill_registry,
+        )
+
+    def set_focus(self, focus: RestoreFocus | None) -> RestoreFocus:
+        if focus is None:
+            focus = RestoreFocus()
+        normalized = focus.normalized()
+        self.restore_focus = normalized
+        if normalized.skill_keys:
+            self.add_skill_keys(normalized.skill_keys)
+        return normalized
+
+    def add_skill_keys(self, skill_keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        merged = tuple(dict.fromkeys((*self.active_skill_keys, *tuple(skill_keys))))
+        self.active_skill_keys = merged
+        return merged
+
+    def refresh_restore_context(self) -> Any:
+        self.restore_context = self.build_restore_context(
+            lane_id=self.restore_focus.lane_id,
+            task_id=self.restore_focus.task_id,
+            skill_keys=self.active_skill_keys,
+        )
+        return self.restore_context
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +401,68 @@ def _resolve_resume(context: SessionRuntimeContext, resume: ResumeEnvelope) -> A
     return resolved
 
 
+def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
+    if len(snapshot.ready_tasks) == 1:
+        task = snapshot.ready_tasks[0]
+        return RestoreFocus(task_id=task.task_id, lane_id=task.lane_id)
+    in_progress = [task for task in snapshot.tasks if task.status is TaskStatus.IN_PROGRESS]
+    if len(in_progress) == 1:
+        task = in_progress[0]
+        return RestoreFocus(task_id=task.task_id, lane_id=task.lane_id)
+    return RestoreFocus()
+
+
+def _register_builtin_tools(registry: ToolRegistry) -> None:
+    from .memory import register_memory_tools
+    from .skills import register_skill_tools
+
+    register_memory_tools(registry)
+    register_skill_tools(registry)
+
+
+def _auto_compact_if_needed(
+    context: SessionRuntimeContext,
+    *,
+    activity_happened: bool,
+    outputs: list[str],
+    all_tool_results: list[ToolResult],
+) -> None:
+    if not activity_happened:
+        return
+    from .memory import MemoryService
+
+    context.refresh()
+    service = MemoryService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+    recent_output = outputs[-1] if outputs else None
+    recent_tool = None if not all_tool_results else all_tool_results[-1]
+    session_summary = service.render_compaction_summary(
+        context.restore_context,
+        recent_output=recent_output,
+        recent_tool_result=recent_tool,
+    )
+    service.compact_scope(
+        session_id=context.snapshot.session.session_id,
+        scope_kind=MemoryScopeKind.SESSION,
+        scope_ref=context.snapshot.session.session_id,
+        summary=session_summary,
+        source_range="auto:harness_run",
+    )
+    if context.restore_focus.lane_id is not None:
+        lane_summary = service.render_compaction_summary(
+            context.restore_context,
+            recent_output=recent_output,
+            recent_tool_result=recent_tool,
+        )
+        service.compact_scope(
+            session_id=context.snapshot.session.session_id,
+            scope_kind=MemoryScopeKind.LANE,
+            scope_ref=context.restore_focus.lane_id,
+            summary=lane_summary,
+            source_range="auto:harness_run",
+        )
+    context.refresh()
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -346,18 +471,26 @@ def run_agent_harness_loop(
     tool_registry: ToolRegistry | None = None,
     event_sink: EventSink | None = None,
 ) -> HarnessResult:
+    from .skills import SkillRegistry
+
     registry = tool_registry or ToolRegistry()
+    _register_builtin_tools(registry)
     sink = event_sink or MemoryEventBus()
     snapshot = SessionRuntimeSnapshot.load(repositories, harness_input.session_id)
+    resolved_focus = harness_input.restore_focus or _resolve_default_focus(snapshot)
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=sink,
         snapshot=snapshot,
         tool_registry=registry,
+        restore_focus=resolved_focus.normalized(),
+        active_skill_keys=resolved_focus.normalized().skill_keys,
+        skill_registry=SkillRegistry(),
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
     delegation_handles: list[DelegationHandle] = []
+    activity_happened = False
 
     if harness_input.message is not None:
         message = _persist_message(
@@ -377,9 +510,11 @@ def run_agent_harness_loop(
                 "sender_kind": message.sender_kind.value,
             },
         )
+        activity_happened = True
 
     if harness_input.resume is not None:
         _resolve_resume(context, harness_input.resume)
+        activity_happened = True
 
     context.refresh()
     tool_results: tuple[ToolResult, ...] = ()
@@ -389,6 +524,8 @@ def run_agent_harness_loop(
     for _ in range(harness_input.max_steps):
         step = driver.plan(context, harness_input, tool_results)
         tool_results = ()
+        if step.next_focus is not None:
+            context.set_focus(step.next_focus)
 
         for task in step.task_updates:
             repositories.tasks.save(task)
@@ -400,6 +537,7 @@ def run_agent_harness_loop(
                     "assigned_ref": task.assigned_ref,
                 },
             )
+            activity_happened = True
 
         for memory in step.memory_entries:
             repositories.memory.save(memory)
@@ -412,6 +550,16 @@ def run_agent_harness_loop(
                     "kind": memory.kind.value,
                 },
             )
+            if memory.kind is MemoryKind.COMPACTION:
+                context.emit(
+                    "memory.compacted",
+                    {
+                        "memory_id": memory.memory_id,
+                        "scope_kind": memory.scope_kind.value,
+                        "scope_ref": memory.scope_ref,
+                    },
+                )
+            activity_happened = True
 
         for invocation in step.engine_invocations:
             invocation = replace(
@@ -432,6 +580,7 @@ def run_agent_harness_loop(
                     "status": invocation.status.value,
                 },
             )
+            activity_happened = True
 
         if step.session_status is not None:
             session = context.snapshot.session
@@ -449,6 +598,7 @@ def run_agent_harness_loop(
                 "session.updated",
                 {"session_id": updated.session_id, "status": updated.status.value},
             )
+            activity_happened = True
 
         if step.assistant_message is not None:
             message = _persist_message(
@@ -469,6 +619,7 @@ def run_agent_harness_loop(
                     "recipient_kind": message.recipient_kind.value,
                 },
             )
+            activity_happened = True
 
         for approval in step.approval_requests:
             approval = replace(
@@ -491,6 +642,7 @@ def run_agent_harness_loop(
                     "lane_id": approval.lane_id,
                 },
             )
+            activity_happened = True
 
         for delegation in step.delegation_requests:
             delegation = replace(
@@ -529,9 +681,16 @@ def run_agent_harness_loop(
                     "lane_id": delegation.lane_id,
                 },
             )
+            activity_happened = True
 
         if step.approval_requests:
             last_status = HarnessStatus.WAITING_APPROVAL
+            _auto_compact_if_needed(
+                context,
+                activity_happened=activity_happened,
+                outputs=outputs,
+                all_tool_results=all_tool_results,
+            )
             context.refresh()
             return HarnessResult(
                 session_id=harness_input.session_id,
@@ -546,6 +705,12 @@ def run_agent_harness_loop(
 
         if step.delegation_requests and not step.tool_invocations:
             last_status = HarnessStatus.WAITING_DELEGATION
+            _auto_compact_if_needed(
+                context,
+                activity_happened=activity_happened,
+                outputs=outputs,
+                all_tool_results=all_tool_results,
+            )
             context.refresh()
             return HarnessResult(
                 session_id=harness_input.session_id,
@@ -590,10 +755,17 @@ def run_agent_harness_loop(
                         "ok": result.ok,
                     },
                 )
+                activity_happened = True
             tool_results = tuple(current_results)
             context.refresh()
             continue
 
+        _auto_compact_if_needed(
+            context,
+            activity_happened=activity_happened,
+            outputs=outputs,
+            all_tool_results=all_tool_results,
+        )
         context.refresh()
         return HarnessResult(
             session_id=harness_input.session_id,
@@ -609,6 +781,12 @@ def run_agent_harness_loop(
     context.emit(
         "harness.max_steps_exceeded",
         {"max_steps": harness_input.max_steps},
+    )
+    _auto_compact_if_needed(
+        context,
+        activity_happened=True,
+        outputs=outputs,
+        all_tool_results=all_tool_results,
     )
     context.refresh()
     return HarnessResult(
