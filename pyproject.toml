@@ -3,6 +3,7 @@ members = [
   "apps/mcp-hpc-runner",
   "apps/openzyme-host-api",
   "apps/openzyme-host-cli",
+  "packages/openzyme-core",
   "packages/openzyme-domain",
   "packages/openzyme-execution",
   "packages/openzyme-graph",
@@ -16,6 +17,7 @@ members = [
 mcp-hpc-runner = { workspace = true }
 openzyme-host-api = { workspace = true }
 openzyme-host-cli = { workspace = true }
+openzyme-core = { workspace = true }
 openzyme-domain = { workspace = true }
 openzyme-execution = { workspace = true }
 openzyme-graph = { workspace = true }

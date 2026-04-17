@@ -25,17 +25,52 @@ from .models import RunStatus
 from .models import SourceRef
 from .models import SourceRefKind
 from .models import UnresolvedGapRecord
+from .control_plane import CONTROL_PLANE_ENTITY_NAMES
+from .control_plane import AgentMember
+from .control_plane import AgentMemberStatus
+from .control_plane import ApprovalRequest
+from .control_plane import ApprovalRequestStatus
+from .control_plane import EngineInvocation
+from .control_plane import EngineInvocationStatus
+from .control_plane import InboxMessage
+from .control_plane import InboxParticipantKind
+from .control_plane import InboxStatus
+from .control_plane import Lane
+from .control_plane import LaneStatus
+from .control_plane import MemoryEntry
+from .control_plane import MemoryKind
+from .control_plane import MemoryScopeKind
+from .control_plane import Session
+from .control_plane import SessionStatus
+from .control_plane import Task
+from .control_plane import TaskPriority
+from .control_plane import TaskStatus
 
 __all__ = [
     "APPROVAL_EXTENSION_TARGETS",
     "ARTIFACT_EXTENSION_TARGETS",
+    "AgentMember",
+    "AgentMemberStatus",
+    "ApprovalRequest",
+    "ApprovalRequestStatus",
     "CORE_ENTITY_NAMES",
+    "CONTROL_PLANE_ENTITY_NAMES",
     "DECISION_EXTENSION_TARGETS",
     "DESIGN_EXTENSION_TARGETS",
+    "EngineInvocation",
+    "EngineInvocationStatus",
     "EPISODE_EXTENSION_TARGETS",
     "REPORT_EXTENSION_TARGETS",
     "RESEARCH_EXTENSION_TARGETS",
     "RUN_EXTENSION_TARGETS",
+    "InboxMessage",
+    "InboxParticipantKind",
+    "InboxStatus",
+    "Lane",
+    "LaneStatus",
+    "MemoryEntry",
+    "MemoryKind",
+    "MemoryScopeKind",
     "Approval",
     "ApprovalStatus",
     "ArtifactKind",
@@ -51,7 +86,12 @@ __all__ = [
     "ResearchSummaryRecord",
     "Run",
     "RunStatus",
+    "Session",
+    "SessionStatus",
     "SourceRef",
     "SourceRefKind",
+    "Task",
+    "TaskPriority",
+    "TaskStatus",
     "UnresolvedGapRecord",
 ]
