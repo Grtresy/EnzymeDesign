@@ -29,6 +29,12 @@ from .repositories import LaneRepository
 from .repositories import TaskRepository
 from .repositories import ApprovalRequestRepository
 from .repositories import connect_sqlite
+from .task_board import TaskBoardBucket
+from .task_board import TaskBoardItem
+from .task_board import TaskBoardProjection
+from .task_board import TaskBoardService
+from .task_board import TaskMutation
+from .task_board import register_task_board_tools
 
 __all__ = [
     "AgentMemberRepository",
@@ -55,11 +61,17 @@ __all__ = [
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
     "TaskRepository",
+    "TaskBoardBucket",
+    "TaskBoardItem",
+    "TaskBoardProjection",
+    "TaskBoardService",
+    "TaskMutation",
     "ToolInvocation",
     "ToolRegistry",
     "ToolResult",
     "apply_sqlite_migrations",
     "connect_sqlite",
     "get_migration_sql",
+    "register_task_board_tools",
     "run_agent_harness_loop",
 ]
