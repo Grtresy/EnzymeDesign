@@ -601,6 +601,31 @@ class MemoryEntryRepository:
             for row in rows
         ]
 
+    def list_by_session(self, session_id: str) -> list[MemoryEntry]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM memory_entries
+            WHERE session_id = ?
+            ORDER BY created_at, memory_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            MemoryEntry(
+                memory_id=row["memory_id"],
+                session_id=row["session_id"],
+                scope_kind=MemoryScopeKind(row["scope_kind"]),
+                scope_ref=row["scope_ref"],
+                kind=MemoryKind(row["kind"]),
+                summary=row["summary"],
+                source_range=row["source_range"],
+                importance=row["importance"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
 
 @dataclass(slots=True)
 class AgentMemberRepository:
