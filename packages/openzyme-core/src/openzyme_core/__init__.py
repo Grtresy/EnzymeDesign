@@ -27,6 +27,16 @@ from .memory import MemoryService
 from .memory import ScopedMemorySummary
 from .memory import SessionRestoreContext
 from .memory import register_memory_tools
+from .projections import ActivityFeedItem
+from .projections import DelegationProjection
+from .projections import DelegationProjectionItem
+from .projections import SessionProjectionBuilder
+from .projections import SessionWorkspaceProjection
+from .protocols import BackgroundCompletion
+from .protocols import CorrelationStatus
+from .protocols import CorrelationThread
+from .protocols import DelegationEnvelope
+from .protocols import ProtocolService
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
 from .repositories import EngineInvocationRepository
@@ -52,10 +62,17 @@ from .task_board import TaskMutation
 from .task_board import register_task_board_tools
 
 __all__ = [
+    "ActivityFeedItem",
     "AgentMemberRepository",
     "ApprovalRequestRepository",
+    "BackgroundCompletion",
+    "CorrelationStatus",
+    "CorrelationThread",
     "CoreRepositories",
+    "DelegationEnvelope",
     "DelegationHandle",
+    "DelegationProjection",
+    "DelegationProjectionItem",
     "DelegationRequest",
     "EngineInvocationRepository",
     "HarnessDriver",
@@ -76,14 +93,17 @@ __all__ = [
     "MemoryService",
     "MemoryEntryRepository",
     "OwnershipError",
+    "ProtocolService",
     "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",
     "ScopedMemorySummary",
+    "SessionProjectionBuilder",
     "SessionRepository",
     "SessionRestoreContext",
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
+    "SessionWorkspaceProjection",
     "SkillDescriptor",
     "SkillDocument",
     "SkillRegistry",

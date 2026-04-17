@@ -362,6 +362,7 @@ def test_harness_loop_exposes_delegation_seam_via_inbox_and_handles() -> None:
     assert result.delegations[0].request_id == "deleg_001"
     inbox_types = [message.message_type for message in repositories.inbox.list_by_session(session.session_id)]
     assert "delegation_request" in inbox_types
+    assert repositories.agents.get("agent:researcher") is not None
     assert "agent.delegated" in {event.event_type for event in result.events}
 
 

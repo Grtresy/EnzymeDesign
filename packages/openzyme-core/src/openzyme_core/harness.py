@@ -9,6 +9,8 @@ from typing import Callable
 from typing import Protocol
 from uuid import uuid4
 
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
@@ -401,6 +403,45 @@ def _resolve_resume(context: SessionRuntimeContext, resume: ResumeEnvelope) -> A
     return resolved
 
 
+def _ensure_agent_member_for_delegation(
+    repositories: CoreRepositories,
+    delegation: DelegationRequest,
+) -> AgentMember | None:
+    if delegation.recipient_kind is not InboxParticipantKind.AGENT:
+        return None
+    existing = repositories.agents.get(delegation.recipient)
+    now = utc_now_iso()
+    if existing is None:
+        agent = AgentMember(
+            agent_id=delegation.recipient,
+            session_id=delegation.session_id,
+            lane_id=delegation.lane_id,
+            task_id=delegation.task_id,
+            name=delegation.recipient.removeprefix("agent:") or delegation.recipient,
+            role="delegate",
+            status=AgentMemberStatus.ACTIVE,
+            parent_agent_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        repositories.agents.save(agent)
+        return agent
+    updated = AgentMember(
+        agent_id=existing.agent_id,
+        session_id=existing.session_id,
+        lane_id=delegation.lane_id if delegation.lane_id is not None else existing.lane_id,
+        task_id=delegation.task_id if delegation.task_id is not None else existing.task_id,
+        name=existing.name,
+        role=existing.role,
+        status=AgentMemberStatus.ACTIVE,
+        parent_agent_id=existing.parent_agent_id,
+        created_at=existing.created_at,
+        updated_at=now,
+    )
+    repositories.agents.save(updated)
+    return updated
+
+
 def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
     if len(snapshot.ready_tasks) == 1:
         task = snapshot.ready_tasks[0]
@@ -665,6 +706,17 @@ def run_agent_harness_loop(
                 payload_ref=delegation.payload_ref,
                 correlation_id=delegation.correlation_id,
             )
+            agent = _ensure_agent_member_for_delegation(repositories, delegation)
+            if agent is not None:
+                context.emit(
+                    "agent.spawned" if agent.created_at == agent.updated_at else "agent.status_updated",
+                    {
+                        "agent_id": agent.agent_id,
+                        "status": agent.status.value,
+                        "task_id": agent.task_id,
+                        "lane_id": agent.lane_id,
+                    },
+                )
             delegation_handles.append(
                 DelegationHandle(
                     request_id=delegation.request_id,

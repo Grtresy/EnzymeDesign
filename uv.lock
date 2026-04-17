@@ -7,6 +7,7 @@ members = [
     "mcp-hpc-runner",
     "openzyme-core",
     "openzyme-domain",
+    "openzyme-engines",
     "openzyme-execution",
     "openzyme-graph",
     "openzyme-host-api",
@@ -533,6 +534,28 @@ dev = [
 
 [package.metadata]
 requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" }]
+provides-extras = ["dev"]
+
+[[package]]
+name = "openzyme-engines"
+version = "0.1.0"
+source = { editable = "packages/openzyme-engines" }
+dependencies = [
+    { name = "openzyme-core" },
+    { name = "openzyme-domain" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "openzyme-core", editable = "packages/openzyme-core" },
+    { name = "openzyme-domain", editable = "packages/openzyme-domain" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
+]
 provides-extras = ["dev"]
 
 [[package]]

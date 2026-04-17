@@ -644,6 +644,33 @@ class ApprovalRequestRepository:
             for row in rows
         ]
 
+    def list_by_session(self, session_id: str) -> list[ApprovalRequest]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM approval_requests
+            WHERE session_id = ?
+            ORDER BY created_at, approval_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            ApprovalRequest(
+                approval_id=row["approval_id"],
+                session_id=row["session_id"],
+                task_id=row["task_id"],
+                lane_id=row["lane_id"],
+                kind=row["kind"],
+                requested_action=row["requested_action"],
+                status=ApprovalRequestStatus(row["status"]),
+                request_ref=row["request_ref"],
+                resolution_ref=row["resolution_ref"],
+                created_at=row["created_at"],
+                resolved_at=row["resolved_at"],
+            )
+            for row in rows
+        ]
+
 
 @dataclass(slots=True)
 class InboxMessageRepository:
@@ -689,22 +716,46 @@ class InboxMessageRepository:
             "SELECT * FROM inbox_messages WHERE session_id = ? ORDER BY created_at, message_id",
             (session_id,),
         ).fetchall()
-        return [
-            InboxMessage(
-                message_id=row["message_id"],
-                session_id=row["session_id"],
-                sender=row["sender"],
-                sender_kind=InboxParticipantKind(row["sender_kind"]),
-                recipient=row["recipient"],
-                recipient_kind=InboxParticipantKind(row["recipient_kind"]),
-                message_type=row["message_type"],
-                correlation_id=row["correlation_id"],
-                payload_ref=row["payload_ref"],
-                status=InboxStatus(row["status"]),
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_message(row) for row in rows]
+
+    def list_by_correlation(self, session_id: str, correlation_id: str) -> list[InboxMessage]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM inbox_messages
+            WHERE session_id = ? AND correlation_id = ?
+            ORDER BY created_at, message_id
+            """,
+            (session_id, correlation_id),
+        ).fetchall()
+        return [self._row_to_message(row) for row in rows]
+
+    def list_for_recipient(self, session_id: str, recipient: str) -> list[InboxMessage]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM inbox_messages
+            WHERE session_id = ? AND recipient = ?
+            ORDER BY created_at, message_id
+            """,
+            (session_id, recipient),
+        ).fetchall()
+        return [self._row_to_message(row) for row in rows]
+
+    def _row_to_message(self, row: sqlite3.Row) -> InboxMessage:
+        return InboxMessage(
+            message_id=row["message_id"],
+            session_id=row["session_id"],
+            sender=row["sender"],
+            sender_kind=InboxParticipantKind(row["sender_kind"]),
+            recipient=row["recipient"],
+            recipient_kind=InboxParticipantKind(row["recipient_kind"]),
+            message_type=row["message_type"],
+            correlation_id=row["correlation_id"],
+            payload_ref=row["payload_ref"],
+            status=InboxStatus(row["status"]),
+            created_at=row["created_at"],
+        )
 
 
 @dataclass(slots=True)
@@ -875,21 +926,30 @@ class AgentMemberRepository:
             "SELECT * FROM agent_members WHERE session_id = ? ORDER BY created_at, agent_id",
             (session_id,),
         ).fetchall()
-        return [
-            AgentMember(
-                agent_id=row["agent_id"],
-                session_id=row["session_id"],
-                lane_id=row["lane_id"],
-                task_id=row["task_id"],
-                name=row["name"],
-                role=row["role"],
-                status=AgentMemberStatus(row["status"]),
-                parent_agent_id=row["parent_agent_id"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_agent(row) for row in rows]
+
+    def get(self, agent_id: str) -> AgentMember | None:
+        row = self.connection.execute(
+            "SELECT * FROM agent_members WHERE agent_id = ?",
+            (agent_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_agent(row)
+
+    def _row_to_agent(self, row: sqlite3.Row) -> AgentMember:
+        return AgentMember(
+            agent_id=row["agent_id"],
+            session_id=row["session_id"],
+            lane_id=row["lane_id"],
+            task_id=row["task_id"],
+            name=row["name"],
+            role=row["role"],
+            status=AgentMemberStatus(row["status"]),
+            parent_agent_id=row["parent_agent_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
 
 @dataclass(slots=True)
@@ -958,28 +1018,45 @@ class EngineInvocationRepository:
         )
         self.connection.commit()
 
+    def get(self, invocation_id: str) -> EngineInvocation | None:
+        row = self.connection.execute(
+            "SELECT * FROM engine_invocations WHERE invocation_id = ?",
+            (invocation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_invocation(row)
+
     def list_by_session(self, session_id: str) -> list[EngineInvocation]:
         rows = self.connection.execute(
             "SELECT * FROM engine_invocations WHERE session_id = ? ORDER BY started_at, invocation_id",
             (session_id,),
         ).fetchall()
-        return [
-            EngineInvocation(
-                invocation_id=row["invocation_id"],
-                session_id=row["session_id"],
-                task_id=row["task_id"],
-                lane_id=row["lane_id"],
-                engine_name=row["engine_name"],
-                status=EngineInvocationStatus(row["status"]),
-                input_ref=row["input_ref"],
-                output_ref=row["output_ref"],
-                approval_id=row["approval_id"],
-                idempotency_key=row["idempotency_key"],
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_invocation(row) for row in rows]
+
+    def list_by_lane(self, session_id: str, lane_id: str) -> list[EngineInvocation]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM engine_invocations
+            WHERE session_id = ? AND lane_id = ?
+            ORDER BY started_at, invocation_id
+            """,
+            (session_id, lane_id),
+        ).fetchall()
+        return [self._row_to_invocation(row) for row in rows]
+
+    def list_by_task(self, session_id: str, task_id: str) -> list[EngineInvocation]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM engine_invocations
+            WHERE session_id = ? AND task_id = ?
+            ORDER BY started_at, invocation_id
+            """,
+            (session_id, task_id),
+        ).fetchall()
+        return [self._row_to_invocation(row) for row in rows]
 
     def list_active_by_session(self, session_id: str) -> list[EngineInvocation]:
         rows = self.connection.execute(
@@ -996,23 +1073,23 @@ class EngineInvocationRepository:
                 EngineInvocationStatus.CANCELLED.value,
             ),
         ).fetchall()
-        return [
-            EngineInvocation(
-                invocation_id=row["invocation_id"],
-                session_id=row["session_id"],
-                task_id=row["task_id"],
-                lane_id=row["lane_id"],
-                engine_name=row["engine_name"],
-                status=EngineInvocationStatus(row["status"]),
-                input_ref=row["input_ref"],
-                output_ref=row["output_ref"],
-                approval_id=row["approval_id"],
-                idempotency_key=row["idempotency_key"],
-                started_at=row["started_at"],
-                finished_at=row["finished_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_invocation(row) for row in rows]
+
+    def _row_to_invocation(self, row: sqlite3.Row) -> EngineInvocation:
+        return EngineInvocation(
+            invocation_id=row["invocation_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            engine_name=row["engine_name"],
+            status=EngineInvocationStatus(row["status"]),
+            input_ref=row["input_ref"],
+            output_ref=row["output_ref"],
+            approval_id=row["approval_id"],
+            idempotency_key=row["idempotency_key"],
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
 
 
 @dataclass(slots=True)
