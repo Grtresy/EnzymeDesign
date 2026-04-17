@@ -7,11 +7,13 @@ from openzyme_runtime import apply_sqlite_migrations as apply_v2_migrations
 
 def test_migration_asset_is_available() -> None:
     sql = get_migration_sql("001_v3_control_plane_foundation")
+    lane_sql = get_migration_sql("002_v3_lane_isolation")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
     assert "CREATE TABLE IF NOT EXISTS engine_invocations" in sql
-    assert MIGRATION_IDS == ("001_v3_control_plane_foundation",)
+    assert "ALTER TABLE tasks ADD COLUMN lane_id" in lane_sql
+    assert MIGRATION_IDS == ("001_v3_control_plane_foundation", "002_v3_lane_isolation")
 
 
 def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
@@ -29,12 +31,18 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "tasks",
         "task_dependencies",
         "lanes",
+        "lane_lifecycle_events",
         "approval_requests",
         "inbox_messages",
         "memory_entries",
         "agent_members",
         "engine_invocations",
     }.issubset(table_names)
+    task_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    assert "lane_id" in task_columns
 
 
 def test_v2_and_v3_migrations_can_coexist_in_one_database() -> None:

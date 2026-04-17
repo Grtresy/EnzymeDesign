@@ -184,6 +184,7 @@ class Task:
     assigned_ref: str | None
     created_at: str
     updated_at: str
+    lane_id: str | None = None
     blocked_by: tuple[str, ...] = ()
 
     @classmethod
@@ -198,6 +199,7 @@ class Task:
         kind: str = "general",
         status: TaskStatus = TaskStatus.TODO,
         assigned_ref: str | None = None,
+        lane_id: str | None = None,
         blocked_by: tuple[str, ...] = (),
     ) -> "Task":
         now = utc_now_iso()
@@ -212,6 +214,7 @@ class Task:
             assigned_ref=assigned_ref,
             created_at=now,
             updated_at=now,
+            lane_id=lane_id,
             blocked_by=blocked_by,
         )
 

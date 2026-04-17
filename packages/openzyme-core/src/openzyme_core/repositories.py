@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from openzyme_domain import AgentMember
@@ -151,6 +152,14 @@ class TaskRepository:
 
     def save(self, task: Task) -> None:
         _require_session_exists(self.connection, task.session_id)
+        if task.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=task.lane_id,
+                expected_session_id=task.session_id,
+            )
         for blocker_id in task.blocked_by:
             _require_linked_session_id(
                 self.connection,
@@ -162,9 +171,10 @@ class TaskRepository:
         self.connection.execute(
             """
             INSERT INTO tasks (
-                task_id, session_id, subject, description, status, priority, kind, assigned_ref, created_at, updated_at
+                task_id, session_id, subject, description, status, priority, kind, assigned_ref, created_at, updated_at,
+                lane_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 subject = excluded.subject,
@@ -173,7 +183,8 @@ class TaskRepository:
                 priority = excluded.priority,
                 kind = excluded.kind,
                 assigned_ref = excluded.assigned_ref,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                lane_id = excluded.lane_id
             """,
             (
                 task.task_id,
@@ -186,6 +197,7 @@ class TaskRepository:
                 task.assigned_ref,
                 task.created_at,
                 task.updated_at,
+                task.lane_id,
             ),
         )
         self.connection.execute(
@@ -219,6 +231,7 @@ class TaskRepository:
             assigned_ref=row["assigned_ref"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            lane_id=row["lane_id"],
             blocked_by=_load_blocked_by(self.connection, row["task_id"]),
         )
 
@@ -239,18 +252,30 @@ class TaskRepository:
                 assigned_ref=row["assigned_ref"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+                lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
             )
             for row in rows
         ]
 
-    def list_ready_by_session(self, session_id: str) -> list[Task]:
+    def list_ready_by_session(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
+        lane_clause = ""
+        params: list[str] = [session_id, TaskStatus.TODO.value]
+        if lane_id is None:
+            lane_clause = ""
+        else:
+            lane_clause = " AND t.lane_id = ?"
+            params.append(lane_id)
+        params.extend([TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value])
         rows = self.connection.execute(
             """
             SELECT t.*
             FROM tasks AS t
             WHERE t.session_id = ?
               AND t.status = ?
+            """
+            + lane_clause
+            + """
               AND NOT EXISTS (
                 SELECT 1
                 FROM task_dependencies AS td
@@ -260,12 +285,7 @@ class TaskRepository:
               )
             ORDER BY t.created_at, t.task_id
             """,
-            (
-                session_id,
-                TaskStatus.TODO.value,
-                TaskStatus.COMPLETED.value,
-                TaskStatus.CANCELLED.value,
-            ),
+            tuple(params),
         ).fetchall()
         return [
             Task(
@@ -279,6 +299,63 @@ class TaskRepository:
                 assigned_ref=row["assigned_ref"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+                lane_id=row["lane_id"],
+                blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+            )
+            for row in rows
+        ]
+
+    def list_by_lane(self, session_id: str, lane_id: str) -> list[Task]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE session_id = ? AND lane_id = ?
+            ORDER BY created_at, task_id
+            """,
+            (session_id, lane_id),
+        ).fetchall()
+        return [
+            Task(
+                task_id=row["task_id"],
+                session_id=row["session_id"],
+                subject=row["subject"],
+                description=row["description"],
+                status=TaskStatus(row["status"]),
+                priority=TaskPriority(row["priority"]),
+                kind=row["kind"],
+                assigned_ref=row["assigned_ref"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                lane_id=row["lane_id"],
+                blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+            )
+            for row in rows
+        ]
+
+    def list_unassigned_by_session(self, session_id: str) -> list[Task]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE session_id = ? AND lane_id IS NULL
+            ORDER BY created_at, task_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            Task(
+                task_id=row["task_id"],
+                session_id=row["session_id"],
+                subject=row["subject"],
+                description=row["description"],
+                status=TaskStatus(row["status"]),
+                priority=TaskPriority(row["priority"]),
+                kind=row["kind"],
+                assigned_ref=row["assigned_ref"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
             )
             for row in rows
@@ -356,6 +433,111 @@ class LaneRepository:
             )
             for row in rows
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class LaneLifecycleEventRecord:
+    event_id: str
+    session_id: str
+    lane_id: str
+    event_type: str
+    created_at: str
+    task_id: str | None = None
+    payload: dict[str, object] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "event_id": self.event_id,
+            "session_id": self.session_id,
+            "lane_id": self.lane_id,
+            "task_id": self.task_id,
+            "event_type": self.event_type,
+            "created_at": self.created_at,
+            "payload": {} if self.payload is None else self.payload,
+        }
+
+
+@dataclass(slots=True)
+class LaneLifecycleEventRepository:
+    connection: sqlite3.Connection
+
+    def save(self, event: LaneLifecycleEventRecord) -> None:
+        _require_session_exists(self.connection, event.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="lanes",
+            id_column="lane_id",
+            record_id=event.lane_id,
+            expected_session_id=event.session_id,
+        )
+        if event.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=event.task_id,
+                expected_session_id=event.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO lane_lifecycle_events (
+                event_id, session_id, lane_id, task_id, event_type, payload_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                lane_id = excluded.lane_id,
+                task_id = excluded.task_id,
+                event_type = excluded.event_type,
+                payload_json = excluded.payload_json,
+                created_at = excluded.created_at
+            """,
+            (
+                event.event_id,
+                event.session_id,
+                event.lane_id,
+                event.task_id,
+                event.event_type,
+                json.dumps({} if event.payload is None else event.payload, sort_keys=True),
+                event.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_session(self, session_id: str) -> list[LaneLifecycleEventRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM lane_lifecycle_events
+            WHERE session_id = ?
+            ORDER BY created_at, rowid
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def list_by_lane(self, session_id: str, lane_id: str) -> list[LaneLifecycleEventRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM lane_lifecycle_events
+            WHERE session_id = ? AND lane_id = ?
+            ORDER BY created_at, rowid
+            """,
+            (session_id, lane_id),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def _row_to_event(self, row: sqlite3.Row) -> LaneLifecycleEventRecord:
+        return LaneLifecycleEventRecord(
+            event_id=row["event_id"],
+            session_id=row["session_id"],
+            lane_id=row["lane_id"],
+            task_id=row["task_id"],
+            event_type=row["event_type"],
+            created_at=row["created_at"],
+            payload=json.loads(row["payload_json"]),
+        )
 
 
 @dataclass(slots=True)
@@ -838,6 +1020,7 @@ class CoreRepositories:
     sessions: SessionRepository
     tasks: TaskRepository
     lanes: LaneRepository
+    lane_events: LaneLifecycleEventRepository
     approvals: ApprovalRequestRepository
     inbox: InboxMessageRepository
     memory: MemoryEntryRepository
@@ -850,6 +1033,7 @@ class CoreRepositories:
             sessions=SessionRepository(connection),
             tasks=TaskRepository(connection),
             lanes=LaneRepository(connection),
+            lane_events=LaneLifecycleEventRepository(connection),
             approvals=ApprovalRequestRepository(connection),
             inbox=InboxMessageRepository(connection),
             memory=MemoryEntryRepository(connection),

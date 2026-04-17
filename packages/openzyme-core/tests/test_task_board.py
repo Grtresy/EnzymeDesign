@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from openzyme_domain import Lane
+from openzyme_domain import LaneStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
@@ -107,6 +109,47 @@ def test_task_board_update_promotes_newly_unblocked_task() -> None:
     assert projection.next_task_id == "task_b"
     assert [item.task.task_id for item in projection.ready_tasks] == ["task_b"]
     assert projection.blocked_tasks == ()
+
+
+def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.lanes.save(
+        Lane(
+            lane_id="lane_001",
+            session_id=session.session_id,
+            name="analysis",
+            status=LaneStatus.CLAIMED,
+            cwd="/tmp/analysis",
+            branch_name=None,
+            claimed_ref="agent:primary",
+            created_at="2026-04-17T10:00:00+00:00",
+            updated_at="2026-04-17T10:00:00+00:00",
+        )
+    )
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_lane",
+        subject="Lane task",
+        description="Bound to lane",
+        priority=TaskPriority.HIGH,
+        lane_id="lane_001",
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_global",
+        subject="Global task",
+        description="No lane",
+        priority=TaskPriority.URGENT,
+    )
+
+    projection = service.build_projection(session.session_id, lane_id="lane_001")
+    next_task = service.select_next_task(session.session_id, lane_id="lane_001")
+
+    assert [item.task.task_id for item in projection.items] == ["task_lane"]
+    assert projection.lane_id == "lane_001"
+    assert next_task.task_id == "task_lane"
 
 
 class TaskToolDriver:

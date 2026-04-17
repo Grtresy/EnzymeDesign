@@ -18,10 +18,16 @@ from .harness import run_agent_harness_loop
 from .migration_assets import MIGRATION_IDS
 from .migration_assets import apply_sqlite_migrations
 from .migration_assets import get_migration_sql
+from .lane_manager import LaneManager
+from .lane_manager import LaneProjection
+from .lane_manager import LaneProjectionItem
+from .lane_manager import register_lane_tools
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
 from .repositories import EngineInvocationRepository
 from .repositories import InboxMessageRepository
+from .repositories import LaneLifecycleEventRecord
+from .repositories import LaneLifecycleEventRepository
 from .repositories import MemoryEntryRepository
 from .repositories import OwnershipError
 from .repositories import SessionRepository
@@ -50,7 +56,12 @@ __all__ = [
     "HarnessStatus",
     "HarnessStep",
     "InboxMessageRepository",
+    "LaneLifecycleEventRecord",
+    "LaneLifecycleEventRepository",
+    "LaneManager",
     "LaneRepository",
+    "LaneProjection",
+    "LaneProjectionItem",
     "MIGRATION_IDS",
     "MemoryEventBus",
     "MemoryEntryRepository",
@@ -73,5 +84,6 @@ __all__ = [
     "connect_sqlite",
     "get_migration_sql",
     "register_task_board_tools",
+    "register_lane_tools",
     "run_agent_harness_loop",
 ]

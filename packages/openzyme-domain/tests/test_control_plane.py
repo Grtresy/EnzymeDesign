@@ -46,12 +46,14 @@ def test_task_to_dict_serializes_priority_and_blockers() -> None:
         subject="Build repositories",
         description="Implement CRUD for V3 tables.",
         priority=TaskPriority.HIGH,
+        lane_id="lane_001",
         blocked_by=("task_000",),
     )
 
     payload = task.to_dict()
     assert payload["priority"] == "high"
     assert payload["status"] == "todo"
+    assert payload["lane_id"] == "lane_001"
     assert payload["blocked_by"] == ["task_000"]
 
 

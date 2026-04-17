@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from dataclasses import replace
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -277,6 +278,25 @@ def _persist_message(
     return message
 
 
+def _resolve_effective_lane_id(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    task_id: str | None,
+    lane_id: str | None,
+) -> str | None:
+    if task_id is None:
+        return lane_id
+    task = repositories.tasks.get(task_id)
+    if task is None:
+        raise ValueError(f"task {task_id!r} does not exist")
+    if task.session_id != session_id:
+        raise ValueError(f"task {task_id!r} belongs to session {task.session_id!r}, not {session_id!r}")
+    if lane_id is not None and task.lane_id is not None and lane_id != task.lane_id:
+        raise ValueError(f"task {task_id!r} is bound to lane {task.lane_id!r}, not {lane_id!r}")
+    return task.lane_id if lane_id is None else lane_id
+
+
 def _resolve_resume(context: SessionRuntimeContext, resume: ResumeEnvelope) -> ApprovalRequest:
     approval = context.repositories.approvals.get(resume.approval_id)
     if approval is None:
@@ -394,6 +414,15 @@ def run_agent_harness_loop(
             )
 
         for invocation in step.engine_invocations:
+            invocation = replace(
+                invocation,
+                lane_id=_resolve_effective_lane_id(
+                    repositories,
+                    session_id=harness_input.session_id,
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                ),
+            )
             repositories.invocations.save(invocation)
             context.emit(
                 "engine.invocation.updated",
@@ -442,6 +471,15 @@ def run_agent_harness_loop(
             )
 
         for approval in step.approval_requests:
+            approval = replace(
+                approval,
+                lane_id=_resolve_effective_lane_id(
+                    repositories,
+                    session_id=harness_input.session_id,
+                    task_id=approval.task_id,
+                    lane_id=approval.lane_id,
+                ),
+            )
             repositories.approvals.save(approval)
             pending_approval_id = approval.approval_id
             context.emit(
@@ -455,6 +493,15 @@ def run_agent_harness_loop(
             )
 
         for delegation in step.delegation_requests:
+            delegation = replace(
+                delegation,
+                lane_id=_resolve_effective_lane_id(
+                    repositories,
+                    session_id=harness_input.session_id,
+                    task_id=delegation.task_id,
+                    lane_id=delegation.lane_id,
+                ),
+            )
             message = _persist_message(
                 repositories,
                 session_id=delegation.session_id,
@@ -514,6 +561,15 @@ def run_agent_harness_loop(
         if step.tool_invocations:
             current_results: list[ToolResult] = []
             for invocation in step.tool_invocations:
+                invocation = replace(
+                    invocation,
+                    lane_id=_resolve_effective_lane_id(
+                        repositories,
+                        session_id=harness_input.session_id,
+                        task_id=invocation.task_id,
+                        lane_id=invocation.lane_id,
+                    ),
+                )
                 context.emit(
                     "tool.invoked",
                     {

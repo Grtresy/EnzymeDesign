@@ -41,6 +41,7 @@ class TaskMutation:
     priority: TaskPriority | object = _UNSET
     kind: str | object = _UNSET
     assigned_ref: str | None | object = _UNSET
+    lane_id: str | None | object = _UNSET
     blocked_by: tuple[str, ...] | object = _UNSET
     updated_at: str | object = _UNSET
 
@@ -64,6 +65,7 @@ class TaskBoardItem:
 @dataclass(frozen=True, slots=True)
 class TaskBoardProjection:
     session_id: str
+    lane_id: str | None
     items: tuple[TaskBoardItem, ...]
     ready_tasks: tuple[TaskBoardItem, ...]
     blocked_tasks: tuple[TaskBoardItem, ...]
@@ -72,6 +74,7 @@ class TaskBoardProjection:
     def to_dict(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
+            "lane_id": self.lane_id,
             "items": [item.to_dict() for item in self.items],
             "ready_tasks": [item.to_dict() for item in self.ready_tasks],
             "blocked_tasks": [item.to_dict() for item in self.blocked_tasks],
@@ -95,6 +98,7 @@ class TaskBoardService:
         kind: str = "general",
         status: TaskStatus = TaskStatus.TODO,
         assigned_ref: str | None = None,
+        lane_id: str | None = None,
         blocked_by: tuple[str, ...] = (),
     ) -> Task:
         task = Task.create(
@@ -106,6 +110,7 @@ class TaskBoardService:
             kind=kind,
             status=status,
             assigned_ref=assigned_ref,
+            lane_id=lane_id,
             blocked_by=blocked_by,
         )
         self.repositories.tasks.save(task)
@@ -133,6 +138,7 @@ class TaskBoardService:
             assigned_ref=task.assigned_ref if mutation.assigned_ref is _UNSET else mutation.assigned_ref,
             created_at=task.created_at,
             updated_at=utc_now_iso() if mutation.updated_at is _UNSET else str(mutation.updated_at),
+            lane_id=task.lane_id if mutation.lane_id is _UNSET else mutation.lane_id,
             blocked_by=task.blocked_by if mutation.blocked_by is _UNSET else mutation.blocked_by,
         )
         self.repositories.tasks.save(updated)
@@ -156,14 +162,16 @@ class TaskBoardService:
     def get_task(self, task_id: str) -> Task | None:
         return self.repositories.tasks.get(task_id)
 
-    def list_tasks(self, session_id: str) -> list[Task]:
-        return self.repositories.tasks.list_by_session(session_id)
+    def list_tasks(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
+        if lane_id is None:
+            return self.repositories.tasks.list_by_session(session_id)
+        return self.repositories.tasks.list_by_lane(session_id, lane_id)
 
-    def list_ready_tasks(self, session_id: str) -> list[Task]:
-        return self.repositories.tasks.list_ready_by_session(session_id)
+    def list_ready_tasks(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
+        return self.repositories.tasks.list_ready_by_session(session_id, lane_id=lane_id)
 
-    def select_next_task(self, session_id: str) -> Task | None:
-        ready_tasks = self.list_ready_tasks(session_id)
+    def select_next_task(self, session_id: str, *, lane_id: str | None = None) -> Task | None:
+        ready_tasks = self.list_ready_tasks(session_id, lane_id=lane_id)
         if not ready_tasks:
             return None
         return sorted(
@@ -175,14 +183,15 @@ class TaskBoardService:
             ),
         )[0]
 
-    def build_projection(self, session_id: str) -> TaskBoardProjection:
-        tasks = self.list_tasks(session_id)
+    def build_projection(self, session_id: str, *, lane_id: str | None = None) -> TaskBoardProjection:
+        tasks = self.list_tasks(session_id, lane_id=lane_id)
         items = tuple(self._build_items(tasks))
         ready_tasks = tuple(item for item in items if item.bucket is TaskBoardBucket.READY)
         blocked_tasks = tuple(item for item in items if item.bucket is TaskBoardBucket.BLOCKED)
-        next_task = self.select_next_task(session_id)
+        next_task = self.select_next_task(session_id, lane_id=lane_id)
         return TaskBoardProjection(
             session_id=session_id,
+            lane_id=lane_id,
             items=items,
             ready_tasks=ready_tasks,
             blocked_tasks=blocked_tasks,
@@ -265,6 +274,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             kind=str(arguments.get("kind", "general")),
             status=TaskStatus(str(arguments.get("status", TaskStatus.TODO.value))),
             assigned_ref=arguments.get("assigned_ref"),
+            lane_id=invocation.lane_id if "lane_id" not in arguments else arguments.get("lane_id"),
             blocked_by=tuple(str(item) for item in arguments.get("blocked_by", ())),
         )
         return ToolResult(
@@ -286,6 +296,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             priority=TaskPriority(str(arguments["priority"])) if "priority" in arguments else _UNSET,
             kind=arguments["kind"] if "kind" in arguments else _UNSET,
             assigned_ref=arguments["assigned_ref"] if "assigned_ref" in arguments else _UNSET,
+            lane_id=arguments["lane_id"] if "lane_id" in arguments else _UNSET,
             blocked_by=tuple(str(item) for item in arguments["blocked_by"]) if "blocked_by" in arguments else _UNSET,
             updated_at=str(arguments["updated_at"]) if "updated_at" in arguments else _UNSET,
         )
@@ -313,7 +324,8 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
 
     def list_tasks_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
-        projection = service.build_projection(context.snapshot.session.session_id)
+        lane_id = invocation.arguments.get("lane_id", invocation.lane_id)
+        projection = service.build_projection(context.snapshot.session.session_id, lane_id=lane_id)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -325,7 +337,8 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
 
     def next_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
-        task = service.select_next_task(context.snapshot.session.session_id)
+        lane_id = invocation.arguments.get("lane_id", invocation.lane_id)
+        task = service.select_next_task(context.snapshot.session.session_id, lane_id=lane_id)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
