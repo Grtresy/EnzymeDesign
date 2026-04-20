@@ -638,3 +638,68 @@ def test_harness_can_dispatch_research_task_via_deep_research_planner() -> None:
     assert result.status is HarnessStatus.COMPLETED
     assert "Session objective: Exercise the Session 03 kernel" in result.outputs[0]
     assert repositories.tasks.get("task_001").status is TaskStatus.IN_PROGRESS
+
+
+class BuiltinTaskLaneToolDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_create_lane",
+                        tool_name="lane.create",
+                        arguments={"lane_id": "lane_builtin", "name": "builtin", "cwd": "/tmp/builtin"},
+                    ),
+                    ToolInvocation(
+                        call_id="call_create_task",
+                        tool_name="task.create",
+                        arguments={
+                            "task_id": "task_builtin",
+                            "subject": "Builtin task",
+                            "description": "Created through default harness registry.",
+                        },
+                    ),
+                )
+            )
+        if len(tool_results) == 2:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_bind_task",
+                        tool_name="lane.bind_task",
+                        arguments={"task_id": "task_builtin", "lane_id": "lane_builtin"},
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="builtin tools ready")
+
+
+def test_harness_default_registry_includes_task_and_lane_tools() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="use builtins"),
+        driver=BuiltinTaskLaneToolDriver(),
+    )
+
+    task = repositories.tasks.get("task_builtin")
+    lane = repositories.lanes.get("lane_builtin")
+    assert result.outputs == ("builtin tools ready",)
+    assert task is not None
+    assert task.lane_id == "lane_builtin"
+    assert lane is not None
+    assert lane.cwd == "/tmp/builtin"
+    assert {event.event_type for event in result.events} >= {
+        "task.created",
+        "lane.created",
+        "task.bound_to_lane",
+        "tool.completed",
+    }

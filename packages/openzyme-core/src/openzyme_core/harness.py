@@ -455,9 +455,13 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
 
 
 def _register_builtin_tools(registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None) -> None:
+    from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
     from .skills import register_skill_tools
+    from .task_board import register_task_board_tools
 
+    register_task_board_tools(registry)
+    register_lane_tools(registry)
     register_memory_tools(registry)
     register_skill_tools(registry)
     if engine_registry is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import sqlite3
+from typing import Any
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus

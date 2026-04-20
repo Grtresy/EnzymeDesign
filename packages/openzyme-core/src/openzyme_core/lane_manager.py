@@ -8,7 +8,6 @@ from uuid import uuid4
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Task
-from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext

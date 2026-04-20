@@ -97,7 +97,7 @@ class DefaultReportingRunner:
             [
                 f"# {title}",
                 "",
-                f"## Objective",
+                "## Objective",
                 session.objective,
                 "",
                 "## Brief",
