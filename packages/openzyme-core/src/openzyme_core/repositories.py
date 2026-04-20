@@ -23,7 +23,9 @@ from openzyme_domain import ResearchGap
 from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_domain import RunRecord
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
@@ -1205,6 +1207,319 @@ class EngineDocumentRepository:
 
 
 @dataclass(slots=True)
+class RunRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, run: RunRecord) -> None:
+        _require_session_exists(self.connection, run.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=run.invocation_id,
+            expected_session_id=run.session_id,
+        )
+        if run.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=run.task_id,
+                expected_session_id=run.session_id,
+            )
+        if run.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=run.lane_id,
+                expected_session_id=run.session_id,
+            )
+        if run.approval_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="approval_requests",
+                id_column="approval_id",
+                record_id=run.approval_id,
+                expected_session_id=run.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_run_records (
+                run_id, session_id, task_id, lane_id, invocation_id, approval_id, engine_name,
+                runner_run_id, status, execution_mode, remote_run_dir, summary, created_at,
+                updated_at, finished_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                approval_id = excluded.approval_id,
+                engine_name = excluded.engine_name,
+                runner_run_id = excluded.runner_run_id,
+                status = excluded.status,
+                execution_mode = excluded.execution_mode,
+                remote_run_dir = excluded.remote_run_dir,
+                summary = excluded.summary,
+                updated_at = excluded.updated_at,
+                finished_at = excluded.finished_at
+            """,
+            (
+                run.run_id,
+                run.session_id,
+                run.task_id,
+                run.lane_id,
+                run.invocation_id,
+                run.approval_id,
+                run.engine_name,
+                run.runner_run_id,
+                run.status.value,
+                run.execution_mode,
+                run.remote_run_dir,
+                run.summary,
+                run.created_at,
+                run.updated_at,
+                run.finished_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, run_id: str) -> RunRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_run_records WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_run(row)
+
+    def get_by_invocation(self, session_id: str, invocation_id: str) -> RunRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_run_records
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, run_id
+            """,
+            (session_id, invocation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_run(row)
+
+    def list_by_session(self, session_id: str) -> list[RunRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_run_records
+            WHERE session_id = ?
+            ORDER BY created_at, run_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def list_by_task(self, session_id: str, task_id: str) -> list[RunRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_run_records
+            WHERE session_id = ? AND task_id = ?
+            ORDER BY created_at, run_id
+            """,
+            (session_id, task_id),
+        ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[RunRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_run_records
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, run_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def _row_to_run(self, row: sqlite3.Row) -> RunRecord:
+        from openzyme_domain import RunStatus
+
+        return RunRecord(
+            run_id=row["run_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            approval_id=row["approval_id"],
+            engine_name=row["engine_name"],
+            runner_run_id=row["runner_run_id"],
+            status=RunStatus(row["status"]),
+            execution_mode=row["execution_mode"],
+            remote_run_dir=row["remote_run_dir"],
+            summary=row["summary"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            finished_at=row["finished_at"],
+        )
+
+
+@dataclass(slots=True)
+class SessionArtifactRepository:
+    connection: sqlite3.Connection
+
+    def save(self, artifact: SessionArtifactRecord) -> None:
+        _require_session_exists(self.connection, artifact.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=artifact.invocation_id,
+            expected_session_id=artifact.session_id,
+        )
+        if artifact.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=artifact.task_id,
+                expected_session_id=artifact.session_id,
+            )
+        if artifact.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=artifact.lane_id,
+                expected_session_id=artifact.session_id,
+            )
+        if artifact.run_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_run_records",
+                id_column="run_id",
+                record_id=artifact.run_id,
+                expected_session_id=artifact.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_artifact_records (
+                artifact_id, session_id, task_id, lane_id, invocation_id, run_id, kind, storage_uri,
+                relative_path, title, description, metadata_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(artifact_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                run_id = excluded.run_id,
+                kind = excluded.kind,
+                storage_uri = excluded.storage_uri,
+                relative_path = excluded.relative_path,
+                title = excluded.title,
+                description = excluded.description,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                artifact.artifact_id,
+                artifact.session_id,
+                artifact.task_id,
+                artifact.lane_id,
+                artifact.invocation_id,
+                artifact.run_id,
+                artifact.kind.value,
+                artifact.storage_uri,
+                artifact.relative_path,
+                artifact.title,
+                artifact.description,
+                json.dumps({} if artifact.metadata is None else artifact.metadata, sort_keys=True),
+                artifact.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, artifact_id: str) -> SessionArtifactRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_artifact_records WHERE artifact_id = ?",
+            (artifact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_artifact(row)
+
+    def list_by_session(self, session_id: str) -> list[SessionArtifactRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_artifact_records
+            WHERE session_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def list_by_task(self, session_id: str, task_id: str) -> list[SessionArtifactRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_artifact_records
+            WHERE session_id = ? AND task_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (session_id, task_id),
+        ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def list_by_run(self, run_id: str) -> list[SessionArtifactRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_artifact_records
+            WHERE run_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[SessionArtifactRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_artifact_records
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, artifact_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_artifact(row) for row in rows]
+
+    def _row_to_artifact(self, row: sqlite3.Row) -> SessionArtifactRecord:
+        from openzyme_domain import ArtifactKind
+
+        return SessionArtifactRecord(
+            artifact_id=row["artifact_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            run_id=row["run_id"],
+            kind=ArtifactKind(row["kind"]),
+            storage_uri=row["storage_uri"],
+            relative_path=row["relative_path"],
+            title=row["title"],
+            description=row["description"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
 class ResearchSummaryRepository:
     connection: sqlite3.Connection
 
@@ -1682,6 +1997,8 @@ class CoreRepositories:
     agents: AgentMemberRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
+    runs: RunRecordRepository
+    artifacts: SessionArtifactRepository
     research_summaries: ResearchSummaryRepository
     research_evidence: ResearchEvidenceRepository
     research_source_refs: ResearchSourceRefRepository
@@ -1700,6 +2017,8 @@ class CoreRepositories:
             agents=AgentMemberRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),
+            runs=RunRecordRepository(connection),
+            artifacts=SessionArtifactRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),
             research_evidence=ResearchEvidenceRepository(connection),
             research_source_refs=ResearchSourceRefRepository(connection),

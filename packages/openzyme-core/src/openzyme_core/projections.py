@@ -68,6 +68,7 @@ class SessionWorkspaceProjection:
     memory: tuple[dict[str, Any], ...]
     delegation: dict[str, Any]
     activity_feed: tuple[dict[str, Any], ...]
+    artifacts: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,6 +81,7 @@ class SessionWorkspaceProjection:
             "memory": list(self.memory),
             "delegation": self.delegation,
             "activity_feed": list(self.activity_feed),
+            "artifacts": list(self.artifacts),
             "capabilities": self.capabilities,
         }
 
@@ -99,6 +101,7 @@ class SessionProjectionBuilder:
         memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
         delegation = self.build_delegation_projection(session_id).to_dict()
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
+        artifacts = tuple(artifact.to_dict() for artifact in self.repositories.artifacts.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
         return SessionWorkspaceProjection(
             session=session.to_dict(),
@@ -109,6 +112,7 @@ class SessionProjectionBuilder:
             memory=memory,
             delegation=delegation,
             activity_feed=activity_feed,
+            artifacts=artifacts,
             capabilities=capabilities,
         )
 
@@ -261,6 +265,14 @@ class SessionProjectionBuilder:
                     payload=evidence.to_dict(),
                 )
             )
+        for artifact in self.repositories.artifacts.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="artifact.recorded",
+                    created_at=artifact.created_at,
+                    payload=artifact.to_dict(),
+                )
+            )
         return sorted(items, key=lambda item: (item.created_at, item.event_type))
 
     def _build_capabilities_projection(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -290,6 +302,13 @@ class SessionProjectionBuilder:
             projected["evidence"] = [item.to_dict() for item in evidence]
             projected["source_refs"] = [item.to_dict() for item in source_refs]
             projected["gaps"] = [item.to_dict() for item in gaps]
+        runs = self.repositories.runs.list_by_invocation(session_id, invocation.invocation_id)
+        if runs:
+            projected["runs"] = [run.to_dict() for run in runs]
+            artifact_payloads: list[dict[str, Any]] = []
+            for run in runs:
+                artifact_payloads.extend(item.to_dict() for item in self.repositories.artifacts.list_by_run(run.run_id))
+            projected["artifacts"] = artifact_payloads
         return projected
 
 

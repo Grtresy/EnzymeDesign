@@ -51,6 +51,18 @@ class ExecutionOutcome:
     remote_run_dir: str
     artifacts: tuple[ExecutionArtifactRef, ...]
     raw_result: dict[str, Any]
+    job_id: str | None = None
+    exit_code: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionStatusSnapshot:
+    run_id: str
+    status: RunStatus
+    remote_run_dir: str
+    raw_result: dict[str, Any]
+    job_id: str | None = None
+    exit_code: int | None = None
 
 
 @dataclass(slots=True)
@@ -79,6 +91,58 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         result = self.server.call_tool(tool_name, {"runspec": runspec})
         return self._normalize_result(result)
 
+    def get_execution_status(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        job_id: str | None = None,
+    ) -> ExecutionStatusSnapshot:
+        result = self.server.call_tool(
+            "job.status",
+            {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
+        )
+        return ExecutionStatusSnapshot(
+            run_id=str(result["run_id"]),
+            status=map_runner_status_to_run_status(str(result.get("state", "failed"))),
+            remote_run_dir=remote_run_dir,
+            raw_result=result,
+            job_id=None if result.get("job_id") is None else str(result["job_id"]),
+            exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
+        )
+
+    def fetch_execution_artifacts(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        runspec: dict[str, Any],
+        job_id: str | None = None,
+    ) -> ExecutionOutcome:
+        result = self.server.call_tool(
+            "job.fetch_artifacts",
+            {
+                "run_id": run_id,
+                "job_id": job_id,
+                "remote_run_dir": remote_run_dir,
+                "runspec": runspec,
+            },
+        )
+        return self._normalize_result(result)
+
+    def cancel_execution(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        job_id: str | None = None,
+    ) -> ExecutionOutcome:
+        result = self.server.call_tool(
+            "job.cancel",
+            {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
+        )
+        return self._normalize_result(result)
+
     def _normalize_result(self, result: dict[str, Any]) -> ExecutionOutcome:
         selected_mode = str(result.get("selected_mode", result.get("requested_mode", "unknown")))
         artifacts = tuple(
@@ -96,4 +160,6 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             remote_run_dir=str(result.get("remote_run_dir", "")),
             artifacts=artifacts,
             raw_result=result,
+            job_id=None if result.get("job_id") is None else str(result["job_id"]),
+            exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
         )

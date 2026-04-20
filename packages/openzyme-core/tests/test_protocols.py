@@ -144,3 +144,35 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
     assert repositories.agents.get("agent:executor").status is AgentMemberStatus.COMPLETED
     assert repositories.invocations.get("inv_001").status is EngineInvocationStatus.SUCCEEDED
     assert service.build_thread(session.session_id, "corr_bg_001").status is CorrelationStatus.COMPLETED
+
+
+def test_background_completion_preserves_existing_invocation_output_ref() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_002",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            engine_name="execution",
+            status=EngineInvocationStatus.RUNNING,
+            input_ref="artifact://engine/inv_002/input.json",
+            output_ref="artifact://engine/inv_002/existing-output.json",
+            approval_id=None,
+            idempotency_key="task_001:execution:2",
+            started_at="2026-04-17T12:00:03+00:00",
+        )
+    )
+
+    service.complete_background_task(
+        session_id=session.session_id,
+        correlation_id="corr_bg_002",
+        recipient="harness",
+        payload_ref="artifact://engine/inv_002/background-notification.json",
+        invocation_id="inv_002",
+        success=True,
+    )
+
+    assert repositories.invocations.get("inv_002").output_ref == "artifact://engine/inv_002/existing-output.json"

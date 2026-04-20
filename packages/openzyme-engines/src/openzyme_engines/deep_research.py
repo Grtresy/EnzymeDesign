@@ -228,6 +228,9 @@ class DeepResearchEngine:
             capability_key="deep_research",
         )
 
+    def register_tools(self, registry: ToolRegistry) -> None:
+        register_deep_research_tools(registry, self)
+
     def start_research(
         self,
         *,

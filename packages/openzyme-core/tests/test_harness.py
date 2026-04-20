@@ -33,6 +33,8 @@ from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import run_agent_harness_loop
+from openzyme_core import EngineDescriptor
+from openzyme_core import EngineRegistry
 
 
 def _build_repositories() -> CoreRepositories:
@@ -263,6 +265,64 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
         "memory.compacted",
         "message.sent",
     }
+
+
+class RegistryBackedEngine:
+    descriptor = EngineDescriptor(
+        engine_name="registry_engine",
+        tool_names=("registry.echo",),
+        input_schema={"type": "object", "required": ["text"]},
+        output_schema={"type": "object", "required": ["value"]},
+        requires_approval=False,
+        supports_background=False,
+        idempotency_key_shape="{task_id}:registry:{nonce}",
+        produces_artifact_types=(),
+        capability_key="registry",
+    )
+
+    def register_tools(self, registry: ToolRegistry) -> None:
+        registry.register("registry.echo", lambda _context, invocation: f"engine:{invocation.arguments['text']}")
+
+
+class RegistryToolDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del harness_input
+        task = context.snapshot.tasks[0]
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_registry",
+                        tool_name="registry.echo",
+                        arguments={"text": "ready"},
+                        task_id=task.task_id,
+                    ),
+                ),
+            )
+        return HarnessStep(assistant_message=str(tool_results[0].content))
+
+
+def test_harness_loop_registers_engine_tools_from_engine_registry() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine_registry = EngineRegistry()
+    engine_registry.register(RegistryBackedEngine())
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="start"),
+        driver=RegistryToolDriver(),
+        engine_registry=engine_registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("engine:ready",)
+    assert [tool_result.tool_name for tool_result in result.tool_results] == ["registry.echo"]
 
 
 class ApprovalDriver:

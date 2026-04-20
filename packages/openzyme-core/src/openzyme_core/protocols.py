@@ -218,7 +218,7 @@ class ProtocolService:
                 engine_name=invocation.engine_name,
                 status=updated_status,
                 input_ref=invocation.input_ref,
-                output_ref=invocation.output_ref if payload_ref is None else payload_ref,
+                output_ref=invocation.output_ref,
                 approval_id=invocation.approval_id,
                 idempotency_key=invocation.idempotency_key,
                 started_at=invocation.started_at,

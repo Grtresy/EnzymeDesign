@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from .models import ArtifactKind
+from .models import RunStatus
 from .models import SourceRefKind
 
 
@@ -23,6 +25,8 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "MemoryEntry",
     "AgentMember",
     "EngineInvocation",
+    "RunRecord",
+    "SessionArtifactRecord",
     "ResearchSummary",
     "ResearchEvidence",
     "ResearchSourceRef",
@@ -359,6 +363,52 @@ class EngineInvocation:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class RunRecord:
+    run_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    approval_id: str | None
+    engine_name: str
+    runner_run_id: str
+    status: RunStatus
+    execution_mode: str
+    remote_run_dir: str
+    created_at: str
+    updated_at: str
+    finished_at: str | None = None
+    summary: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SessionArtifactRecord:
+    artifact_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    run_id: str | None
+    kind: ArtifactKind
+    storage_uri: str
+    relative_path: str
+    created_at: str
+    title: str | None = None
+    description: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["kind"] = self.kind.value
         return data
 
 

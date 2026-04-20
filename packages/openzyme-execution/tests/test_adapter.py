@@ -9,6 +9,25 @@ class FakeRunnerServer:
 
     def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         self.calls.append((name, arguments))
+        if name == "job.status":
+            return {
+                "run_id": str(arguments["run_id"]),
+                "job_id": "123",
+                "state": "completed",
+                "exit_code": 0,
+            }
+        if name == "job.fetch_artifacts":
+            return {
+                "run_id": str(arguments["run_id"]),
+                "requested_mode": "sbatch",
+                "selected_mode": "sbatch",
+                "remote_run_dir": str(arguments["remote_run_dir"]),
+                "status": "completed",
+                "job_id": "123",
+                "artifacts": {
+                    "/remote/run_001/out/result.json": "/tmp/result.json",
+                },
+            }
         return {
             "run_id": "run_001",
             "requested_mode": "auto",
@@ -83,3 +102,25 @@ def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
         sent_runspec["metadata"]["openzyme"]["requested_tool_name"]
         == "protein_engineering_pipeline"
     )
+
+
+def test_hpc_runner_adapter_queries_status_and_fetches_artifacts() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+
+    status = adapter.get_execution_status(
+        run_id="run_001",
+        remote_run_dir="/remote/run_001",
+        job_id="123",
+    )
+    fetched = adapter.fetch_execution_artifacts(
+        run_id="run_001",
+        remote_run_dir="/remote/run_001",
+        job_id="123",
+        runspec={"name": "fpocket"},
+    )
+
+    assert status.status is RunStatus.SUCCEEDED
+    assert fetched.job_id == "123"
+    assert fetched.artifacts[0].relative_path == "result.json"
+    assert [name for name, _ in server.calls[-2:]] == ["job.status", "job.fetch_artifacts"]

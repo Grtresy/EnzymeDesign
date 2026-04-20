@@ -17,9 +17,13 @@ from openzyme_domain import ResearchGap
 from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_domain import RunRecord
+from openzyme_domain import RunStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
+from openzyme_domain import ArtifactKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
@@ -143,6 +147,37 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
         idempotency_key="task_exec:deep_research:v1",
         started_at="2026-04-16T10:09:00+00:00",
     )
+    run = RunRecord(
+        run_id="run_001",
+        session_id=session.session_id,
+        task_id=child_task.task_id,
+        lane_id=lane.lane_id,
+        invocation_id="inv_001",
+        approval_id=approval.approval_id,
+        engine_name="execution",
+        runner_run_id="job_123",
+        status=RunStatus.QUEUED,
+        execution_mode="sbatch",
+        remote_run_dir="/remote/run_001",
+        summary=None,
+        created_at="2026-04-16T10:09:10+00:00",
+        updated_at="2026-04-16T10:09:10+00:00",
+    )
+    artifact = SessionArtifactRecord(
+        artifact_id="run_001:stdout.log",
+        session_id=session.session_id,
+        task_id=child_task.task_id,
+        lane_id=lane.lane_id,
+        invocation_id="inv_001",
+        run_id="run_001",
+        kind=ArtifactKind.LOG,
+        storage_uri="/tmp/stdout.log",
+        relative_path="stdout.log",
+        title="stdout.log",
+        description=None,
+        metadata={"source": "execution_engine"},
+        created_at="2026-04-16T10:09:11+00:00",
+    )
     lane_event = LaneLifecycleEventRecord(
         event_id="lane_evt_001",
         session_id=session.session_id,
@@ -162,6 +197,8 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     repositories.memory.save(memory)
     repositories.agents.save(agent)
     repositories.invocations.save(invocation)
+    repositories.runs.save(run)
+    repositories.artifacts.save(artifact)
     repositories.lane_events.save(lane_event)
     repositories.engine_documents.save(
         EngineDocumentRecord(
@@ -245,6 +282,8 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.agents.list_by_session(session.session_id) == [agent]
     assert repositories.invocations.list_by_session(session.session_id) == [invocation]
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
+    assert repositories.runs.get_by_invocation(session.session_id, invocation.invocation_id) == run
+    assert repositories.artifacts.list_by_run(run.run_id) == [artifact]
     assert repositories.engine_documents.list_by_invocation(session.session_id, invocation.invocation_id)[0].payload == {
         "summary": "Initial dossier"
     }

@@ -14,9 +14,13 @@ from openzyme_domain import ResearchGap
 from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_domain import RunRecord
+from openzyme_domain import RunStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
+from openzyme_domain import ArtifactKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
@@ -115,6 +119,58 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             started_at="2026-04-17T13:00:05+00:00",
         )
     )
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_exec_001",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            engine_name="execution",
+            status=EngineInvocationStatus.SUCCEEDED,
+            input_ref="artifact://engine/inv_exec_001/input.json",
+            output_ref="eng_exec_out_001",
+            approval_id="appr_001",
+            idempotency_key="task_001:execution:1",
+            started_at="2026-04-17T13:00:06+00:00",
+            finished_at="2026-04-17T13:00:07+00:00",
+        )
+    )
+    repositories.runs.save(
+        RunRecord(
+            run_id="run_exec_001",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_exec_001",
+            approval_id="appr_001",
+            engine_name="execution",
+            runner_run_id="job_123",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="sbatch",
+            remote_run_dir="/remote/run_exec_001",
+            summary="Execution completed successfully.",
+            created_at="2026-04-17T13:00:06+00:00",
+            updated_at="2026-04-17T13:00:07+00:00",
+            finished_at="2026-04-17T13:00:07+00:00",
+        )
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="run_exec_001:stdout.log",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_exec_001",
+            run_id="run_exec_001",
+            kind=ArtifactKind.LOG,
+            storage_uri="/tmp/stdout.log",
+            relative_path="stdout.log",
+            title="stdout.log",
+            description=None,
+            metadata={"source": "execution_engine"},
+            created_at="2026-04-17T13:00:07+00:00",
+        )
+    )
     repositories.engine_documents.save(
         EngineDocumentRecord(
             document_id="eng_out_001",
@@ -135,6 +191,20 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             },
             created_at="2026-04-17T13:00:05+00:00",
             updated_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="eng_exec_out_001",
+            session_id=session.session_id,
+            invocation_id="inv_exec_001",
+            document_kind="execution_result",
+            payload={
+                "run": {"run_id": "run_exec_001"},
+                "parsed_result": {"result_summary": "Execution completed successfully.", "structured_findings": {}},
+            },
+            created_at="2026-04-17T13:00:07+00:00",
+            updated_at="2026-04-17T13:00:07+00:00",
         )
     )
     repositories.research_summaries.save(
@@ -235,13 +305,18 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
     assert workspace["delegation"]["agents"][0]["agent"]["agent_id"] == "agent:researcher"
+    assert workspace["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
     assert "deep_research" in workspace["capabilities"]
+    assert "execution" in workspace["capabilities"]
     assert workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"] == "high"
     assert workspace["capabilities"]["deep_research"][0]["source_refs"][0]["kind"] == "paper"
     assert workspace["capabilities"]["deep_research"][0]["gaps"][0]["summary"] == "Need wet-lab validation"
+    assert workspace["capabilities"]["execution"][0]["runs"][0]["run_id"] == "run_exec_001"
+    assert workspace["capabilities"]["execution"][0]["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
     assert any(item["event_type"] == "approval.requested" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "agent.spawned" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "engine.invocation.started" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "research.summary.updated" for item in workspace["activity_feed"])
+    assert any(item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"])

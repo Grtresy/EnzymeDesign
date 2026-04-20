@@ -1,4 +1,5 @@
 from openzyme_domain import CONTROL_PLANE_ENTITY_NAMES
+from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
@@ -8,7 +9,10 @@ from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_domain import RunRecord
+from openzyme_domain import RunStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
@@ -26,6 +30,8 @@ def test_control_plane_entity_names_are_stable() -> None:
         "MemoryEntry",
         "AgentMember",
         "EngineInvocation",
+        "RunRecord",
+        "SessionArtifactRecord",
         "ResearchSummary",
         "ResearchEvidence",
         "ResearchSourceRef",
@@ -125,3 +131,41 @@ def test_research_summary_records_use_v3_control_plane_fields() -> None:
     assert payload["status"] == "needs_clarification"
     assert payload["invocation_id"] == "inv_001"
     assert SourceRefKind.WEB_PAGE.value == "web_page"
+
+
+def test_execution_records_serialize_with_v3_session_scope() -> None:
+    run = RunRecord(
+        run_id="run_001",
+        session_id="sess_001",
+        task_id="task_001",
+        lane_id="lane_001",
+        invocation_id="inv_001",
+        approval_id="appr_001",
+        engine_name="execution",
+        runner_run_id="job_123",
+        status=RunStatus.RUNNING,
+        execution_mode="sbatch",
+        remote_run_dir="/remote/run_001",
+        summary=None,
+        created_at="2026-04-20T10:00:00+00:00",
+        updated_at="2026-04-20T10:00:00+00:00",
+    )
+    artifact = SessionArtifactRecord(
+        artifact_id="run_001:stdout.log",
+        session_id="sess_001",
+        task_id="task_001",
+        lane_id="lane_001",
+        invocation_id="inv_001",
+        run_id="run_001",
+        kind=ArtifactKind.LOG,
+        storage_uri="/tmp/stdout.log",
+        relative_path="stdout.log",
+        title="stdout.log",
+        description=None,
+        metadata={"source": "execution_engine"},
+        created_at="2026-04-20T10:01:00+00:00",
+    )
+
+    assert run.to_dict()["status"] == "running"
+    assert artifact.to_dict()["kind"] == "log"
+    assert artifact.to_dict()["session_id"] == "sess_001"

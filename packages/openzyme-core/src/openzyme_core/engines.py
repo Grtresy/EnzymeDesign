@@ -39,6 +39,8 @@ class CapabilityEngine(Protocol):
     @property
     def descriptor(self) -> EngineDescriptor: ...
 
+    def register_tools(self, registry: Any) -> None: ...
+
 
 @dataclass(slots=True)
 class EngineRegistry:
@@ -61,6 +63,9 @@ class EngineRegistry:
 
     def list_descriptors(self) -> tuple[EngineDescriptor, ...]:
         return tuple(engine.descriptor for engine in self._engines.values())
+
+    def list_engines(self) -> tuple[CapabilityEngine, ...]:
+        return tuple(self._engines.values())
 
 
 @dataclass(slots=True)

@@ -15,6 +15,9 @@ class FakeEngine:
         capability_key="fake",
     )
 
+    def register_tools(self, registry: object) -> None:
+        del registry
+
 
 def test_engine_registry_tracks_descriptors() -> None:
     registry = EngineRegistry()
@@ -25,3 +28,4 @@ def test_engine_registry_tracks_descriptors() -> None:
 
     assert engine.descriptor.capability_key == "fake"
     assert descriptors[0].to_dict()["engine_name"] == "fake_engine"
+    assert registry.list_engines()[0].descriptor.engine_name == "fake_engine"

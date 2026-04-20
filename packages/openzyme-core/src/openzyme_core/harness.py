@@ -27,6 +27,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
+from .engines import EngineRegistry
 from .repositories import CoreRepositories
 
 
@@ -453,12 +454,15 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
     return RestoreFocus()
 
 
-def _register_builtin_tools(registry: ToolRegistry) -> None:
+def _register_builtin_tools(registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None) -> None:
     from .memory import register_memory_tools
     from .skills import register_skill_tools
 
     register_memory_tools(registry)
     register_skill_tools(registry)
+    if engine_registry is not None:
+        for engine in engine_registry.list_engines():
+            engine.register_tools(registry)
 
 
 def _auto_compact_if_needed(
@@ -510,12 +514,13 @@ def run_agent_harness_loop(
     *,
     driver: HarnessDriver,
     tool_registry: ToolRegistry | None = None,
+    engine_registry: EngineRegistry | None = None,
     event_sink: EventSink | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
     registry = tool_registry or ToolRegistry()
-    _register_builtin_tools(registry)
+    _register_builtin_tools(registry, engine_registry=engine_registry)
     sink = event_sink or MemoryEventBus()
     snapshot = SessionRuntimeSnapshot.load(repositories, harness_input.session_id)
     resolved_focus = harness_input.restore_focus or _resolve_default_focus(snapshot)
