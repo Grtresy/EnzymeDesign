@@ -15,6 +15,8 @@ from .renderers import render_episode_list
 from .renderers import render_json
 from .renderers import render_projects
 from .renderers import render_records
+from .renderers import render_v3_command_result
+from .renderers import render_v3_workspace
 from .renderers import render_workspace
 
 
@@ -23,6 +25,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", dest="base_url", help="Host API base URL")
     parser.add_argument("--project-id", help="Default project ID")
     parser.add_argument("--episode-id", help="Default episode ID")
+    parser.add_argument("--session-id", help="Default V3 session ID")
     parser.add_argument(
         "--format",
         choices=("text", "json"),
@@ -72,6 +75,61 @@ def _build_parser() -> argparse.ArgumentParser:
 
     reports = episode_sub.add_parser("reports", help="List report records")
     reports.add_argument("--episode-id", dest="command_episode_id", help="Episode ID override")
+
+    sessions = subparsers.add_parser("sessions", help="V3 session commands")
+    session_sub = sessions.add_subparsers(dest="sessions_command", required=True)
+    session_create = session_sub.add_parser("create", help="Create a V3 session")
+    session_create.add_argument("--project-id", dest="command_project_id", help="Project ID override")
+    session_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    session_create.add_argument("--objective", required=True, help="Session objective")
+    session_create.add_argument("--title", help="Session title")
+    session_show = session_sub.add_parser("show", help="Show V3 workspace")
+    session_show.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    session_message = session_sub.add_parser("message", help="Send a message to a V3 session")
+    session_message.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    session_message.add_argument("--message", required=True, help="User message")
+    session_message.add_argument("--task-id", help="Focused task ID")
+    session_message.add_argument("--lane-id", help="Focused lane ID")
+
+    tasks = subparsers.add_parser("tasks", help="V3 task board commands")
+    task_sub = tasks.add_subparsers(dest="tasks_command", required=True)
+    task_create = task_sub.add_parser("create", help="Create a V3 task")
+    task_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    task_create.add_argument("--task-id", help="Task ID override")
+    task_create.add_argument("--subject", required=True)
+    task_create.add_argument("--description", default="")
+    task_create.add_argument("--priority", default="normal")
+    task_create.add_argument("--kind", default="general")
+    task_create.add_argument("--lane-id")
+    task_update = task_sub.add_parser("update", help="Update a V3 task")
+    task_update.add_argument("--task-id", required=True)
+    task_update.add_argument("--status")
+    task_update.add_argument("--subject")
+    task_update.add_argument("--description")
+    task_update.add_argument("--priority")
+    task_update.add_argument("--lane-id")
+
+    lanes = subparsers.add_parser("lanes", help="V3 lane commands")
+    lane_sub = lanes.add_subparsers(dest="lanes_command", required=True)
+    lane_create = lane_sub.add_parser("create", help="Create a V3 lane")
+    lane_create.add_argument("--session-id", dest="command_session_id", help="Session ID override")
+    lane_create.add_argument("--lane-id")
+    lane_create.add_argument("--name", required=True)
+    lane_create.add_argument("--cwd", default=".")
+    lane_create.add_argument("--branch-name")
+    lane_claim = lane_sub.add_parser("claim", help="Claim a V3 lane")
+    lane_claim.add_argument("--lane-id", required=True)
+    lane_claim.add_argument("--claimed-ref", default="user")
+    lane_keep = lane_sub.add_parser("keep", help="Release/keep a V3 lane for later")
+    lane_keep.add_argument("--lane-id", required=True)
+    lane_remove = lane_sub.add_parser("remove", help="Remove a V3 lane")
+    lane_remove.add_argument("--lane-id", required=True)
+
+    approvals = subparsers.add_parser("approvals", help="V3 approval commands")
+    approval_sub = approvals.add_subparsers(dest="approvals_command", required=True)
+    approval_resolve = approval_sub.add_parser("resolve", help="Resolve a V3 approval")
+    approval_resolve.add_argument("--approval-id", required=True)
+    approval_resolve.add_argument("--decision", choices=("approved", "rejected"), required=True)
 
     return parser
 
@@ -130,6 +188,97 @@ def run_cli(
             )
             payload = client.list_project_episodes(project_id)
             stdout.write(_format_output(config.output_format, payload, render_episode_list) + "\n")
+            return 0
+
+        if args.resource == "sessions":
+            if args.sessions_command == "create":
+                project_id = _require_value(
+                    getattr(args, "command_project_id", None) or args.project_id or config.project_id,
+                    "--project-id",
+                )
+                payload = client.create_v3_session(
+                    project_id=project_id,
+                    objective=args.objective,
+                    title=args.title,
+                    session_id=getattr(args, "command_session_id", None) or args.session_id,
+                )
+                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+                return 0
+            session_id = _require_value(
+                getattr(args, "command_session_id", None) or args.session_id,
+                "--session-id",
+            )
+            if args.sessions_command == "show":
+                payload = client.get_v3_workspace(session_id)
+                stdout.write(_format_output(config.output_format, payload, render_v3_workspace) + "\n")
+                return 0
+            if args.sessions_command == "message":
+                payload = client.post_v3_message(
+                    session_id,
+                    message=args.message,
+                    task_id=args.task_id,
+                    lane_id=args.lane_id,
+                )
+                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+                return 0
+
+        if args.resource == "tasks":
+            if args.tasks_command == "create":
+                session_id = _require_value(
+                    getattr(args, "command_session_id", None) or args.session_id,
+                    "--session-id",
+                )
+                payload_body = {
+                    "session_id": session_id,
+                    "subject": args.subject,
+                    "description": args.description,
+                    "priority": args.priority,
+                    "kind": args.kind,
+                }
+                if args.task_id:
+                    payload_body["task_id"] = args.task_id
+                if args.lane_id:
+                    payload_body["lane_id"] = args.lane_id
+                payload = client.create_v3_task(payload_body)
+                stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+                return 0
+            payload_body = {}
+            for field in ("status", "subject", "description", "priority", "lane_id"):
+                value = getattr(args, field)
+                if value is not None:
+                    payload_body[field] = value
+            payload = client.update_v3_task(args.task_id, payload_body)
+            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+            return 0
+
+        if args.resource == "lanes":
+            if args.lanes_command == "create":
+                session_id = _require_value(
+                    getattr(args, "command_session_id", None) or args.session_id,
+                    "--session-id",
+                )
+                payload_body = {
+                    "session_id": session_id,
+                    "name": args.name,
+                    "cwd": args.cwd,
+                }
+                if args.lane_id:
+                    payload_body["lane_id"] = args.lane_id
+                if args.branch_name:
+                    payload_body["branch_name"] = args.branch_name
+                payload = client.create_v3_lane(payload_body)
+            elif args.lanes_command == "claim":
+                payload = client.claim_v3_lane(args.lane_id, args.claimed_ref)
+            elif args.lanes_command == "keep":
+                payload = client.keep_v3_lane(args.lane_id)
+            else:
+                payload = client.remove_v3_lane(args.lane_id)
+            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+            return 0
+
+        if args.resource == "approvals":
+            payload = client.resolve_v3_approval(args.approval_id, args.decision)
+            stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
             return 0
 
         episode_id = (

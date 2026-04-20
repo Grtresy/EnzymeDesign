@@ -17,5 +17,9 @@ test("buildHostPaths matches the thin host api surface", () => {
     createEpisode: "/commands/create_episode",
     resumeEpisode: "/commands/resume_episode",
     resolveApproval: "/commands/resolve_approval",
+    v3CreateSession: "/v3/sessions",
+    v3Workspace: "/v3/sessions/ep_001/workspace",
+    v3Messages: "/v3/sessions/ep_001/messages",
+    v3Events: "/v3/sessions/ep_001/events?replay=1",
   });
 });

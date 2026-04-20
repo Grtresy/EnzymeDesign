@@ -260,6 +260,74 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(f"{episode_id}-execution-approval-")
 
 
+def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_001",
+            "project_id": "proj_001",
+            "objective": "Plan an enzyme design run",
+        },
+    )
+
+    assert created.status_code == 200
+    workspace = created.json()["workspace"]
+    assert workspace["session"]["session_id"] == "sess_v3_001"
+    assert workspace["task_board"]["items"] == []
+
+    lane = client.post(
+        "/v3/lanes",
+        json={
+            "session_id": "sess_v3_001",
+            "lane_id": "lane_v3_001",
+            "name": "analysis",
+            "cwd": "/tmp/openzyme-v3-analysis",
+        },
+    )
+    assert lane.status_code == 200
+    assert lane.json()["lane"]["status"] == "idle"
+
+    task = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_v3_001",
+            "task_id": "task_v3_001",
+            "subject": "Extract design goals",
+            "description": "Read the paper and extract enzyme design objectives.",
+            "lane_id": "lane_v3_001",
+            "priority": "high",
+        },
+    )
+    assert task.status_code == 200
+    assert task.json()["task"]["lane_id"] == "lane_v3_001"
+
+    message = client.post(
+        "/v3/sessions/sess_v3_001/messages",
+        json={"message": "Start by planning the literature extraction.", "task_id": "task_v3_001"},
+    )
+    assert message.status_code == 200
+    payload = message.json()
+    assert payload["outputs"] == ["Received: Start by planning the literature extraction."]
+    assert {event["event_type"] for event in payload["events"]} >= {
+        "conversation.user_message",
+        "message.received",
+        "message.sent",
+        "conversation.assistant_message",
+    }
+    assert payload["workspace"]["inbox"]
+
+    events = client.get("/v3/sessions/sess_v3_001/events?replay=1")
+    assert events.status_code == 200
+    assert "event: conversation.user_message" in events.text
+    assert "event: conversation.assistant_message" in events.text
+
+    updated = client.patch("/v3/tasks/task_v3_001", json={"status": "in_progress"})
+    assert updated.status_code == 200
+    assert updated.json()["task"]["status"] == "in_progress"
+
+
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
 

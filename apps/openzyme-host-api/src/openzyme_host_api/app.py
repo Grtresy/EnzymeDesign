@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
@@ -21,6 +22,12 @@ from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
 from .service import HostApiService
 from .tracing import host_request_trace_context
+from .v3_service import V3EventStore
+from .v3_service import V3HostApiService
+
+from openzyme_core import CoreRepositories
+from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
+from openzyme_core import connect_sqlite as connect_v3_sqlite
 
 
 GraphBuilder = Callable[[Any], Any]
@@ -42,10 +49,38 @@ class ResolveApprovalRequest(BaseModel):
     decision: str
 
 
+class CreateV3SessionRequest(BaseModel):
+    project_id: str
+    objective: str
+    title: str | None = None
+    session_id: str | None = None
+
+
+class PostV3MessageRequest(BaseModel):
+    message: str | None = None
+    task_id: str | None = None
+    lane_id: str | None = None
+    skill_keys: list[str] = []
+    max_steps: int = 8
+
+
+class ResolveV3ApprovalRequest(BaseModel):
+    decision: str
+    actor_ref: str = "user"
+
+
+def _build_default_v3_repositories() -> CoreRepositories:
+    connection = connect_v3_sqlite(":memory:")
+    apply_v3_sqlite_migrations(connection)
+    return CoreRepositories.from_connection(connection)
+
+
 @dataclass(frozen=True, slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
     graph_builder: GraphBuilder = build_v2_supervisor_graph
+    v3_repositories: CoreRepositories = field(default_factory=_build_default_v3_repositories)
+    v3_event_store: V3EventStore = field(default_factory=V3EventStore)
 
     def build_runtime(self) -> GraphRuntimeFacade:
         return GraphRuntimeFacade(self.foundation)
@@ -63,6 +98,12 @@ class HostApiDependencies:
             projection_loader=HostProjectionLoader(runtime=runtime, graph_builder=self.graph_builder),
             event_projector=WorkflowEventProjector(),
             graph_builder=self.graph_builder,
+        )
+
+    def build_v3_service(self) -> V3HostApiService:
+        return V3HostApiService(
+            repositories=self.v3_repositories,
+            event_store=self.v3_event_store,
         )
 
 
@@ -214,6 +255,126 @@ def create_app(
                     yield _sse_encode(event)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/v3/sessions")
+    def create_v3_session(request: CreateV3SessionRequest) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.create_session(
+                project_id=request.project_id,
+                objective=request.objective,
+                title=request.title,
+                session_id=request.session_id,
+            )
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/v3/sessions/{session_id}")
+    def get_v3_session(session_id: str) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            workspace = service.workspace(session_id)
+            return {"session": workspace["session"], "workspace": workspace}
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/messages")
+    def post_v3_message(session_id: str, request: PostV3MessageRequest) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.post_message(
+                session_id=session_id,
+                message=request.message,
+                task_id=request.task_id,
+                lane_id=request.lane_id,
+                skill_keys=tuple(request.skill_keys),
+                max_steps=request.max_steps,
+            ).to_dict()
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/v3/sessions/{session_id}/workspace")
+    def get_v3_workspace(session_id: str) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.workspace(session_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get("/v3/sessions/{session_id}/events")
+    def stream_v3_events(session_id: str, replay: bool = True) -> StreamingResponse:
+        service = dependencies.build_v3_service()
+        try:
+            service.workspace(session_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+        def event_stream() -> Any:
+            if replay:
+                for event in service.events(session_id):
+                    yield _sse_encode(event)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/v3/tasks")
+    def create_v3_task(payload: dict[str, Any]) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.create_task(payload)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.patch("/v3/tasks/{task_id}")
+    def update_v3_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.update_task(task_id, payload)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/lanes")
+    def create_v3_lane(payload: dict[str, Any]) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.create_lane(payload)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/lanes/{lane_id}/claim")
+    def claim_v3_lane(lane_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.claim_lane(lane_id, claimed_ref=str(payload.get("claimed_ref") or "user"))
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/lanes/{lane_id}/keep")
+    def keep_v3_lane(lane_id: str) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.keep_lane(lane_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/lanes/{lane_id}/remove")
+    def remove_v3_lane(lane_id: str) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.remove_lane(lane_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/approvals/{approval_id}/resolve")
+    def resolve_v3_approval(approval_id: str, request: ResolveV3ApprovalRequest) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.resolve_approval(
+                approval_id,
+                decision=request.decision,
+                actor_ref=request.actor_ref,
+            ).to_dict()
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
 
     if ui_dist_dir is not None and ui_dist_dir.exists():
         app.mount("/ui", StaticFiles(directory=str(ui_dist_dir), html=True), name="ui")

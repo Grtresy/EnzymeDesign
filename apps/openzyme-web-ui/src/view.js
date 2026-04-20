@@ -311,6 +311,119 @@ function renderReport(workspace) {
   `;
 }
 
+function renderV3TaskBoard(workspace) {
+  const items = workspace.task_board?.items ?? [];
+  if (!items.length) {
+    return `<p class="empty-copy">No tasks yet.</p>`;
+  }
+  return `
+    <ul class="record-list">
+      ${items
+        .map((item) => {
+          const task = item.task;
+          return `<li><strong>${escapeHtml(task.subject)}</strong><span>${escapeHtml(task.task_id)} · ${escapeHtml(task.status)} · ${escapeHtml(item.bucket)}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderV3Lanes(workspace) {
+  const lanes = workspace.lane_board?.lanes ?? [];
+  if (!lanes.length) {
+    return `<p class="empty-copy">No lanes yet.</p>`;
+  }
+  return `
+    <ul class="record-list">
+      ${lanes
+        .map((item) => {
+          const lane = item.lane;
+          return `<li><strong>${escapeHtml(lane.name)}</strong><span>${escapeHtml(lane.lane_id)} · ${escapeHtml(lane.status)} · ${escapeHtml(lane.cwd)}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderV3Conversation(workspace) {
+  const conversation = workspace.conversation ?? [];
+  if (!conversation.length) {
+    return `<p class="empty-copy">Start the session with a message.</p>`;
+  }
+  return `
+    <ol class="chat-list">
+      ${conversation
+        .map(
+          (item) => `
+            <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}">
+              <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}</span>
+              <p>${escapeHtml(item.content)}</p>
+            </li>
+          `,
+        )
+        .join("")}
+    </ol>
+  `;
+}
+
+function renderV3Activity(workspace) {
+  const events = workspace.activity_feed ?? [];
+  if (!events.length) {
+    return `<p class="empty-copy">No activity yet.</p>`;
+  }
+  return `
+    <ul class="activity-list">
+      ${events
+        .slice(0, 8)
+        .map((event) => `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(event.created_at ?? "")}</span></li>`)
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderV3Workspace(workspace, viewState) {
+  const session = workspace.session;
+  const reports = workspace.reports ?? [];
+  const artifacts = workspace.artifacts ?? [];
+  return `
+    <section class="workspace-board v3-workspace">
+      <article class="panel hero-panel chat-hero">
+        <p class="eyebrow">Session ${escapeHtml(session.session_id)}</p>
+        <h2>${escapeHtml(session.objective)}</h2>
+        <p class="status-line">Status: <strong>${escapeHtml(session.status)}</strong></p>
+      </article>
+      <article class="panel pane chat-pane">
+        <h3>Conversation</h3>
+        ${renderV3Conversation(workspace)}
+        <form id="message-form" class="message-form">
+          <input name="message" placeholder="Send a message to the harness" ${viewState.busy ? "disabled" : ""} required />
+          <button type="submit" ${viewState.busy ? "disabled" : ""}>Send</button>
+        </form>
+      </article>
+      <article class="panel pane task-pane">
+        <h3>Task Board</h3>
+        ${renderV3TaskBoard(workspace)}
+      </article>
+      <article class="panel pane lane-pane">
+        <h3>Lanes</h3>
+        ${renderV3Lanes(workspace)}
+      </article>
+      <article class="panel pane activity-pane">
+        <h3>Activity</h3>
+        ${renderV3Activity(workspace)}
+      </article>
+      <article class="panel pane report-pane">
+        <h3>Outputs</h3>
+        <dl class="facts">
+          <div><dt>Artifacts</dt><dd>${artifacts.length}</dd></div>
+          <div><dt>Reports</dt><dd>${reports.length}</dd></div>
+          <div><dt>Capabilities</dt><dd>${Object.keys(workspace.capabilities ?? {}).length}</dd></div>
+        </dl>
+      </article>
+    </section>
+  `;
+}
+
 export function renderWorkspaceShell(viewState) {
   const workspace = viewState.workspace;
   const workspaceBody =
@@ -324,7 +437,9 @@ export function renderWorkspaceShell(viewState) {
           </article>
         </section>
       `
-      : `
+      : workspace.session
+        ? renderV3Workspace(workspace, viewState)
+        : `
         <section class="workspace-board">
           <article class="panel hero-panel">
             <p class="eyebrow">Episode ${escapeHtml(workspace.episode_id)}</p>
@@ -403,9 +518,9 @@ export function renderApp(viewState) {
         </label>
         <label>
           Objective
-          <input name="objective" value="Improve thermostability with a final report" required />
+          <input name="objective" value="Plan an enzyme design workflow from a paper" required />
         </label>
-        <button type="submit">${viewState.busy ? "Working..." : "Create Episode"}</button>
+        <button type="submit">${viewState.busy ? "Working..." : "Create V3 Session"}</button>
       </form>
       ${viewState.errorMessage ? `<p class="error-banner">${escapeHtml(viewState.errorMessage)}</p>` : ""}
     </section>

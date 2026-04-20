@@ -16,6 +16,26 @@ const workflowEventTypes = [
   "workflow.report_available",
 ];
 
+const v3EventTypes = [
+  "session.created",
+  "conversation.user_message",
+  "conversation.assistant_message",
+  "message.received",
+  "message.sent",
+  "tool.invoked",
+  "tool.completed",
+  "task.created",
+  "task.updated",
+  "lane.created",
+  "lane.claimed",
+  "lane.released",
+  "lane.removed",
+  "approval.requested",
+  "approval.resolved",
+  "engine.invocation.updated",
+  "report.generated",
+];
+
 function buildUrl(baseUrl, path) {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
@@ -99,6 +119,36 @@ export class HostApiClient {
     }
     return source;
   }
+
+  createV3Session(payload) {
+    return requestJson(this.baseUrl, "/v3/sessions", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    });
+  }
+
+  getV3Workspace(sessionId) {
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}/workspace`);
+  }
+
+  postV3Message(sessionId, payload) {
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    });
+  }
+
+  streamV3Session(sessionId, onEvent) {
+    const source = new EventSource(buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1`));
+    for (const eventType of v3EventTypes) {
+      source.addEventListener(eventType, (message) => {
+        onEvent(JSON.parse(message.data));
+      });
+    }
+    return source;
+  }
 }
 
 export function buildHostPaths(episodeId) {
@@ -115,5 +165,9 @@ export function buildHostPaths(episodeId) {
     createEpisode: "/commands/create_episode",
     resumeEpisode: "/commands/resume_episode",
     resolveApproval: "/commands/resolve_approval",
+    v3CreateSession: "/v3/sessions",
+    v3Workspace: `/v3/sessions/${episodeId}/workspace`,
+    v3Messages: `/v3/sessions/${episodeId}/messages`,
+    v3Events: `/v3/sessions/${episodeId}/events?replay=1`,
   };
 }

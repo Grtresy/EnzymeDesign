@@ -12,10 +12,14 @@ function repaint() {
 }
 
 async function handleCreate(formData) {
-  await controller.createEpisode({
+  await controller.createSession({
     project_id: formData.get("project_id"),
     objective: formData.get("objective"),
   });
+}
+
+async function handleMessage(formData) {
+  await controller.sendMessage(String(formData.get("message") ?? ""));
 }
 
 async function handleProjectSelection(projectId) {
@@ -45,6 +49,11 @@ function bindActions() {
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     await handleCreate(new FormData(form));
+  });
+  const messageForm = document.querySelector("#message-form");
+  messageForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await handleMessage(new FormData(messageForm));
   });
 
   document.querySelector('[data-action="resume"]')?.addEventListener("click", handleResume);

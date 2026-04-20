@@ -72,3 +72,43 @@ def render_command_result(result: dict[str, Any]) -> str:
             f"Snapshot events emitted: {len(result.get('events', []))}",
         ]
     )
+
+
+def render_v3_workspace(workspace: dict[str, Any]) -> str:
+    session = workspace["session"]
+    task_items = workspace.get("task_board", {}).get("items", [])
+    lanes = workspace.get("lane_board", {}).get("lanes", [])
+    approvals = workspace.get("pending_approvals", [])
+    reports = workspace.get("reports", [])
+    lines = [
+        f"Session {session['session_id']}",
+        f"Status: {session['status']}",
+        f"Objective: {session['objective']}",
+        f"Tasks: {len(task_items)}",
+        f"Lanes: {len(lanes)}",
+        f"Pending approvals: {len(approvals)}",
+        f"Reports: {len(reports)}",
+    ]
+    if task_items:
+        lines.append("Task board")
+        for item in task_items:
+            task = item["task"]
+            lines.append(
+                f"- {task['task_id']}: {task['subject']} [{task['status']}/{item['bucket']}]"
+            )
+    if lanes:
+        lines.append("Lanes")
+        for item in lanes:
+            lane = item["lane"]
+            lines.append(f"- {lane['lane_id']}: {lane['name']} [{lane['status']}]")
+    return "\n".join(lines)
+
+
+def render_v3_command_result(result: dict[str, Any]) -> str:
+    lines = [render_v3_workspace(result["workspace"])]
+    outputs = result.get("outputs") or []
+    if outputs:
+        lines.append("Assistant")
+        lines.extend(f"- {output}" for output in outputs)
+    lines.append(f"Events emitted: {len(result.get('events', []))}")
+    return "\n".join(lines)

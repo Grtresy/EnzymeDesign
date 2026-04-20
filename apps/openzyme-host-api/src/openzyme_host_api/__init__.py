@@ -21,6 +21,8 @@ from .service import HostApiService
 from .tracing import build_trace_metadata
 from .tracing import build_trace_tags
 from .tracing import tracing_enabled
+from .v3_service import V3EventStore
+from .v3_service import V3HostApiService
 
 __all__ = [
     "COMMAND_SURFACE",
@@ -39,6 +41,8 @@ __all__ = [
     "WorkflowEventProjector",
     "WorkflowProjection",
     "WorkflowStreamEventContract",
+    "V3EventStore",
+    "V3HostApiService",
     "build_host_api_contract",
     "build_configured_foundation",
     "build_local_eval_foundation",

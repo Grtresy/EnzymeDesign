@@ -34,6 +34,17 @@ export class WorkspaceController {
     });
   }
 
+  _connectV3Stream(sessionId) {
+    this._disconnectStream();
+    this.stream = this.client.streamV3Session(sessionId, (event) => {
+      if (!this.state.workspace) {
+        return;
+      }
+      this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+      this._emit();
+    });
+  }
+
   async bootstrap({ projectId = "", episodeId = "" } = {}) {
     this.state.busy = true;
     this._emit();
@@ -120,6 +131,51 @@ export class WorkspaceController {
       this.state.episodes = await this.client.getProjectEpisodes(this.state.currentProjectId);
       this.state.errorMessage = "";
       this._connectStream(response.episode_id);
+    } catch (error) {
+      this.state.errorMessage = error.message;
+    } finally {
+      this.state.busy = false;
+      this._emit();
+    }
+  }
+
+  async createSession(payload) {
+    this.state.busy = true;
+    this._emit();
+    try {
+      const response = await this.client.createV3Session({
+        ...payload,
+        project_id: payload.project_id || this.state.currentProjectId || "proj_001",
+      });
+      this.state.workspace = response.workspace;
+      this.state.currentSessionId = response.session_id;
+      this.state.currentProjectId = response.workspace.session.project_id;
+      for (const event of response.events ?? []) {
+        this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+      }
+      this.state.errorMessage = "";
+      this._connectV3Stream(response.session_id);
+    } catch (error) {
+      this.state.errorMessage = error.message;
+    } finally {
+      this.state.busy = false;
+      this._emit();
+    }
+  }
+
+  async sendMessage(message) {
+    if (!this.state.currentSessionId) {
+      return;
+    }
+    this.state.busy = true;
+    this._emit();
+    try {
+      const response = await this.client.postV3Message(this.state.currentSessionId, { message });
+      this.state.workspace = response.workspace;
+      for (const event of response.events ?? []) {
+        this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+      }
+      this.state.errorMessage = "";
     } catch (error) {
       this.state.errorMessage = error.message;
     } finally {

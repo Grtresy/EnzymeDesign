@@ -82,13 +82,74 @@ function buildWorkspace() {
   };
 }
 
+function buildV3Workspace() {
+  return {
+    session: {
+      session_id: "sess_001",
+      project_id: "proj_001",
+      objective: "Plan an enzyme design workflow",
+      status: "active",
+    },
+    task_board: {
+      items: [
+        {
+          task: {
+            task_id: "task_001",
+            subject: "Extract goals",
+            status: "todo",
+          },
+          bucket: "ready",
+        },
+      ],
+    },
+    lane_board: { lanes: [] },
+    pending_approvals: [],
+    activity_feed: [],
+    artifacts: [],
+    reports: [],
+    capabilities: {},
+  };
+}
+
 test("view state starts empty and renderApp shows create form", () => {
   const state = buildInitialViewState();
   const html = renderApp(state);
   assert.equal(state.currentProjectId, "");
   assert.equal(state.currentEpisodeId, "");
-  assert.match(html, /Create Episode/);
+  assert.match(html, /Create V3 Session/);
   assert.match(html, /Project Shell/);
+});
+
+test("v3 conversation events render as chat without workflow phase fields", () => {
+  let workspace = buildV3Workspace();
+  workspace = reduceWorkspaceWithEvent(workspace, {
+    event_id: "evt_user",
+    event_type: "conversation.user_message",
+    created_at: "2026-04-20T00:00:00+00:00",
+    payload: { content: "Start planning" },
+  });
+  workspace = reduceWorkspaceWithEvent(workspace, {
+    event_id: "evt_agent",
+    event_type: "conversation.assistant_message",
+    created_at: "2026-04-20T00:00:01+00:00",
+    payload: { content: "Received: Start planning" },
+  });
+
+  const html = renderApp({
+    projects: [],
+    episodes: [],
+    currentProjectId: "proj_001",
+    currentEpisodeId: "",
+    currentSessionId: "sess_001",
+    workspace,
+    errorMessage: "",
+    busy: false,
+  });
+
+  assert.match(html, /Conversation/);
+  assert.match(html, /Start planning/);
+  assert.match(html, /Received: Start planning/);
+  assert.doesNotMatch(html, /Active node/);
 });
 
 test("workspace render explains auto-run phases instead of looking skipped", () => {

@@ -254,3 +254,76 @@ test("workspace controller bootstraps project shell and switches episodes", asyn
   assert.equal(loadedEpisodeId, "ep_000");
   assert.equal(controller.state.currentEpisodeId, "ep_000");
 });
+
+function buildV3Workspace() {
+  return {
+    session: {
+      session_id: "sess_001",
+      project_id: "proj_001",
+      objective: "Plan with V3",
+      status: "active",
+    },
+    task_board: { items: [] },
+    lane_board: { lanes: [] },
+    pending_approvals: [],
+    activity_feed: [],
+    artifacts: [],
+    reports: [],
+    capabilities: {},
+  };
+}
+
+test("workspace controller creates v3 chat sessions and applies message events", async () => {
+  let streamHandler = null;
+  const fakeClient = {
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace(),
+        events: [{ event_id: "evt_session", event_type: "session.created", payload: {}, created_at: "now" }],
+      };
+    },
+    streamV3Session(_sessionId, onEvent) {
+      streamHandler = onEvent;
+      return { close() {} };
+    },
+    async postV3Message() {
+      return {
+        session_id: "sess_001",
+        status: "completed",
+        outputs: ["Received: hello"],
+        workspace: buildV3Workspace(),
+        events: [
+          {
+            event_id: "evt_user",
+            event_type: "conversation.user_message",
+            payload: { content: "hello" },
+            created_at: "now",
+          },
+          {
+            event_id: "evt_agent",
+            event_type: "conversation.assistant_message",
+            payload: { content: "Received: hello" },
+            created_at: "now",
+          },
+        ],
+      };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  assert.equal(controller.state.currentSessionId, "sess_001");
+
+  await controller.sendMessage("hello");
+  assert.equal(controller.state.workspace.conversation.length, 2);
+  assert.equal(controller.state.workspace.conversation[1].content, "Received: hello");
+
+  streamHandler?.({
+    event_id: "evt_tool",
+    event_type: "tool.completed",
+    payload: { tool_name: "task.create" },
+    created_at: "now",
+  });
+  assert.equal(controller.state.workspace.activity_feed[0].event_type, "tool.completed");
+});
