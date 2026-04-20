@@ -325,6 +325,64 @@ def test_harness_loop_registers_engine_tools_from_engine_registry() -> None:
     assert [tool_result.tool_name for tool_result in result.tool_results] == ["registry.echo"]
 
 
+class ToolCreatedApprovalDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_approval",
+                        tool_name="approval_tool",
+                        arguments={},
+                        task_id="task_001",
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="approval requested")
+
+
+def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def approval_tool(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
+        context.repositories.approvals.save(
+            ApprovalRequest(
+                approval_id="appr_tool_001",
+                session_id=session.session_id,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                kind="tool_gate",
+                requested_action="Approve the tool action.",
+                status=ApprovalRequestStatus.PENDING,
+                request_ref=None,
+                resolution_ref=None,
+                created_at="2026-04-17T09:05:00+00:00",
+            )
+        )
+        return "pending approval"
+
+    registry.register("approval_tool", approval_tool)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id),
+        driver=ToolCreatedApprovalDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.WAITING_APPROVAL
+    assert result.pending_approval_id == "appr_tool_001"
+    assert result.snapshot.pending_approvals[0].approval_id == "appr_tool_001"
+
+
 class ApprovalDriver:
     def plan(
         self,

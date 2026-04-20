@@ -512,6 +512,12 @@ def _auto_compact_if_needed(
     context.refresh()
 
 
+def _pending_approval_id(snapshot: SessionRuntimeSnapshot) -> str | None:
+    if not snapshot.pending_approvals:
+        return None
+    return snapshot.pending_approvals[0].approval_id
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -828,6 +834,18 @@ def run_agent_harness_loop(
             all_tool_results=all_tool_results,
         )
         context.refresh()
+        pending_approval_id = _pending_approval_id(context.snapshot)
+        if pending_approval_id is not None:
+            return HarnessResult(
+                session_id=harness_input.session_id,
+                status=HarnessStatus.WAITING_APPROVAL,
+                snapshot=context.snapshot,
+                events=tuple(sink.events),
+                outputs=tuple(outputs),
+                tool_results=tuple(all_tool_results),
+                pending_approval_id=pending_approval_id,
+                delegations=tuple(delegation_handles),
+            )
         return HarnessResult(
             session_id=harness_input.session_id,
             status=last_status,

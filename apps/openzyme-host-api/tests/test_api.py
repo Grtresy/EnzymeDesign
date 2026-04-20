@@ -328,6 +328,114 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     assert updated.json()["task"]["status"] == "in_progress"
 
 
+def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_engines",
+            "project_id": "proj_001",
+            "objective": "Evaluate a thermostability candidate",
+        },
+    )
+    assert created.status_code == 200
+    lane = client.post(
+        "/v3/lanes",
+        json={
+            "session_id": "sess_v3_engines",
+            "lane_id": "lane_v3_engines",
+            "name": "engine lane",
+            "cwd": "/tmp/openzyme-v3-engines",
+        },
+    )
+    assert lane.status_code == 200
+
+    research_task = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_v3_engines",
+            "task_id": "task_research_v3",
+            "subject": "Collect evidence",
+            "description": "Collect papers for the scaffold family.",
+            "kind": "research",
+            "lane_id": "lane_v3_engines",
+        },
+    )
+    assert research_task.status_code == 200
+    research = client.post(
+        "/v3/sessions/sess_v3_engines/messages",
+        json={"message": "Run the research task.", "task_id": "task_research_v3"},
+    )
+    assert research.status_code == 200
+    research_payload = research.json()
+    assert research_payload["status"] == "completed"
+    assert research_payload["workspace"]["task_board"]["items"][0]["task"]["status"] == "completed"
+    assert research_payload["workspace"]["capabilities"]["deep_research"][0]["canonical_summary"]["status"] == "completed"
+
+    execution_task = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_v3_engines",
+            "task_id": "task_execution_v3",
+            "subject": "Run fpocket",
+            "description": "Run fpocket against the candidate structure.",
+            "kind": "execution",
+            "lane_id": "lane_v3_engines",
+        },
+    )
+    assert execution_task.status_code == 200
+    execution = client.post(
+        "/v3/sessions/sess_v3_engines/messages",
+        json={"message": "Run the execution task.", "task_id": "task_execution_v3"},
+    )
+    assert execution.status_code == 200
+    execution_payload = execution.json()
+    assert execution_payload["status"] == "waiting_approval"
+    pending = execution_payload["workspace"]["pending_approvals"]
+    assert pending[0]["kind"] == "execution_launch"
+    assert execution_payload["workspace"]["capabilities"]["execution"][0]["status"] == "waiting_approval"
+
+    approval_id = pending[0]["approval_id"]
+    resolved = client.post(
+        f"/v3/approvals/{approval_id}/resolve",
+        json={"decision": "approved", "actor_ref": "tester"},
+    )
+    assert resolved.status_code == 200
+    resolved_payload = resolved.json()
+    assert resolved_payload["status"] == "completed"
+    assert resolved_payload["workspace"]["pending_approvals"] == []
+    assert resolved_payload["workspace"]["capabilities"]["execution"][0]["status"] == "succeeded"
+    assert resolved_payload["workspace"]["artifacts"]
+
+    reporting_task = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_v3_engines",
+            "task_id": "task_report_v3",
+            "subject": "Summarize workspace",
+            "description": "Produce a concise report for the completed V3 workspace.",
+            "kind": "reporting",
+            "lane_id": "lane_v3_engines",
+        },
+    )
+    assert reporting_task.status_code == 200
+    report = client.post(
+        "/v3/sessions/sess_v3_engines/messages",
+        json={"message": "Create the report.", "task_id": "task_report_v3"},
+    )
+    assert report.status_code == 200
+    report_payload = report.json()
+    assert report_payload["status"] == "completed"
+    assert report_payload["workspace"]["reports"][0]["status"] == "ready"
+    assert report_payload["workspace"]["capabilities"]["reporting"][0]["report"]["status"] == "ready"
+
+    events = client.get("/v3/sessions/sess_v3_engines/events?replay=1")
+    assert events.status_code == 200
+    assert "event: engine.invocation.started" in events.text
+    assert "event: report.generated" in events.text
+
+
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
 

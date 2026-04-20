@@ -26,8 +26,18 @@ from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
 
 from openzyme_core import CoreRepositories
+from openzyme_core import EngineRegistry
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_engines import DeepResearchEngine
+from openzyme_engines import ExecutionEngine
+from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
+from openzyme_engines import ExecutionStatusSnapshot as V3ExecutionStatusSnapshot
+from openzyme_engines import GraphBackedDeepResearchRunner
+from openzyme_engines import ReportingEngine
+from openzyme_engines import build_engine_registry
+from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
+from openzyme_domain import RunStatus
 
 
 GraphBuilder = Callable[[Any], Any]
@@ -75,6 +85,133 @@ def _build_default_v3_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
+@dataclass(slots=True)
+class V3ExecutionRunnerAdapter:
+    execution_adapter: Any
+    _outcomes_by_run_id: dict[str, V3ExecutionOutcome] = field(default_factory=dict)
+
+    def submit_execution(self, session_id: str, payload: dict[str, Any]) -> V3ExecutionOutcome:
+        outcome = self._convert_outcome(self.execution_adapter.submit_execution(session_id, payload))
+        self._outcomes_by_run_id[outcome.run_id] = outcome
+        return outcome
+
+    def get_execution_status(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        job_id: str | None = None,
+    ) -> V3ExecutionStatusSnapshot:
+        if hasattr(self.execution_adapter, "get_execution_status"):
+            snapshot = self.execution_adapter.get_execution_status(
+                run_id=run_id,
+                remote_run_dir=remote_run_dir,
+                job_id=job_id,
+            )
+            return V3ExecutionStatusSnapshot(
+                run_id=str(snapshot.run_id),
+                status=snapshot.status,
+                remote_run_dir=str(snapshot.remote_run_dir),
+                raw_result=dict(snapshot.raw_result),
+                job_id=None if snapshot.job_id is None else str(snapshot.job_id),
+                exit_code=snapshot.exit_code,
+            )
+        outcome = self._outcomes_by_run_id.get(run_id)
+        if outcome is None:
+            return V3ExecutionStatusSnapshot(
+                run_id=run_id,
+                status=RunStatus.FAILED,
+                remote_run_dir=remote_run_dir,
+                raw_result={"error": "execution adapter does not expose status polling"},
+                job_id=job_id,
+            )
+        return V3ExecutionStatusSnapshot(
+            run_id=outcome.run_id,
+            status=outcome.status,
+            remote_run_dir=outcome.remote_run_dir,
+            raw_result=outcome.raw_result,
+            job_id=outcome.job_id,
+            exit_code=outcome.exit_code,
+        )
+
+    def fetch_execution_artifacts(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        runspec: dict[str, Any],
+        job_id: str | None = None,
+    ) -> V3ExecutionOutcome:
+        if hasattr(self.execution_adapter, "fetch_execution_artifacts"):
+            outcome = self._convert_outcome(
+                self.execution_adapter.fetch_execution_artifacts(
+                    run_id=run_id,
+                    remote_run_dir=remote_run_dir,
+                    runspec=runspec,
+                    job_id=job_id,
+                )
+            )
+            self._outcomes_by_run_id[outcome.run_id] = outcome
+            return outcome
+        outcome = self._outcomes_by_run_id.get(run_id)
+        if outcome is None:
+            return V3ExecutionOutcome(
+                run_id=run_id,
+                status=RunStatus.FAILED,
+                execution_mode="unknown",
+                remote_run_dir=remote_run_dir,
+                raw_result={"error": "execution adapter does not expose artifact fetch"},
+                artifacts=(),
+                job_id=job_id,
+            )
+        return outcome
+
+    def cancel_execution(
+        self,
+        *,
+        run_id: str,
+        remote_run_dir: str,
+        job_id: str | None = None,
+    ) -> V3ExecutionOutcome:
+        if hasattr(self.execution_adapter, "cancel_execution"):
+            return self._convert_outcome(
+                self.execution_adapter.cancel_execution(
+                    run_id=run_id,
+                    remote_run_dir=remote_run_dir,
+                    job_id=job_id,
+                )
+            )
+        return V3ExecutionOutcome(
+            run_id=run_id,
+            status=RunStatus.CANCELLED,
+            execution_mode="unknown",
+            remote_run_dir=remote_run_dir,
+            raw_result={"status": "cancelled"},
+            artifacts=(),
+            job_id=job_id,
+        )
+
+    def _convert_outcome(self, outcome: Any) -> V3ExecutionOutcome:
+        artifacts = tuple(
+            V3ExecutionArtifactRef(
+                storage_uri=str(artifact.storage_uri),
+                relative_path=str(artifact.relative_path),
+                kind=artifact.kind,
+            )
+            for artifact in getattr(outcome, "artifacts", ())
+        )
+        return V3ExecutionOutcome(
+            run_id=str(outcome.run_id),
+            status=outcome.status,
+            execution_mode=str(outcome.execution_mode),
+            remote_run_dir=str(outcome.remote_run_dir),
+            raw_result=dict(outcome.raw_result),
+            artifacts=artifacts,
+            job_id=None if getattr(outcome, "job_id", None) is None else str(outcome.job_id),
+            exit_code=getattr(outcome, "exit_code", None),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
@@ -104,6 +241,25 @@ class HostApiDependencies:
         return V3HostApiService(
             repositories=self.v3_repositories,
             event_store=self.v3_event_store,
+            engine_registry=self.build_v3_engine_registry(),
+        )
+
+    def build_v3_engine_registry(self) -> EngineRegistry:
+        return build_engine_registry(
+            DeepResearchEngine(
+                self.v3_repositories,
+                GraphBackedDeepResearchRunner(
+                    research_adapter=self.foundation.research_adapter,
+                    research_tool_provider=self.foundation.research_tool_provider,
+                    model_factory=self.foundation.model_factory,
+                    settings=self.foundation.settings,
+                ),
+            ),
+            ExecutionEngine(
+                self.v3_repositories,
+                V3ExecutionRunnerAdapter(self.foundation.execution_adapter),
+            ),
+            ReportingEngine(self.v3_repositories),
         )
 
 

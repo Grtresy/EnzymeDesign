@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
+import json
 from typing import Any
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
+from openzyme_core import EngineRegistry
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessStep
+from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
@@ -16,11 +20,14 @@ from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
+from openzyme_core import ToolInvocation
 from openzyme_core import ToolResult
 from openzyme_core import run_agent_harness_loop
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
+from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
@@ -38,6 +45,14 @@ def _event(event_type: str, session_id: str, payload: dict[str, Any]) -> dict[st
         "created_at": utc_now_iso(),
         "payload": payload,
     }
+
+
+def _event_fingerprint(event: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(event["event_type"]),
+        str(event["created_at"]),
+        json.dumps(event.get("payload", {}), sort_keys=True, separators=(",", ":")),
+    )
 
 
 @dataclass(slots=True)
@@ -74,6 +89,152 @@ class EchoConversationDriver:
 
 
 @dataclass(frozen=True, slots=True)
+class EngineBackedConversationDriver:
+    message: str | None
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[ToolResult, ...],
+    ) -> HarnessStep:
+        if tool_results:
+            return self._after_tool_result(context, tool_results[0])
+        if harness_input.resume is not None:
+            step = self._resume_waiting_invocation(context, harness_input.resume.decision)
+            if step is not None:
+                return step
+        task = self._select_task(context, harness_input)
+        if task is None or task.kind not in {"research", "execution", "reporting"}:
+            return EchoConversationDriver(self.message).plan(context, harness_input, tool_results)
+        return self._start_task(task)
+
+    def _select_task(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> Task | None:
+        focus = harness_input.restore_focus
+        if focus is not None and focus.task_id is not None:
+            task = context.repositories.tasks.get(focus.task_id)
+            if task is not None and task.session_id == context.snapshot.session.session_id:
+                return task
+        for task in context.snapshot.ready_tasks:
+            if task.kind in {"research", "execution", "reporting"}:
+                return task
+        return None
+
+    def _start_task(self, task: Task) -> HarnessStep:
+        if task.status not in {TaskStatus.TODO, TaskStatus.BLOCKED}:
+            return HarnessStep(assistant_message=f"Task {task.task_id} is already {task.status.value}.")
+        invocation = self._tool_for_task(task)
+        return HarnessStep(
+            assistant_message=f"Starting {task.kind} task {task.task_id}.",
+            tool_invocations=(invocation,),
+            task_updates=(
+                replace(
+                    task,
+                    status=TaskStatus.IN_PROGRESS,
+                    updated_at=utc_now_iso(),
+                ),
+            ),
+            next_focus=RestoreFocus(task_id=task.task_id, lane_id=task.lane_id),
+        )
+
+    def _tool_for_task(self, task: Task) -> ToolInvocation:
+        if task.kind == "research":
+            return ToolInvocation(
+                call_id=f"call_research_{task.task_id}",
+                tool_name="deep_research.start",
+                arguments={"task_id": task.task_id, "brief": task.description or task.subject},
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+            )
+        if task.kind == "execution":
+            return ToolInvocation(
+                call_id=f"call_execution_{task.task_id}",
+                tool_name="execution.start",
+                arguments={
+                    "task_id": task.task_id,
+                    "handoff": {
+                        "execution_goal": task.description or task.subject,
+                        "catalog_tool_id": "fpocket",
+                        "require_approval": True,
+                    },
+                },
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+            )
+        return ToolInvocation(
+            call_id=f"call_reporting_{task.task_id}",
+            tool_name="reporting.start",
+            arguments={"task_id": task.task_id, "report_brief": task.description or task.subject},
+            task_id=task.task_id,
+            lane_id=task.lane_id,
+        )
+
+    def _resume_waiting_invocation(
+        self,
+        context: SessionRuntimeContext,
+        decision: ResumeDecision,
+    ) -> HarnessStep | None:
+        waiting = [
+            invocation
+            for invocation in context.snapshot.active_invocations
+            if invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+            and invocation.engine_name == "execution"
+            and invocation.approval_id is not None
+        ]
+        if not waiting:
+            return None
+        invocation = waiting[0]
+        return HarnessStep(
+            assistant_message=f"Resuming execution invocation {invocation.invocation_id}.",
+            tool_invocations=(
+                ToolInvocation(
+                    call_id=f"call_resume_{invocation.invocation_id}",
+                    tool_name="execution.resume",
+                    arguments={
+                        "invocation_id": invocation.invocation_id,
+                        "resolution": f"Approval {decision.value} by user.",
+                    },
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                ),
+            ),
+            next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
+        )
+
+    def _after_tool_result(self, context: SessionRuntimeContext, result: ToolResult) -> HarnessStep:
+        task = None if result.task_id is None else context.repositories.tasks.get(result.task_id)
+        status = self._invocation_status_from_result(result)
+        if status == EngineInvocationStatus.WAITING_APPROVAL.value:
+            return HarnessStep(assistant_message=f"{result.tool_name} is waiting for approval.")
+        if result.ok and status not in {EngineInvocationStatus.FAILED.value, EngineInvocationStatus.CANCELLED.value}:
+            updates = ()
+            if task is not None:
+                updates = (replace(task, status=TaskStatus.COMPLETED, updated_at=utc_now_iso()),)
+            return HarnessStep(
+                assistant_message=f"{result.tool_name} completed.",
+                task_updates=updates,
+            )
+        updates = ()
+        if task is not None:
+            updates = (replace(task, status=TaskStatus.BLOCKED, updated_at=utc_now_iso()),)
+        return HarnessStep(
+            assistant_message=f"{result.tool_name} did not complete successfully.",
+            task_updates=updates,
+        )
+
+    def _invocation_status_from_result(self, result: ToolResult) -> str | None:
+        try:
+            payload = json.loads(result.content)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(payload, dict):
+            invocation = payload.get("invocation")
+            if isinstance(invocation, dict) and invocation.get("status") is not None:
+                return str(invocation["status"])
+        return None
+
+
+@dataclass(frozen=True, slots=True)
 class V3CommandResult:
     session_id: str
     status: str
@@ -95,6 +256,7 @@ class V3CommandResult:
 class V3HostApiService:
     repositories: CoreRepositories
     event_store: V3EventStore
+    engine_registry: EngineRegistry | None = None
 
     def create_session(
         self,
@@ -133,6 +295,23 @@ class V3HostApiService:
     def events(self, session_id: str) -> list[dict[str, Any]]:
         return self.event_store.list(session_id)
 
+    def _extend_with_activity_events(self, session_id: str, events: list[dict[str, Any]]) -> None:
+        existing = {_event_fingerprint(event) for event in self.event_store.list(session_id)}
+        current = {_event_fingerprint(event) for event in events}
+        for item in self.workspace(session_id).get("activity_feed", []):
+            event = {
+                "event_id": _new_id("evt"),
+                "session_id": session_id,
+                "event_type": item["event_type"],
+                "created_at": item["created_at"],
+                "payload": item["payload"],
+            }
+            fingerprint = _event_fingerprint(event)
+            if fingerprint in existing or fingerprint in current:
+                continue
+            events.append(event)
+            current.add(fingerprint)
+
     def post_message(
         self,
         *,
@@ -154,7 +333,8 @@ class V3HostApiService:
                 max_steps=max_steps,
                 restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id, skill_keys=skill_keys),
             ),
-            driver=EchoConversationDriver(message),
+            driver=EngineBackedConversationDriver(message) if self.engine_registry is not None else EchoConversationDriver(message),
+            engine_registry=self.engine_registry,
             event_sink=event_bus,
         )
         events: list[dict[str, Any]] = []
@@ -163,6 +343,7 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", session_id, {"content": output}))
+        self._extend_with_activity_events(session_id, events)
         self.event_store.append(session_id, events)
         return V3CommandResult(
             session_id=session_id,
@@ -191,7 +372,8 @@ class V3HostApiService:
                 ),
                 restore_focus=RestoreFocus(task_id=approval.task_id, lane_id=approval.lane_id),
             ),
-            driver=EchoConversationDriver(None),
+            driver=EngineBackedConversationDriver(None) if self.engine_registry is not None else EchoConversationDriver(None),
+            engine_registry=self.engine_registry,
         )
         events = [
             _event(
@@ -203,10 +385,11 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", approval.session_id, {"content": output}))
+        self._extend_with_activity_events(approval.session_id, events)
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(
             session_id=approval.session_id,
-            status=result.status.value,
+            status=HarnessStatus.WAITING_APPROVAL.value if result.pending_approval_id else result.status.value,
             outputs=result.outputs,
             events=events,
             workspace=self.workspace(approval.session_id),
@@ -226,6 +409,7 @@ class V3HostApiService:
             blocked_by=tuple(payload.get("blocked_by") or ()),
         )
         events = [_event("task.created", task.session_id, {"task": task.to_dict()})]
+        self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}
 
@@ -250,6 +434,7 @@ class V3HostApiService:
         mutation = TaskMutation(**mutation_kwargs)
         task = TaskBoardService(self.repositories).update_task(task_id, mutation)
         events = [_event("task.updated", task.session_id, {"task": task.to_dict()})]
+        self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}
 
@@ -262,23 +447,27 @@ class V3HostApiService:
             branch_name=payload.get("branch_name"),
         )
         events = [_event("lane.created", lane.session_id, {"lane": lane.to_dict()})]
+        self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
         return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
 
     def claim_lane(self, lane_id: str, *, claimed_ref: str) -> dict[str, Any]:
         lane = LaneManager(self.repositories).claim_lane(lane_id, claimed_ref=claimed_ref)
         events = [_event("lane.claimed", lane.session_id, {"lane": lane.to_dict()})]
+        self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
         return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
 
     def keep_lane(self, lane_id: str) -> dict[str, Any]:
         lane = LaneManager(self.repositories).keep_lane(lane_id)
         events = [_event("lane.released", lane.session_id, {"lane": lane.to_dict()})]
+        self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
         return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
 
     def remove_lane(self, lane_id: str) -> dict[str, Any]:
         lane = LaneManager(self.repositories).remove_lane(lane_id)
         events = [_event("lane.removed", lane.session_id, {"lane": lane.to_dict()})]
+        self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
         return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
