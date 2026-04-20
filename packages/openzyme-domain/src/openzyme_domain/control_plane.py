@@ -27,6 +27,7 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "EngineInvocation",
     "RunRecord",
     "SessionArtifactRecord",
+    "SessionReportRecord",
     "ResearchSummary",
     "ResearchEvidence",
     "ResearchSourceRef",
@@ -155,6 +156,17 @@ class ResearchSummaryStatus(StrEnum):
     @property
     def is_terminal(self) -> bool:
         return self in {self.COMPLETED, self.PARTIAL, self.NEEDS_CLARIFICATION, self.FAILED}
+
+
+class SessionReportStatus(StrEnum):
+    DRAFT = "draft"
+    READY = "ready"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.READY, self.PUBLISHED, self.FAILED}
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +421,28 @@ class SessionArtifactRecord:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["kind"] = self.kind.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SessionReportRecord:
+    report_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    run_id: str | None
+    artifact_id: str | None
+    status: SessionReportStatus
+    title: str
+    summary: str
+    stage_summary: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
         return data
 
 

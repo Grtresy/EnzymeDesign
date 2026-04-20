@@ -18,6 +18,8 @@ from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportRecord
+from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import ArtifactKind
@@ -171,6 +173,23 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             created_at="2026-04-17T13:00:07+00:00",
         )
     )
+    repositories.reports.save(
+        SessionReportRecord(
+            report_id="report_inv_exec_001",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_exec_001",
+            run_id="run_exec_001",
+            artifact_id="run_exec_001:stdout.log",
+            status=SessionReportStatus.READY,
+            title="Execution report",
+            summary="Report summary",
+            stage_summary="Research summary: Normalized evidence dossier",
+            created_at="2026-04-17T13:00:07+00:00",
+            updated_at="2026-04-17T13:00:08+00:00",
+        )
+    )
     repositories.engine_documents.save(
         EngineDocumentRecord(
             document_id="eng_out_001",
@@ -306,8 +325,10 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
     assert workspace["delegation"]["agents"][0]["agent"]["agent_id"] == "agent:researcher"
     assert workspace["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
+    assert workspace["reports"][0]["report_id"] == "report_inv_exec_001"
     assert "deep_research" in workspace["capabilities"]
     assert "execution" in workspace["capabilities"]
+    assert "reporting" not in workspace["capabilities"]
     assert workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"] == "high"
@@ -315,8 +336,10 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["capabilities"]["deep_research"][0]["gaps"][0]["summary"] == "Need wet-lab validation"
     assert workspace["capabilities"]["execution"][0]["runs"][0]["run_id"] == "run_exec_001"
     assert workspace["capabilities"]["execution"][0]["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
+    assert workspace["capabilities"]["execution"][0]["report"]["report_id"] == "report_inv_exec_001"
     assert any(item["event_type"] == "approval.requested" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "agent.spawned" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "engine.invocation.started" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "research.summary.updated" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"])
+    assert any(item["event_type"] == "report.generated" for item in workspace["activity_feed"])

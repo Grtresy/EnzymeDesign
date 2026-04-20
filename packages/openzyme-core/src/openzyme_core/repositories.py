@@ -26,6 +26,8 @@ from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportRecord
+from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
@@ -1520,6 +1522,142 @@ class SessionArtifactRepository:
 
 
 @dataclass(slots=True)
+class SessionReportRepository:
+    connection: sqlite3.Connection
+
+    def save(self, report: SessionReportRecord) -> None:
+        _require_session_exists(self.connection, report.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=report.invocation_id,
+            expected_session_id=report.session_id,
+        )
+        if report.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=report.task_id,
+                expected_session_id=report.session_id,
+            )
+        if report.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=report.lane_id,
+                expected_session_id=report.session_id,
+            )
+        if report.run_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_run_records",
+                id_column="run_id",
+                record_id=report.run_id,
+                expected_session_id=report.session_id,
+            )
+        if report.artifact_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_artifact_records",
+                id_column="artifact_id",
+                record_id=report.artifact_id,
+                expected_session_id=report.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_report_records (
+                report_id, session_id, task_id, lane_id, invocation_id, run_id, artifact_id, status,
+                title, summary, stage_summary, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                run_id = excluded.run_id,
+                artifact_id = excluded.artifact_id,
+                status = excluded.status,
+                title = excluded.title,
+                summary = excluded.summary,
+                stage_summary = excluded.stage_summary,
+                updated_at = excluded.updated_at
+            """,
+            (
+                report.report_id,
+                report.session_id,
+                report.task_id,
+                report.lane_id,
+                report.invocation_id,
+                report.run_id,
+                report.artifact_id,
+                report.status.value,
+                report.title,
+                report.summary,
+                report.stage_summary,
+                report.created_at,
+                report.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, report_id: str) -> SessionReportRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_report_records WHERE report_id = ?",
+            (report_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_report(row)
+
+    def get_by_invocation(self, session_id: str, invocation_id: str) -> SessionReportRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_report_records
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, report_id
+            """,
+            (session_id, invocation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_report(row)
+
+    def list_by_session(self, session_id: str) -> list[SessionReportRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_report_records
+            WHERE session_id = ?
+            ORDER BY updated_at, report_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_report(row) for row in rows]
+
+    def _row_to_report(self, row: sqlite3.Row) -> SessionReportRecord:
+        return SessionReportRecord(
+            report_id=row["report_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            run_id=row["run_id"],
+            artifact_id=row["artifact_id"],
+            status=SessionReportStatus(row["status"]),
+            title=row["title"],
+            summary=row["summary"],
+            stage_summary=row["stage_summary"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
 class ResearchSummaryRepository:
     connection: sqlite3.Connection
 
@@ -1999,6 +2137,7 @@ class CoreRepositories:
     engine_documents: EngineDocumentRepository
     runs: RunRecordRepository
     artifacts: SessionArtifactRepository
+    reports: SessionReportRepository
     research_summaries: ResearchSummaryRepository
     research_evidence: ResearchEvidenceRepository
     research_source_refs: ResearchSourceRefRepository
@@ -2019,6 +2158,7 @@ class CoreRepositories:
             engine_documents=EngineDocumentRepository(connection),
             runs=RunRecordRepository(connection),
             artifacts=SessionArtifactRepository(connection),
+            reports=SessionReportRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),
             research_evidence=ResearchEvidenceRepository(connection),
             research_source_refs=ResearchSourceRefRepository(connection),

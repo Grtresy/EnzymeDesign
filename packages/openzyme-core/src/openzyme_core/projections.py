@@ -69,6 +69,7 @@ class SessionWorkspaceProjection:
     delegation: dict[str, Any]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
+    reports: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +83,7 @@ class SessionWorkspaceProjection:
             "delegation": self.delegation,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
+            "reports": list(self.reports),
             "capabilities": self.capabilities,
         }
 
@@ -102,6 +104,7 @@ class SessionProjectionBuilder:
         delegation = self.build_delegation_projection(session_id).to_dict()
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
         artifacts = tuple(artifact.to_dict() for artifact in self.repositories.artifacts.list_by_session(session_id))
+        reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
         return SessionWorkspaceProjection(
             session=session.to_dict(),
@@ -113,6 +116,7 @@ class SessionProjectionBuilder:
             delegation=delegation,
             activity_feed=activity_feed,
             artifacts=artifacts,
+            reports=reports,
             capabilities=capabilities,
         )
 
@@ -273,12 +277,22 @@ class SessionProjectionBuilder:
                     payload=artifact.to_dict(),
                 )
             )
+        for report in self.repositories.reports.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="report.generated" if report.status.is_terminal else "report.updated",
+                    created_at=report.updated_at,
+                    payload=report.to_dict(),
+                )
+            )
         return sorted(items, key=lambda item: (item.created_at, item.event_type))
 
     def _build_capabilities_projection(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for invocation in self.repositories.invocations.list_by_session(session_id):
-            grouped.setdefault(invocation.engine_name, []).append(self._project_invocation(session_id, invocation))
+            grouped.setdefault(self._capability_key_for_engine(invocation.engine_name), []).append(
+                self._project_invocation(session_id, invocation)
+            )
         return grouped
 
     def _project_invocation(self, session_id: str, invocation: Any) -> dict[str, Any]:
@@ -309,7 +323,17 @@ class SessionProjectionBuilder:
             for run in runs:
                 artifact_payloads.extend(item.to_dict() for item in self.repositories.artifacts.list_by_run(run.run_id))
             projected["artifacts"] = artifact_payloads
+        report = self.repositories.reports.get_by_invocation(session_id, invocation.invocation_id)
+        if report is not None:
+            projected["report"] = report.to_dict()
         return projected
+
+    def _capability_key_for_engine(self, engine_name: str) -> str:
+        return {
+            "deep_research": "deep_research",
+            "execution": "execution",
+            "reporting": "reporting",
+        }.get(engine_name, engine_name)
 
 
 __all__ = [

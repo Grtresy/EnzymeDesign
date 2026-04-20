@@ -11,6 +11,7 @@ def test_migration_asset_is_available() -> None:
     engine_sql = get_migration_sql("003_v3_engine_documents")
     research_sql = get_migration_sql("004_v3_research_control_plane")
     execution_sql = get_migration_sql("005_v3_execution_control_plane")
+    reporting_sql = get_migration_sql("006_v3_reporting_control_plane")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -19,12 +20,14 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS engine_documents" in engine_sql
     assert "CREATE TABLE IF NOT EXISTS session_research_summaries" in research_sql
     assert "CREATE TABLE IF NOT EXISTS session_run_records" in execution_sql
+    assert "CREATE TABLE IF NOT EXISTS session_report_records" in reporting_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
         "003_v3_engine_documents",
         "004_v3_research_control_plane",
         "005_v3_execution_control_plane",
+        "006_v3_reporting_control_plane",
     )
 
 
@@ -52,6 +55,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "engine_documents",
         "session_run_records",
         "session_artifact_records",
+        "session_report_records",
         "session_research_summaries",
         "session_research_evidence",
         "session_research_source_refs",

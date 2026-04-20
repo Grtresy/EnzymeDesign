@@ -21,6 +21,8 @@ from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportRecord
+from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import ArtifactKind
@@ -178,6 +180,21 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
         metadata={"source": "execution_engine"},
         created_at="2026-04-16T10:09:11+00:00",
     )
+    report = SessionReportRecord(
+        report_id="report_001",
+        session_id=session.session_id,
+        task_id=child_task.task_id,
+        lane_id=lane.lane_id,
+        invocation_id=invocation.invocation_id,
+        run_id=run.run_id,
+        artifact_id=artifact.artifact_id,
+        status=SessionReportStatus.READY,
+        title="Execution report",
+        summary="Execution summary",
+        stage_summary="Research summary: done",
+        created_at="2026-04-16T10:09:12+00:00",
+        updated_at="2026-04-16T10:09:12+00:00",
+    )
     lane_event = LaneLifecycleEventRecord(
         event_id="lane_evt_001",
         session_id=session.session_id,
@@ -199,6 +216,7 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     repositories.invocations.save(invocation)
     repositories.runs.save(run)
     repositories.artifacts.save(artifact)
+    repositories.reports.save(report)
     repositories.lane_events.save(lane_event)
     repositories.engine_documents.save(
         EngineDocumentRecord(
@@ -284,6 +302,7 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
     assert repositories.runs.get_by_invocation(session.session_id, invocation.invocation_id) == run
     assert repositories.artifacts.list_by_run(run.run_id) == [artifact]
+    assert repositories.reports.get_by_invocation(session.session_id, invocation.invocation_id) == report
     assert repositories.engine_documents.list_by_invocation(session.session_id, invocation.invocation_id)[0].payload == {
         "summary": "Initial dossier"
     }

@@ -56,6 +56,7 @@ from .repositories import ResearchGapRepository
 from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
+from .repositories import SessionReportRepository
 from .repositories import SessionArtifactRepository
 from .repositories import SessionRepository
 from .repositories import LaneRepository
@@ -117,6 +118,7 @@ __all__ = [
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
     "RunRecordRepository",
+    "SessionReportRepository",
     "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",

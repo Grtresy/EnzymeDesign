@@ -13,6 +13,8 @@ from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportRecord
+from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
 from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
@@ -32,6 +34,7 @@ def test_control_plane_entity_names_are_stable() -> None:
         "EngineInvocation",
         "RunRecord",
         "SessionArtifactRecord",
+        "SessionReportRecord",
         "ResearchSummary",
         "ResearchEvidence",
         "ResearchSourceRef",
@@ -169,3 +172,24 @@ def test_execution_records_serialize_with_v3_session_scope() -> None:
     assert run.to_dict()["status"] == "running"
     assert artifact.to_dict()["kind"] == "log"
     assert artifact.to_dict()["session_id"] == "sess_001"
+
+
+def test_session_report_records_serialize_with_v3_scope() -> None:
+    report = SessionReportRecord(
+        report_id="report_001",
+        session_id="sess_001",
+        task_id="task_001",
+        lane_id="lane_001",
+        invocation_id="inv_001",
+        run_id="run_001",
+        artifact_id="inv_001:report",
+        status=SessionReportStatus.READY,
+        title="Final report",
+        summary="Report summary",
+        stage_summary="Research summary: ok",
+        created_at="2026-04-20T10:02:00+00:00",
+        updated_at="2026-04-20T10:03:00+00:00",
+    )
+
+    assert report.to_dict()["status"] == "ready"
+    assert report.to_dict()["session_id"] == "sess_001"
