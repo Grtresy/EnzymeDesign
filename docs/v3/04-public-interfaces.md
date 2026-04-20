@@ -17,24 +17,31 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 ## 2. API 设计默认值
 
-建议最小接口：
+建议最小接口按两层理解。
+
+面向普通用户与 Web UI 的主入口：
 
 - `POST /v3/sessions`
 - `GET /v3/sessions/{session_id}`
 - `POST /v3/sessions/{session_id}/messages`
 - `GET /v3/sessions/{session_id}/workspace`
 - `GET /v3/sessions/{session_id}/events`
+- `POST /v3/approvals/{approval_id}/resolve`
+
+面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
+
 - `POST /v3/tasks`
 - `PATCH /v3/tasks/{task_id}`
 - `POST /v3/lanes`
 - `POST /v3/lanes/{lane_id}/claim`
 - `POST /v3/lanes/{lane_id}/keep`
 - `POST /v3/lanes/{lane_id}/remove`
-- `POST /v3/approvals/{approval_id}/resolve`
 
 说明：
 
 - `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation、engine 调用
+- Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 agent loop 通过 harness tools 更新，再通过 workspace projection 展示
+- task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台
 - V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 delegated agent / subtask 状态
 
 ## 3. Workspace Contract
@@ -67,26 +74,36 @@ V3 CLI 不再围绕 `episode phase` 渲染。
 默认能力：
 
 - 查看 session workspace
-- 查看和更新 task board
+- 查看 task board，并在高级/ops 场景下更新 task board
 - 处理 approvals
 - 观察 lane 状态
 - 发起消息 / 继续 agent loop
 
+CLI 可以保留 task / lane mutation 命令，作为自动化、调试、迁移和 operator 用途；这不代表 Web UI 的默认用户需要手动维护这些对象。
+
 ## 5. Web UI 语义
 
-V3 Web UI 默认呈现：
+V3 Web UI 默认是 conversation-first。
 
-- 主工作区叙事
-- task board
-- lane/workspace 状态
-- approvals
-- artifacts / runs / reports
-- activity feed
+主交互：
+
+- 用户发送自然语言消息
+- agent loop / harness 决定是否创建 task、绑定 lane、调用 engine、请求 approval
+- approval 以对话流中的卡片形式出现，用户只需要 approve / reject
+- task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
+
+默认展示：
+
+- 对话 timeline
+- approval cards
+- tool / engine / report / artifact activity cards
+- task board、lane/workspace 状态、delegation、artifacts / runs / reports 的只读 inspector
 
 不要求用户理解：
 
 - 哪个 graph 节点正在运行
 - 哪个 subgraph 持有当前局部状态
+- 如何手动创建 task / lane 才能推进工作
 
 ## 6. Streaming
 

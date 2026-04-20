@@ -345,6 +345,36 @@ function renderV3Lanes(workspace) {
   `;
 }
 
+function renderV3Approvals(workspace, viewState) {
+  const approvals = workspace.pending_approvals ?? [];
+  if (!approvals.length) {
+    return "";
+  }
+  return `
+    <div class="approval-stack" aria-label="Pending approvals">
+      ${approvals
+        .map(
+          (approval) => `
+            <article class="approval-card">
+              <p class="eyebrow">${escapeHtml(approval.kind ?? "approval")}</p>
+              <h4>${escapeHtml(approval.requested_action ?? "Review requested action")}</h4>
+              <dl class="facts compact-facts">
+                <div><dt>Approval</dt><dd>${escapeHtml(approval.approval_id)}</dd></div>
+                <div><dt>Task</dt><dd>${escapeHtml(approval.task_id ?? "none")}</dd></div>
+                <div><dt>Lane</dt><dd>${escapeHtml(approval.lane_id ?? "none")}</dd></div>
+              </dl>
+              <div class="action-row">
+                <button type="button" data-v3-approval-decision="approved" ${viewState.busy ? "disabled" : ""}>Approve</button>
+                <button type="button" data-v3-approval-decision="rejected" ${viewState.busy ? "disabled" : ""}>Reject</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderV3Conversation(workspace) {
   const conversation = workspace.conversation ?? [];
   if (!conversation.length) {
@@ -366,6 +396,79 @@ function renderV3Conversation(workspace) {
   `;
 }
 
+function renderV3Capabilities(workspace) {
+  const entries = Object.entries(workspace.capabilities ?? {}).flatMap(([capabilityKey, items]) =>
+    (items ?? []).map((item) => ({ capabilityKey, item })),
+  );
+  if (!entries.length) {
+    return `<p class="empty-copy">No capability invocations yet.</p>`;
+  }
+  return `
+    <ul class="record-list">
+      ${entries
+        .map(
+          ({ capabilityKey, item }) => `
+            <li>
+              <strong>${escapeHtml(capabilityKey)}</strong>
+              <span>${escapeHtml(item.invocation_id ?? "invocation")} · ${escapeHtml(item.status ?? "unknown")}</span>
+            </li>
+          `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderV3Outputs(workspace) {
+  const artifacts = workspace.artifacts ?? [];
+  const reports = workspace.reports ?? [];
+  if (!artifacts.length && !reports.length) {
+    return `<p class="empty-copy">No artifacts or reports yet.</p>`;
+  }
+  return `
+    <div class="stack">
+      ${
+        reports.length
+          ? `<section>
+              <h4>Reports</h4>
+              <ul class="record-list">
+                ${reports
+                  .map(
+                    (report) => `
+                      <li>
+                        <strong>${escapeHtml(report.title ?? report.report_id)}</strong>
+                        <span>${escapeHtml(report.status ?? "unknown")} · ${escapeHtml(report.report_id)}</span>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </section>`
+          : ""
+      }
+      ${
+        artifacts.length
+          ? `<section>
+              <h4>Artifacts</h4>
+              <ul class="record-list">
+                ${artifacts
+                  .map(
+                    (artifact) => `
+                      <li>
+                        <strong>${escapeHtml(artifact.title ?? artifact.relative_path ?? artifact.artifact_id)}</strong>
+                        <span>${escapeHtml(artifact.kind ?? "artifact")} · ${escapeHtml(artifact.artifact_id)}</span>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </section>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 function renderV3Activity(workspace) {
   const events = workspace.activity_feed ?? [];
   if (!events.length) {
@@ -383,8 +486,6 @@ function renderV3Activity(workspace) {
 
 function renderV3Workspace(workspace, viewState) {
   const session = workspace.session;
-  const reports = workspace.reports ?? [];
-  const artifacts = workspace.artifacts ?? [];
   return `
     <section class="workspace-board v3-workspace">
       <article class="panel hero-panel chat-hero">
@@ -395,6 +496,7 @@ function renderV3Workspace(workspace, viewState) {
       <article class="panel pane chat-pane">
         <h3>Conversation</h3>
         ${renderV3Conversation(workspace)}
+        ${renderV3Approvals(workspace, viewState)}
         <form id="message-form" class="message-form">
           <input name="message" placeholder="Send a message to the harness" ${viewState.busy ? "disabled" : ""} required />
           <button type="submit" ${viewState.busy ? "disabled" : ""}>Send</button>
@@ -414,11 +516,11 @@ function renderV3Workspace(workspace, viewState) {
       </article>
       <article class="panel pane report-pane">
         <h3>Outputs</h3>
-        <dl class="facts">
-          <div><dt>Artifacts</dt><dd>${artifacts.length}</dd></div>
-          <div><dt>Reports</dt><dd>${reports.length}</dd></div>
-          <div><dt>Capabilities</dt><dd>${Object.keys(workspace.capabilities ?? {}).length}</dd></div>
-        </dl>
+        ${renderV3Outputs(workspace)}
+      </article>
+      <article class="panel pane capability-pane">
+        <h3>Capabilities</h3>
+        ${renderV3Capabilities(workspace)}
       </article>
     </section>
   `;

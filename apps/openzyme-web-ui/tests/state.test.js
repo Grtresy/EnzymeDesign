@@ -102,12 +102,27 @@ function buildV3Workspace() {
         },
       ],
     },
-    lane_board: { lanes: [] },
+    lane_board: {
+      lanes: [
+        {
+          lane: {
+            lane_id: "lane_001",
+            name: "analysis",
+            status: "idle",
+            cwd: "/tmp/lane_001",
+          },
+          tasks: [],
+          ready_task_ids: [],
+        },
+      ],
+    },
     pending_approvals: [],
     activity_feed: [],
-    artifacts: [],
-    reports: [],
-    capabilities: {},
+    artifacts: [{ artifact_id: "art_001", title: "stdout.log", kind: "log" }],
+    reports: [{ report_id: "report_001", title: "Summary report", status: "ready" }],
+    capabilities: {
+      execution: [{ invocation_id: "inv_001", status: "succeeded" }],
+    },
   };
 }
 
@@ -149,7 +164,44 @@ test("v3 conversation events render as chat without workflow phase fields", () =
   assert.match(html, /Conversation/);
   assert.match(html, /Start planning/);
   assert.match(html, /Received: Start planning/);
+  assert.match(html, /Extract goals/);
+  assert.match(html, /analysis/);
+  assert.match(html, /Summary report/);
+  assert.match(html, /execution/);
   assert.doesNotMatch(html, /Active node/);
+  assert.doesNotMatch(html, /Create Task/);
+  assert.doesNotMatch(html, /Create Lane/);
+});
+
+test("v3 pending approvals render as conversation approval cards", () => {
+  const workspace = {
+    ...buildV3Workspace(),
+    pending_approvals: [
+      {
+        approval_id: "appr_v3_001",
+        kind: "execution_launch",
+        requested_action: "Approve fpocket execution",
+        task_id: "task_001",
+        lane_id: "lane_001",
+      },
+    ],
+  };
+
+  const html = renderApp({
+    projects: [],
+    episodes: [],
+    currentProjectId: "proj_001",
+    currentEpisodeId: "",
+    currentSessionId: "sess_001",
+    workspace,
+    errorMessage: "",
+    busy: false,
+  });
+
+  assert.match(html, /Approve fpocket execution/);
+  assert.match(html, /data-v3-approval-decision="approved"/);
+  assert.match(html, /data-v3-approval-decision="rejected"/);
+  assert.doesNotMatch(html, /pending_approval/);
 });
 
 test("workspace render explains auto-run phases instead of looking skipped", () => {

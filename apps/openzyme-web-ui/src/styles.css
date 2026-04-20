@@ -296,6 +296,27 @@ button.secondary {
   margin: 0;
 }
 
+.approval-stack {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.approval-card {
+  border: 1px solid rgba(157, 79, 24, 0.32);
+  border-radius: 8px;
+  padding: 0.95rem;
+  background: rgba(255, 247, 235, 0.96);
+}
+
+.approval-card h4 {
+  margin: 0 0 0.8rem;
+}
+
+.compact-facts {
+  margin-bottom: 0.85rem;
+}
+
 .from-user {
   justify-self: end;
   background: var(--accent);

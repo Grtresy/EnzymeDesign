@@ -20,6 +20,9 @@ const v3EventTypes = [
   "session.created",
   "conversation.user_message",
   "conversation.assistant_message",
+  "inbox.delivered",
+  "agent.message.delivered",
+  "background.completed",
   "message.received",
   "message.sent",
   "tool.invoked",
@@ -32,7 +35,10 @@ const v3EventTypes = [
   "lane.removed",
   "approval.requested",
   "approval.resolved",
+  "engine.invocation.started",
   "engine.invocation.updated",
+  "engine.invocation.completed",
+  "artifact.recorded",
   "report.generated",
 ];
 
@@ -140,6 +146,14 @@ export class HostApiClient {
     });
   }
 
+  resolveV3Approval(approvalId, payload) {
+    return requestJson(this.baseUrl, `/v3/approvals/${approvalId}/resolve`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload),
+    });
+  }
+
   streamV3Session(sessionId, onEvent) {
     const source = new EventSource(buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1`));
     for (const eventType of v3EventTypes) {
@@ -169,5 +183,6 @@ export function buildHostPaths(episodeId) {
     v3Workspace: `/v3/sessions/${episodeId}/workspace`,
     v3Messages: `/v3/sessions/${episodeId}/messages`,
     v3Events: `/v3/sessions/${episodeId}/events?replay=1`,
+    v3ApprovalResolve: "/v3/approvals/appr_001/resolve",
   };
 }

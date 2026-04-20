@@ -38,6 +38,10 @@ async function handleResume() {
 }
 
 async function handleApproval(decision) {
+  if (controller.state.currentSessionId && controller.state.workspace?.session?.session_id) {
+    await controller.resolveApproval(decision);
+    return;
+  }
   if (!controller.state.currentEpisodeId || !controller.state.workspace?.workflow?.pending_approval?.approval_id) {
     return;
   }
@@ -62,6 +66,11 @@ function bindActions() {
   });
   document.querySelector('[data-action="reject"]')?.addEventListener("click", async () => {
     await handleApproval("rejected");
+  });
+  document.querySelectorAll("[data-v3-approval-decision]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await handleApproval(button.dataset.v3ApprovalDecision);
+    });
   });
   document.querySelector("#project-select")?.addEventListener("change", async (event) => {
     await handleProjectSelection(event.target.value);

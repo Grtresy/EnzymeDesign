@@ -273,6 +273,22 @@ function buildV3Workspace() {
   };
 }
 
+function buildV3ApprovalWorkspace() {
+  return {
+    ...buildV3Workspace(),
+    pending_approvals: [
+      {
+        approval_id: "appr_v3_001",
+        kind: "execution_launch",
+        requested_action: "Approve execution launch for task Run fpocket",
+        task_id: "task_execution",
+        lane_id: "lane_001",
+        status: "pending",
+      },
+    ],
+  };
+}
+
 test("workspace controller creates v3 chat sessions and applies message events", async () => {
   let streamHandler = null;
   const fakeClient = {
@@ -326,4 +342,50 @@ test("workspace controller creates v3 chat sessions and applies message events",
     created_at: "now",
   });
   assert.equal(controller.state.workspace.activity_feed[0].event_type, "tool.completed");
+});
+
+test("workspace controller resolves v3 approvals through the session control plane", async () => {
+  let resolveCall = null;
+  const fakeClient = {
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3ApprovalWorkspace(),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async resolveV3Approval(approvalId, payload) {
+      resolveCall = { approvalId, payload };
+      return {
+        session_id: "sess_001",
+        status: "completed",
+        outputs: ["execution.resume completed."],
+        workspace: buildV3Workspace(),
+        events: [
+          {
+            event_id: "evt_approval",
+            event_type: "approval.resolved",
+            payload: { approval_id: approvalId, decision: payload.decision },
+            created_at: "now",
+          },
+        ],
+      };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  assert.equal(controller.state.workspace.pending_approvals[0].approval_id, "appr_v3_001");
+
+  await controller.resolveApproval("approved");
+
+  assert.deepEqual(resolveCall, {
+    approvalId: "appr_v3_001",
+    payload: { decision: "approved", actor_ref: "user" },
+  });
+  assert.equal(controller.state.workspace.pending_approvals.length, 0);
+  assert.equal(controller.state.workspace.activity_feed[0].event_type, "approval.resolved");
 });

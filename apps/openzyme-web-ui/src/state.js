@@ -68,6 +68,9 @@ export function reduceWorkspaceWithEvent(workspace, event) {
           { role: "assistant", content: payload.content ?? "", event_id: event.event_id },
         ];
         return next;
+      case "inbox.delivered":
+      case "agent.message.delivered":
+      case "background.completed":
       case "message.received":
       case "message.sent":
       case "tool.invoked":
@@ -80,7 +83,10 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       case "lane.removed":
       case "approval.requested":
       case "approval.resolved":
+      case "engine.invocation.started":
       case "engine.invocation.updated":
+      case "engine.invocation.completed":
+      case "artifact.recorded":
       case "report.generated":
       case "session.created":
         next.activity_feed = [

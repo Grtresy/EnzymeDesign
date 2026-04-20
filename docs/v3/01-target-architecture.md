@@ -156,6 +156,8 @@ UI/CLI
   -> send structured commands back to control plane
 ```
 
+Web UI 的默认交互是 conversation-first：用户通过消息表达目标，通过 approval cards 确认高风险动作；task / lane / engine invocation 等 control-plane 对象由 harness tools 维护，并以只读 workspace inspector 形式展示。CLI 可以保留 task / lane mutation 作为 operator、调试、自动化能力，但这不是普通 Web 用户推进工作的默认方式。
+
 ## 5. 关键设计默认值
 
 - `project` 继续保留为上层业务锚点

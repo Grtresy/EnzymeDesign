@@ -194,6 +194,28 @@ export class WorkspaceController {
   }
 
   async resolveApproval(decision) {
+    if (this.state.currentSessionId && this.state.workspace?.session) {
+      const approvalId = this.state.workspace.pending_approvals?.[0]?.approval_id;
+      if (!approvalId) {
+        return;
+      }
+      this.state.busy = true;
+      this._emit();
+      try {
+        const response = await this.client.resolveV3Approval(approvalId, { decision, actor_ref: "user" });
+        this.state.workspace = response.workspace;
+        for (const event of response.events ?? []) {
+          this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+        }
+        this.state.errorMessage = "";
+      } catch (error) {
+        this.state.errorMessage = error.message;
+      } finally {
+        this.state.busy = false;
+        this._emit();
+      }
+      return;
+    }
     const approvalId = this.state.workspace?.workflow?.pending_approval?.approval_id;
     const response = await this.client.resolveApproval({
       episode_id: this.state.currentEpisodeId,
