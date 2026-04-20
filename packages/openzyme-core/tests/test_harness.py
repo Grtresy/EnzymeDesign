@@ -16,6 +16,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import DeepResearchTaskPlanner
 from openzyme_core import DelegationRequest
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessStep
@@ -521,3 +522,59 @@ def test_harness_auto_compaction_keeps_lane_restore_state() -> None:
     lane_memory = repositories.memory.list_by_scope(session.session_id, MemoryScopeKind.LANE, lane.lane_id)
     assert any(entry.kind is MemoryKind.COMPACTION for entry in lane_memory)
     assert second.pending_approval_id == "appr_001"
+
+
+class DeepResearchPlanningDriver:
+    def __init__(self) -> None:
+        self.planner = DeepResearchTaskPlanner()
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del harness_input
+        if not tool_results:
+            planned = self.planner.plan_task(context)
+            assert planned is not None
+            return planned
+        return HarnessStep(assistant_message=str(tool_results[0].content))
+
+
+def test_harness_can_dispatch_research_task_via_deep_research_planner() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=task.status,
+            priority=task.priority,
+            kind="research",
+            assigned_ref=task.assigned_ref,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    registry = ToolRegistry()
+    registry.register(
+        "deep_research.start",
+        lambda _context, invocation: invocation.arguments["brief"],
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id),
+        driver=DeepResearchPlanningDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert "Session objective: Exercise the Session 03 kernel" in result.outputs[0]
+    assert repositories.tasks.get("task_001").status is TaskStatus.IN_PROGRESS

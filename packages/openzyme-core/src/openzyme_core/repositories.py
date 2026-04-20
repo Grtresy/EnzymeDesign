@@ -18,8 +18,14 @@ from openzyme_domain import LaneStatus
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import ResearchEvidence
+from openzyme_domain import ResearchGap
+from openzyme_domain import ResearchSourceRef
+from openzyme_domain import ResearchSummary
+from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
+from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
@@ -1092,6 +1098,578 @@ class EngineInvocationRepository:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class EngineDocumentRecord:
+    document_id: str
+    session_id: str
+    document_kind: str
+    payload: dict[str, Any]
+    created_at: str
+    updated_at: str
+    invocation_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "session_id": self.session_id,
+            "invocation_id": self.invocation_id,
+            "document_kind": self.document_kind,
+            "payload": self.payload,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass(slots=True)
+class EngineDocumentRepository:
+    connection: sqlite3.Connection
+
+    def save(self, document: EngineDocumentRecord) -> None:
+        _require_session_exists(self.connection, document.session_id)
+        if document.invocation_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="engine_invocations",
+                id_column="invocation_id",
+                record_id=document.invocation_id,
+                expected_session_id=document.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO engine_documents (
+                document_id, session_id, invocation_id, document_kind, payload_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(document_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                invocation_id = excluded.invocation_id,
+                document_kind = excluded.document_kind,
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                document.document_id,
+                document.session_id,
+                document.invocation_id,
+                document.document_kind,
+                json.dumps(document.payload, sort_keys=True),
+                document.created_at,
+                document.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, document_id: str) -> EngineDocumentRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM engine_documents WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_document(row)
+
+    def list_by_session(self, session_id: str) -> list[EngineDocumentRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM engine_documents
+            WHERE session_id = ?
+            ORDER BY created_at, document_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_document(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[EngineDocumentRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM engine_documents
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, document_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_document(row) for row in rows]
+
+    def _row_to_document(self, row: sqlite3.Row) -> EngineDocumentRecord:
+        return EngineDocumentRecord(
+            document_id=row["document_id"],
+            session_id=row["session_id"],
+            invocation_id=row["invocation_id"],
+            document_kind=row["document_kind"],
+            payload=json.loads(row["payload_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class ResearchSummaryRepository:
+    connection: sqlite3.Connection
+
+    def save(self, summary: ResearchSummary) -> None:
+        _require_session_exists(self.connection, summary.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=summary.invocation_id,
+            expected_session_id=summary.session_id,
+        )
+        if summary.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=summary.task_id,
+                expected_session_id=summary.session_id,
+            )
+        if summary.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=summary.lane_id,
+                expected_session_id=summary.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_research_summaries (
+                summary_id, session_id, task_id, lane_id, invocation_id, status, completion_reason,
+                research_brief, summary, clarification_question, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(summary_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                status = excluded.status,
+                completion_reason = excluded.completion_reason,
+                research_brief = excluded.research_brief,
+                summary = excluded.summary,
+                clarification_question = excluded.clarification_question,
+                updated_at = excluded.updated_at
+            """,
+            (
+                summary.summary_id,
+                summary.session_id,
+                summary.task_id,
+                summary.lane_id,
+                summary.invocation_id,
+                summary.status.value,
+                summary.completion_reason,
+                summary.research_brief,
+                summary.summary,
+                summary.clarification_question,
+                summary.created_at,
+                summary.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, summary_id: str) -> ResearchSummary | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_research_summaries WHERE summary_id = ?",
+            (summary_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_summary(row)
+
+    def get_by_invocation(self, session_id: str, invocation_id: str) -> ResearchSummary | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_summaries
+            WHERE session_id = ? AND invocation_id = ?
+            """,
+            (session_id, invocation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_summary(row)
+
+    def list_by_session(self, session_id: str) -> list[ResearchSummary]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_summaries
+            WHERE session_id = ?
+            ORDER BY created_at, summary_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_summary(row) for row in rows]
+
+    def _row_to_summary(self, row: sqlite3.Row) -> ResearchSummary:
+        return ResearchSummary(
+            summary_id=row["summary_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            status=ResearchSummaryStatus(row["status"]),
+            completion_reason=row["completion_reason"],
+            research_brief=row["research_brief"],
+            summary=row["summary"],
+            clarification_question=row["clarification_question"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class ResearchEvidenceRepository:
+    connection: sqlite3.Connection
+
+    def save(self, evidence: ResearchEvidence) -> None:
+        _require_session_exists(self.connection, evidence.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=evidence.invocation_id,
+            expected_session_id=evidence.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+                table_name="session_research_summaries",
+            id_column="summary_id",
+            record_id=evidence.summary_id,
+            expected_session_id=evidence.session_id,
+        )
+        if evidence.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=evidence.task_id,
+                expected_session_id=evidence.session_id,
+            )
+        if evidence.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=evidence.lane_id,
+                expected_session_id=evidence.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_research_evidence (
+                evidence_id, session_id, task_id, lane_id, invocation_id, summary_id, summary,
+                query, confidence_label, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(evidence_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                summary_id = excluded.summary_id,
+                summary = excluded.summary,
+                query = excluded.query,
+                confidence_label = excluded.confidence_label
+            """,
+            (
+                evidence.evidence_id,
+                evidence.session_id,
+                evidence.task_id,
+                evidence.lane_id,
+                evidence.invocation_id,
+                evidence.summary_id,
+                evidence.summary,
+                evidence.query,
+                evidence.confidence_label,
+                evidence.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_session(self, session_id: str) -> list[ResearchEvidence]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_evidence
+            WHERE session_id = ?
+            ORDER BY created_at, evidence_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_evidence(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchEvidence]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_evidence
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, evidence_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_evidence(row) for row in rows]
+
+    def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM session_research_evidence WHERE session_id = ? AND invocation_id = ?",
+            (session_id, invocation_id),
+        )
+        self.connection.commit()
+
+    def _row_to_evidence(self, row: sqlite3.Row) -> ResearchEvidence:
+        return ResearchEvidence(
+            evidence_id=row["evidence_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            summary_id=row["summary_id"],
+            summary=row["summary"],
+            query=row["query"],
+            confidence_label=row["confidence_label"],
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class ResearchSourceRefRepository:
+    connection: sqlite3.Connection
+
+    def save(self, source_ref: ResearchSourceRef) -> None:
+        _require_session_exists(self.connection, source_ref.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=source_ref.invocation_id,
+            expected_session_id=source_ref.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+                table_name="session_research_evidence",
+            id_column="evidence_id",
+            record_id=source_ref.evidence_id,
+            expected_session_id=source_ref.session_id,
+        )
+        if source_ref.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=source_ref.task_id,
+                expected_session_id=source_ref.session_id,
+            )
+        if source_ref.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=source_ref.lane_id,
+                expected_session_id=source_ref.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_research_source_refs (
+                source_ref_id, session_id, task_id, lane_id, invocation_id, evidence_id, title,
+                locator, kind, snippet, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_ref_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                evidence_id = excluded.evidence_id,
+                title = excluded.title,
+                locator = excluded.locator,
+                kind = excluded.kind,
+                snippet = excluded.snippet
+            """,
+            (
+                source_ref.source_ref_id,
+                source_ref.session_id,
+                source_ref.task_id,
+                source_ref.lane_id,
+                source_ref.invocation_id,
+                source_ref.evidence_id,
+                source_ref.title,
+                source_ref.locator,
+                source_ref.kind.value,
+                source_ref.snippet,
+                source_ref.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_session(self, session_id: str) -> list[ResearchSourceRef]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_source_refs
+            WHERE session_id = ?
+            ORDER BY created_at, source_ref_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_source_ref(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchSourceRef]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_source_refs
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, source_ref_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_source_ref(row) for row in rows]
+
+    def list_by_evidence(self, evidence_id: str) -> list[ResearchSourceRef]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_source_refs
+            WHERE evidence_id = ?
+            ORDER BY created_at, source_ref_id
+            """,
+            (evidence_id,),
+        ).fetchall()
+        return [self._row_to_source_ref(row) for row in rows]
+
+    def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM session_research_source_refs WHERE session_id = ? AND invocation_id = ?",
+            (session_id, invocation_id),
+        )
+        self.connection.commit()
+
+    def _row_to_source_ref(self, row: sqlite3.Row) -> ResearchSourceRef:
+        return ResearchSourceRef(
+            source_ref_id=row["source_ref_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            evidence_id=row["evidence_id"],
+            title=row["title"],
+            locator=row["locator"],
+            kind=SourceRefKind(row["kind"]),
+            snippet=row["snippet"],
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class ResearchGapRepository:
+    connection: sqlite3.Connection
+
+    def save(self, gap: ResearchGap) -> None:
+        _require_session_exists(self.connection, gap.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="engine_invocations",
+            id_column="invocation_id",
+            record_id=gap.invocation_id,
+            expected_session_id=gap.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+                table_name="session_research_summaries",
+            id_column="summary_id",
+            record_id=gap.summary_id,
+            expected_session_id=gap.session_id,
+        )
+        if gap.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=gap.task_id,
+                expected_session_id=gap.session_id,
+            )
+        if gap.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=gap.lane_id,
+                expected_session_id=gap.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_research_gaps (
+                gap_id, session_id, task_id, lane_id, invocation_id, summary_id, summary, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(gap_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                invocation_id = excluded.invocation_id,
+                summary_id = excluded.summary_id,
+                summary = excluded.summary
+            """,
+            (
+                gap.gap_id,
+                gap.session_id,
+                gap.task_id,
+                gap.lane_id,
+                gap.invocation_id,
+                gap.summary_id,
+                gap.summary,
+                gap.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_session(self, session_id: str) -> list[ResearchGap]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_gaps
+            WHERE session_id = ?
+            ORDER BY created_at, gap_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_gap(row) for row in rows]
+
+    def list_by_invocation(self, session_id: str, invocation_id: str) -> list[ResearchGap]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_research_gaps
+            WHERE session_id = ? AND invocation_id = ?
+            ORDER BY created_at, gap_id
+            """,
+            (session_id, invocation_id),
+        ).fetchall()
+        return [self._row_to_gap(row) for row in rows]
+
+    def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        self.connection.execute(
+            "DELETE FROM session_research_gaps WHERE session_id = ? AND invocation_id = ?",
+            (session_id, invocation_id),
+        )
+        self.connection.commit()
+
+    def _row_to_gap(self, row: sqlite3.Row) -> ResearchGap:
+        return ResearchGap(
+            gap_id=row["gap_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            invocation_id=row["invocation_id"],
+            summary_id=row["summary_id"],
+            summary=row["summary"],
+            created_at=row["created_at"],
+        )
+
+
 @dataclass(slots=True)
 class CoreRepositories:
     sessions: SessionRepository
@@ -1103,6 +1681,11 @@ class CoreRepositories:
     memory: MemoryEntryRepository
     agents: AgentMemberRepository
     invocations: EngineInvocationRepository
+    engine_documents: EngineDocumentRepository
+    research_summaries: ResearchSummaryRepository
+    research_evidence: ResearchEvidenceRepository
+    research_source_refs: ResearchSourceRefRepository
+    research_gaps: ResearchGapRepository
 
     @classmethod
     def from_connection(cls, connection: sqlite3.Connection) -> "CoreRepositories":
@@ -1116,4 +1699,9 @@ class CoreRepositories:
             memory=MemoryEntryRepository(connection),
             agents=AgentMemberRepository(connection),
             invocations=EngineInvocationRepository(connection),
+            engine_documents=EngineDocumentRepository(connection),
+            research_summaries=ResearchSummaryRepository(connection),
+            research_evidence=ResearchEvidenceRepository(connection),
+            research_source_refs=ResearchSourceRefRepository(connection),
+            research_gaps=ResearchGapRepository(connection),
         )

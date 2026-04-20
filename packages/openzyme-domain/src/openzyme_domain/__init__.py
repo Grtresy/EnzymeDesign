@@ -40,6 +40,11 @@ from .control_plane import LaneStatus
 from .control_plane import MemoryEntry
 from .control_plane import MemoryKind
 from .control_plane import MemoryScopeKind
+from .control_plane import ResearchEvidence
+from .control_plane import ResearchGap
+from .control_plane import ResearchSourceRef
+from .control_plane import ResearchSummary
+from .control_plane import ResearchSummaryStatus
 from .control_plane import Session
 from .control_plane import SessionStatus
 from .control_plane import Task
@@ -71,6 +76,11 @@ __all__ = [
     "MemoryEntry",
     "MemoryKind",
     "MemoryScopeKind",
+    "ResearchEvidence",
+    "ResearchGap",
+    "ResearchSourceRef",
+    "ResearchSummary",
+    "ResearchSummaryStatus",
     "Approval",
     "ApprovalStatus",
     "ArtifactKind",

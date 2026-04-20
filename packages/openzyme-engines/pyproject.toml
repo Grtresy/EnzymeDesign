@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
   "openzyme-core",
   "openzyme-domain",
+  "openzyme-graph",
+  "openzyme-runtime",
+  "openzyme-research",
 ]
 
 [project.optional-dependencies]

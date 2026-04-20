@@ -6,8 +6,11 @@ from openzyme_domain import InboxStatus
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import ResearchSummary
+from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
+from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
@@ -23,6 +26,10 @@ def test_control_plane_entity_names_are_stable() -> None:
         "MemoryEntry",
         "AgentMember",
         "EngineInvocation",
+        "ResearchSummary",
+        "ResearchEvidence",
+        "ResearchSourceRef",
+        "ResearchGap",
     )
 
 
@@ -96,3 +103,25 @@ def test_memory_and_inbox_records_use_typed_scope_and_participant_kinds() -> Non
     assert memory.to_dict()["kind"] == "continuity"
     assert message.to_dict()["sender_kind"] == "user"
     assert message.to_dict()["recipient_kind"] == "harness"
+
+
+def test_research_summary_records_use_v3_control_plane_fields() -> None:
+    summary = ResearchSummary(
+        summary_id="inv_001:summary",
+        session_id="sess_001",
+        task_id="task_001",
+        lane_id="lane_001",
+        invocation_id="inv_001",
+        status=ResearchSummaryStatus.NEEDS_CLARIFICATION,
+        completion_reason="clarification_requested",
+        research_brief="Collect catalytic literature",
+        summary="Research needs clarification before continuing.",
+        clarification_question="Which enzyme family should the search focus on?",
+        created_at="2026-04-20T10:00:00+00:00",
+        updated_at="2026-04-20T10:01:00+00:00",
+    )
+
+    payload = summary.to_dict()
+    assert payload["status"] == "needs_clarification"
+    assert payload["invocation_id"] == "inv_001"
+    assert SourceRefKind.WEB_PAGE.value == "web_page"

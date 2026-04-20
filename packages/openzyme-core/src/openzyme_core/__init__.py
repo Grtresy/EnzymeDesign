@@ -1,3 +1,7 @@
+from .engines import CapabilityEngine
+from .engines import DeepResearchTaskPlanner
+from .engines import EngineDescriptor
+from .engines import EngineRegistry
 from .harness import DelegationHandle
 from .harness import DelegationRequest
 from .harness import HarnessDriver
@@ -39,12 +43,18 @@ from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
+from .repositories import EngineDocumentRecord
+from .repositories import EngineDocumentRepository
 from .repositories import EngineInvocationRepository
 from .repositories import InboxMessageRepository
 from .repositories import LaneLifecycleEventRecord
 from .repositories import LaneLifecycleEventRepository
 from .repositories import MemoryEntryRepository
 from .repositories import OwnershipError
+from .repositories import ResearchEvidenceRepository
+from .repositories import ResearchGapRepository
+from .repositories import ResearchSourceRefRepository
+from .repositories import ResearchSummaryRepository
 from .repositories import SessionRepository
 from .repositories import LaneRepository
 from .repositories import TaskRepository
@@ -66,14 +76,20 @@ __all__ = [
     "AgentMemberRepository",
     "ApprovalRequestRepository",
     "BackgroundCompletion",
+    "CapabilityEngine",
     "CorrelationStatus",
     "CorrelationThread",
     "CoreRepositories",
+    "DeepResearchTaskPlanner",
     "DelegationEnvelope",
     "DelegationHandle",
     "DelegationProjection",
     "DelegationProjectionItem",
     "DelegationRequest",
+    "EngineDescriptor",
+    "EngineDocumentRecord",
+    "EngineDocumentRepository",
+    "EngineRegistry",
     "EngineInvocationRepository",
     "HarnessDriver",
     "HarnessEvent",
@@ -94,6 +110,10 @@ __all__ = [
     "MemoryEntryRepository",
     "OwnershipError",
     "ProtocolService",
+    "ResearchEvidenceRepository",
+    "ResearchGapRepository",
+    "ResearchSourceRefRepository",
+    "ResearchSummaryRepository",
     "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",

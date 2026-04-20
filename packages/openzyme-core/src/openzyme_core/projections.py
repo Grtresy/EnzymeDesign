@@ -245,13 +245,52 @@ class SessionProjectionBuilder:
                         payload=invocation.to_dict(),
                     )
                 )
+        for summary in self.repositories.research_summaries.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="research.summary.updated",
+                    created_at=summary.updated_at,
+                    payload=summary.to_dict(),
+                )
+            )
+        for evidence in self.repositories.research_evidence.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="research.evidence.recorded",
+                    created_at=evidence.created_at,
+                    payload=evidence.to_dict(),
+                )
+            )
         return sorted(items, key=lambda item: (item.created_at, item.event_type))
 
     def _build_capabilities_projection(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for invocation in self.repositories.invocations.list_by_session(session_id):
-            grouped.setdefault(invocation.engine_name, []).append(invocation.to_dict())
+            grouped.setdefault(invocation.engine_name, []).append(self._project_invocation(session_id, invocation))
         return grouped
+
+    def _project_invocation(self, session_id: str, invocation: Any) -> dict[str, Any]:
+        projected = invocation.to_dict()
+        documents = self.repositories.engine_documents.list_by_invocation(session_id, invocation.invocation_id)
+        if documents:
+            projected["documents"] = [document.to_dict() for document in documents]
+            output_document = next(
+                (document for document in reversed(documents) if document.document_id == invocation.output_ref),
+                None,
+            )
+            if output_document is not None:
+                projected["output_document"] = output_document.to_dict()
+                projected["output_payload"] = output_document.payload
+        summary = self.repositories.research_summaries.get_by_invocation(session_id, invocation.invocation_id)
+        if summary is not None:
+            evidence = self.repositories.research_evidence.list_by_invocation(session_id, invocation.invocation_id)
+            source_refs = self.repositories.research_source_refs.list_by_invocation(session_id, invocation.invocation_id)
+            gaps = self.repositories.research_gaps.list_by_invocation(session_id, invocation.invocation_id)
+            projected["canonical_summary"] = summary.to_dict()
+            projected["evidence"] = [item.to_dict() for item in evidence]
+            projected["source_refs"] = [item.to_dict() for item in source_refs]
+            projected["gaps"] = [item.to_dict() for item in gaps]
+        return projected
 
 
 __all__ = [

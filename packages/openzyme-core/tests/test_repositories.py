@@ -12,12 +12,19 @@ from openzyme_domain import LaneStatus
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import ResearchEvidence
+from openzyme_domain import ResearchGap
+from openzyme_domain import ResearchSourceRef
+from openzyme_domain import ResearchSummary
+from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
+from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import EngineDocumentRecord
 from openzyme_core import LaneLifecycleEventRecord
 from openzyme_core import OwnershipError
 from openzyme_core import apply_sqlite_migrations
@@ -156,6 +163,74 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     repositories.agents.save(agent)
     repositories.invocations.save(invocation)
     repositories.lane_events.save(lane_event)
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="doc_001",
+            session_id=session.session_id,
+            invocation_id=invocation.invocation_id,
+            document_kind="deep_research_dossier",
+            payload={"summary": "Initial dossier"},
+            created_at="2026-04-16T10:09:31+00:00",
+            updated_at="2026-04-16T10:09:31+00:00",
+        )
+    )
+    repositories.research_summaries.save(
+        ResearchSummary(
+            summary_id="inv_001:summary",
+            session_id=session.session_id,
+            task_id=child_task.task_id,
+            lane_id=lane.lane_id,
+            invocation_id=invocation.invocation_id,
+            status=ResearchSummaryStatus.COMPLETED,
+            completion_reason="research_completed",
+            research_brief="Collect scaffold evidence",
+            summary="Research finished with one evidence item.",
+            clarification_question=None,
+            created_at="2026-04-16T10:09:32+00:00",
+            updated_at="2026-04-16T10:09:32+00:00",
+        )
+    )
+    repositories.research_evidence.save(
+        ResearchEvidence(
+            evidence_id="inv_001:evidence:1",
+            session_id=session.session_id,
+            task_id=child_task.task_id,
+            lane_id=lane.lane_id,
+            invocation_id=invocation.invocation_id,
+            summary_id="inv_001:summary",
+            summary="Scaffold A is literature-backed.",
+            query="scaffold A evidence",
+            confidence_label="high",
+            created_at="2026-04-16T10:09:33+00:00",
+        )
+    )
+    repositories.research_source_refs.save(
+        ResearchSourceRef(
+            source_ref_id="inv_001:evidence:1:source:1",
+            session_id=session.session_id,
+            task_id=child_task.task_id,
+            lane_id=lane.lane_id,
+            invocation_id=invocation.invocation_id,
+            evidence_id="inv_001:evidence:1",
+            title="Paper A",
+            locator="https://example.org/paper-a",
+            kind=SourceRefKind.PAPER,
+            snippet="Thermostability signal",
+            created_at="2026-04-16T10:09:34+00:00",
+        )
+    )
+    repositories.research_gaps.save(
+        ResearchGap(
+            gap_id="inv_001:gap:1",
+            session_id=session.session_id,
+            task_id=child_task.task_id,
+            lane_id=lane.lane_id,
+            invocation_id=invocation.invocation_id,
+            summary_id="inv_001:summary",
+            summary="Need wet-lab validation",
+            created_at="2026-04-16T10:09:35+00:00",
+        )
+    )
 
     assert repositories.sessions.get(session.session_id) == session
     assert repositories.tasks.list_by_session(session.session_id) == [root_task, child_task]
@@ -170,6 +245,19 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.agents.list_by_session(session.session_id) == [agent]
     assert repositories.invocations.list_by_session(session.session_id) == [invocation]
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
+    assert repositories.engine_documents.list_by_invocation(session.session_id, invocation.invocation_id)[0].payload == {
+        "summary": "Initial dossier"
+    }
+    assert repositories.research_summaries.get_by_invocation(session.session_id, invocation.invocation_id).summary == (
+        "Research finished with one evidence item."
+    )
+    assert repositories.research_evidence.list_by_invocation(session.session_id, invocation.invocation_id)[0].query == (
+        "scaffold A evidence"
+    )
+    assert repositories.research_source_refs.list_by_evidence("inv_001:evidence:1")[0].kind is SourceRefKind.PAPER
+    assert repositories.research_gaps.list_by_invocation(session.session_id, invocation.invocation_id)[0].summary == (
+        "Need wet-lab validation"
+    )
 
 
 def test_task_ready_query_filters_out_blocked_work() -> None:

@@ -7,6 +7,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from .models import SourceRefKind
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
@@ -21,6 +23,10 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "MemoryEntry",
     "AgentMember",
     "EngineInvocation",
+    "ResearchSummary",
+    "ResearchEvidence",
+    "ResearchSourceRef",
+    "ResearchGap",
 )
 
 
@@ -134,6 +140,17 @@ class EngineInvocationStatus(StrEnum):
     @property
     def is_terminal(self) -> bool:
         return self in {self.SUCCEEDED, self.FAILED, self.CANCELLED}
+
+
+class ResearchSummaryStatus(StrEnum):
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.COMPLETED, self.PARTIAL, self.NEEDS_CLARIFICATION, self.FAILED}
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,3 +360,76 @@ class EngineInvocation:
         data = asdict(self)
         data["status"] = self.status.value
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSummary:
+    summary_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    status: ResearchSummaryStatus
+    completion_reason: str
+    research_brief: str
+    summary: str
+    created_at: str
+    updated_at: str
+    clarification_question: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchEvidence:
+    evidence_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    summary_id: str
+    summary: str
+    query: str
+    created_at: str
+    confidence_label: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchSourceRef:
+    source_ref_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    evidence_id: str
+    title: str
+    locator: str
+    kind: SourceRefKind
+    created_at: str
+    snippet: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["kind"] = self.kind.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchGap:
+    gap_id: str
+    session_id: str
+    task_id: str | None
+    lane_id: str | None
+    invocation_id: str
+    summary_id: str
+    summary: str
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

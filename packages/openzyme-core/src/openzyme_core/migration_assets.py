@@ -7,6 +7,8 @@ import sqlite3
 MIGRATION_IDS: tuple[str, ...] = (
     "001_v3_control_plane_foundation",
     "002_v3_lane_isolation",
+    "003_v3_engine_documents",
+    "004_v3_research_control_plane",
 )
 
 

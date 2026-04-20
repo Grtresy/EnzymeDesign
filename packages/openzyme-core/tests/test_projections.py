@@ -9,12 +9,19 @@ from openzyme_domain import LaneStatus
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
+from openzyme_domain import ResearchEvidence
+from openzyme_domain import ResearchGap
+from openzyme_domain import ResearchSourceRef
+from openzyme_domain import ResearchSummary
+from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
+from openzyme_domain import SourceRefKind
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import EngineDocumentRecord
 from openzyme_core import ProtocolService
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import apply_sqlite_migrations
@@ -108,6 +115,102 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             started_at="2026-04-17T13:00:05+00:00",
         )
     )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="eng_out_001",
+            session_id=session.session_id,
+            invocation_id="inv_001",
+            document_kind="deep_research_dossier",
+            payload={
+                "status": "completed",
+                "completion_reason": "research_completed",
+                "research_brief": "Research target",
+                "summary": "Normalized evidence dossier",
+                "evidence_items": [],
+                "source_refs": [],
+                "unresolved_gaps": [],
+                "raw_notes": [],
+                "clarification_question": None,
+                "recent_turns": [],
+            },
+            created_at="2026-04-17T13:00:05+00:00",
+            updated_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    repositories.research_summaries.save(
+        ResearchSummary(
+            summary_id="inv_001:summary",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            status=ResearchSummaryStatus.COMPLETED,
+            completion_reason="research_completed",
+            research_brief="Research target",
+            summary="Normalized evidence dossier",
+            clarification_question=None,
+            created_at="2026-04-17T13:00:05+00:00",
+            updated_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    repositories.research_evidence.save(
+        ResearchEvidence(
+            evidence_id="inv_001:evidence:1",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            summary_id="inv_001:summary",
+            summary="Catalytic paper supports the brief",
+            query="Research target",
+            confidence_label="high",
+            created_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    repositories.research_source_refs.save(
+        ResearchSourceRef(
+            source_ref_id="inv_001:evidence:1:source:1",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            evidence_id="inv_001:evidence:1",
+            title="Paper A",
+            locator="https://example.org/paper-a",
+            kind=SourceRefKind.PAPER,
+            snippet="Key result",
+            created_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    repositories.research_gaps.save(
+        ResearchGap(
+            gap_id="inv_001:gap:1",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            summary_id="inv_001:summary",
+            summary="Need wet-lab validation",
+            created_at="2026-04-17T13:00:05+00:00",
+        )
+    )
+    invocation = repositories.invocations.get("inv_001")
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id=invocation.invocation_id,
+            session_id=invocation.session_id,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            engine_name=invocation.engine_name,
+            status=invocation.status,
+            input_ref=invocation.input_ref,
+            output_ref="eng_out_001",
+            approval_id=invocation.approval_id,
+            idempotency_key=invocation.idempotency_key,
+            started_at=invocation.started_at,
+            finished_at=invocation.finished_at,
+        )
+    )
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
@@ -133,6 +236,12 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
     assert workspace["delegation"]["agents"][0]["agent"]["agent_id"] == "agent:researcher"
     assert "deep_research" in workspace["capabilities"]
+    assert workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"] == "Normalized evidence dossier"
+    assert workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"] == "Normalized evidence dossier"
+    assert workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"] == "high"
+    assert workspace["capabilities"]["deep_research"][0]["source_refs"][0]["kind"] == "paper"
+    assert workspace["capabilities"]["deep_research"][0]["gaps"][0]["summary"] == "Need wet-lab validation"
     assert any(item["event_type"] == "approval.requested" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "agent.spawned" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "engine.invocation.started" for item in workspace["activity_feed"])
+    assert any(item["event_type"] == "research.summary.updated" for item in workspace["activity_feed"])
