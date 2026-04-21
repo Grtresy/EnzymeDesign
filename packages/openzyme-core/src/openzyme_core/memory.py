@@ -20,6 +20,8 @@ from openzyme_domain.control_plane import utc_now_iso
 from .repositories import CoreRepositories
 from .skills import SkillDocument
 from .skills import SkillRegistry
+from .conversation import ConversationEntry
+from .conversation import load_recent_conversation
 
 
 def _new_memory_id() -> str:
@@ -58,6 +60,7 @@ class SessionRestoreContext:
     lane_memory: ScopedMemorySummary | None
     task_memory: ScopedMemorySummary | None
     skill_documents: tuple[SkillDocument, ...]
+    recent_conversation: tuple[ConversationEntry, ...]
     focused_lane_id: str | None
     focused_task_id: str | None
 
@@ -75,6 +78,7 @@ class SessionRestoreContext:
             "lane_memory": None if self.lane_memory is None else self.lane_memory.to_dict(),
             "task_memory": None if self.task_memory is None else self.task_memory.to_dict(),
             "skill_documents": [skill.to_dict() for skill in self.skill_documents],
+            "recent_conversation": [entry.to_dict() for entry in self.recent_conversation],
             "focused_lane_id": self.focused_lane_id,
             "focused_task_id": self.focused_task_id,
         }
@@ -276,6 +280,7 @@ class MemoryService:
         if skill_keys:
             registry = registry or SkillRegistry()
             skill_documents = registry.load_skills(skill_keys)
+        recent_conversation = load_recent_conversation(self.repositories, session_id)
         return SessionRestoreContext(
             session=session,
             tasks=tuple(self.repositories.tasks.list_by_session(session_id)),
@@ -289,6 +294,7 @@ class MemoryService:
             lane_memory=lane_memory,
             task_memory=task_memory,
             skill_documents=skill_documents,
+            recent_conversation=recent_conversation,
             focused_lane_id=lane_id,
             focused_task_id=task_id,
         )

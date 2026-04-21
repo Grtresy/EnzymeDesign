@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ENV_FILES = (".env", ".env.local")
 DEFAULT_OPENAI_COMPAT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4"
 DEFAULT_OPENAI_COMPAT_MODEL = "glm-5.1"
+DEFAULT_OPENAI_COMPAT_EXTRA_BODY = {"provider": "bigmodel"}
 DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD = "function_calling"
 DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS = 3
 DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
@@ -61,6 +62,12 @@ def _parse_json_object(value: str | None) -> dict[str, Any] | None:
     if not isinstance(parsed, dict):
         raise ValueError("Expected a JSON object.")
     return parsed
+
+
+def _default_llm_extra_body(*, model: str, base_url: str) -> dict[str, Any] | None:
+    if "open.bigmodel.cn" in base_url or model.startswith("glm-"):
+        return dict(DEFAULT_OPENAI_COMPAT_EXTRA_BODY)
+    return None
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -168,18 +175,23 @@ class LlmSettings:
             or os.getenv("ZHIPUAI_API_KEY")
             or None
         )
+        model = os.getenv("OPENZYME_LLM_MODEL", DEFAULT_OPENAI_COMPAT_MODEL)
+        base_url = os.getenv("OPENZYME_LLM_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL)
+        extra_body = _parse_json_object(os.getenv("OPENZYME_LLM_EXTRA_BODY"))
+        if extra_body is None:
+            extra_body = _default_llm_extra_body(model=model, base_url=base_url)
         return cls(
             api_key=api_key,
-            model=os.getenv("OPENZYME_LLM_MODEL", DEFAULT_OPENAI_COMPAT_MODEL),
-            base_url=os.getenv("OPENZYME_LLM_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL),
-            extra_body=_parse_json_object(os.getenv("OPENZYME_LLM_EXTRA_BODY")),
+            model=model,
+            base_url=base_url,
+            extra_body=extra_body,
             max_tokens=(
                 None
                 if os.getenv("OPENZYME_LLM_MAX_TOKENS") in {None, ""}
                 else _parse_int(os.getenv("OPENZYME_LLM_MAX_TOKENS"), 0)
             ),
             timeout=_parse_optional_float(os.getenv("OPENZYME_LLM_TIMEOUT")),
-            max_retries=_parse_int(os.getenv("OPENZYME_LLM_MAX_RETRIES"), 1),
+            max_retries=_parse_int(os.getenv("OPENZYME_LLM_MAX_RETRIES"), 5),
             temperature=_parse_float(os.getenv("OPENZYME_LLM_TEMPERATURE"), 0.0),
             structured_output_method=os.getenv(
                 "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",

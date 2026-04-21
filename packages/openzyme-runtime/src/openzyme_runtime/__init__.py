@@ -82,6 +82,7 @@ from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
 from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS
 from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from .settings import DEFAULT_OPENAI_COMPAT_BASE_URL
+from .settings import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from .settings import DEFAULT_OPENAI_COMPAT_MODEL
 from .settings import ExecutionSettings
 from .settings import HostApiSettings
@@ -201,6 +202,7 @@ __all__ = [
     "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
+    "DEFAULT_OPENAI_COMPAT_EXTRA_BODY",
     "DEFAULT_OPENAI_COMPAT_MODEL",
     "apply_sqlite_migrations",
     "build_episode_graph_config",

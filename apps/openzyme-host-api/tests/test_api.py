@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
@@ -82,6 +83,264 @@ class FakeResearchAdapter:
         )
 
 
+class FakeHarnessInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_task_create",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_llm_001",
+                            "subject": "Capture design goals",
+                            "description": "Extract the user goal into a tracked task.",
+                            "kind": "general",
+                            "priority": "high",
+                        },
+                    }
+                ],
+            }
+        return {"content": "Created task task_llm_001 and captured the goal.", "tool_calls": []}
+
+
+class FakeHarnessModelFactory:
+    def __init__(self) -> None:
+        self.invoker = FakeHarnessInvoker()
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeHarnessInvoker:
+        assert purpose == "v3_harness_loop"
+        return self.invoker
+
+
+class FakeEchoHarnessInvoker:
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+        del system_prompt, messages, tools
+        return {"content": "Planning started.", "tool_calls": []}
+
+
+class FakeEchoHarnessModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeEchoHarnessInvoker:
+        assert purpose == "v3_harness_loop"
+        return FakeEchoHarnessInvoker()
+
+
+def _message_role(message: object) -> str | None:
+    if isinstance(message, dict):
+        return None if message.get("role") is None else str(message["role"])
+    message_type = type(message).__name__
+    if message_type == "HumanMessage":
+        return "user"
+    if message_type == "AIMessage":
+        return "assistant"
+    if message_type == "ToolMessage":
+        return "tool"
+    return None
+
+
+def _message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
+def _tool_message_name(message: object) -> str | None:
+    if isinstance(message, dict):
+        return None if message.get("name") is None else str(message["name"])
+    return None if getattr(message, "name", None) is None else str(getattr(message, "name"))
+
+
+class FakeEngineHarnessInvoker:
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+        del tools
+        focused_task = next(
+            (
+                line.removeprefix("Focused task: ").strip()
+                for line in system_prompt.splitlines()
+                if line.startswith("Focused task: ")
+            ),
+            "none",
+        )
+        latest_tool_name = None
+        latest_tool_content = ""
+        seen_tool_names: list[str] = []
+        for message in messages:
+            if _message_role(message) != "tool":
+                continue
+            tool_name = _tool_message_name(message)
+            if tool_name is None:
+                continue
+            latest_tool_name = tool_name
+            latest_tool_content = _message_content(message)
+            seen_tool_names.append(tool_name)
+        latest_user_message = next(
+            (_message_content(message) for message in reversed(messages) if _message_role(message) == "user"),
+            "",
+        )
+
+        if focused_task == "task_research_v3":
+            if latest_tool_name is None:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_research_running",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "in_progress"},
+                        },
+                        {
+                            "id": "call_research_start",
+                            "name": "deep_research.start",
+                            "args": {
+                                "task_id": focused_task,
+                                "brief": "Collect papers for the scaffold family.",
+                            },
+                        },
+                    ],
+                }
+            if latest_tool_name == "deep_research.start":
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_research_completed",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "completed"},
+                        }
+                    ],
+                }
+            return {"content": "deep_research.start completed.", "tool_calls": []}
+
+        if focused_task == "task_execution_v3":
+            active_invocations = next(
+                (
+                    line.removeprefix("Active invocations: ").strip()
+                    for line in system_prompt.splitlines()
+                    if line.startswith("Active invocations: ")
+                ),
+                "none",
+            )
+            if latest_tool_name is None and active_invocations == "none":
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_execution_running",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "in_progress"},
+                        },
+                        {
+                            "id": "call_execution_start",
+                            "name": "execution.start",
+                            "args": {
+                                "task_id": focused_task,
+                                "handoff": {
+                                    "execution_goal": "Run fpocket against the candidate structure.",
+                                    "catalog_tool_id": "fpocket",
+                                    "require_approval": True,
+                                },
+                            },
+                        },
+                    ],
+                }
+            if latest_tool_name is None and active_invocations != "none":
+                invocation_id = active_invocations.split(",")[0].strip()
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_execution_resume",
+                            "name": "execution.resume",
+                            "args": {
+                                "invocation_id": invocation_id,
+                                "resolution": "Approval approved by user.",
+                            },
+                        }
+                    ],
+                }
+            if latest_tool_name == "execution.start":
+                return {"content": "execution.start is waiting for approval.", "tool_calls": []}
+            if latest_tool_name == "execution.resume":
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_execution_completed",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "completed"},
+                        }
+                    ],
+                }
+            return {"content": "execution.resume completed.", "tool_calls": []}
+
+        if focused_task == "task_report_v3":
+            if latest_tool_name is None:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_report_running",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "in_progress"},
+                        },
+                        {
+                            "id": "call_reporting_start",
+                            "name": "reporting.start",
+                            "args": {
+                                "task_id": focused_task,
+                                "report_brief": "Produce a concise report for the completed V3 workspace.",
+                            },
+                        },
+                    ],
+                }
+            if latest_tool_name == "reporting.start":
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_update_report_completed",
+                            "name": "task.update",
+                            "args": {"task_id": focused_task, "status": "completed"},
+                        }
+                    ],
+                }
+            return {"content": "reporting.start completed.", "tool_calls": []}
+
+        if "Please track extracting the design goals as a task." in latest_user_message:
+            if latest_tool_name is None:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_task_create",
+                            "name": "task.create",
+                            "args": {
+                                "task_id": "task_llm_001",
+                                "subject": "Capture design goals",
+                                "description": "Extract the user goal into a tracked task.",
+                                "kind": "general",
+                                "priority": "high",
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Created task task_llm_001 and captured the goal.", "tool_calls": []}
+
+        raise AssertionError(f"Unhandled fake harness request for focused task {focused_task!r}")
+
+
+class FakeEngineHarnessModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeEngineHarnessInvoker:
+        assert purpose == "v3_harness_loop"
+        return FakeEngineHarnessInvoker()
+
+
 def _resolve_next_approval(client: TestClient, episode_id: str, decision: str = "approved") -> dict[str, object]:
     pending = client.get(f"/episodes/{episode_id}/pending-actions")
     assert pending.status_code == 200
@@ -130,6 +389,51 @@ def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
             create_app(
                 HostApiDependencies(
                     foundation=foundation,
+                    graph_builder=build_v2_supervisor_graph,
+                )
+            )
+        ),
+        foundation,
+    )
+
+
+def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+    client, foundation = _build_client(monkeypatch)
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
+                    graph_builder=build_v2_supervisor_graph,
+                )
+            )
+        ),
+        foundation,
+    )
+
+
+def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+    client, foundation = _build_client(monkeypatch)
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=replace(foundation, model_factory=FakeEngineHarnessModelFactory()),
+                    graph_builder=build_v2_supervisor_graph,
+                )
+            )
+        ),
+        foundation,
+    )
+
+
+def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+    client, foundation = _build_client(monkeypatch)
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=replace(foundation, model_factory=FakeEchoHarnessModelFactory()),
                     graph_builder=build_v2_supervisor_graph,
                 )
             )
@@ -261,7 +565,7 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
 
 
 def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
-    client, _ = _build_client(monkeypatch)
+    client, _ = _build_v3_echo_llm_client(monkeypatch)
 
     created = client.post(
         "/v3/sessions",
@@ -309,7 +613,7 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     )
     assert message.status_code == 200
     payload = message.json()
-    assert payload["outputs"] == ["Received: Start by planning the literature extraction."]
+    assert payload["outputs"] == ["Planning started."]
     assert {event["event_type"] for event in payload["events"]} >= {
         "conversation.user_message",
         "message.received",
@@ -329,7 +633,7 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
 
 
 def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None:
-    client, _ = _build_client(monkeypatch)
+    client, _ = _build_v3_engine_llm_client(monkeypatch)
 
     created = client.post(
         "/v3/sessions",
@@ -434,6 +738,53 @@ def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None
     assert events.status_code == 200
     assert "event: engine.invocation.started" in events.text
     assert "event: report.generated" in events.text
+
+
+def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monkeypatch) -> None:
+    client, _ = _build_v3_llm_client(monkeypatch)
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_llm",
+            "project_id": "proj_001",
+            "objective": "Capture the user's design goal",
+        },
+    )
+    assert created.status_code == 200
+
+    message = client.post(
+        "/v3/sessions/sess_v3_llm/messages",
+        json={"message": "Please track extracting the design goals as a task."},
+    )
+    assert message.status_code == 200
+    payload = message.json()
+    assert payload["outputs"] == ["Created task task_llm_001 and captured the goal."]
+    assert payload["workspace"]["task_board"]["items"][0]["task"]["task_id"] == "task_llm_001"
+    assert payload["workspace"]["conversation"][0]["content"] == "Please track extracting the design goals as a task."
+    assert payload["workspace"]["conversation"][1]["content"] == "Created task task_llm_001 and captured the goal."
+    assert any(event["event_type"] == "tool.completed" for event in payload["events"])
+
+
+def test_v3_message_ingress_returns_service_unavailable_without_model_factory(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_missing_llm",
+            "project_id": "proj_001",
+            "objective": "Capture the user's design goal",
+        },
+    )
+    assert created.status_code == 200
+
+    message = client.post(
+        "/v3/sessions/sess_v3_missing_llm/messages",
+        json={"message": "Please track extracting the design goals as a task."},
+    )
+    assert message.status_code == 503
+    assert "requires a configured model_factory" in message.json()["detail"]
 
 
 def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:

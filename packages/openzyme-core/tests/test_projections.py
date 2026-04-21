@@ -4,6 +4,9 @@ from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import InboxMessage
+from openzyme_domain import InboxParticipantKind
+from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import MemoryEntry
@@ -32,6 +35,7 @@ from openzyme_core import ProtocolService
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core import persist_conversation_message
 
 
 def _build_repositories() -> CoreRepositories:
@@ -104,6 +108,52 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             source_range="auto:harness_run",
             importance=8,
             created_at="2026-04-17T13:00:04+00:00",
+        )
+    )
+    user_payload_ref = persist_conversation_message(
+        repositories,
+        session_id=session.session_id,
+        message_id="msg_user_001",
+        role="user",
+        content="Start the research task.",
+        created_at="2026-04-17T13:00:00+00:00",
+    )
+    assistant_payload_ref = persist_conversation_message(
+        repositories,
+        session_id=session.session_id,
+        message_id="msg_assistant_001",
+        role="assistant",
+        content="I will create the research task and prepare the lane.",
+        created_at="2026-04-17T13:00:01+00:00",
+    )
+    repositories.inbox.save(
+        InboxMessage(
+            message_id="msg_user_001",
+            session_id=session.session_id,
+            sender="user",
+            sender_kind=InboxParticipantKind.USER,
+            recipient="harness",
+            recipient_kind=InboxParticipantKind.HARNESS,
+            message_type="user_message",
+            correlation_id=None,
+            payload_ref=user_payload_ref,
+            status=InboxStatus.DELIVERED,
+            created_at="2026-04-17T13:00:00+00:00",
+        )
+    )
+    repositories.inbox.save(
+        InboxMessage(
+            message_id="msg_assistant_001",
+            session_id=session.session_id,
+            sender="harness",
+            sender_kind=InboxParticipantKind.HARNESS,
+            recipient="user",
+            recipient_kind=InboxParticipantKind.USER,
+            message_type="assistant_message",
+            correlation_id=None,
+            payload_ref=assistant_payload_ref,
+            status=InboxStatus.DELIVERED,
+            created_at="2026-04-17T13:00:01+00:00",
         )
     )
     repositories.invocations.save(
@@ -369,6 +419,8 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
 
     assert workspace["session"]["session_id"] == session.session_id
+    assert [entry["role"] for entry in workspace["conversation"]] == ["user", "assistant"]
+    assert workspace["conversation"][0]["content"] == "Start the research task."
     assert workspace["task_board"]["next_task_id"] == "task_001"
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"

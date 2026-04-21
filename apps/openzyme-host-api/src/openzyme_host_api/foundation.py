@@ -106,7 +106,7 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
             settings.llm,
             max_tokens=300 if live_policy.max_tokens is None else live_policy.max_tokens,
             timeout=45.0 if live_policy.timeout is None else live_policy.timeout,
-            max_retries=1 if live_policy.max_retries is None else max(1, live_policy.max_retries),
+            max_retries=5 if live_policy.max_retries is None else max(0, live_policy.max_retries),
             structured_output_method=(
                 "function_calling"
                 if live_policy.structured_output_method is None

@@ -87,17 +87,37 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 职责：
 
-- 维护统一 agent loop
+- 维护统一 top-level harness loop
 - 执行工具分发
 - 协调 tasks / lanes / approvals / delegation / background jobs
 - 注入 skills、memory、tool results
 - 维护 subagent spawn / resume / shutdown seam
 - 决定何时调用 capability engines
+- 通过 tool-calling model 驱动顶层消息回合
 
 不负责：
 
 - 直接成为业务记录存储层
 - 直接替代 external runner
+- 在顶层重新引入 graph orchestration
+
+顶层 loop 的默认形态是一个 bounded turn loop：
+
+```text
+restore context
+  -> call top-level model with tool schemas
+  -> inspect tool calls / assistant output
+  -> dispatch tools through harness registry
+  -> feed tool results back into next model turn
+  -> stop when the model emits a final assistant message
+  -> or return a waiting state for approval / delegation
+```
+
+实现约束：
+
+- 顶层 loop 继续由 OpenZyme 自己维护，不使用顶层 LangGraph / agent graph 编排
+- 顶层只复用 LangChain / LangGraph 的模型接入层，例如 chat model 初始化、tool binding、tool-calling response 解析
+- capability engine 内部可以继续使用 LangGraph，但 engine state 不能反向成为产品顶层真状态
 
 ### 3.3 Capability Engines
 
@@ -134,10 +154,32 @@ create session
   -> project workspace snapshot
 ```
 
+### 4.1.1 消息回合路径
+
+```text
+POST /v3/sessions/{session_id}/messages
+  -> persist user message
+  -> build restore context
+  -> call top-level tool-calling model
+  -> if tool calls exist:
+       dispatch tools
+       persist tool side effects
+       feed tool results into the next model turn
+  -> else if assistant output exists:
+       persist assistant message
+       auto compact
+       return completed
+  -> else if approval / delegation wait state exists:
+       persist wait state
+       auto compact
+       return waiting
+```
+
 ### 4.2 恢复路径
 
 ```text
 reload session
+  -> restore conversation
   -> restore task board
   -> restore lane bindings
   -> restore pending approvals
@@ -166,8 +208,10 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `lane` 是默认执行隔离单元
 - `delegation` 默认作为 harness tool / protocol 存在，而不是 prompt 惯例
 - `workspace projection` 是 UI / CLI 唯一合法读模型
+- `workspace.conversation` 是 V3 对话真读模型
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
+- 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 
 ## 6. 推荐 Monorepo 包布局
 

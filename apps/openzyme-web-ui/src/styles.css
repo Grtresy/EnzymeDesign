@@ -97,36 +97,6 @@ body {
   align-items: baseline;
 }
 
-.episode-list {
-  display: grid;
-  gap: 0.65rem;
-}
-
-.episode-chip {
-  width: 100%;
-  border-radius: 16px;
-  padding: 0.8rem 0.9rem;
-  text-align: left;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid var(--line);
-  color: var(--ink);
-}
-
-.episode-chip small {
-  display: block;
-  margin-top: 0.25rem;
-  color: var(--muted);
-}
-
-.episode-chip.is-active {
-  background: var(--accent);
-  color: white;
-}
-
-.episode-chip.is-active small {
-  color: rgba(255, 255, 255, 0.8);
-}
-
 form {
   display: grid;
   gap: 0.9rem;

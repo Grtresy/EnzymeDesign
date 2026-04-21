@@ -40,6 +40,8 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 说明：
 
 - `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation、engine 调用
+- 当 `model_factory` 可用时，该入口默认走真实 top-level LLM harness driver
+- 当 `model_factory` 不可用时，允许回退到 deterministic driver，但不得改变 `/v3` control-plane contract
 - Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 agent loop 通过 harness tools 更新，再通过 workspace projection 展示
 - task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台
 - V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 delegated agent / subtask 状态
@@ -51,6 +53,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 最低字段分区：
 
 - `session`
+- `conversation`
 - `task_board`
 - `lane_board`
 - `pending_approvals`
@@ -64,6 +67,8 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 说明：
 
+- `conversation` 来源于持久化的 user / assistant message content，是 V3 对话的 canonical read model
+- UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline，而不是依赖浏览器本地消息历史
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
 
@@ -88,7 +93,7 @@ V3 Web UI 默认是 conversation-first。
 主交互：
 
 - 用户发送自然语言消息
-- agent loop / harness 决定是否创建 task、绑定 lane、调用 engine、请求 approval
+- top-level LLM harness loop 决定是否创建 task、绑定 lane、调用 engine、请求 approval
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
 
@@ -111,6 +116,10 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 推送单位：
 
+- `conversation.user_message`
+- `conversation.assistant_message`
+- `tool.invoked`
+- `tool.completed`
 - `task.updated`
 - `approval.requested` / `approval.resolved`
 - `lane.created` / `lane.bound` / `lane.removed`

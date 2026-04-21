@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import RuntimeFoundation
 
@@ -242,6 +243,7 @@ class HostApiDependencies:
             repositories=self.v3_repositories,
             event_store=self.v3_event_store,
             engine_registry=self.build_v3_engine_registry(),
+            model_factory=self.foundation.model_factory,
         )
 
     def build_v3_engine_registry(self) -> EngineRegistry:
@@ -268,6 +270,8 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, MissingLlmConfigurationError):
+        return HTTPException(status_code=503, detail=str(exc))
     return HTTPException(status_code=500, detail=str(exc))
 
 

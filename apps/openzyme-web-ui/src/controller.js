@@ -6,6 +6,7 @@ export class WorkspaceController {
     this.onChange = onChange;
     this.state = buildInitialViewState();
     this.stream = null;
+    this.requestVersion = 0;
   }
 
   snapshot() {
@@ -23,21 +24,19 @@ export class WorkspaceController {
     }
   }
 
-  _connectStream(episodeId) {
-    this._disconnectStream();
-    this.stream = this.client.streamEpisode(episodeId, (event) => {
-      if (!this.state.workspace) {
-        return;
-      }
-      this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
-      this._emit();
-    });
+  _beginRequest() {
+    this.requestVersion += 1;
+    return this.requestVersion;
+  }
+
+  _isCurrentRequest(version) {
+    return version === this.requestVersion;
   }
 
   _connectV3Stream(sessionId) {
     this._disconnectStream();
     this.stream = this.client.streamV3Session(sessionId, (event) => {
-      if (!this.state.workspace) {
+      if (!this.state.workspace?.session || this.state.currentSessionId !== sessionId) {
         return;
       }
       this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
@@ -45,101 +44,20 @@ export class WorkspaceController {
     });
   }
 
-  async bootstrap({ projectId = "", episodeId = "" } = {}) {
-    this.state.busy = true;
+  async bootstrap() {
+    this._disconnectStream();
+    this.state.workspace = null;
+    this.state.currentSessionId = "";
+    this.state.errorMessage = "";
+    this.state.busy = false;
     this._emit();
-    try {
-      this.state.projects = await this.client.getProjects();
-      this.state.currentProjectId = projectId || this.state.projects[0]?.project_id || "";
-      if (!this.state.currentProjectId) {
-        this.state.episodes = [];
-        this.state.currentEpisodeId = "";
-        this.state.workspace = null;
-        this._disconnectStream();
-        this.state.errorMessage = "";
-        return;
-      }
-      await this._loadProjectEpisodes(this.state.currentProjectId, {
-        preferredEpisodeId: episodeId,
-        connectStream: true,
-      });
-      this.state.errorMessage = "";
-    } catch (error) {
-      this.state.errorMessage = error.message;
-    } finally {
-      this.state.busy = false;
-      this._emit();
-    }
-  }
-
-  async _loadProjectEpisodes(projectId, { preferredEpisodeId = "", connectStream = false } = {}) {
-    this.state.episodes = await this.client.getProjectEpisodes(projectId);
-    this.state.currentEpisodeId = preferredEpisodeId || this.state.episodes.at(-1)?.episode_id || "";
-    if (!this.state.currentEpisodeId) {
-      this.state.workspace = null;
-      this._disconnectStream();
-      return;
-    }
-    this.state.workspace = await this.client.getWorkspace(this.state.currentEpisodeId);
-    if (connectStream) {
-      this._connectStream(this.state.currentEpisodeId);
-    }
-  }
-
-  async selectProject(projectId) {
-    this.state.busy = true;
-    this._emit();
-    try {
-      this.state.currentProjectId = projectId;
-      await this._loadProjectEpisodes(projectId, { connectStream: true });
-      this.state.errorMessage = "";
-    } catch (error) {
-      this.state.errorMessage = error.message;
-    } finally {
-      this.state.busy = false;
-      this._emit();
-    }
-  }
-
-  async selectEpisode(episodeId) {
-    this.state.busy = true;
-    this._emit();
-    try {
-      this.state.currentEpisodeId = episodeId;
-      this.state.workspace = await this.client.getWorkspace(episodeId);
-      this._connectStream(episodeId);
-      this.state.errorMessage = "";
-    } catch (error) {
-      this.state.errorMessage = error.message;
-    } finally {
-      this.state.busy = false;
-      this._emit();
-    }
-  }
-
-  async createEpisode(payload) {
-    this.state.busy = true;
-    this._emit();
-    try {
-      const response = await this.client.createEpisode({
-        ...payload,
-        project_id: payload.project_id || this.state.currentProjectId,
-      });
-      this.state.workspace = response.workspace;
-      this.state.currentEpisodeId = response.episode_id;
-      this.state.currentProjectId = response.workspace.workflow.project_id;
-      this.state.episodes = await this.client.getProjectEpisodes(this.state.currentProjectId);
-      this.state.errorMessage = "";
-      this._connectStream(response.episode_id);
-    } catch (error) {
-      this.state.errorMessage = error.message;
-    } finally {
-      this.state.busy = false;
-      this._emit();
-    }
   }
 
   async createSession(payload) {
+    if (this.state.busy) {
+      return;
+    }
+    const requestVersion = this._beginRequest();
     this.state.busy = true;
     this._emit();
     try {
@@ -147,6 +65,9 @@ export class WorkspaceController {
         ...payload,
         project_id: payload.project_id || this.state.currentProjectId || "proj_001",
       });
+      if (!this._isCurrentRequest(requestVersion)) {
+        return;
+      }
       this.state.workspace = response.workspace;
       this.state.currentSessionId = response.session_id;
       this.state.currentProjectId = response.workspace.session.project_id;
@@ -156,15 +77,21 @@ export class WorkspaceController {
       this.state.errorMessage = "";
       this._connectV3Stream(response.session_id);
     } catch (error) {
+      if (!this._isCurrentRequest(requestVersion)) {
+        return;
+      }
       this.state.errorMessage = error.message;
     } finally {
+      if (!this._isCurrentRequest(requestVersion)) {
+        return;
+      }
       this.state.busy = false;
       this._emit();
     }
   }
 
   async sendMessage(message) {
-    if (!this.state.currentSessionId) {
+    if (!this.state.currentSessionId || this.state.busy) {
       return;
     }
     this.state.busy = true;
@@ -184,45 +111,28 @@ export class WorkspaceController {
     }
   }
 
-  async resumeEpisode(resumePayload = { approved: true }) {
-    const response = await this.client.resumeEpisode({
-      episode_id: this.state.currentEpisodeId,
-      resume_payload: resumePayload,
-    });
-    this.state.workspace = response.workspace;
-    this._emit();
-  }
-
   async resolveApproval(decision) {
-    if (this.state.currentSessionId && this.state.workspace?.session) {
-      const approvalId = this.state.workspace.pending_approvals?.[0]?.approval_id;
-      if (!approvalId) {
-        return;
-      }
-      this.state.busy = true;
-      this._emit();
-      try {
-        const response = await this.client.resolveV3Approval(approvalId, { decision, actor_ref: "user" });
-        this.state.workspace = response.workspace;
-        for (const event of response.events ?? []) {
-          this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
-        }
-        this.state.errorMessage = "";
-      } catch (error) {
-        this.state.errorMessage = error.message;
-      } finally {
-        this.state.busy = false;
-        this._emit();
-      }
+    if (!this.state.currentSessionId || !this.state.workspace?.session || this.state.busy) {
       return;
     }
-    const approvalId = this.state.workspace?.workflow?.pending_approval?.approval_id;
-    const response = await this.client.resolveApproval({
-      episode_id: this.state.currentEpisodeId,
-      approval_id: approvalId,
-      decision,
-    });
-    this.state.workspace = response.workspace;
+    const approvalId = this.state.workspace.pending_approvals?.[0]?.approval_id;
+    if (!approvalId) {
+      return;
+    }
+    this.state.busy = true;
     this._emit();
+    try {
+      const response = await this.client.resolveV3Approval(approvalId, { decision, actor_ref: "user" });
+      this.state.workspace = response.workspace;
+      for (const event of response.events ?? []) {
+        this.state.workspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+      }
+      this.state.errorMessage = "";
+    } catch (error) {
+      this.state.errorMessage = error.message;
+    } finally {
+      this.state.busy = false;
+      this._emit();
+    }
   }
 }

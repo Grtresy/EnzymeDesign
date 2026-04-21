@@ -5,6 +5,7 @@ from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
 from openzyme_runtime import get_settings
 from openzyme_runtime import reset_settings_cache
@@ -71,7 +72,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.llm.api_key is None
     assert settings.llm.model == DEFAULT_OPENAI_COMPAT_MODEL
     assert settings.llm.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
-    assert settings.llm.extra_body is None
+    assert settings.llm.extra_body == DEFAULT_OPENAI_COMPAT_EXTRA_BODY
     assert settings.llm.max_tokens is None
     assert settings.llm.structured_output_method == DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
     assert (
@@ -185,6 +186,18 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.test.live_llm.structured_output_method == "function_calling"
     assert settings.test.live_llm.structured_output_max_attempts == 2
     assert settings.test.live_llm.structured_output_retry_backoff_seconds == 0.5
+
+
+def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
+    monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENZYME_LLM_EXTRA_BODY", '{"provider":"custom","mode":"strict"}')
+
+    reset_settings_cache()
+    settings = get_settings()
+
+    assert settings.llm.extra_body == {"provider": "custom", "mode": "strict"}
 
 
 def test_settings_cache_can_be_reset(monkeypatch) -> None:

@@ -724,7 +724,7 @@ class InboxMessageRepository:
 
     def list_by_session(self, session_id: str) -> list[InboxMessage]:
         rows = self.connection.execute(
-            "SELECT * FROM inbox_messages WHERE session_id = ? ORDER BY created_at, message_id",
+            "SELECT * FROM inbox_messages WHERE session_id = ? ORDER BY created_at, rowid",
             (session_id,),
         ).fetchall()
         return [self._row_to_message(row) for row in rows]
@@ -735,7 +735,7 @@ class InboxMessageRepository:
             SELECT *
             FROM inbox_messages
             WHERE session_id = ? AND correlation_id = ?
-            ORDER BY created_at, message_id
+            ORDER BY created_at, rowid
             """,
             (session_id, correlation_id),
         ).fetchall()
@@ -747,7 +747,7 @@ class InboxMessageRepository:
             SELECT *
             FROM inbox_messages
             WHERE session_id = ? AND recipient = ?
-            ORDER BY created_at, message_id
+            ORDER BY created_at, rowid
             """,
             (session_id, recipient),
         ).fetchall()

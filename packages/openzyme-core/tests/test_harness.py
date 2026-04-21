@@ -19,6 +19,7 @@ from openzyme_core import CoreRepositories
 from openzyme_core import DeepResearchTaskPlanner
 from openzyme_core import DelegationRequest
 from openzyme_core import HarnessInput
+from openzyme_core import LlmConversationDriver
 from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
 from openzyme_core import MemoryEventBus
@@ -35,6 +36,7 @@ from openzyme_core import connect_sqlite
 from openzyme_core import run_agent_harness_loop
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineRegistry
+from openzyme_core import builtin_tool_descriptors
 
 
 def _build_repositories() -> CoreRepositories:
@@ -761,3 +763,58 @@ def test_harness_default_registry_includes_task_and_lane_tools() -> None:
         "task.bound_to_lane",
         "tool.completed",
     }
+
+
+class FakeToolCallingInvoker:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
+        self.calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": list(tools)})
+        return self.response
+
+
+class FakeModelFactory:
+    def __init__(self, response: object) -> None:
+        self.invoker = FakeToolCallingInvoker(response)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
+        assert purpose == "v3_harness_loop"
+        return self.invoker
+
+
+def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
+    tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
+    assert {"task.create", "task.update", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
+
+
+def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_task", "name": "task.create", "args": {"task_id": "task_002", "subject": "Plan", "description": "Plan next step"}},
+                ],
+            }
+        )
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="plan work"), ())
+
+    assert step.assistant_message is None
+    assert step.tool_invocations[0].tool_name == "task.create"
+    assert step.tool_invocations[0].arguments["task_id"] == "task_002"

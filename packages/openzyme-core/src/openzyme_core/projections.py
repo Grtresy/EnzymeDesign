@@ -12,6 +12,7 @@ from openzyme_domain import MemoryKind
 from .repositories import CoreRepositories
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
+from .conversation import build_conversation_projection
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class DelegationProjection:
 @dataclass(frozen=True, slots=True)
 class SessionWorkspaceProjection:
     session: dict[str, Any]
+    conversation: tuple[dict[str, Any], ...]
     task_board: dict[str, Any]
     lane_board: dict[str, Any]
     pending_approvals: tuple[dict[str, Any], ...]
@@ -75,6 +77,7 @@ class SessionWorkspaceProjection:
     def to_dict(self) -> dict[str, Any]:
         return {
             "session": self.session,
+            "conversation": list(self.conversation),
             "task_board": self.task_board,
             "lane_board": self.lane_board,
             "pending_approvals": list(self.pending_approvals),
@@ -98,6 +101,7 @@ class SessionProjectionBuilder:
             raise ValueError(f"session {session_id!r} does not exist")
         task_board = TaskBoardService(self.repositories).build_projection(session_id).to_dict()
         lane_board = LaneManager(self.repositories).build_projection(session_id).to_dict()
+        conversation = tuple(entry.to_dict() for entry in build_conversation_projection(self.repositories, session_id))
         approvals = tuple(approval.to_dict() for approval in self.repositories.approvals.list_pending_by_session(session_id))
         inbox = tuple(message.to_dict() for message in self.repositories.inbox.list_by_session(session_id))
         memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
@@ -108,6 +112,7 @@ class SessionProjectionBuilder:
         capabilities = self._build_capabilities_projection(session_id)
         return SessionWorkspaceProjection(
             session=session.to_dict(),
+            conversation=conversation,
             task_board=task_board,
             lane_board=lane_board,
             pending_approvals=approvals,

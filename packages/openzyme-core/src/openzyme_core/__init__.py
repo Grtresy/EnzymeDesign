@@ -2,6 +2,10 @@ from .engines import CapabilityEngine
 from .engines import DeepResearchTaskPlanner
 from .engines import EngineDescriptor
 from .engines import EngineRegistry
+from .conversation import ConversationEntry
+from .conversation import build_conversation_projection
+from .conversation import load_recent_conversation
+from .conversation import persist_conversation_message
 from .harness import DelegationHandle
 from .harness import DelegationRequest
 from .harness import HarnessDriver
@@ -67,12 +71,16 @@ from .skills import SkillDescriptor
 from .skills import SkillDocument
 from .skills import SkillRegistry
 from .skills import register_skill_tools
+from .tool_catalog import ToolDescriptor
+from .tool_catalog import builtin_tool_descriptors
+from .tool_catalog import top_level_tool_descriptors
 from .task_board import TaskBoardBucket
 from .task_board import TaskBoardItem
 from .task_board import TaskBoardProjection
 from .task_board import TaskBoardService
 from .task_board import TaskMutation
 from .task_board import register_task_board_tools
+from .llm_driver import LlmConversationDriver
 
 __all__ = [
     "ActivityFeedItem",
@@ -82,6 +90,7 @@ __all__ = [
     "CapabilityEngine",
     "CorrelationStatus",
     "CorrelationThread",
+    "ConversationEntry",
     "CoreRepositories",
     "DeepResearchTaskPlanner",
     "DelegationEnvelope",
@@ -107,6 +116,7 @@ __all__ = [
     "LaneRepository",
     "LaneProjection",
     "LaneProjectionItem",
+    "LlmConversationDriver",
     "MIGRATION_IDS",
     "MemoryEventBus",
     "MemoryService",
@@ -139,15 +149,21 @@ __all__ = [
     "TaskBoardProjection",
     "TaskBoardService",
     "TaskMutation",
+    "ToolDescriptor",
     "ToolInvocation",
     "ToolRegistry",
     "ToolResult",
     "apply_sqlite_migrations",
+    "build_conversation_projection",
+    "builtin_tool_descriptors",
     "connect_sqlite",
     "get_migration_sql",
+    "load_recent_conversation",
+    "persist_conversation_message",
     "register_memory_tools",
     "register_skill_tools",
     "register_task_board_tools",
     "register_lane_tools",
     "run_agent_harness_loop",
+    "top_level_tool_descriptors",
 ]

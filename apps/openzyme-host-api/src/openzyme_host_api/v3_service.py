@@ -12,6 +12,7 @@ from openzyme_core import HarnessInput
 from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
+from openzyme_core import LlmConversationDriver
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
@@ -31,6 +32,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
+from openzyme_runtime import MissingLlmConfigurationError
 
 
 def _new_id(prefix: str) -> str:
@@ -257,6 +259,7 @@ class V3HostApiService:
     repositories: CoreRepositories
     event_store: V3EventStore
     engine_registry: EngineRegistry | None = None
+    model_factory: Any | None = None
 
     def create_session(
         self,
@@ -324,6 +327,7 @@ class V3HostApiService:
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
+        driver = self._require_llm_driver()
         event_bus = MemoryEventBus()
         result = run_agent_harness_loop(
             self.repositories,
@@ -333,7 +337,7 @@ class V3HostApiService:
                 max_steps=max_steps,
                 restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id, skill_keys=skill_keys),
             ),
-            driver=EngineBackedConversationDriver(message) if self.engine_registry is not None else EchoConversationDriver(message),
+            driver=driver,
             engine_registry=self.engine_registry,
             event_sink=event_bus,
         )
@@ -361,6 +365,7 @@ class V3HostApiService:
             raise ValueError(f"approval {approval_id!r} is not pending")
         if decision not in {"approved", "rejected"}:
             raise ValueError("decision must be 'approved' or 'rejected'")
+        driver = self._require_llm_driver()
         result = run_agent_harness_loop(
             self.repositories,
             HarnessInput(
@@ -372,7 +377,7 @@ class V3HostApiService:
                 ),
                 restore_focus=RestoreFocus(task_id=approval.task_id, lane_id=approval.lane_id),
             ),
-            driver=EngineBackedConversationDriver(None) if self.engine_registry is not None else EchoConversationDriver(None),
+            driver=driver,
             engine_registry=self.engine_registry,
         )
         events = [
@@ -394,6 +399,13 @@ class V3HostApiService:
             events=events,
             workspace=self.workspace(approval.session_id),
         )
+
+    def _require_llm_driver(self) -> LlmConversationDriver:
+        if self.model_factory is None:
+            raise MissingLlmConfigurationError(
+                "V3 top-level harness loop requires a configured model_factory; deterministic fallback has been removed."
+            )
+        return LlmConversationDriver(self.model_factory, engine_registry=self.engine_registry)
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = TaskBoardService(self.repositories).create_task(

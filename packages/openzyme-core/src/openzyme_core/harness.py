@@ -29,6 +29,7 @@ from openzyme_domain.control_plane import utc_now_iso
 
 from .engines import EngineRegistry
 from .repositories import CoreRepositories
+from .conversation import persist_conversation_message
 
 
 def _new_id(prefix: str) -> str:
@@ -326,9 +327,22 @@ def _persist_message(
     message_type: str,
     payload_ref: str | None = None,
     correlation_id: str | None = None,
+    content: str | None = None,
 ) -> InboxMessage:
+    message_id = _new_id("msg")
+    created_at = utc_now_iso()
+    if content is not None and payload_ref is None:
+        role = "assistant" if message_type == "assistant_message" else "user"
+        payload_ref = persist_conversation_message(
+            repositories,
+            session_id=session_id,
+            message_id=message_id,
+            role=role,
+            content=content,
+            created_at=created_at,
+        )
     message = InboxMessage(
-        message_id=_new_id("msg"),
+        message_id=message_id,
         session_id=session_id,
         sender=sender,
         sender_kind=sender_kind,
@@ -338,7 +352,7 @@ def _persist_message(
         correlation_id=correlation_id,
         payload_ref=payload_ref,
         status=InboxStatus.DELIVERED,
-        created_at=utc_now_iso(),
+        created_at=created_at,
     )
     repositories.inbox.save(message)
     return message
@@ -557,6 +571,7 @@ def run_agent_harness_loop(
             recipient="harness",
             recipient_kind=InboxParticipantKind.HARNESS,
             message_type="user_message",
+            content=harness_input.message,
         )
         context.emit(
             "message.received",
@@ -665,6 +680,7 @@ def run_agent_harness_loop(
                 recipient=harness_input.sender,
                 recipient_kind=harness_input.sender_kind,
                 message_type="assistant_message",
+                content=step.assistant_message,
             )
             outputs.append(step.assistant_message)
             context.emit(

@@ -38,7 +38,7 @@ def _settings() -> OpenZymeSettings:
             extra_body={"provider": "bigmodel"},
             max_tokens=800,
             timeout=30.0,
-            max_retries=1,
+            max_retries=5,
             temperature=0.0,
             structured_output_method="function_calling",
             structured_output_max_attempts=3,
@@ -164,7 +164,7 @@ def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
 
     assert constrained.llm.max_tokens == 256
     assert constrained.llm.timeout == 12.0
-    assert constrained.llm.max_retries == 1
+    assert constrained.llm.max_retries == 0
     assert constrained.llm.structured_output_method == "function_calling"
     assert constrained.llm.structured_output_max_attempts == 2
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.25
@@ -230,6 +230,8 @@ def test_build_model_factory_from_env_uses_bigmodel_defaults(monkeypatch) -> Non
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "test-key")
     monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_EXTRA_BODY", raising=False)
+    monkeypatch.setenv("OPENZYME_LLM_MAX_RETRIES", "5")
 
     factory = build_model_factory_from_env()
 
@@ -237,4 +239,6 @@ def test_build_model_factory_from_env_uses_bigmodel_defaults(monkeypatch) -> Non
     assert factory.model == DEFAULT_OPENAI_COMPAT_MODEL
     assert factory.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
     assert factory.api_key == "test-key"
+    assert factory.extra_body == {"provider": "bigmodel"}
+    assert factory.max_retries == 5
     reset_settings_cache()
