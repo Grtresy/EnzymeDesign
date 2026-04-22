@@ -7,16 +7,31 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function renderEmptyState() {
+const sectionLabels = {
+  conversation: "Conversation",
+  tasks: "Tasks",
+  lanes: "Lanes",
+  outputs: "Outputs",
+  capabilities: "Capabilities",
+  activity: "Activity",
+};
+
+function renderEmptyConversation(viewState) {
   return `
-    <section class="workspace-board v3-workspace">
-      <article class="panel hero-panel chat-hero">
-        <p class="eyebrow">OpenZyme V3</p>
-        <h2>Session Workspace</h2>
-        <p class="status-line">Create a session, then send a message to the harness.</p>
-      </article>
-    </section>
+    <div class="empty-chat">
+      <p class="eyebrow">OpenZyme V3</p>
+      <h2>Select a session or create a new one</h2>
+      <p class="status-line">The center column stays focused on the conversation. Operational detail lives in the inspector.</p>
+      ${viewState?.errors?.session ? `<p class="error-banner" role="alert">${escapeHtml(viewState.errors.session)}</p>` : ""}
+    </div>
   `;
+}
+
+function renderPanelError(message) {
+  if (!message) {
+    return "";
+  }
+  return `<p class="error-banner" role="alert">${escapeHtml(message)}</p>`;
 }
 
 export function renderV3TaskBoard(workspace) {
@@ -71,9 +86,20 @@ export function renderV3Approvals(workspace, viewState) {
                 <div><dt>Task</dt><dd>${escapeHtml(approval.task_id ?? "none")}</dd></div>
                 <div><dt>Lane</dt><dd>${escapeHtml(approval.lane_id ?? "none")}</dd></div>
               </dl>
+              ${renderPanelError(viewState.errors.approvals?.[approval.approval_id] ?? "")}
               <div class="action-row">
-                <button type="button" data-v3-approval-decision="approved" ${viewState.busy ? "disabled" : ""}>Approve</button>
-                <button type="button" data-v3-approval-decision="rejected" ${viewState.busy ? "disabled" : ""}>Reject</button>
+                <button
+                  type="button"
+                  data-v3-approval-decision="approved"
+                  data-approval-id="${escapeHtml(approval.approval_id)}"
+                  ${viewState.pendingApprovalId === approval.approval_id ? "disabled" : ""}
+                >Approve</button>
+                <button
+                  type="button"
+                  data-v3-approval-decision="rejected"
+                  data-approval-id="${escapeHtml(approval.approval_id)}"
+                  ${viewState.pendingApprovalId === approval.approval_id ? "disabled" : ""}
+                >Reject</button>
               </div>
             </article>
           `,
@@ -93,7 +119,7 @@ export function renderV3Conversation(workspace) {
       ${conversation
         .map(
           (item) => `
-            <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}">
+            <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}" data-message-id="${escapeHtml(item.message_id ?? item.event_id ?? "")}">
               <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}</span>
               <p>${escapeHtml(item.content)}</p>
             </li>
@@ -185,114 +211,257 @@ export function renderV3Activity(workspace) {
   return `
     <ul class="activity-list">
       ${events
-        .slice(0, 8)
+        .slice(0, 10)
         .map((event) => `<li><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(event.created_at ?? "")}</span></li>`)
         .join("")}
     </ul>
   `;
 }
 
-export function renderV3Hero(workspace) {
+function renderSessionFacts(workspace) {
   const session = workspace.session ?? {};
   return `
-    <p class="eyebrow">OpenZyme V3</p>
-    <h2>${escapeHtml(session.objective)}</h2>
-    <p class="status-line">Session: <strong>${escapeHtml(session.session_id)}</strong> · Status: <strong>${escapeHtml(session.status)}</strong></p>
+    <dl class="facts">
+      <div><dt>Session</dt><dd>${escapeHtml(session.session_id)}</dd></div>
+      <div><dt>Status</dt><dd>${escapeHtml(session.status)}</dd></div>
+      <div><dt>Project</dt><dd>${escapeHtml(session.project_id)}</dd></div>
+      <div><dt>Created</dt><dd>${escapeHtml(session.created_at ?? "")}</dd></div>
+      <div><dt>Updated</dt><dd>${escapeHtml(session.updated_at ?? "")}</dd></div>
+    </dl>
   `;
 }
 
-export function renderV3Workspace(workspace, viewState) {
+export function renderInspectorContent(viewState) {
+  const workspace = viewState.workspace;
+  if (!workspace?.session) {
+    return `<p class="empty-copy">Select a session to inspect structured state.</p>`;
+  }
+  switch (viewState.currentSection) {
+    case "tasks":
+      return renderV3TaskBoard(workspace);
+    case "lanes":
+      return renderV3Lanes(workspace);
+    case "outputs":
+      return renderV3Outputs(workspace);
+    case "capabilities":
+      return renderV3Capabilities(workspace);
+    case "activity":
+      return renderV3Activity(workspace);
+    default:
+      return renderSessionFacts(workspace);
+  }
+}
+
+export function renderSidebarStatus(viewState) {
   return `
-    <section class="workspace-board v3-workspace">
-      <article class="panel hero-panel chat-hero" id="v3-hero-panel">
-        ${renderV3Hero(workspace)}
-      </article>
-      <article class="panel pane chat-pane">
-        <h3>Conversation</h3>
-        <div id="v3-conversation-list">${renderV3Conversation(workspace)}</div>
-        <div id="v3-approval-stack">${renderV3Approvals(workspace, viewState)}</div>
-        <form id="message-form" class="message-form" autocomplete="off">
-          <input
-            name="message"
-            placeholder="Send a message to the harness"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            ${viewState.busy ? "disabled" : ""}
-            required
-          />
-          <button type="submit" ${viewState.busy ? "disabled" : ""}>Send</button>
+    <p class="status-line">Project <strong>${escapeHtml(viewState.currentProjectId)}</strong></p>
+    ${renderPanelError(viewState.errors?.createSession ?? "")}
+  `;
+}
+
+export function renderSessionTree(viewState) {
+  if (viewState.errors?.sidebar || viewState.errors?.session) {
+    return `
+      ${renderPanelError(viewState.errors?.sidebar || viewState.errors?.session)}
+      ${viewState.sessionSummaries.length ? "" : `<p class="empty-copy">Sessions could not be loaded.</p>`}
+    `;
+  }
+  if (!viewState.sessionSummaries.length) {
+    return `<p class="empty-copy">No sessions yet.</p>`;
+  }
+  return `
+    <ul class="tree-list" role="tree">
+      ${viewState.sessionSummaries
+        .map((session) => {
+          const isExpanded = viewState.sidebarExpandedSessionIds.includes(session.session_id);
+          const isActive = viewState.currentSessionId === session.session_id;
+          return `
+            <li class="tree-node session-node" role="treeitem" aria-expanded="${isExpanded}">
+              <div class="session-row ${isActive ? "is-active" : ""}">
+                <button
+                  type="button"
+                  class="tree-toggle"
+                  data-action="toggle-session"
+                  data-session-id="${escapeHtml(session.session_id)}"
+                  aria-label="${isExpanded ? "Collapse" : "Expand"}"
+                >${isExpanded ? "▾" : "▸"}</button>
+                <button
+                  type="button"
+                  class="session-select"
+                  data-action="select-session"
+                  data-session-id="${escapeHtml(session.session_id)}"
+                  ${viewState.sidebarBusy ? "disabled" : ""}
+                >
+                  <strong>${escapeHtml(session.title || session.objective)}</strong>
+                  <span>${escapeHtml(session.latest_message_preview || session.objective)}</span>
+                  <small>${escapeHtml(session.status)}${session.pending_approval_count ? ` · ${session.pending_approval_count} approval` : ""}</small>
+                </button>
+              </div>
+              ${
+                isExpanded
+                  ? `<ul class="section-tree" role="group">
+                      ${Object.entries(sectionLabels)
+                        .map(
+                          ([sectionKey, label]) => `
+                            <li>
+                              <button
+                                type="button"
+                                class="section-select ${isActive && viewState.currentSection === sectionKey ? "is-current" : ""}"
+                                data-action="select-section"
+                                data-session-id="${escapeHtml(session.session_id)}"
+                                data-section="${escapeHtml(sectionKey)}"
+                                ${viewState.sidebarBusy ? "disabled" : ""}
+                              >${escapeHtml(label)}</button>
+                            </li>
+                          `,
+                        )
+                        .join("")}
+                    </ul>`
+                  : ""
+              }
+            </li>
+          `;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+export function renderConversationHeader(viewState) {
+  const workspace = viewState.workspace;
+  if (!workspace?.session) {
+    return "";
+  }
+  return `
+    <div>
+      <p class="eyebrow">Conversation</p>
+      <h2>${escapeHtml(workspace.session.title ?? workspace.session.objective)}</h2>
+      <p class="status-line">${escapeHtml(workspace.session.objective)}</p>
+    </div>
+    <div class="header-status-stack">
+      ${viewState.refreshingWorkspace ? `<span class="status-chip">Refreshing…</span>` : ""}
+      <div class="session-badge">${escapeHtml(workspace.session.status)}</div>
+    </div>
+  `;
+}
+
+export function renderComposerStatus(viewState) {
+  if (viewState.errors?.message) {
+    return renderPanelError(viewState.errors.message);
+  }
+  return `<span class="status-line">Selected section: ${escapeHtml(sectionLabels[viewState.currentSection] ?? "Conversation")}</span>`;
+}
+
+export function renderInspectorHeader(viewState) {
+  return `
+    <h3>${escapeHtml(sectionLabels[viewState.currentSection] ?? "Conversation")}</h3>
+    ${
+      viewState.workspace?.session
+        ? `<span>${escapeHtml(viewState.workspace.session.session_id)}</span>`
+        : `<span>No session</span>`
+    }
+  `;
+}
+
+export function renderSidebar(viewState) {
+  return `
+    <section class="sidebar-shell">
+      <div class="panel sidebar-panel">
+        <p class="eyebrow">OpenZyme V3</p>
+        <h1>Workspace</h1>
+        <div id="sidebar-status-root">${renderSidebarStatus(viewState)}</div>
+        <form id="create-session-form" class="compact-form" autocomplete="off">
+          <input type="hidden" name="project_id" value="${escapeHtml(viewState.currentProjectId)}" />
+          <label>
+            Title
+            <input
+              name="title"
+              placeholder="Optional session title"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            />
+          </label>
+          <label>
+            Objective
+            <textarea
+              name="objective"
+              rows="3"
+              placeholder="What should this session accomplish?"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              required
+            ></textarea>
+          </label>
+          <button id="create-session-submit" type="submit" ${viewState.createSessionBusy ? "disabled" : ""}>New Session</button>
         </form>
-      </article>
-      <article class="panel pane task-pane">
-        <h3>Task Board</h3>
-        <div id="v3-task-board">${renderV3TaskBoard(workspace)}</div>
-      </article>
-      <article class="panel pane lane-pane">
-        <h3>Lanes</h3>
-        <div id="v3-lane-board">${renderV3Lanes(workspace)}</div>
-      </article>
-      <article class="panel pane activity-pane">
-        <h3>Activity</h3>
-        <div id="v3-activity-feed">${renderV3Activity(workspace)}</div>
-      </article>
-      <article class="panel pane report-pane">
-        <h3>Outputs</h3>
-        <div id="v3-outputs">${renderV3Outputs(workspace)}</div>
-      </article>
-      <article class="panel pane capability-pane">
-        <h3>Capabilities</h3>
-        <div id="v3-capabilities">${renderV3Capabilities(workspace)}</div>
-      </article>
+      </div>
+      <div class="panel tree-panel">
+        <div class="tree-header">
+          <h3>Sessions</h3>
+          <span id="session-count-root">${viewState.sidebarBusy ? "Loading..." : `${viewState.sessionSummaries.length}`}</span>
+        </div>
+        <div id="sidebar-tree-root">${renderSessionTree(viewState)}</div>
+      </div>
     </section>
   `;
 }
 
-export function renderFormPanel(viewState) {
+export function renderMainColumn(viewState) {
+  const workspace = viewState.workspace;
+  if (!workspace?.session) {
+    return renderEmptyConversation(viewState);
+  }
   return `
-    <section class="panel form-panel">
-      <h1>OpenZyme V3</h1>
-      <p class="status-line">Session-first workspace for the harness control plane.</p>
-      <form id="create-session-form" autocomplete="off">
-        <label>
-          Project ID
-          <input
-            name="project_id"
-            value="${escapeHtml(viewState.currentProjectId || "proj_001")}"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-        </label>
-        <label>
-          Objective
-          <input
-            name="objective"
-            value="Plan an enzyme design workflow from a paper"
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            required
-          />
-        </label>
-        <button type="submit" ${viewState.busy ? "disabled" : ""}>Create Session</button>
+    <section class="main-column-shell">
+      <header class="panel conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
+      <section class="panel conversation-panel">
+        <div id="conversation-list-root">${renderV3Conversation(workspace)}</div>
+        <div id="approval-stack-root">${renderV3Approvals(workspace, viewState)}</div>
+      </section>
+      <form id="message-form" class="panel composer-panel" autocomplete="off">
+        <textarea
+          name="message"
+          rows="3"
+          placeholder="Message the harness"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          ${viewState.messageBusy ? "disabled" : ""}
+          required
+        ></textarea>
+        <div class="composer-actions">
+          <div id="composer-status-root">${renderComposerStatus(viewState)}</div>
+          <button id="message-submit" type="submit" ${viewState.messageBusy ? "disabled" : ""}>Send</button>
+        </div>
       </form>
-      ${viewState.errorMessage ? `<p class="error-banner">${escapeHtml(viewState.errorMessage)}</p>` : ""}
     </section>
+  `;
+}
+
+export function renderInspector(viewState) {
+  return `
+    <section class="panel inspector-panel">
+      <div class="tree-header" id="inspector-header-root">${renderInspectorHeader(viewState)}</div>
+      <div id="inspector-content-root">${renderInspectorContent(viewState)}</div>
+    </section>
+  `;
+}
+
+export function renderAppShell(viewState) {
+  return `
+    <main class="app-shell chat-workspace">
+      <section id="sidebar-column-root">${renderSidebar(viewState)}</section>
+      <section id="main-column-root">${renderMainColumn(viewState)}</section>
+      <section id="inspector-column-root">${renderInspector(viewState)}</section>
+    </main>
   `;
 }
 
 export function renderApp(viewState) {
-  return `
-    <main class="app-shell">
-      <div id="form-panel-root">${renderFormPanel(viewState)}</div>
-      <div id="workspace-shell-root">
-        ${viewState.workspace?.session ? renderV3Workspace(viewState.workspace, viewState) : renderEmptyState()}
-      </div>
-    </main>
-  `;
+  return renderAppShell(viewState);
 }

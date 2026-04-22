@@ -766,6 +766,46 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monk
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
 
 
+def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_count(monkeypatch) -> None:
+    client, _ = _build_v3_llm_client(monkeypatch)
+
+    created_a = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_list_a",
+            "project_id": "proj_001",
+            "objective": "First session",
+            "title": "Session A",
+        },
+    )
+    created_b = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_list_b",
+            "project_id": "proj_001",
+            "objective": "Second session",
+            "title": "Session B",
+        },
+    )
+    assert created_a.status_code == 200
+    assert created_b.status_code == 200
+
+    message = client.post(
+        "/v3/sessions/sess_v3_list_a/messages",
+        json={"message": "Please track extracting the design goals as a task."},
+    )
+    assert message.status_code == 200
+
+    listing = client.get("/v3/projects/proj_001/sessions")
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert [item["session_id"] for item in payload] == ["sess_v3_list_a", "sess_v3_list_b"]
+    assert payload[0]["title"] == "Session A"
+    assert payload[0]["latest_message_preview"] == "Created task task_llm_001 and captured the goal."
+    assert payload[0]["pending_approval_count"] == 0
+    assert payload[0]["updated_at"] >= payload[1]["updated_at"]
+
+
 def test_v3_message_ingress_returns_service_unavailable_without_model_factory(monkeypatch) -> None:
     client, _ = _build_client(monkeypatch)
 

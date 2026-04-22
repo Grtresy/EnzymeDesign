@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 
 import { WorkspaceController } from "../src/controller.js";
 
-function buildV3Workspace() {
+function buildV3Workspace(sessionId = "sess_001", title = "Plan with V3") {
   return {
     session: {
-      session_id: "sess_001",
+      session_id: sessionId,
       project_id: "proj_001",
-      objective: "Plan with V3",
+      title,
+      objective: title,
       status: "active",
+      created_at: "2026-04-21T00:00:00+00:00",
+      updated_at: "2026-04-21T00:00:00+00:00",
     },
     task_board: { items: [] },
     lane_board: { lanes: [] },
@@ -38,63 +41,48 @@ function buildV3ApprovalWorkspace() {
   };
 }
 
-test("workspace controller bootstraps into an empty v3-only state", async () => {
-  const controller = new WorkspaceController({});
-  controller.state.workspace = buildV3Workspace();
-  controller.state.currentSessionId = "sess_001";
+test("workspace controller bootstraps with project session summaries", async () => {
+  const fakeClient = {
+    async listV3Sessions() {
+      return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
+    },
+  };
 
+  const controller = new WorkspaceController(fakeClient);
   await controller.bootstrap();
 
-  assert.equal(controller.state.currentSessionId, "");
-  assert.equal(controller.state.workspace, null);
-  assert.equal(controller.state.busy, false);
+  assert.equal(controller.state.currentProjectId, "proj_001");
+  assert.equal(controller.state.sessionSummaries.length, 1);
+  assert.equal(controller.state.sidebarBusy, false);
 });
 
-test("workspace controller creates v3 chat sessions and applies message events", async () => {
+test("workspace controller creates v3 sessions and opens the conversation view", async () => {
   let streamHandler = null;
   const fakeClient = {
+    async listV3Sessions() {
+      return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
+    },
     async createV3Session() {
       return {
         session_id: "sess_001",
         workspace: buildV3Workspace(),
-        events: [{ event_id: "evt_session", event_type: "session.created", payload: {}, created_at: "now" }],
+        events: [],
       };
     },
     streamV3Session(_sessionId, onEvent) {
       streamHandler = onEvent;
       return { close() {} };
     },
-    async postV3Message() {
-      return {
-        session_id: "sess_001",
-        status: "completed",
-        outputs: ["Received: hello"],
-        workspace: buildV3Workspace(),
-        events: [
-          {
-            event_id: "evt_user",
-            event_type: "conversation.user_message",
-            payload: { content: "hello" },
-            created_at: "now",
-          },
-          {
-            event_id: "evt_agent",
-            event_type: "conversation.assistant_message",
-            payload: { content: "Received: hello" },
-            created_at: "now",
-          },
-        ],
-      };
+    async getV3Session() {
+      return { session: buildV3Workspace().session, workspace: buildV3Workspace() };
     },
   };
 
   const controller = new WorkspaceController(fakeClient);
   await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
   assert.equal(controller.state.currentSessionId, "sess_001");
-
-  await controller.sendMessage("hello");
-  assert.equal(controller.state.workspace.conversation.length, 2);
-  assert.equal(controller.state.workspace.conversation[1].content, "Received: hello");
+  assert.equal(controller.state.currentSection, "conversation");
+  assert.deepEqual(controller.state.sidebarExpandedSessionIds, ["sess_001"]);
 
   streamHandler?.({
     event_id: "evt_tool",
@@ -103,11 +91,45 @@ test("workspace controller creates v3 chat sessions and applies message events",
     created_at: "now",
   });
   assert.equal(controller.state.workspace.activity_feed[0].event_type, "tool.completed");
+
+  const activityFeedRef = controller.state.workspace.activity_feed;
+  streamHandler?.({
+    event_id: "evt_tool",
+    event_type: "tool.completed",
+    payload: { tool_name: "task.create" },
+    created_at: "now",
+  });
+  assert.equal(controller.state.workspace.activity_feed, activityFeedRef);
 });
 
-test("workspace controller resolves v3 approvals through the session control plane", async () => {
+test("selectSession loads a workspace and can switch inspector sections", async () => {
+  const fakeClient = {
+    async listV3Sessions() {
+      return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
+    },
+    async getV3Session() {
+      return { session: buildV3Workspace().session, workspace: buildV3Workspace() };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  await controller.selectSession("sess_001", "tasks");
+  assert.equal(controller.state.currentSessionId, "sess_001");
+  assert.equal(controller.state.currentSection, "tasks");
+
+  controller.selectSection("activity");
+  assert.equal(controller.state.currentSection, "activity");
+});
+
+test("workspace controller resolves v3 approvals and refreshes summaries", async () => {
   let resolveCall = null;
   const fakeClient = {
+    async listV3Sessions() {
+      return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
+    },
     async createV3Session() {
       return {
         session_id: "sess_001",
@@ -139,46 +161,13 @@ test("workspace controller resolves v3 approvals through the session control pla
 
   const controller = new WorkspaceController(fakeClient);
   await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
-  assert.equal(controller.state.workspace.pending_approvals[0].approval_id, "appr_v3_001");
-
-  await controller.resolveApproval("approved");
+  await controller.resolveApproval("appr_v3_001", "approved");
 
   assert.deepEqual(resolveCall, {
     approvalId: "appr_v3_001",
     payload: { decision: "approved", actor_ref: "user" },
   });
   assert.equal(controller.state.workspace.pending_approvals.length, 0);
-  assert.equal(controller.state.workspace.activity_feed[0].event_type, "approval.resolved");
-});
-
-test("session stream events from a stale session are ignored", async () => {
-  let streamHandler = null;
-  const fakeClient = {
-    async createV3Session() {
-      return {
-        session_id: "sess_001",
-        workspace: buildV3Workspace(),
-        events: [],
-      };
-    },
-    streamV3Session(_sessionId, onEvent) {
-      streamHandler = onEvent;
-      return { close() {} };
-    },
-  };
-
-  const controller = new WorkspaceController(fakeClient);
-  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
-  controller.state.currentSessionId = "sess_002";
-
-  streamHandler?.({
-    event_id: "evt_tool",
-    event_type: "tool.completed",
-    payload: { tool_name: "task.create" },
-    created_at: "now",
-  });
-
-  assert.equal(controller.state.workspace.activity_feed.length, 0);
 });
 
 test("sendMessage is ignored while another request is already in flight", async () => {
@@ -188,6 +177,9 @@ test("sendMessage is ignored while another request is already in flight", async 
     releasePost = resolve;
   });
   const fakeClient = {
+    async listV3Sessions() {
+      return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
+    },
     async createV3Session() {
       return {
         session_id: "sess_001",
@@ -221,4 +213,50 @@ test("sendMessage is ignored while another request is already in flight", async 
   await pending;
 
   assert.equal(postCalls, 1);
+});
+
+test("stale sendMessage responses do not overwrite the currently selected session", async () => {
+  let releasePost;
+  const postPromise = new Promise((resolve) => {
+    releasePost = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async getV3Session(sessionId) {
+      return {
+        session: buildV3Workspace(sessionId, sessionId).session,
+        workspace: buildV3Workspace(sessionId, sessionId),
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async postV3Message() {
+      await postPromise;
+      return {
+        session_id: "sess_001",
+        status: "completed",
+        outputs: [],
+        workspace: buildV3Workspace("sess_001", "First"),
+        events: [],
+      };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  controller.state.currentProjectId = "proj_001";
+  controller.state.currentSessionId = "sess_001";
+  controller.state.workspace = buildV3Workspace("sess_001", "First");
+
+  const pending = controller.sendMessage("hello");
+  await Promise.resolve();
+  await controller.selectSession("sess_002", "conversation");
+  releasePost();
+  await pending;
+
+  assert.equal(controller.state.currentSessionId, "sess_002");
+  assert.equal(controller.state.workspace.session.session_id, "sess_002");
+  assert.equal(controller.state.messageBusy, false);
 });

@@ -1,148 +1,132 @@
 import { HostApiClient } from "./client.js";
 import { WorkspaceController } from "./controller.js";
 import {
-  renderApp,
-  renderFormPanel,
-  renderV3Activity,
+  renderAppShell,
+  renderComposerStatus,
+  renderConversationHeader,
+  renderInspector,
+  renderInspectorContent,
+  renderInspectorHeader,
+  renderMainColumn,
+  renderSessionTree,
+  renderSidebar,
+  renderSidebarStatus,
   renderV3Approvals,
-  renderV3Capabilities,
   renderV3Conversation,
-  renderV3Hero,
-  renderV3Lanes,
-  renderV3Outputs,
-  renderV3TaskBoard,
 } from "./view.js";
 
 const client = new HostApiClient(window.OPENZYME_HOST_API_BASE ?? "");
 const appElement = document.querySelector("#app");
 const controller = new WorkspaceController(client, repaint);
-let lastRenderKey = null;
 
-function snapshotActiveField() {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) {
-    return null;
+function ensureShell() {
+  if (!document.querySelector("#sidebar-column-root")) {
+    appElement.innerHTML = renderAppShell(controller.state);
   }
-  if (!appElement.contains(active)) {
-    return null;
-  }
-  if (active.id) {
-    return {
-      selector: `#${active.id}`,
-      value: active.value,
-      selectionStart: active.selectionStart,
-      selectionEnd: active.selectionEnd,
-    };
-  }
-  if (active.name && active.form?.id) {
-    return {
-      selector: `#${active.form.id} [name="${active.name}"]`,
-      value: active.value,
-      selectionStart: active.selectionStart,
-      selectionEnd: active.selectionEnd,
-    };
-  }
-  return null;
 }
 
-function restoreActiveField(snapshot) {
-  if (!snapshot) {
+function setButtonDisabled(selector, disabled) {
+  const button = document.querySelector(selector);
+  if (button instanceof HTMLButtonElement) {
+    button.disabled = disabled;
+  }
+}
+
+function syncComposerScroll() {
+  const list = document.querySelector(".chat-list");
+  if (!(list instanceof HTMLElement)) {
     return;
   }
-  const field = document.querySelector(snapshot.selector);
-  if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)) {
+  const wasNearBottom = list.dataset.stickToBottom !== "false";
+  if (wasNearBottom) {
+    list.scrollTop = list.scrollHeight;
+  }
+}
+
+function bindScrollableChatState() {
+  const list = document.querySelector(".chat-list");
+  if (!(list instanceof HTMLElement) || list.dataset.scrollBound === "true") {
     return;
   }
-  field.value = snapshot.value;
-  field.focus();
-  if (
-    typeof snapshot.selectionStart === "number" &&
-    typeof snapshot.selectionEnd === "number"
-  ) {
-    field.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
-  }
-}
-
-function renderKey(state) {
-  if (!state.workspace?.session) {
-    return "empty";
-  }
-  return `v3:${state.workspace.session.session_id}`;
-}
-
-function applyV3Patch(state) {
-  const workspace = state.workspace;
-  if (!workspace?.session) {
-    return false;
-  }
-  const formRoot = document.querySelector("#form-panel-root");
-  const hero = document.querySelector("#v3-hero-panel");
-  const conversation = document.querySelector("#v3-conversation-list");
-  const approvals = document.querySelector("#v3-approval-stack");
-  const taskBoard = document.querySelector("#v3-task-board");
-  const laneBoard = document.querySelector("#v3-lane-board");
-  const activity = document.querySelector("#v3-activity-feed");
-  const outputs = document.querySelector("#v3-outputs");
-  const capabilities = document.querySelector("#v3-capabilities");
-  const messageInput = document.querySelector("#message-form input[name='message']");
-  const messageButton = document.querySelector("#message-form button[type='submit']");
-  if (
-    !formRoot ||
-    !hero ||
-    !conversation ||
-    !approvals ||
-    !taskBoard ||
-    !laneBoard ||
-    !activity ||
-    !outputs ||
-    !capabilities ||
-    !(messageInput instanceof HTMLInputElement) ||
-    !(messageButton instanceof HTMLButtonElement)
-  ) {
-    return false;
-  }
-  formRoot.innerHTML = renderFormPanel(state);
-  hero.innerHTML = renderV3Hero(workspace);
-  conversation.innerHTML = renderV3Conversation(workspace);
-  approvals.innerHTML = renderV3Approvals(workspace, state);
-  taskBoard.innerHTML = renderV3TaskBoard(workspace);
-  laneBoard.innerHTML = renderV3Lanes(workspace);
-  activity.innerHTML = renderV3Activity(workspace);
-  outputs.innerHTML = renderV3Outputs(workspace);
-  capabilities.innerHTML = renderV3Capabilities(workspace);
-  messageInput.disabled = state.busy;
-  messageButton.disabled = state.busy;
-  return true;
+  list.addEventListener("scroll", () => {
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
+    list.dataset.stickToBottom = nearBottom ? "true" : "false";
+  });
+  list.dataset.scrollBound = "true";
+  list.dataset.stickToBottom = "true";
 }
 
 function repaint() {
-  const nextRenderKey = renderKey(controller.state);
-  if (lastRenderKey === nextRenderKey && nextRenderKey.startsWith("v3:")) {
-    if (applyV3Patch(controller.state)) {
-      bindActions();
-      return;
-    }
+  ensureShell();
+  const sidebarRoot = document.querySelector("#sidebar-column-root");
+  const mainRoot = document.querySelector("#main-column-root");
+  const inspectorRoot = document.querySelector("#inspector-column-root");
+  if (!sidebarRoot || !mainRoot || !inspectorRoot) {
+    appElement.innerHTML = renderAppShell(controller.state);
+    bindActions();
+    bindScrollableChatState();
+    syncComposerScroll();
+    return;
   }
-  const activeField = snapshotActiveField();
-  appElement.innerHTML = renderApp(controller.state);
+
+  const sidebarStatus = document.querySelector("#sidebar-status-root");
+  const sidebarTree = document.querySelector("#sidebar-tree-root");
+  const sessionCount = document.querySelector("#session-count-root");
+  if (!document.querySelector("#create-session-form")) {
+    sidebarRoot.innerHTML = renderSidebar(controller.state);
+  } else {
+    if (sidebarStatus) {
+      sidebarStatus.innerHTML = renderSidebarStatus(controller.state);
+    }
+    if (sidebarTree) {
+      sidebarTree.innerHTML = renderSessionTree(controller.state);
+    }
+    if (sessionCount) {
+      sessionCount.textContent = controller.state.sidebarBusy ? "Loading..." : `${controller.state.sessionSummaries.length}`;
+    }
+    setButtonDisabled("#create-session-submit", controller.state.createSessionBusy);
+  }
+
+  const hasWorkspace = Boolean(controller.state.workspace?.session);
+  const messageForm = document.querySelector("#message-form");
+  if (!hasWorkspace || !(messageForm instanceof HTMLFormElement)) {
+    mainRoot.innerHTML = renderMainColumn(controller.state);
+  } else {
+    const conversationHeader = document.querySelector("#conversation-header-root");
+    const conversationList = document.querySelector("#conversation-list-root");
+    const approvalStack = document.querySelector("#approval-stack-root");
+    const composerStatus = document.querySelector("#composer-status-root");
+    if (conversationHeader) {
+      conversationHeader.innerHTML = renderConversationHeader(controller.state);
+    }
+    if (conversationList) {
+      conversationList.innerHTML = renderV3Conversation(controller.state.workspace);
+    }
+    if (approvalStack) {
+      approvalStack.innerHTML = renderV3Approvals(controller.state.workspace, controller.state);
+    }
+    if (composerStatus) {
+      composerStatus.innerHTML = renderComposerStatus(controller.state);
+    }
+    const messageInput = document.querySelector("#message-form textarea[name='message']");
+    if (messageInput instanceof HTMLTextAreaElement) {
+      messageInput.disabled = controller.state.messageBusy;
+    }
+    setButtonDisabled("#message-submit", controller.state.messageBusy);
+  }
+
+  const inspectorHeader = document.querySelector("#inspector-header-root");
+  const inspectorContent = document.querySelector("#inspector-content-root");
+  if (inspectorHeader && inspectorContent) {
+    inspectorHeader.innerHTML = renderInspectorHeader(controller.state);
+    inspectorContent.innerHTML = renderInspectorContent(controller.state);
+  } else {
+    inspectorRoot.innerHTML = renderInspector(controller.state);
+  }
+
   bindActions();
-  restoreActiveField(activeField);
-  lastRenderKey = nextRenderKey;
-}
-
-async function handleCreate(formData) {
-  await controller.createSession({
-    project_id: formData.get("project_id"),
-    objective: formData.get("objective"),
-  });
-}
-
-async function handleMessage(formData) {
-  await controller.sendMessage(String(formData.get("message") ?? ""));
-}
-
-async function handleApproval(decision) {
-  await controller.resolveApproval(decision);
+  bindScrollableChatState();
+  syncComposerScroll();
 }
 
 async function onSubmit(event) {
@@ -152,12 +136,23 @@ async function onSubmit(event) {
   }
   if (form.id === "create-session-form") {
     event.preventDefault();
-    await handleCreate(new FormData(form));
+    const success = await controller.createSession({
+      project_id: String(new FormData(form).get("project_id") ?? ""),
+      title: String(new FormData(form).get("title") ?? "").trim() || null,
+      objective: String(new FormData(form).get("objective") ?? ""),
+    });
+    if (success) {
+      document.querySelector("#create-session-form")?.reset();
+    }
     return;
   }
   if (form.id === "message-form") {
     event.preventDefault();
-    await handleMessage(new FormData(form));
+    const formData = new FormData(form);
+    const success = await controller.sendMessage(String(formData.get("message") ?? ""));
+    if (success) {
+      document.querySelector("#message-form")?.reset();
+    }
   }
 }
 
@@ -166,11 +161,31 @@ async function onClick(event) {
   if (!(target instanceof HTMLElement)) {
     return;
   }
-  const approvalButton = target.closest("[data-v3-approval-decision]");
-  if (!(approvalButton instanceof HTMLElement)) {
+  const sessionToggle = target.closest("[data-action='toggle-session']");
+  if (sessionToggle instanceof HTMLElement) {
+    controller.toggleSessionTree(sessionToggle.dataset.sessionId);
     return;
   }
-  await handleApproval(approvalButton.dataset.v3ApprovalDecision);
+  const sessionSelect = target.closest("[data-action='select-session']");
+  if (sessionSelect instanceof HTMLElement) {
+    await controller.selectSession(sessionSelect.dataset.sessionId, "conversation");
+    return;
+  }
+  const sectionSelect = target.closest("[data-action='select-section']");
+  if (sectionSelect instanceof HTMLElement) {
+    const sessionId = sectionSelect.dataset.sessionId;
+    const section = sectionSelect.dataset.section;
+    if (controller.state.currentSessionId !== sessionId) {
+      await controller.selectSession(sessionId, section);
+      return;
+    }
+    controller.selectSection(section);
+    return;
+  }
+  const approvalButton = target.closest("[data-v3-approval-decision]");
+  if (approvalButton instanceof HTMLElement) {
+    await controller.resolveApproval(approvalButton.dataset.approvalId, approvalButton.dataset.v3ApprovalDecision);
+  }
 }
 
 function bindActions() {

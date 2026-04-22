@@ -36,7 +36,14 @@ function buildUrl(baseUrl, path) {
 async function requestJson(baseUrl, path, options = {}) {
   const response = await fetch(buildUrl(baseUrl, path), options);
   if (!response.ok) {
-    const detail = await response.text();
+    const raw = await response.text();
+    let detail = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      detail = parsed.detail ?? parsed.error?.message ?? raw;
+    } catch {
+      detail = raw;
+    }
     throw new Error(detail || `Request failed with status ${response.status}`);
   }
   return response.json();
@@ -47,12 +54,20 @@ export class HostApiClient {
     this.baseUrl = baseUrl;
   }
 
+  listV3Sessions(projectId) {
+    return requestJson(this.baseUrl, `/v3/projects/${projectId}/sessions`);
+  }
+
   createV3Session(payload) {
     return requestJson(this.baseUrl, "/v3/sessions", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify(payload),
     });
+  }
+
+  getV3Session(sessionId) {
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`);
   }
 
   postV3Message(sessionId, payload) {
@@ -72,7 +87,7 @@ export class HostApiClient {
   }
 
   streamV3Session(sessionId, onEvent) {
-    const source = new EventSource(buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1`));
+    const source = new EventSource(buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1&follow=1`));
     for (const eventType of v3EventTypes) {
       source.addEventListener(eventType, (message) => {
         onEvent(JSON.parse(message.data));
@@ -82,11 +97,13 @@ export class HostApiClient {
   }
 }
 
-export function buildHostPaths(sessionId) {
+export function buildHostPaths(projectId, sessionId) {
   return {
+    v3ProjectSessions: `/v3/projects/${projectId}/sessions`,
     v3CreateSession: "/v3/sessions",
+    v3Session: `/v3/sessions/${sessionId}`,
     v3Messages: `/v3/sessions/${sessionId}/messages`,
-    v3Events: `/v3/sessions/${sessionId}/events?replay=1`,
+    v3Events: `/v3/sessions/${sessionId}/events?replay=1&follow=1`,
     v3ApprovalResolve: "/v3/approvals/appr_001/resolve",
   };
 }

@@ -784,6 +784,14 @@ class FakeModelFactory:
         return self.invoker
 
 
+class FakeEngine:
+    def __init__(self, descriptor: EngineDescriptor) -> None:
+        self.descriptor = descriptor
+
+    def register_tools(self, registry: ToolRegistry) -> None:
+        del registry
+
+
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
     assert {"task.create", "task.update", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
@@ -818,3 +826,130 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
+
+
+def test_llm_conversation_driver_backfills_engine_task_id_from_same_turn_task_create() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    engine_registry = EngineRegistry()
+    engine_registry.register(
+        FakeEngine(
+            EngineDescriptor(
+                engine_name="deep_research",
+                tool_names=("deep_research.start",),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "brief": {"type": "string"},
+                    },
+                    "required": ["task_id", "brief"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                requires_approval=False,
+                supports_background=False,
+                idempotency_key_shape="{task_id}:deep_research:{nonce}",
+                produces_artifact_types=(),
+                capability_key="deep_research",
+            )
+        )
+    )
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_research_001",
+                            "subject": "Deep research",
+                            "description": "Survey AI in systems engineering",
+                            "kind": "research",
+                        },
+                    },
+                    {
+                        "id": "call_research",
+                        "name": "deep_research.start",
+                        "args": {
+                            "brief": "Survey AI in systems engineering",
+                        },
+                    },
+                ],
+            }
+        ),
+        engine_registry=engine_registry,
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())
+
+    assert step.assistant_message is None
+    assert [invocation.tool_name for invocation in step.tool_invocations] == ["task.create", "deep_research.start"]
+    assert step.tool_invocations[1].arguments["task_id"] == "task_research_001"
+
+
+def test_llm_conversation_driver_returns_friendly_message_when_engine_call_lacks_task_id() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    engine_registry = EngineRegistry()
+    engine_registry.register(
+        FakeEngine(
+            EngineDescriptor(
+                engine_name="deep_research",
+                tool_names=("deep_research.start",),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "brief": {"type": "string"},
+                    },
+                    "required": ["task_id", "brief"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                requires_approval=False,
+                supports_background=False,
+                idempotency_key_shape="{task_id}:deep_research:{nonce}",
+                produces_artifact_types=(),
+                capability_key="deep_research",
+            )
+        )
+    )
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_research", "name": "deep_research.start", "args": {"brief": "Survey AI in systems engineering"}},
+                ],
+            }
+        ),
+        engine_registry=engine_registry,
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())
+
+    assert step.tool_invocations == ()
+    assert "without task_id" in str(step.assistant_message)

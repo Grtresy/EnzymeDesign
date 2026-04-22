@@ -45,6 +45,8 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "You are the top-level OpenZyme harness planner.",
         "Use tools to create and update tasks, bind lanes, start capability engines, and compact memory when useful.",
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
+        "Never call deep_research.start, execution.start, or reporting.start without a concrete task_id.",
+        "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
@@ -125,12 +127,55 @@ class LlmConversationDriver:
     def _tool_catalog(self) -> tuple[ToolDescriptor, ...]:
         return top_level_tool_descriptors(self.engine_registry)
 
+    def _descriptor_by_name(self) -> dict[str, ToolDescriptor]:
+        return {descriptor.tool_name: descriptor for descriptor in self._tool_catalog()}
+
     def _invocation_refs(self, tool_name: str, args: dict[str, Any]) -> tuple[str | None, str | None]:
         if tool_name in {"task.create", "lane.create"}:
             return None, None
         task_id = None if "task_id" not in args else str(args["task_id"])
         lane_id = None if "lane_id" not in args else str(args["lane_id"])
         return task_id, lane_id
+
+    def _backfill_task_bound_engine_args(self, tool_calls: list[dict[str, Any]]) -> None:
+        created_tasks = [
+            dict(tool_call.get("args") or {})
+            for tool_call in tool_calls
+            if str(tool_call.get("name")) == "task.create"
+        ]
+        created_task = created_tasks[0] if len(created_tasks) == 1 else None
+        if created_task is None:
+            return
+        created_task_id = created_task.get("task_id")
+        created_subject = str(created_task.get("subject") or "")
+        created_description = str(created_task.get("description") or "")
+        for tool_call in tool_calls:
+            tool_name = str(tool_call.get("name"))
+            if tool_name not in {"deep_research.start", "reporting.start"}:
+                continue
+            arguments = dict(tool_call.get("args") or {})
+            if not arguments.get("task_id") and created_task_id:
+                arguments["task_id"] = str(created_task_id)
+            if tool_name == "deep_research.start" and not arguments.get("brief"):
+                arguments["brief"] = created_description or created_subject
+            if tool_name == "reporting.start" and not arguments.get("report_brief"):
+                arguments["report_brief"] = created_description or created_subject
+            tool_call["args"] = arguments
+
+    def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
+        descriptor = self._descriptor_by_name().get(tool_name)
+        if descriptor is None:
+            return f"Tool {tool_name} is not available in the current harness."
+        required = tuple(descriptor.input_schema.get("required") or ())
+        missing = [field_name for field_name in required if field_name not in arguments or arguments[field_name] in (None, "")]
+        if not missing:
+            return None
+        if tool_name in {"deep_research.start", "execution.start", "reporting.start"} and "task_id" in missing:
+            return (
+                f"Cannot start {tool_name} without task_id. "
+                "Create or select a task first, then start the capability."
+            )
+        return f"Cannot call {tool_name}; missing required fields: {', '.join(missing)}."
 
     def plan(
         self,
@@ -155,10 +200,14 @@ class LlmConversationDriver:
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             selected = tool_calls[: self.max_parallel_tool_calls]
+            self._backfill_task_bound_engine_args(selected)
             invocations: list[ToolInvocation] = []
             for index, tool_call in enumerate(selected):
                 tool_name = str(tool_call["name"])
                 arguments = dict(tool_call.get("args") or {})
+                validation_error = self._validate_tool_arguments(tool_name, arguments)
+                if validation_error is not None:
+                    return HarnessStep(assistant_message=validation_error)
                 task_id, lane_id = self._invocation_refs(tool_name, arguments)
                 invocations.append(
                     ToolInvocation(

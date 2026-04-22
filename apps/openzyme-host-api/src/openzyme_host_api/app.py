@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from dataclasses import field
@@ -429,6 +430,14 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
+    @app.get("/v3/projects/{project_id}/sessions")
+    def list_v3_project_sessions(project_id: str) -> list[dict[str, Any]]:
+        service = dependencies.build_v3_service()
+        try:
+            return service.list_sessions(project_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
     @app.get("/v3/sessions/{session_id}")
     def get_v3_session(session_id: str) -> dict[str, Any]:
         service = dependencies.build_v3_service()
@@ -462,17 +471,32 @@ def create_app(
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}/events")
-    def stream_v3_events(session_id: str, replay: bool = True) -> StreamingResponse:
+    def stream_v3_events(session_id: str, replay: bool = True, follow: bool = False) -> StreamingResponse:
         service = dependencies.build_v3_service()
         try:
             service.workspace(session_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-        def event_stream() -> Any:
+        async def event_stream() -> Any:
+            next_index = 0
             if replay:
-                for event in service.events(session_id):
+                existing = service.events(session_id)
+                for event in existing:
                     yield _sse_encode(event)
+                next_index = len(existing)
+            else:
+                next_index = len(service.events(session_id))
+
+            if not follow:
+                return
+
+            while True:
+                current = service.events(session_id)
+                while next_index < len(current):
+                    yield _sse_encode(current[next_index])
+                    next_index += 1
+                await asyncio.sleep(0.5)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

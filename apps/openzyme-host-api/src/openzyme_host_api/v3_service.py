@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import datetime
+from datetime import timedelta
 import json
 from typing import Any
 from uuid import uuid4
@@ -295,8 +297,51 @@ class V3HostApiService:
     def workspace(self, session_id: str) -> dict[str, Any]:
         return SessionProjectionBuilder(self.repositories).build_session_workspace(session_id).to_dict()
 
+    def list_sessions(self, project_id: str) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for session in self.repositories.sessions.list_by_project(project_id):
+            messages = self.repositories.inbox.list_by_session(session.session_id)
+            approvals = self.repositories.approvals.list_by_session(session.session_id)
+            latest_preview = ""
+            for message in reversed(messages):
+                if message.message_type not in {"user_message", "assistant_message"} or not message.payload_ref:
+                    continue
+                payload = self.repositories.engine_documents.get(message.payload_ref)
+                if payload is None:
+                    continue
+                content = str(payload.payload.get("content") or "").strip()
+                if content:
+                    latest_preview = content
+                    break
+            summaries.append(
+                {
+                    "session_id": session.session_id,
+                    "project_id": session.project_id,
+                    "title": session.title,
+                    "objective": session.objective,
+                    "status": session.status.value,
+                    "created_at": session.created_at,
+                    "updated_at": session.updated_at,
+                    "latest_message_preview": latest_preview,
+                    "pending_approval_count": sum(
+                        1 for approval in approvals if approval.status is ApprovalRequestStatus.PENDING
+                    ),
+                }
+            )
+        summaries.sort(key=lambda item: (item["updated_at"], item["session_id"]), reverse=True)
+        return summaries
+
     def events(self, session_id: str) -> list[dict[str, Any]]:
         return self.event_store.list(session_id)
+
+    def _touch_session(self, session_id: str) -> None:
+        session = self.repositories.sessions.get(session_id)
+        if session is None:
+            return
+        next_updated_at = utc_now_iso()
+        if next_updated_at <= session.updated_at:
+            next_updated_at = (datetime.fromisoformat(session.updated_at) + timedelta(seconds=1)).isoformat()
+        self.repositories.sessions.save(replace(session, updated_at=next_updated_at))
 
     def _extend_with_activity_events(self, session_id: str, events: list[dict[str, Any]]) -> None:
         existing = {_event_fingerprint(event) for event in self.event_store.list(session_id)}
@@ -347,6 +392,7 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", session_id, {"content": output}))
+        self._touch_session(session_id)
         self._extend_with_activity_events(session_id, events)
         self.event_store.append(session_id, events)
         return V3CommandResult(
@@ -390,6 +436,7 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", approval.session_id, {"content": output}))
+        self._touch_session(approval.session_id)
         self._extend_with_activity_events(approval.session_id, events)
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(

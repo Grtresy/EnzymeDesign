@@ -12,30 +12,128 @@ function ensureWorkspace(workspace) {
   workspace.capabilities ??= {};
 }
 
+function fingerprint(value) {
+  return JSON.stringify(value ?? null);
+}
+
+function hasConversationEntry(workspace, role, content, messageId) {
+  return (workspace.conversation ?? []).some((item) => {
+    if (messageId && item.message_id) {
+      return item.message_id === messageId;
+    }
+    return item.role === role && item.content === content;
+  });
+}
+
+function hasActivityEntry(workspace, event) {
+  const payload = event.payload ?? event;
+  const candidate = `${event.event_type}|${event.created_at ?? ""}|${fingerprint(payload)}`;
+  return (workspace.activity_feed ?? []).some((item) => {
+    if (item.event_id && event.event_id && item.event_id === event.event_id) {
+      return true;
+    }
+    const existing = `${item.event_type}|${item.created_at ?? ""}|${fingerprint(item.payload)}`;
+    return existing === candidate;
+  });
+}
+
+export function eventRequiresWorkspaceRefresh(event) {
+  return new Set([
+    "task.created",
+    "task.updated",
+    "lane.created",
+    "lane.claimed",
+    "lane.released",
+    "lane.removed",
+    "engine.invocation.started",
+    "engine.invocation.updated",
+    "engine.invocation.completed",
+    "artifact.recorded",
+    "report.generated",
+    "report.updated",
+  ]).has(event.event_type);
+}
+
 export function reduceWorkspaceWithEvent(workspace, event) {
   ensureWorkspace(workspace);
-  const next = structuredClone(workspace);
-  const payload = event.payload ?? event;
-  const alreadySeen = [
-    ...(next.conversation ?? []),
-    ...(next.activity_feed ?? []),
-  ].some((item) => item.event_id && item.event_id === event.event_id);
-  if (alreadySeen) {
-    return next;
-  }
   switch (event.event_type) {
-    case "conversation.user_message":
+    case "conversation.user_message": {
+      const payload = event.payload ?? event;
+      if (hasConversationEntry(workspace, "user", payload.content ?? "", payload.message_id ?? null)) {
+        return workspace;
+      }
+      const next = structuredClone(workspace);
       next.conversation = [
         ...(next.conversation ?? []),
-        { role: "user", content: payload.content ?? "", event_id: event.event_id },
+        {
+          role: "user",
+          content: payload.content ?? "",
+          message_id: payload.message_id,
+          created_at: event.created_at,
+          event_id: event.event_id,
+        },
       ];
       return next;
-    case "conversation.assistant_message":
+    }
+    case "conversation.assistant_message": {
+      const payload = event.payload ?? event;
+      if (hasConversationEntry(workspace, "assistant", payload.content ?? "", payload.message_id ?? null)) {
+        return workspace;
+      }
+      const next = structuredClone(workspace);
       next.conversation = [
         ...(next.conversation ?? []),
-        { role: "assistant", content: payload.content ?? "", event_id: event.event_id },
+        {
+          role: "assistant",
+          content: payload.content ?? "",
+          message_id: payload.message_id,
+          created_at: event.created_at,
+          event_id: event.event_id,
+        },
       ];
       return next;
+    }
+    case "approval.requested": {
+      const payload = event.payload ?? event;
+      const next = structuredClone(workspace);
+      if (!(workspace.pending_approvals ?? []).some((approval) => approval.approval_id === payload.approval_id)) {
+        next.pending_approvals = [
+          ...(next.pending_approvals ?? []),
+          { ...payload, event_id: event.event_id },
+        ];
+      }
+      if (!hasActivityEntry(next, event)) {
+        next.activity_feed = [
+          {
+            event_id: event.event_id,
+            event_type: event.event_type,
+            created_at: event.created_at,
+            payload,
+          },
+          ...(next.activity_feed ?? []),
+        ];
+      }
+      return next;
+    }
+    case "approval.resolved": {
+      const payload = event.payload ?? event;
+      const next = structuredClone(workspace);
+      next.pending_approvals = (next.pending_approvals ?? []).filter(
+        (approval) => approval.approval_id !== payload.approval_id,
+      );
+      if (!hasActivityEntry(next, event)) {
+        next.activity_feed = [
+          {
+            event_id: event.event_id,
+            event_type: event.event_type,
+            created_at: event.created_at,
+            payload,
+          },
+          ...(next.activity_feed ?? []),
+        ];
+      }
+      return next;
+    }
     case "inbox.delivered":
     case "agent.message.delivered":
     case "background.completed":
@@ -49,14 +147,23 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "lane.claimed":
     case "lane.released":
     case "lane.removed":
-    case "approval.requested":
-    case "approval.resolved":
     case "engine.invocation.started":
     case "engine.invocation.updated":
     case "engine.invocation.completed":
     case "artifact.recorded":
     case "report.generated":
+    case "report.updated":
     case "session.created":
+    case "agent.spawned":
+    case "agent.status_updated":
+    case "memory.compacted":
+    case "research.summary.updated":
+    case "research.evidence.recorded": {
+      if (hasActivityEntry(workspace, event)) {
+        return workspace;
+      }
+      const payload = event.payload ?? event;
+      const next = structuredClone(workspace);
       next.activity_feed = [
         {
           event_id: event.event_id,
@@ -67,17 +174,58 @@ export function reduceWorkspaceWithEvent(workspace, event) {
         ...(next.activity_feed ?? []),
       ];
       return next;
+    }
     default:
-      return next;
+      return workspace;
   }
+}
+
+export function buildSessionSummaryFromWorkspace(workspace) {
+  ensureWorkspace(workspace);
+  const session = workspace.session;
+  const conversation = workspace.conversation ?? [];
+  const latestMessage = conversation.length ? conversation.at(-1)?.content ?? "" : "";
+  return {
+    session_id: session.session_id,
+    project_id: session.project_id,
+    title: session.title ?? session.objective,
+    objective: session.objective,
+    status: session.status,
+    created_at: session.created_at ?? "",
+    updated_at: session.updated_at ?? "",
+    latest_message_preview: latestMessage,
+    pending_approval_count: (workspace.pending_approvals ?? []).length,
+  };
+}
+
+export function upsertSessionSummary(sessionSummaries, summary) {
+  const next = [...sessionSummaries.filter((item) => item.session_id !== summary.session_id), summary];
+  next.sort((left, right) => {
+    const updated = String(right.updated_at ?? "").localeCompare(String(left.updated_at ?? ""));
+    return updated || String(right.session_id).localeCompare(String(left.session_id));
+  });
+  return next;
 }
 
 export function buildInitialViewState() {
   return {
     currentProjectId: "proj_001",
     currentSessionId: "",
+    currentSection: "conversation",
+    sidebarExpandedSessionIds: [],
+    sessionSummaries: [],
     workspace: null,
-    errorMessage: "",
-    busy: false,
+    sidebarBusy: false,
+    messageBusy: false,
+    refreshingWorkspace: false,
+    createSessionBusy: false,
+    pendingApprovalId: "",
+    errors: {
+      sidebar: "",
+      createSession: "",
+      session: "",
+      message: "",
+      approvals: {},
+    },
   };
 }
