@@ -68,6 +68,7 @@ function buildV3Workspace() {
     pending_approvals: [],
     activity_feed: [],
     artifacts: [{ artifact_id: "art_001", title: "stdout.log", kind: "log" }],
+    report_drafts: [{ draft_id: "draft_001", title: "Workspace draft", status: "ready" }],
     reports: [{ report_id: "report_001", title: "Summary report", status: "ready" }],
     capabilities: {
       execution: [{ invocation_id: "inv_001", status: "succeeded" }],
@@ -126,6 +127,32 @@ test("v3 conversation events render in the central chat column", () => {
   assert.match(html, /Extract goals/);
   assert.match(html, /Conversation/);
   assert.match(html, /Tasks/);
+});
+
+test("report draft events are tracked in activity and rendered in outputs", () => {
+  let workspace = buildV3Workspace();
+  workspace = reduceWorkspaceWithEvent(workspace, {
+    event_id: "evt_draft",
+    event_type: "report_draft.updated",
+    created_at: "2026-04-21T00:00:06+00:00",
+    payload: { draft_id: "draft_001", status: "ready", title: "Workspace draft" },
+  });
+
+  const html = renderApp({
+    currentProjectId: "proj_001",
+    currentSessionId: "sess_001",
+    currentSection: "outputs",
+    sidebarExpandedSessionIds: ["sess_001"],
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+    errorMessage: "",
+    sidebarBusy: false,
+    messageBusy: false,
+  });
+
+  assert.equal(workspace.activity_feed[0].event_type, "report_draft.updated");
+  assert.match(html, /Report Drafts/);
+  assert.match(html, /Workspace draft/);
 });
 
 test("team inspector renders delegated teammate status", () => {

@@ -39,6 +39,7 @@
 - task 默认由 master agent 基于用户目标创建与编排
 - task board 的主用途是支撑内部工作协调，而不是给用户做手工项目管理
 - 具体 research / execution / reporting task 默认可被委托给 teammate agent 推进
+- reporting task 默认由 report teammate 围绕 `report_draft` 直接推进，而不是默认先起 reporting engine
 - capability invocation 默认应围绕 task 发生，而不是绕过 task 直接从 conversation 裸触发
 
 ## 验收标准

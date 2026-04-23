@@ -9,6 +9,7 @@ function ensureWorkspace(workspace) {
   workspace.pending_approvals ??= [];
   workspace.activity_feed ??= [];
   workspace.artifacts ??= [];
+  workspace.report_drafts ??= [];
   workspace.reports ??= [];
   workspace.capabilities ??= {};
 }
@@ -50,6 +51,7 @@ export function eventRequiresWorkspaceRefresh(event) {
     "engine.invocation.updated",
     "engine.invocation.completed",
     "artifact.recorded",
+    "report_draft.updated",
     "report.generated",
     "report.updated",
     "agent.spawned",
@@ -157,6 +159,7 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "engine.invocation.updated":
     case "engine.invocation.completed":
     case "artifact.recorded":
+    case "report_draft.updated":
     case "report.generated":
     case "report.updated":
     case "session.created":

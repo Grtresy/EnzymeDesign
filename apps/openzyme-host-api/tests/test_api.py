@@ -207,11 +207,30 @@ class FakeEngineHarnessInvoker:
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": "call_reporting_start",
-                            "name": "reporting.start",
+                            "id": "call_report_draft_update",
+                            "name": "report_draft.update",
                             "args": {
                                 "task_id": "task_report_v3",
-                                "report_brief": "Produce a concise report for the completed V3 workspace.",
+                                "title": "Workspace report",
+                                "summary": "Integrated workspace report",
+                                "status": "ready",
+                                "markdown": "# Workspace report\n\nIntegrated workspace report",
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_report_publish",
+                            "name": "report.publish",
+                            "args": {
+                                "task_id": "task_report_v3",
+                                "title": "Workspace report",
+                                "summary": "Integrated workspace report",
+                                "stage_summary": "Research and execution summarized.",
                             },
                         }
                     ],
@@ -621,7 +640,7 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     assert updated.json()["task"]["status"] == "in_progress"
 
 
-def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None:
+def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> None:
     client, _ = _build_v3_engine_llm_client(monkeypatch)
 
     created = client.post(
@@ -726,12 +745,15 @@ def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None
     assert report.status_code == 200
     report_payload = report.json()
     assert report_payload["status"] == "completed"
+    assert report_payload["workspace"]["report_drafts"][0]["task_id"] == "task_report_v3"
+    assert report_payload["workspace"]["report_drafts"][0]["status"] == "published"
     assert report_payload["workspace"]["reports"][0]["status"] == "ready"
-    assert report_payload["workspace"]["capabilities"]["reporting"][0]["report"]["status"] == "ready"
+    assert "reporting" not in report_payload["workspace"]["capabilities"]
 
     events = client.get("/v3/sessions/sess_v3_engines/events?replay=1")
     assert events.status_code == 200
     assert "event: engine.invocation.started" in events.text
+    assert "event: report_draft.updated" in events.text
     assert "event: report.generated" in events.text
 
 

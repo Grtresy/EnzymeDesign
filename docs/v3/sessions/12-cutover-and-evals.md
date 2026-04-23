@@ -38,7 +38,7 @@
 
 - 至少一条 V3 端到端路径可稳定运行
 - 出现故障时有可执行回滚路径
-- 评估脚本可以度量 research / execution / reporting 质量与成本
+- 评估脚本可以度量 research / execution / report drafting / final delivery 质量与成本
 - 已明确 V2 停止功能演进、迁移窗口、下线路径与残余 shim 清理计划
 
 ## 建议验证

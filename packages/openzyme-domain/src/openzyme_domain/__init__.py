@@ -46,6 +46,8 @@ from .control_plane import ResearchGap
 from .control_plane import ResearchSourceRef
 from .control_plane import ResearchSummary
 from .control_plane import ResearchSummaryStatus
+from .control_plane import SessionReportDraftRecord
+from .control_plane import SessionReportDraftStatus
 from .control_plane import SessionReportRecord
 from .control_plane import SessionReportStatus
 from .control_plane import SessionArtifactRecord
@@ -86,6 +88,8 @@ __all__ = [
     "ResearchSourceRef",
     "ResearchSummary",
     "ResearchSummaryStatus",
+    "SessionReportDraftRecord",
+    "SessionReportDraftStatus",
     "SessionReportRecord",
     "SessionReportStatus",
     "Approval",

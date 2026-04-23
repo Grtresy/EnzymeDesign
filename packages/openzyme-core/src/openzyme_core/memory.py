@@ -15,6 +15,7 @@ from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import Task
 from openzyme_domain.control_plane import utc_now_iso
@@ -59,6 +60,7 @@ class SessionRestoreContext:
     agents: tuple[AgentMember, ...]
     active_invocations: tuple[EngineInvocation, ...]
     artifacts: tuple[SessionArtifactRecord, ...]
+    report_drafts: tuple[SessionReportDraftRecord, ...]
     reports: tuple[SessionReportRecord, ...]
     protocol_threads: tuple[dict[str, Any], ...]
     session_memory: ScopedMemorySummary
@@ -80,6 +82,7 @@ class SessionRestoreContext:
             "agents": [agent.to_dict() for agent in self.agents],
             "active_invocations": [invocation.to_dict() for invocation in self.active_invocations],
             "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "report_drafts": [draft.to_dict() for draft in self.report_drafts],
             "reports": [report.to_dict() for report in self.reports],
             "protocol_threads": list(self.protocol_threads),
             "session_memory": self.session_memory.to_dict(),
@@ -309,6 +312,7 @@ class MemoryService:
             agents=tuple(self.repositories.agents.list_by_session(session_id)),
             active_invocations=tuple(self.repositories.invocations.list_active_by_session(session_id)),
             artifacts=tuple(self.repositories.artifacts.list_by_session(session_id)),
+            report_drafts=tuple(self.repositories.report_drafts.list_by_session(session_id)),
             reports=tuple(self.repositories.reports.list_by_session(session_id)),
             protocol_threads=tuple(
                 protocol.build_thread(session_id, correlation_id).to_dict()

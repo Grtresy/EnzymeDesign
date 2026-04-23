@@ -13,6 +13,8 @@ from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportDraftRecord
+from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
@@ -34,6 +36,7 @@ def test_control_plane_entity_names_are_stable() -> None:
         "EngineInvocation",
         "RunRecord",
         "SessionArtifactRecord",
+        "SessionReportDraftRecord",
         "SessionReportRecord",
         "ResearchSummary",
         "ResearchEvidence",
@@ -193,3 +196,22 @@ def test_session_report_records_serialize_with_v3_scope() -> None:
 
     assert report.to_dict()["status"] == "ready"
     assert report.to_dict()["session_id"] == "sess_001"
+
+
+def test_session_report_draft_records_serialize_with_v3_scope() -> None:
+    draft = SessionReportDraftRecord(
+        draft_id="draft_001",
+        session_id="sess_001",
+        task_id="task_001",
+        owner_agent_id="agent:reporter",
+        status=SessionReportDraftStatus.IN_REVIEW,
+        title="Draft report",
+        summary="Draft summary",
+        content_ref="doc_001",
+        published_report_id=None,
+        created_at="2026-04-20T10:02:00+00:00",
+        updated_at="2026-04-20T10:03:00+00:00",
+    )
+
+    assert draft.to_dict()["status"] == "in_review"
+    assert draft.to_dict()["owner_agent_id"] == "agent:reporter"

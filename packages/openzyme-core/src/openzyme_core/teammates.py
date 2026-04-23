@@ -28,6 +28,7 @@ from .lane_manager import register_lane_tools
 from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
+from .report_drafts import register_report_draft_tools
 from .skills import register_skill_tools
 from .task_board import register_task_board_tools
 from .tool_catalog import ToolDescriptor
@@ -211,19 +212,54 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
             )
         )
     if role == "reporter":
-        role_specific.append(
-            ToolDescriptor(
-                tool_name="reporting.start",
-                description="Start reporting for the assigned task.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                        "report_brief": {"type": "string"},
+        role_specific.extend(
+            (
+                ToolDescriptor(
+                    tool_name="report_draft.get",
+                    description="Read the current report draft for the assigned task.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "draft_id": {"type": "string"},
+                            "task_id": {"type": "string"},
+                        },
+                        "additionalProperties": False,
                     },
-                    "required": ["task_id", "report_brief"],
-                    "additionalProperties": False,
-                },
+                ),
+                ToolDescriptor(
+                    tool_name="report_draft.update",
+                    description="Create or update the report draft for the assigned task.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "markdown": {"type": "string"},
+                            "status": {"type": "string", "enum": ["draft", "in_review", "ready", "published", "failed"]},
+                            "owner_agent_id": {"type": "string"},
+                        },
+                        "required": ["task_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="report.publish",
+                    description="Publish the current report draft as a final report.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "draft_id": {"type": "string"},
+                            "task_id": {"type": "string"},
+                            "report_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "stage_summary": {"type": "string"},
+                            "status": {"type": "string", "enum": ["ready", "published", "failed"]},
+                        },
+                        "additionalProperties": False,
+                    },
+                ),
             )
         )
     return (*shared, *tuple(role_specific))
@@ -240,6 +276,7 @@ def build_teammate_registry(*, engine_registry: EngineRegistry | None = None) ->
             engine.register_tools(registry)
     register_artifact_tools(registry)
     register_protocol_tools(registry)
+    register_report_draft_tools(registry)
     return registry
 
 
@@ -304,6 +341,7 @@ class TeammateConversationDriver(HarnessDriver):
         restore = context.restore_context
         assert restore is not None
         artifact_titles = ", ".join(artifact.title for artifact in restore.artifacts[:8]) or "none"
+        draft_titles = ", ".join(draft.title for draft in restore.report_drafts[:8]) or "none"
         protocol_bits = ", ".join(thread["correlation_id"] for thread in restore.protocol_threads[:8]) or "none"
         report_titles = ", ".join(report.title for report in restore.reports[:8]) or "none"
         return "\n".join(
@@ -322,6 +360,7 @@ class TeammateConversationDriver(HarnessDriver):
                 f"Focused task: {restore.focused_task_id or 'none'}",
                 f"Focused lane: {restore.focused_lane_id or 'none'}",
                 "Artifact catalog: " + artifact_titles,
+                "Report draft catalog: " + draft_titles,
                 "Report catalog: " + report_titles,
                 "Known protocol threads: " + protocol_bits,
                 "Ready tasks: " + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
@@ -402,7 +441,7 @@ class TeammateConversationDriver(HarnessDriver):
             invocations: list[ToolInvocation] = []
             for index, tool_call in enumerate(tool_calls[: self.max_parallel_tool_calls]):
                 args = dict(tool_call.get("args") or {})
-                if "task_id" not in args and tool_call["name"].startswith(("deep_research.", "reporting.", "execution.")):
+                if "task_id" not in args and tool_call["name"].startswith(("deep_research.", "execution.", "report_draft.", "report.")):
                     args["task_id"] = self.task_id
                 invocations.append(
                     ToolInvocation(

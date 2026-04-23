@@ -44,7 +44,6 @@ Agent Harness Kernel
   |
   +--> deep_research engine
   +--> execution engine
-  +--> reporting engine
   |
   v
 Persistence + Infra
@@ -71,6 +70,7 @@ V3 的产品主语义改为：
 - `lane / workspace isolation`
 - `approval + inbox + team protocols`
 - `capability engines` 被 harness 按需调用
+- `report draft` 作为可恢复、可修订、可发布的中间交付物
 - `workspace projection` 统一对外暴露当前状态
 
 V3 里不再要求所有产品动作都投射为顶层 phase。
@@ -83,7 +83,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 - 管理 `session` 生命周期
 - 持久化 `task / lane / approval / inbox / memory / agent roster / engine invocation`
-- 持久化 `artifact catalog / report / run` 并将其暴露为 session 共享工作面
+- 持久化 `artifact catalog / report draft / report / run` 并将其暴露为 session 共享工作面
 - 提供统一 API / streaming / projection
 - 触发 harness kernel 运行
 - 为 UI / CLI 提供 canonical workspace snapshot
@@ -94,7 +94,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 决定 task 内容或项目级拆解
 - 深研究推理细节
 - HPC 执行编排细节
-- 报告具体生成细节
+- 报告具体写作、修订与发布细节
 
 ### 3.2 Agent Harness Kernel
 
@@ -145,7 +145,6 @@ restore context
 
 - `deep_research`
 - `execution`
-- `reporting`
 
 要求：
 
@@ -167,10 +166,11 @@ create session
   -> teammate agent restore on shared session workspace with task/lane focus
   -> teammate inspects artifacts / protocols / task state
   -> teammate chooses tools / capability calls when needed
+  -> report teammate may update report draft directly on shared workspace
   -> assign / claim lane for delegated task when execution context is required
   -> resolve approvals through unified protocol
   -> teammates may communicate peer-to-peer through team protocols
-  -> materialize artifacts / runs / reports
+  -> materialize artifacts / runs / report drafts / reports
   -> master agent synthesize progress / deliverables back to user
   -> project workspace snapshot
 ```
@@ -226,7 +226,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - 用户与 master agent 对话
 - master agent 创建和编排 task
 - master agent 将具体 task 分配给 teammate agents
-- teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / reports
+- teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / report drafts / reports
 - teammate 之间通过 team protocol 协作，master 负责对外汇报和最终交付
 
 ## 5. 关键设计默认值
@@ -240,10 +240,12 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `workspace.conversation` 是 V3 对话真读模型
 - teammate 默认拥有 session-wide artifact catalog 的读视野，并以 task / lane focused restore context 工作
 - teammate 默认采用 role-scoped tool surface；共享读工具可见，危险写操作保持结构化约束
+- `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 - research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成
+- reporting 默认由 report teammate 直接在共享 workspace 上完成，不要求单独 reporting engine
 
 ## 6. 推荐 Monorepo 包布局
 
@@ -256,7 +258,7 @@ V3 默认不沿用 V2 那种偏细的 package 切法。
 - `packages/openzyme-core`
   负责 control plane、repositories、runtime、tool registry、memory、approval、lane、projection、host-facing core services
 - `packages/openzyme-engines`
-  负责 `deep_research`、`execution`、`reporting` 等 capability engines
+  负责 `deep_research`、`execution` 等 capability engines
 - `apps/openzyme-host-api`
 - `apps/openzyme-host-cli`
 - `apps/openzyme-web-ui`

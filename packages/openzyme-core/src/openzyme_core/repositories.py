@@ -27,6 +27,8 @@ from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportDraftRecord
+from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
@@ -1528,13 +1530,14 @@ class SessionReportRepository:
 
     def save(self, report: SessionReportRecord) -> None:
         _require_session_exists(self.connection, report.session_id)
-        _require_linked_session_id(
-            self.connection,
-            table_name="engine_invocations",
-            id_column="invocation_id",
-            record_id=report.invocation_id,
-            expected_session_id=report.session_id,
-        )
+        if report.invocation_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="engine_invocations",
+                id_column="invocation_id",
+                record_id=report.invocation_id,
+                expected_session_id=report.session_id,
+            )
         if report.task_id is not None:
             _require_linked_session_id(
                 self.connection,
@@ -1590,9 +1593,9 @@ class SessionReportRepository:
             (
                 report.report_id,
                 report.session_id,
-                report.task_id,
-                report.lane_id,
-                report.invocation_id,
+            report.task_id,
+            report.lane_id,
+            report.invocation_id,
                 report.run_id,
                 report.artifact_id,
                 report.status.value,
@@ -1653,6 +1656,121 @@ class SessionReportRepository:
             title=row["title"],
             summary=row["summary"],
             stage_summary=row["stage_summary"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class SessionReportDraftRepository:
+    connection: sqlite3.Connection
+
+    def save(self, draft: SessionReportDraftRecord) -> None:
+        _require_session_exists(self.connection, draft.session_id)
+        if draft.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=draft.task_id,
+                expected_session_id=draft.session_id,
+            )
+        if draft.owner_agent_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="agent_members",
+                id_column="agent_id",
+                record_id=draft.owner_agent_id,
+                expected_session_id=draft.session_id,
+            )
+        if draft.published_report_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_report_records",
+                id_column="report_id",
+                record_id=draft.published_report_id,
+                expected_session_id=draft.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_report_draft_records (
+                draft_id, session_id, task_id, owner_agent_id, status, title, summary,
+                content_ref, published_report_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(draft_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                task_id = excluded.task_id,
+                owner_agent_id = excluded.owner_agent_id,
+                status = excluded.status,
+                title = excluded.title,
+                summary = excluded.summary,
+                content_ref = excluded.content_ref,
+                published_report_id = excluded.published_report_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                draft.draft_id,
+                draft.session_id,
+                draft.task_id,
+                draft.owner_agent_id,
+                draft.status.value,
+                draft.title,
+                draft.summary,
+                draft.content_ref,
+                draft.published_report_id,
+                draft.created_at,
+                draft.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, draft_id: str) -> SessionReportDraftRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_report_draft_records WHERE draft_id = ?",
+            (draft_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_draft(row)
+
+    def get_by_task(self, session_id: str, task_id: str) -> SessionReportDraftRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_report_draft_records
+            WHERE session_id = ? AND task_id = ?
+            ORDER BY updated_at DESC, draft_id DESC
+            """,
+            (session_id, task_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_draft(row)
+
+    def list_by_session(self, session_id: str) -> list[SessionReportDraftRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM session_report_draft_records
+            WHERE session_id = ?
+            ORDER BY updated_at, draft_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_draft(row) for row in rows]
+
+    def _row_to_draft(self, row: sqlite3.Row) -> SessionReportDraftRecord:
+        return SessionReportDraftRecord(
+            draft_id=row["draft_id"],
+            session_id=row["session_id"],
+            task_id=row["task_id"],
+            owner_agent_id=row["owner_agent_id"],
+            status=SessionReportDraftStatus(row["status"]),
+            title=row["title"],
+            summary=row["summary"],
+            content_ref=row["content_ref"],
+            published_report_id=row["published_report_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -2138,6 +2256,7 @@ class CoreRepositories:
     engine_documents: EngineDocumentRepository
     runs: RunRecordRepository
     artifacts: SessionArtifactRepository
+    report_drafts: SessionReportDraftRepository
     reports: SessionReportRepository
     research_summaries: ResearchSummaryRepository
     research_evidence: ResearchEvidenceRepository
@@ -2159,6 +2278,7 @@ class CoreRepositories:
             engine_documents=EngineDocumentRepository(connection),
             runs=RunRecordRepository(connection),
             artifacts=SessionArtifactRepository(connection),
+            report_drafts=SessionReportDraftRepository(connection),
             reports=SessionReportRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),
             research_evidence=ResearchEvidenceRepository(connection),

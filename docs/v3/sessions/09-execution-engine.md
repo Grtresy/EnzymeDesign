@@ -39,7 +39,7 @@
 - 审批从 control plane 发起和恢复
 - run / artifact 可关联到 session / task / lane
 - 同一 task 的多次 execution invocation 可区分、可恢复
-- execution 结果可回到 reporting / workspace projection
+- execution 结果可回到 report draft / workspace projection
 
 ## 建议验证
 
@@ -47,4 +47,4 @@
 
 ## 交接给下一轮
 
-- Session 10 汇总 research / execution / artifacts 成统一工作区叙事
+- Session 10 汇总 research / execution / artifacts 成 report draft 与统一工作区叙事

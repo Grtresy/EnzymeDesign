@@ -181,12 +181,32 @@ export function renderV3Capabilities(workspace) {
 
 export function renderV3Outputs(workspace) {
   const artifacts = workspace.artifacts ?? [];
+  const drafts = workspace.report_drafts ?? [];
   const reports = workspace.reports ?? [];
-  if (!artifacts.length && !reports.length) {
-    return `<p class="empty-copy">No artifacts or reports yet.</p>`;
+  if (!artifacts.length && !drafts.length && !reports.length) {
+    return `<p class="empty-copy">No artifacts, drafts, or reports yet.</p>`;
   }
   return `
     <div class="stack">
+      ${
+        drafts.length
+          ? `<section>
+              <h4>Report Drafts</h4>
+              <ul class="record-list">
+                ${drafts
+                  .map(
+                    (draft) => `
+                      <li>
+                        <strong>${escapeHtml(draft.title ?? draft.draft_id)}</strong>
+                        <span>${escapeHtml(draft.status ?? "unknown")} · ${escapeHtml(draft.draft_id)}</span>
+                      </li>
+                    `,
+                  )
+                  .join("")}
+              </ul>
+            </section>`
+          : ""
+      }
       ${
         reports.length
           ? `<section>

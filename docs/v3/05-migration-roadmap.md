@@ -68,7 +68,8 @@
 
 目标：
 
-- 把 `deep_research`、`execution`、`reporting` 改造成被 harness 调度的能力引擎
+- 挂接 `deep_research`、`execution` capability engines
+- 建立 report teammate + report draft + final report 发布路径
 
 ### 阶段 E：产品表面切换
 
@@ -104,7 +105,7 @@
 - `execution` approval 统一走 harness protocol
 - 任务、lane、approval、memory 可跨压缩恢复
 - engine invocation、delegation、background completion 可独立恢复
-- V3 能独立跑通从 research 到 execution 到 reporting 的闭环
+- V3 能独立跑通从 research 到 execution 到 report drafting 再到 final delivery 的闭环
 - V2 已被明确冻结，且不存在继续向 V2 主模型回灌新能力的计划
 - `openzyme-runtime` / `openzyme-storage` / `openzyme-tools` / `openzyme-graph` 不再承载新的产品顶层真状态
 

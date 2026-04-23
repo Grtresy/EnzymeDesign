@@ -29,6 +29,7 @@ const v3EventTypes = [
   "engine.invocation.updated",
   "engine.invocation.completed",
   "artifact.recorded",
+  "report_draft.updated",
   "report.generated",
   "report.updated",
 ];

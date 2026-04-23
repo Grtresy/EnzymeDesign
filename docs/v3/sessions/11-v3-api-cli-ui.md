@@ -32,7 +32,7 @@
 - CLI workspace 视图
 - Web conversation timeline
 - approval cards
-- 只读 workspace inspector，包括 task board、lane board、delegation、artifacts、reports、capabilities
+- 只读 workspace inspector，包括 task board、lane board、delegation、artifacts、report drafts、reports、capabilities
 - v3 streaming events
 - canonical `workspace.conversation`
 - built-in V3 tool schema/catalog for top-level tool-calling
@@ -41,7 +41,7 @@
 
 - `workspace.conversation` 展示用户与 master agent 的对话
 - `task board + delegation + lane board + capabilities` 展示 OpenZyme 内部执行组织
-- `artifacts` / `reports` / `capabilities` 共同展示 agent team 的共享工作面，而不是只展示最终交付物
+- `artifacts` / `report drafts` / `reports` / `capabilities` 共同展示 agent team 的共享工作面，而不是只展示最终交付物
 - Web UI 默认表现为“一个对外负责人 + 一个内部执行团队”，而不是多个平级 agent 直接面向用户
 
 ## 验收标准
@@ -49,9 +49,9 @@
 - 用户能通过对话消息继续 harness loop
 - 顶层 LLM 至少可以完成一次真实 tool call 再继续输出 assistant 消息
 - 当 harness 需要人工确认时，UI 在对话流中展示 approval card，并能 approve / reject 后恢复 loop
-- 用户能查看 session、task board、lane board、approvals、delegation、artifacts、reports、capabilities，但默认不需要手工创建或编排 task / lane
+- 用户能查看 session、task board、lane board、approvals、delegation、artifacts、report drafts、reports、capabilities，但默认不需要手工创建或编排 task / lane
 - UI 刷新后可以只靠 workspace projection 恢复，包括 conversation timeline
-- 至少有一条主路径符合 `user -> master agent -> task -> teammate loop -> capability -> delivery`
+- 至少有一条主路径符合 `user -> master agent -> task -> teammate loop -> report draft/capability -> delivery`
 
 ## 建议验证
 

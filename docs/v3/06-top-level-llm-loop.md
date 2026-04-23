@@ -68,14 +68,15 @@ user message
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
-- `deep_research.start`、`execution.start`、`reporting.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
+- `deep_research.start`、`execution.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
+- reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
 首批不默认暴露给模型的高风险操作：
 
 - `lane.remove`
 - `lane.keep`
 - `lane.unbind_task`
-- 直接 engine start tools such as `deep_research.start`, `execution.start`, `reporting.start`
+- 直接 engine start tools such as `deep_research.start`, `execution.start`
 
 ## 6. Conversation 与 Projection
 

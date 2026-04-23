@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
@@ -20,6 +22,8 @@ from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionReportDraftRecord
+from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
@@ -187,22 +191,6 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             finished_at="2026-04-17T13:00:07+00:00",
         )
     )
-    repositories.invocations.save(
-        EngineInvocation(
-            invocation_id="inv_report_001",
-            session_id=session.session_id,
-            task_id="task_001",
-            lane_id="lane_001",
-            engine_name="reporting",
-            status=EngineInvocationStatus.SUCCEEDED,
-            input_ref="artifact://engine/inv_report_001/input.json",
-            output_ref="eng_report_out_001",
-            approval_id=None,
-            idempotency_key="task_001:reporting:1",
-            started_at="2026-04-17T13:00:08+00:00",
-            finished_at="2026-04-17T13:00:09+00:00",
-        )
-    )
     repositories.runs.save(
         RunRecord(
             run_id="run_exec_001",
@@ -262,7 +250,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             session_id=session.session_id,
             task_id="task_001",
             lane_id="lane_001",
-            invocation_id="inv_report_001",
+            invocation_id=None,
             run_id=None,
             artifact_id=None,
             status=SessionReportStatus.READY,
@@ -311,17 +299,43 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     )
     repositories.engine_documents.save(
         EngineDocumentRecord(
-            document_id="eng_report_out_001",
+            document_id="draft_doc_001",
             session_id=session.session_id,
-            invocation_id="inv_report_001",
-            document_kind="report_document",
+            invocation_id=None,
+            document_kind="report_draft_content",
             payload={
-                "report_id": "report_inv_report_001",
-                "title": "Workspace report",
-                "summary": "Integrated workspace report",
                 "markdown": "# Workspace report",
             },
-            created_at="2026-04-17T13:00:09+00:00",
+            created_at="2026-04-17T13:00:08+00:00",
+            updated_at="2026-04-17T13:00:08+00:00",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:reporter",
+            session_id=session.session_id,
+            lane_id="lane_001",
+            task_id="task_001",
+            name="Reporter",
+            role="reporter",
+            status=AgentMemberStatus.COMPLETED,
+            parent_agent_id=None,
+            created_at="2026-04-17T13:00:08+00:00",
+            updated_at="2026-04-17T13:00:09+00:00",
+        )
+    )
+    repositories.report_drafts.save(
+        SessionReportDraftRecord(
+            draft_id="draft_001",
+            session_id=session.session_id,
+            task_id="task_001",
+            owner_agent_id="agent:reporter",
+            status=SessionReportDraftStatus.PUBLISHED,
+            title="Workspace report",
+            summary="Integrated workspace report",
+            content_ref="draft_doc_001",
+            published_report_id="report_inv_report_001",
+            created_at="2026-04-17T13:00:08+00:00",
             updated_at="2026-04-17T13:00:09+00:00",
         )
     )
@@ -424,15 +438,20 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["task_board"]["next_task_id"] == "task_001"
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
-    assert workspace["delegation"]["agents"][0]["agent"]["agent_id"] == "agent:researcher"
+    assert any(
+        item["agent"]["agent_id"] == "agent:researcher"
+        for item in workspace["delegation"]["agents"]
+    )
     assert workspace["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
     assert {report["report_id"] for report in workspace["reports"]} == {
         "report_inv_exec_001",
         "report_inv_report_001",
     }
+    assert workspace["report_drafts"][0]["draft_id"] == "draft_001"
+    assert workspace["report_drafts"][0]["published_report_id"] == "report_inv_report_001"
     assert "deep_research" in workspace["capabilities"]
     assert "execution" in workspace["capabilities"]
-    assert "reporting" in workspace["capabilities"]
+    assert "reporting" not in workspace["capabilities"]
     assert workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"] == "Normalized evidence dossier"
     assert workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"] == "high"
@@ -441,11 +460,10 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["capabilities"]["execution"][0]["runs"][0]["run_id"] == "run_exec_001"
     assert workspace["capabilities"]["execution"][0]["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
     assert workspace["capabilities"]["execution"][0]["report"]["report_id"] == "report_inv_exec_001"
-    assert workspace["capabilities"]["reporting"][0]["output_payload"]["report_id"] == "report_inv_report_001"
-    assert workspace["capabilities"]["reporting"][0]["report"]["summary"] == "Integrated workspace report"
     assert any(item["event_type"] == "approval.requested" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "agent.spawned" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "engine.invocation.started" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "research.summary.updated" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"])
+    assert any(item["event_type"] == "report_draft.updated" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "report.generated" for item in workspace["activity_feed"])

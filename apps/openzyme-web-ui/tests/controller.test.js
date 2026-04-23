@@ -20,6 +20,7 @@ function buildV3Workspace(sessionId = "sess_001", title = "Plan with V3") {
     pending_approvals: [],
     activity_feed: [],
     artifacts: [],
+    report_drafts: [],
     reports: [],
     capabilities: {},
     conversation: [],

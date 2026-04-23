@@ -45,6 +45,7 @@ from .protocols import CorrelationStatus
 from .protocols import CorrelationThread
 from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
+from .report_drafts import register_report_draft_tools
 from .artifact_tools import register_artifact_tools
 from .protocol_tools import register_protocol_tools
 from .repositories import AgentMemberRepository
@@ -62,6 +63,7 @@ from .repositories import ResearchGapRepository
 from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
+from .repositories import SessionReportDraftRepository
 from .repositories import SessionReportRepository
 from .repositories import SessionArtifactRepository
 from .repositories import SessionRepository
@@ -133,6 +135,7 @@ __all__ = [
     "MemoryEntryRepository",
     "OwnershipError",
     "ProtocolService",
+    "register_report_draft_tools",
     "register_artifact_tools",
     "register_protocol_tools",
     "ResearchEvidenceRepository",
@@ -140,6 +143,7 @@ __all__ = [
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
     "RunRecordRepository",
+    "SessionReportDraftRepository",
     "SessionReportRepository",
     "RestoreFocus",
     "ResumeDecision",

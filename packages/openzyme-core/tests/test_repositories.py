@@ -21,6 +21,8 @@ from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportDraftRecord
+from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_domain import SessionStatus
@@ -195,6 +197,19 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
         created_at="2026-04-16T10:09:12+00:00",
         updated_at="2026-04-16T10:09:12+00:00",
     )
+    draft = SessionReportDraftRecord(
+        draft_id="draft_001",
+        session_id=session.session_id,
+        task_id=child_task.task_id,
+        owner_agent_id=agent.agent_id,
+        status=SessionReportDraftStatus.IN_REVIEW,
+        title="Execution draft",
+        summary="Draft summary",
+        content_ref="doc_002",
+        published_report_id=report.report_id,
+        created_at="2026-04-16T10:09:12+00:00",
+        updated_at="2026-04-16T10:09:13+00:00",
+    )
     lane_event = LaneLifecycleEventRecord(
         event_id="lane_evt_001",
         session_id=session.session_id,
@@ -217,6 +232,7 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     repositories.runs.save(run)
     repositories.artifacts.save(artifact)
     repositories.reports.save(report)
+    repositories.report_drafts.save(draft)
     repositories.lane_events.save(lane_event)
     repositories.engine_documents.save(
         EngineDocumentRecord(
@@ -302,6 +318,8 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
     assert repositories.runs.get_by_invocation(session.session_id, invocation.invocation_id) == run
     assert repositories.artifacts.list_by_run(run.run_id) == [artifact]
+    assert repositories.report_drafts.get(draft.draft_id) == draft
+    assert repositories.report_drafts.get_by_task(session.session_id, child_task.task_id) == draft
     assert repositories.reports.get_by_invocation(session.session_id, invocation.invocation_id) == report
     assert repositories.engine_documents.list_by_invocation(session.session_id, invocation.invocation_id)[0].payload == {
         "summary": "Initial dossier"

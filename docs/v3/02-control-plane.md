@@ -42,7 +42,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 - `task` 不是普通聊天消息，也不是 capability tool call 的临时参数
 - `task` 默认由 master agent 基于用户对话创建和编排
-- `task` 是 delegated teammate、lane、approval、engine invocation、artifact、report、protocol thread 的默认关联锚点
+- `task` 是 delegated teammate、lane、approval、engine invocation、artifact、report draft、report、protocol thread 的默认关联锚点
 - `task` 的存在意义是让内部执行和外部对话解耦：用户与 master agent 对话，内部团队围绕 task 推进工作
 
 建议字段：
@@ -183,20 +183,37 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `started_at`
 - `finished_at`
 
-### 2.9 Artifact / Run / Report
+### 2.9 Artifact / Run / ReportDraft / Report
 
 用途：
 
 - 保留 V2 的 artifact-first 优势
 - 但将其纳入更大的 harness control plane
+- `report_draft` 作为 report teammate 的共享中间工作对象，用于承载可修订、可恢复、可发布的总结过程
 
 要求：
 
 - `run` 与 `artifact` 必须可回链到 session / task / lane / engine invocation
+- `report_draft` 必须可回链到 session / task / teammate / protocol thread，并可被 workspace projection 直接消费
 - `report` 必须能被 workspace projection 直接消费
+- final `report` 默认来自 `report_draft` 的发布结果，而不是强依赖一次 capability invocation
 - 大体积、engine-specific、调试型数据优先存入 artifact store，由 control plane 通过 typed ref 引用，而不是塞入 canonical row
 - session 级 artifact catalog 必须可被 master 与 teammate 共同读取；artifact 不是只给 UI 看的投影附件
 - artifact 默认是 team 共享工作面的一部分，task / lane 决定焦点与归属，而不是决定可见性的唯一边界
+
+`report_draft` 建议最小字段：
+
+- `draft_id`
+- `session_id`
+- `task_id`
+- `owner_agent_id`
+- `status`
+- `title`
+- `summary`
+- `content_ref`
+- `published_report_id`
+- `created_at`
+- `updated_at`
 
 ## 3. Workspace Projection
 
@@ -212,6 +229,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `memory`
 - `delegation`
 - `artifacts`
+- `report_drafts`
 - `reports`
 - `capabilities`
 - `activity_feed`
@@ -222,6 +240,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `task_board` 看内部工作如何被拆解和推进
 - `delegation` 看哪些 teammate 正在推进哪些 task、持有哪些 correlation thread
 - `lane_board` / `capabilities` 看 task 在什么执行上下文里运行
+- `report_drafts` 看 report teammate 正在如何组织、修订、准备发布交付物
 - `artifacts` 看 agent team 当前共享工作面中已产出的证据、结果与中间产物
 
 ## 4. Event Model
@@ -248,6 +267,7 @@ control plane 需要最小事件流，便于 streaming 与审计。
 - `engine.invocation.started`
 - `engine.invocation.updated`
 - `engine.invocation.completed`
+- `report_draft.updated`
 - `report.generated`
 
 ## 5. 与 V2 的迁移关系

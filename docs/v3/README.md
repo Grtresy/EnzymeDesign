@@ -6,9 +6,9 @@ V3 的核心立场：
 
 - 这是一次 **harness-first** 的版本升级，不是对 V2 supervisor graph 的局部修补。
 - V2 视为冻结并准备废弃的路线；V3 不以延续 V2 产品模型为目标。
-- 顶层产品真状态从 `episode + phase graph` 转向 `session + task board + lane/workspace + approval + capability engines`。
+- 顶层产品真状态从 `episode + phase graph` 转向 `session + task board + lane/workspace + approval + teammate work surface`。
 - `learn-claude-code` 是 V3 的方法论基线。
-- LangGraph / LangChain 可以继续存在，但只能作为 `deep_research`、报告生成等**内部能力引擎**的实现工具，不能重新成为产品级 workflow truth owner。
+- LangGraph / LangChain 可以继续存在，但只能作为 `deep_research`、`execution` 等**内部能力引擎**的实现工具，不能重新成为产品级 workflow truth owner。
 - Monorepo 包布局默认收敛为：`packages/openzyme-domain`、`packages/openzyme-core`、`packages/openzyme-engines`，避免沿着 V2 的 `runtime/storage/tools/graph` 继续过细拆分。
 
 先读文档顺序：
@@ -31,7 +31,7 @@ V3 的核心立场：
 7. [sessions/06-background-and-protocols.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/06-background-and-protocols.md)
 8. [sessions/08-deep-research-engine.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/08-deep-research-engine.md)
 9. [sessions/09-execution-engine.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/09-execution-engine.md)
-10. [sessions/10-reporting-and-projections.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/10-reporting-and-projections.md)
+10. [sessions/10-report-drafts-and-projections.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/10-report-drafts-and-projections.md)
 11. [sessions/11-v3-api-cli-ui.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/11-v3-api-cli-ui.md)
 12. [sessions/12-cutover-and-evals.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/12-cutover-and-evals.md)
 

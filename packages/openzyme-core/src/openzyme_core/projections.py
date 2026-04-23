@@ -76,6 +76,7 @@ class SessionWorkspaceProjection:
     delegation: dict[str, Any]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
+    report_drafts: tuple[dict[str, Any], ...]
     reports: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
 
@@ -91,6 +92,7 @@ class SessionWorkspaceProjection:
             "delegation": self.delegation,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
+            "report_drafts": list(self.report_drafts),
             "reports": list(self.reports),
             "capabilities": self.capabilities,
         }
@@ -113,6 +115,7 @@ class SessionProjectionBuilder:
         delegation = self.build_delegation_projection(session_id).to_dict()
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
         artifacts = tuple(artifact.to_dict() for artifact in self.repositories.artifacts.list_by_session(session_id))
+        report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
         reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
         return SessionWorkspaceProjection(
@@ -126,6 +129,7 @@ class SessionProjectionBuilder:
             delegation=delegation,
             activity_feed=activity_feed,
             artifacts=artifacts,
+            report_drafts=report_drafts,
             reports=reports,
             capabilities=capabilities,
         )
@@ -294,6 +298,14 @@ class SessionProjectionBuilder:
                     payload=artifact.to_dict(),
                 )
             )
+        for draft in self.repositories.report_drafts.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="report_draft.updated",
+                    created_at=draft.updated_at,
+                    payload=draft.to_dict(),
+                )
+            )
         for report in self.repositories.reports.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(
@@ -349,7 +361,6 @@ class SessionProjectionBuilder:
         return {
             "deep_research": "deep_research",
             "execution": "execution",
-            "reporting": "reporting",
         }.get(engine_name, engine_name)
 
 

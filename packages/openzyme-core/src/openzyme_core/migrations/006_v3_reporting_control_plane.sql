@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS session_report_records (
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
     lane_id TEXT REFERENCES lanes(lane_id) ON DELETE SET NULL,
-    invocation_id TEXT NOT NULL REFERENCES engine_invocations(invocation_id) ON DELETE CASCADE,
+    invocation_id TEXT REFERENCES engine_invocations(invocation_id) ON DELETE CASCADE,
     run_id TEXT REFERENCES session_run_records(run_id) ON DELETE SET NULL,
     artifact_id TEXT REFERENCES session_artifact_records(artifact_id) ON DELETE SET NULL,
     status TEXT NOT NULL,

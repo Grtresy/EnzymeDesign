@@ -1,4 +1,4 @@
-# Session 10: Reporting And Projections
+# Session 10: Report Drafts And Projections
 
 ## Guardrail
 
@@ -6,7 +6,7 @@
 
 ## 目标
 
-构建 reporting engine 与统一 workspace projection，使 research、execution、artifact、report 可以对外形成稳定工作区视图。
+构建 `report_draft` 工作面与统一 workspace projection，使 research、execution、artifact、report draft、report 可以对外形成稳定工作区视图。
 
 ## 参考
 
@@ -15,7 +15,7 @@
 
 ## 本轮允许改动
 
-- report generation contracts
+- report draft contracts
 - projection loaders
 - host-facing workspace assembly
 
@@ -26,17 +26,24 @@
 
 ## 完成产物
 
-- reporting engine
+- report draft model
+- report draft tool surface
 - unified workspace projection
 - activity feed / summary projection
 - named workspace sections aligned with public interface contract
+
+补充约束：
+
+- 本轮默认不引入 reporting engine
+- report teammate 直接围绕 `report_draft` 组织总结、修订与发布前准备
+- final `report` 作为 `report_draft` 的发布结果进入 workspace，而不是 engine invocation 的默认副产物
 
 ## 验收标准
 
 - UI / CLI 不必理解 internal engines
 - workspace snapshot 可以完整表达当前 session 状态
 - projection section names 与 `/v3` 公共接口保持一致
-- report / artifact / run / task / approval 能统一渲染
+- report draft / report / artifact / run / task / approval 能统一渲染
 
 ## 建议验证
 
