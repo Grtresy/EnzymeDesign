@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
@@ -28,6 +30,7 @@ from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
+from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SkillRegistry
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
@@ -37,6 +40,7 @@ from openzyme_core import run_agent_harness_loop
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineRegistry
 from openzyme_core import builtin_tool_descriptors
+from openzyme_core import top_level_tool_descriptors
 
 
 def _build_repositories() -> CoreRepositories:
@@ -765,6 +769,140 @@ def test_harness_default_registry_includes_task_and_lane_tools() -> None:
     }
 
 
+class BuiltinDelegationDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_delegate_task",
+                        tool_name="task.delegate",
+                        arguments={"task_id": "task_001", "agent_role": "researcher"},
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="delegated")
+
+
+def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=task.status,
+            priority=task.priority,
+            kind="research",
+            assigned_ref=task.assigned_ref,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+
+    registry = ToolRegistry()
+    registry.register("deep_research.start", lambda _context, invocation: json.dumps({"brief": invocation.arguments["brief"]}))
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="delegate research"),
+        driver=BuiltinDelegationDriver(),
+        tool_registry=registry,
+        model_factory=FakeModelFactory(
+            {
+                "v3_teammate_loop:researcher": [
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_research",
+                                "name": "deep_research.start",
+                                "args": {"task_id": "task_001", "brief": "Run the first harness step."},
+                            }
+                        ],
+                    },
+                    {"content": "Research task completed.", "tool_calls": []},
+                ]
+            }
+        ),
+    )
+
+    delegated_task = repositories.tasks.get("task_001")
+    assert result.outputs == ("delegated",)
+    assert delegated_task.assigned_ref == "agent:researcher"
+    assert delegated_task.status is TaskStatus.COMPLETED
+    assert repositories.agents.get("agent:researcher") is not None
+    inbox_types = [message.message_type for message in repositories.inbox.list_by_session(session.session_id)]
+    assert "delegation_request" in inbox_types
+    assert "delegation_result" in inbox_types
+
+
+def test_session_workspace_projection_exposes_delegation_threads() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=task.status,
+            priority=task.priority,
+            kind="research",
+            assigned_ref=task.assigned_ref,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    registry = ToolRegistry()
+    registry.register("deep_research.start", lambda _context, invocation: json.dumps({"brief": invocation.arguments["brief"]}))
+
+    run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="delegate research"),
+        driver=BuiltinDelegationDriver(),
+        tool_registry=registry,
+        model_factory=FakeModelFactory(
+            {
+                "v3_teammate_loop:researcher": [
+                    {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_research",
+                                "name": "deep_research.start",
+                                "args": {"task_id": "task_001", "brief": "Run the first harness step."},
+                            }
+                        ],
+                    },
+                    {"content": "Research task completed.", "tool_calls": []},
+                ]
+            }
+        ),
+    )
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    delegation = workspace["delegation"]["agents"][0]
+
+    assert delegation["agent"]["agent_id"] == "agent:researcher"
+    assert delegation["latest_correlation_id"] is not None
+    assert delegation["thread_summaries"][0]["status"] == "responded"
+
+
 class FakeToolCallingInvoker:
     def __init__(self, response: object) -> None:
         self.response = response
@@ -772,16 +910,25 @@ class FakeToolCallingInvoker:
 
     def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
         self.calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": list(tools)})
+        if isinstance(self.response, list):
+            index = min(len(self.calls) - 1, len(self.response) - 1)
+            return self.response[index]
         return self.response
 
 
 class FakeModelFactory:
-    def __init__(self, response: object) -> None:
-        self.invoker = FakeToolCallingInvoker(response)
+    def __init__(self, response: object | dict[str, object]) -> None:
+        self.response = response
+        self.invokers: dict[str, FakeToolCallingInvoker] = {}
 
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
-        assert purpose == "v3_harness_loop"
-        return self.invoker
+        if purpose not in self.invokers:
+            if isinstance(self.response, dict) and purpose in self.response:
+                response = self.response[purpose]
+            else:
+                response = self.response
+            self.invokers[purpose] = FakeToolCallingInvoker(response)
+        return self.invokers[purpose]
 
 
 class FakeEngine:
@@ -794,7 +941,14 @@ class FakeEngine:
 
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
-    assert {"task.create", "task.update", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
+    assert {"task.create", "task.update", "task.delegate", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
+
+
+def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
+    tool_names = {descriptor.tool_name for descriptor in top_level_tool_descriptors()}
+    assert "deep_research.start" not in tool_names
+    assert "execution.start" not in tool_names
+    assert "reporting.start" not in tool_names
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
@@ -828,7 +982,7 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
 
 
-def test_llm_conversation_driver_backfills_engine_task_id_from_same_turn_task_create() -> None:
+def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -841,30 +995,6 @@ def test_llm_conversation_driver_backfills_engine_task_id_from_same_turn_task_cr
         skill_registry=SkillRegistry(),
     )
     context.refresh_restore_context()
-    engine_registry = EngineRegistry()
-    engine_registry.register(
-        FakeEngine(
-            EngineDescriptor(
-                engine_name="deep_research",
-                tool_names=("deep_research.start",),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                        "brief": {"type": "string"},
-                    },
-                    "required": ["task_id", "brief"],
-                    "additionalProperties": False,
-                },
-                output_schema={"type": "object"},
-                requires_approval=False,
-                supports_background=False,
-                idempotency_key_shape="{task_id}:deep_research:{nonce}",
-                produces_artifact_types=(),
-                capability_key="deep_research",
-            )
-        )
-    )
     driver = LlmConversationDriver(
         FakeModelFactory(
             {
@@ -881,26 +1011,26 @@ def test_llm_conversation_driver_backfills_engine_task_id_from_same_turn_task_cr
                         },
                     },
                     {
-                        "id": "call_research",
-                        "name": "deep_research.start",
+                        "id": "call_delegate",
+                        "name": "task.delegate",
                         "args": {
-                            "brief": "Survey AI in systems engineering",
+                            "agent_role": "researcher",
                         },
                     },
                 ],
             }
-        ),
-        engine_registry=engine_registry,
+        )
     )
 
     step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())
 
     assert step.assistant_message is None
-    assert [invocation.tool_name for invocation in step.tool_invocations] == ["task.create", "deep_research.start"]
+    assert [invocation.tool_name for invocation in step.tool_invocations] == ["task.create", "task.delegate"]
     assert step.tool_invocations[1].arguments["task_id"] == "task_research_001"
+    assert step.tool_invocations[1].arguments["instructions"] == "Survey AI in systems engineering"
 
 
-def test_llm_conversation_driver_returns_friendly_message_when_engine_call_lacks_task_id() -> None:
+def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_task_id() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -913,40 +1043,15 @@ def test_llm_conversation_driver_returns_friendly_message_when_engine_call_lacks
         skill_registry=SkillRegistry(),
     )
     context.refresh_restore_context()
-    engine_registry = EngineRegistry()
-    engine_registry.register(
-        FakeEngine(
-            EngineDescriptor(
-                engine_name="deep_research",
-                tool_names=("deep_research.start",),
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                        "brief": {"type": "string"},
-                    },
-                    "required": ["task_id", "brief"],
-                    "additionalProperties": False,
-                },
-                output_schema={"type": "object"},
-                requires_approval=False,
-                supports_background=False,
-                idempotency_key_shape="{task_id}:deep_research:{nonce}",
-                produces_artifact_types=(),
-                capability_key="deep_research",
-            )
-        )
-    )
     driver = LlmConversationDriver(
         FakeModelFactory(
             {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_research", "name": "deep_research.start", "args": {"brief": "Survey AI in systems engineering"}},
+                    {"id": "call_delegate", "name": "task.delegate", "args": {"agent_role": "researcher"}},
                 ],
             }
-        ),
-        engine_registry=engine_registry,
+        )
     )
 
     step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())

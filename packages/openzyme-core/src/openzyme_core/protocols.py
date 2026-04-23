@@ -15,6 +15,7 @@ from openzyme_domain import InboxStatus
 from openzyme_domain.control_plane import utc_now_iso
 
 from .repositories import CoreRepositories
+from .repositories import EngineDocumentRecord
 
 
 class CorrelationStatus(StrEnum):
@@ -125,6 +126,16 @@ class ProtocolService:
             payload_ref=payload_ref,
             correlation_id=correlation_id,
         )
+        self._emit(
+            "agent.delegated",
+            {
+                "agent_id": agent.agent_id,
+                "task_id": agent.task_id,
+                "lane_id": agent.lane_id,
+                "correlation_id": correlation_id,
+                "message_id": message.message_id,
+            },
+        )
         return DelegationEnvelope(agent=agent, request_message=message, correlation_id=correlation_id)
 
     def reply(
@@ -149,6 +160,28 @@ class ProtocolService:
             payload_ref=payload_ref,
             correlation_id=correlation_id,
         )
+
+    def persist_payload(
+        self,
+        *,
+        session_id: str,
+        document_kind: str,
+        payload: dict[str, Any],
+    ) -> str:
+        document_id = f"doc_{uuid4().hex[:12]}"
+        now = utc_now_iso()
+        self.repositories.engine_documents.save(
+            EngineDocumentRecord(
+                document_id=document_id,
+                session_id=session_id,
+                invocation_id=None,
+                document_kind=document_kind,
+                payload=payload,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return document_id
 
     def send_message(
         self,

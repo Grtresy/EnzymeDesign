@@ -67,7 +67,7 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
             "/v3/sessions/sess_live_v3_llm/messages",
             json={
                 "message": (
-                    "Call task.create exactly once to create task_id task_live_v3_001 with subject "
+                    "Call task.create exactly once to create a task with subject "
                     "'Capture design goals' and description 'Extract the user design goals into a tracked task.' "
                     "Then reply with one short confirmation sentence."
                 )
@@ -76,8 +76,13 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    task_ids = [item["task"]["task_id"] for item in payload["workspace"]["task_board"]["items"]]
-    assert "task_live_v3_001" in task_ids
+    task_items = payload["workspace"]["task_board"]["items"]
+    assert task_items
+    assert any(
+        item["task"]["subject"] == "Capture design goals"
+        and item["task"]["description"] == "Extract the user design goals into a tracked task."
+        for item in task_items
+    )
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
     assert payload["workspace"]["conversation"]
     assert payload["outputs"]

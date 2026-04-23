@@ -6,7 +6,7 @@
 
 ## 目标
 
-提供 `/v3` API、Thin CLI、conversation-first Web workspace，使用户真正通过 V3 control plane 交互，并让顶层 `/v3` conversation ingress 可以由真实 LLM harness loop 驱动。
+提供 `/v3` API、Thin CLI、conversation-first Web workspace，使用户真正通过 V3 control plane 与 master agent 交互，并让顶层 `/v3` conversation ingress 可以由真实 LLM master-agent loop 驱动。
 
 ## 参考
 
@@ -37,6 +37,13 @@
 - canonical `workspace.conversation`
 - built-in V3 tool schema/catalog for top-level tool-calling
 
+语义补充：
+
+- `workspace.conversation` 展示用户与 master agent 的对话
+- `task board + delegation + lane board + capabilities` 展示 OpenZyme 内部执行组织
+- `artifacts` / `reports` / `capabilities` 共同展示 agent team 的共享工作面，而不是只展示最终交付物
+- Web UI 默认表现为“一个对外负责人 + 一个内部执行团队”，而不是多个平级 agent 直接面向用户
+
 ## 验收标准
 
 - 用户能通过对话消息继续 harness loop
@@ -44,7 +51,7 @@
 - 当 harness 需要人工确认时，UI 在对话流中展示 approval card，并能 approve / reject 后恢复 loop
 - 用户能查看 session、task board、lane board、approvals、delegation、artifacts、reports、capabilities，但默认不需要手工创建或编排 task / lane
 - UI 刷新后可以只靠 workspace projection 恢复，包括 conversation timeline
-- 无模型配置时，系统仍可回退到 deterministic driver
+- 至少有一条主路径符合 `user -> master agent -> task -> teammate loop -> capability -> delivery`
 
 ## 建议验证
 

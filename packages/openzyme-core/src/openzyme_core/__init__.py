@@ -45,6 +45,8 @@ from .protocols import CorrelationStatus
 from .protocols import CorrelationThread
 from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
+from .artifact_tools import register_artifact_tools
+from .protocol_tools import register_protocol_tools
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
@@ -71,6 +73,13 @@ from .skills import SkillDescriptor
 from .skills import SkillDocument
 from .skills import SkillRegistry
 from .skills import register_skill_tools
+from .subagents import default_agent_id_for_role
+from .subagents import default_agent_role_for_task
+from .subagents import register_subagent_tools
+from .teammates import TeammateConversationDriver
+from .teammates import build_teammate_registry
+from .teammates import teammate_tool_descriptors
+from .teammates import run_teammate_loop
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import builtin_tool_descriptors
 from .tool_catalog import top_level_tool_descriptors
@@ -87,6 +96,7 @@ __all__ = [
     "AgentMemberRepository",
     "ApprovalRequestRepository",
     "BackgroundCompletion",
+    "build_teammate_registry",
     "CapabilityEngine",
     "CorrelationStatus",
     "CorrelationThread",
@@ -123,6 +133,8 @@ __all__ = [
     "MemoryEntryRepository",
     "OwnershipError",
     "ProtocolService",
+    "register_artifact_tools",
+    "register_protocol_tools",
     "ResearchEvidenceRepository",
     "ResearchGapRepository",
     "ResearchSourceRefRepository",
@@ -143,6 +155,8 @@ __all__ = [
     "SkillDescriptor",
     "SkillDocument",
     "SkillRegistry",
+    "default_agent_id_for_role",
+    "default_agent_role_for_task",
     "TaskRepository",
     "TaskBoardBucket",
     "TaskBoardItem",
@@ -162,8 +176,12 @@ __all__ = [
     "persist_conversation_message",
     "register_memory_tools",
     "register_skill_tools",
+    "register_subagent_tools",
     "register_task_board_tools",
     "register_lane_tools",
+    "run_teammate_loop",
     "run_agent_harness_loop",
+    "TeammateConversationDriver",
+    "teammate_tool_descriptors",
     "top_level_tool_descriptors",
 ]

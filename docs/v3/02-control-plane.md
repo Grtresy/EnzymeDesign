@@ -34,8 +34,16 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 用途：
 
-- 持久化任务图与执行状态
-- 支持依赖、assignment、lane 绑定、结果回填
+- 持久化 master agent 对内部工作的正式安排
+- 作为 session 内可调度、可委托、可恢复、可完成的工作单元
+- 支持依赖、assignment、lane 绑定、delegation、结果回填
+
+补充定义：
+
+- `task` 不是普通聊天消息，也不是 capability tool call 的临时参数
+- `task` 默认由 master agent 基于用户对话创建和编排
+- `task` 是 delegated teammate、lane、approval、engine invocation、artifact、report、protocol thread 的默认关联锚点
+- `task` 的存在意义是让内部执行和外部对话解耦：用户与 master agent 对话，内部团队围绕 task 推进工作
 
 建议字段：
 
@@ -55,7 +63,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 用途：
 
-- 表达隔离执行上下文
+- 表达 task 的隔离执行上下文
 - 记录工作目录、资源绑定、生命周期
 
 建议字段：
@@ -132,7 +140,8 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 用途：
 
-- 表达可被 harness 恢复、投影、协议化通信的 delegated agent / teammate
+- 表达可被 harness 恢复、投影、协议化通信的 teammate agent
+- 表达哪个 teammate 正在代表 agent team 推进哪个 task，以及它当前的 role / focus / 生命周期
 
 建议字段：
 
@@ -147,11 +156,17 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `created_at`
 - `updated_at`
 
+补充约束：
+
+- teammate 在“是否是 agent”这件事上与 master 平级；差异在于职责，而不是本体类型
+- master 是 team leader 与 user-facing agent；teammate 是 internal worker / specialist
+- teammate 应拥有自己的 restore context、tool surface、protocol thread 与状态投影
+
 ### 2.8 EngineInvocation
 
 用途：
 
-- 统一追踪 capability engine 的启动、恢复、重试、并发与结果回填
+- 统一追踪 capability engine 围绕某个 task 的启动、恢复、重试、并发与结果回填
 
 建议字段：
 
@@ -180,6 +195,8 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `run` 与 `artifact` 必须可回链到 session / task / lane / engine invocation
 - `report` 必须能被 workspace projection 直接消费
 - 大体积、engine-specific、调试型数据优先存入 artifact store，由 control plane 通过 typed ref 引用，而不是塞入 canonical row
+- session 级 artifact catalog 必须可被 master 与 teammate 共同读取；artifact 不是只给 UI 看的投影附件
+- artifact 默认是 team 共享工作面的一部分，task / lane 决定焦点与归属，而不是决定可见性的唯一边界
 
 ## 3. Workspace Projection
 
@@ -199,6 +216,14 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `capabilities`
 - `activity_feed`
 
+其中推荐的阅读关系是：
+
+- `conversation` 看用户与 master agent 的往来
+- `task_board` 看内部工作如何被拆解和推进
+- `delegation` 看哪些 teammate 正在推进哪些 task、持有哪些 correlation thread
+- `lane_board` / `capabilities` 看 task 在什么执行上下文里运行
+- `artifacts` 看 agent team 当前共享工作面中已产出的证据、结果与中间产物
+
 ## 4. Event Model
 
 control plane 需要最小事件流，便于 streaming 与审计。
@@ -215,6 +240,7 @@ control plane 需要最小事件流，便于 streaming 与审计。
 - `agent.spawned`
 - `agent.status_updated`
 - `agent.message.delivered`
+- `agent.delegated`
 - `approval.requested`
 - `approval.resolved`
 - `memory.compacted`

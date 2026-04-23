@@ -4,6 +4,14 @@
 
 OpenZyme V3 的目标不是“更复杂的 graph workflow”，而是一个 **harness-first scientific agent platform**。
 
+角色模型默认采用：
+
+- 用户是甲方
+- OpenZyme 是乙方
+- `master agent` 作为对外负责人，与用户对话、理解目标、创建和编排 task
+- `teammate agent` 作为内部执行者，与 master 同属一个 agent team，默认推进具体 task
+- `harness` 作为系统层，负责状态、协议、约束、恢复和投影
+
 顶层结构：
 
 ```text
@@ -22,6 +30,7 @@ V3 Host Control Plane
   +--> memory / compaction
   +--> inbox / team protocols
   +--> delegation / agent roster
+  +--> shared workspace / artifact catalog
   +--> projection engine
   |
   v
@@ -29,7 +38,7 @@ Agent Harness Kernel
   |
   +--> tool registry
   +--> skill loader
-  +--> subagent / delegation manager
+  +--> teammate loop runtime
   +--> capability dispatch
   +--> background jobs
   |
@@ -58,8 +67,9 @@ V3 的产品主语义改为：
 
 - `session`
 - `task DAG`
+- `master agent -> teammate` delegation
 - `lane / workspace isolation`
-- `approval + inbox + delegation protocols`
+- `approval + inbox + team protocols`
 - `capability engines` 被 harness 按需调用
 - `workspace projection` 统一对外暴露当前状态
 
@@ -73,12 +83,15 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 - 管理 `session` 生命周期
 - 持久化 `task / lane / approval / inbox / memory / agent roster / engine invocation`
+- 持久化 `artifact catalog / report / run` 并将其暴露为 session 共享工作面
 - 提供统一 API / streaming / projection
 - 触发 harness kernel 运行
 - 为 UI / CLI 提供 canonical workspace snapshot
 
 不负责：
 
+- 理解用户意图
+- 决定 task 内容或项目级拆解
 - 深研究推理细节
 - HPC 执行编排细节
 - 报告具体生成细节
@@ -89,13 +102,18 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 - 维护统一 top-level harness loop
 - 执行工具分发
-- 协调 tasks / lanes / approvals / delegation / background jobs
+- 协调 tasks / lanes / approvals / delegation / background jobs 的持久化与协议推进
 - 注入 skills、memory、tool results
-- 维护 subagent spawn / resume / shutdown seam
-- 决定何时调用 capability engines
+- 维护 teammate spawn / resume / shutdown seam
+- 为每个 agent 构建 focused restore context，并暴露 role-scoped tool surface
+- 决定何时调用 capability engines 或等待 agent team protocol 继续推进
 - 通过 tool-calling model 驱动顶层消息回合
 
 不负责：
+
+- 直接理解用户意图
+- 直接决定 task 的业务内容
+- 取代 master agent 做项目经理式编排
 
 - 直接成为业务记录存储层
 - 直接替代 external runner
@@ -143,14 +161,17 @@ restore context
 
 ```text
 create session
-  -> create / prioritize tasks
-  -> assign / claim lane
-  -> run harness loop
-  -> delegate subtasks when needed
-  -> call deep_research when needed
-  -> call execution when needed
+  -> master agent understands user goal
+  -> master agent create / prioritize tasks
+  -> master agent assign concrete tasks to teammate agents when needed
+  -> teammate agent restore on shared session workspace with task/lane focus
+  -> teammate inspects artifacts / protocols / task state
+  -> teammate chooses tools / capability calls when needed
+  -> assign / claim lane for delegated task when execution context is required
   -> resolve approvals through unified protocol
+  -> teammates may communicate peer-to-peer through team protocols
   -> materialize artifacts / runs / reports
+  -> master agent synthesize progress / deliverables back to user
   -> project workspace snapshot
 ```
 
@@ -200,18 +221,29 @@ UI/CLI
 
 Web UI 的默认交互是 conversation-first：用户通过消息表达目标，通过 approval cards 确认高风险动作；task / lane / engine invocation 等 control-plane 对象由 harness tools 维护，并以只读 workspace inspector 形式展示。CLI 可以保留 task / lane mutation 作为 operator、调试、自动化能力，但这不是普通 Web 用户推进工作的默认方式。
 
+默认主路径不是“用户消息直接触发 capability”，而是：
+
+- 用户与 master agent 对话
+- master agent 创建和编排 task
+- master agent 将具体 task 分配给 teammate agents
+- teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / reports
+- teammate 之间通过 team protocol 协作，master 负责对外汇报和最终交付
+
 ## 5. 关键设计默认值
 
 - `project` 继续保留为上层业务锚点
 - `session` 替代 `episode` 成为交互锚点
 - `task` 是默认工作组织单元
 - `lane` 是默认执行隔离单元
-- `delegation` 默认作为 harness tool / protocol 存在，而不是 prompt 惯例
+- `delegation` / `team protocol` 默认作为 task-aware harness tool / protocol 存在，而不是 prompt 惯例
 - `workspace projection` 是 UI / CLI 唯一合法读模型
 - `workspace.conversation` 是 V3 对话真读模型
+- teammate 默认拥有 session-wide artifact catalog 的读视野，并以 task / lane focused restore context 工作
+- teammate 默认采用 role-scoped tool surface；共享读工具可见，危险写操作保持结构化约束
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
+- research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成
 
 ## 6. 推荐 Monorepo 包布局
 

@@ -41,10 +41,10 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 - `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation、engine 调用
 - 当 `model_factory` 可用时，该入口默认走真实 top-level LLM harness driver
-- 当 `model_factory` 不可用时，允许回退到 deterministic driver，但不得改变 `/v3` control-plane contract
-- Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 agent loop 通过 harness tools 更新，再通过 workspace projection 展示
+- Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 master agent 在 loop 中创建和编排，再通过 workspace projection 展示
 - task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台
-- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 delegated agent / subtask 状态
+- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol 状态
+- 默认主路径是 `conversation -> master planning -> task -> delegation -> teammate loop -> lane/capability -> user feedback`，而不是用户消息直接裸触发 capability
 
 ## 3. Workspace Contract
 
@@ -67,10 +67,12 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 说明：
 
-- `conversation` 来源于持久化的 user / assistant message content，是 V3 对话的 canonical read model
+- `conversation` 来源于持久化的 user / assistant message content，是用户与 master agent 的 canonical read model
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline，而不是依赖浏览器本地消息历史
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
+- `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
+- `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
 
 ## 4. CLI 语义
 
@@ -93,7 +95,9 @@ V3 Web UI 默认是 conversation-first。
 主交互：
 
 - 用户发送自然语言消息
-- top-level LLM harness loop 决定是否创建 task、绑定 lane、调用 engine、请求 approval
+- top-level master agent loop 决定如何创建和编排 task
+- 具体 research / execution / reporting task 默认委托给 teammate agent 推进
+- teammate 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 engine、请求 approval，并可通过 protocol 与 peers 沟通
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
 
@@ -110,6 +114,12 @@ V3 Web UI 默认是 conversation-first。
 - 哪个 subgraph 持有当前局部状态
 - 如何手动创建 task / lane 才能推进工作
 
+同时也不应要求用户理解：
+
+- 具体哪个 teammate 在什么时刻被 spawn
+- 为什么某个 capability 缺少 `task_id`
+- 内部 team protocol / lane / engine / artifact catalog 是如何串起来的
+
 ## 6. Streaming
 
 V3 streaming 默认围绕 control-plane events，而不是围绕 graph implementation 细节。
@@ -123,9 +133,11 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `task.updated`
 - `approval.requested` / `approval.resolved`
 - `lane.created` / `lane.bound` / `lane.removed`
-- `agent.spawned` / `agent.message.delivered`
+- `agent.spawned` / `agent.delegated` / `agent.message.delivered`
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
 - `report.generated`
+
+这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
 
 ## 7. 弃用策略
 

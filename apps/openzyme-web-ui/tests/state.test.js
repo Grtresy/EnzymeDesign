@@ -46,6 +46,25 @@ function buildV3Workspace() {
         },
       ],
     },
+    delegation: {
+      agents: [
+        {
+          agent: {
+            agent_id: "agent:researcher",
+            name: "researcher",
+            role: "researcher",
+            status: "active",
+            task_id: "task_001",
+          },
+          correlation_ids: ["corr_001"],
+          latest_correlation_id: "corr_001",
+          latest_message_type: "delegation_request",
+          latest_message_at: "2026-04-21T00:00:00+00:00",
+          pending_correlation_ids: ["corr_001"],
+          thread_summaries: [],
+        },
+      ],
+    },
     pending_approvals: [],
     activity_feed: [],
     artifacts: [{ artifact_id: "art_001", title: "stdout.log", kind: "log" }],
@@ -107,6 +126,25 @@ test("v3 conversation events render in the central chat column", () => {
   assert.match(html, /Extract goals/);
   assert.match(html, /Conversation/);
   assert.match(html, /Tasks/);
+});
+
+test("team inspector renders delegated teammate status", () => {
+  const workspace = buildV3Workspace();
+  const html = renderApp({
+    currentProjectId: "proj_001",
+    currentSessionId: "sess_001",
+    currentSection: "team",
+    sidebarExpandedSessionIds: ["sess_001"],
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+    errorMessage: "",
+    sidebarBusy: false,
+    messageBusy: false,
+  });
+
+  assert.match(html, /Team/);
+  assert.match(html, /researcher/);
+  assert.match(html, /task_001/);
 });
 
 test("approval events update pending approvals and activity", () => {

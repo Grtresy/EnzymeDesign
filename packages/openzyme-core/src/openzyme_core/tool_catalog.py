@@ -40,7 +40,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "assigned_ref": {"type": ["string", "null"]},
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["task_id", "subject", "description"],
+                "required": ["subject"],
                 "additionalProperties": False,
             },
         ),
@@ -88,6 +88,22 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             input_schema={
                 "type": "object",
                 "properties": {"lane_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="task.delegate",
+            description="Delegate a concrete task to an internal teammate agent for execution.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "agent_role": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "instructions": {"type": "string"},
+                    "correlation_id": {"type": "string"},
+                },
+                "required": ["task_id"],
                 "additionalProperties": False,
             },
         ),
@@ -158,26 +174,8 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
 
 
 def top_level_tool_descriptors(engine_registry: EngineRegistry | None = None) -> tuple[ToolDescriptor, ...]:
-    descriptors = list(builtin_tool_descriptors())
-    if engine_registry is not None:
-        engine_tool_names = {
-            "deep_research.start": "Start a deep research capability invocation for a research task.",
-            "execution.start": "Start an execution capability invocation for an execution task.",
-            "reporting.start": "Start a reporting capability invocation for a reporting task.",
-        }
-        for engine in engine_registry.list_engines():
-            for tool_name in engine.descriptor.tool_names:
-                description = engine_tool_names.get(tool_name)
-                if description is None:
-                    continue
-                descriptors.append(
-                    ToolDescriptor(
-                        tool_name=tool_name,
-                        description=description,
-                        input_schema=engine.descriptor.input_schema,
-                    )
-                )
-    return tuple(descriptors)
+    del engine_registry
+    return builtin_tool_descriptors()
 
 
 __all__ = ["ToolDescriptor", "builtin_tool_descriptors", "top_level_tool_descriptors"]

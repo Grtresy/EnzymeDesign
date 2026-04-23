@@ -22,11 +22,15 @@ const v3EventTypes = [
   "lane.removed",
   "approval.requested",
   "approval.resolved",
+  "agent.spawned",
+  "agent.delegated",
+  "agent.status_updated",
   "engine.invocation.started",
   "engine.invocation.updated",
   "engine.invocation.completed",
   "artifact.recorded",
   "report.generated",
+  "report.updated",
 ];
 
 function buildUrl(baseUrl, path) {

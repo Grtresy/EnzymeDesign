@@ -16,6 +16,7 @@ function buildV3Workspace(sessionId = "sess_001", title = "Plan with V3") {
     },
     task_board: { items: [] },
     lane_board: { lanes: [] },
+    delegation: { agents: [] },
     pending_approvals: [],
     activity_feed: [],
     artifacts: [],

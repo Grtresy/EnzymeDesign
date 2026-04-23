@@ -137,6 +137,8 @@ class HarnessInput:
     sender: str = "user"
     sender_kind: InboxParticipantKind = InboxParticipantKind.USER
     restore_focus: RestoreFocus | None = None
+    persist_conversation: bool = True
+    skip_resume_resolution: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +248,8 @@ class SessionRuntimeContext:
     restore_context: Any | None = None
     active_skill_keys: tuple[str, ...] = ()
     skill_registry: Any | None = None
+    model_factory: Any | None = None
+    engine_registry: EngineRegistry | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(self.repositories, self.snapshot.session.session_id)
@@ -472,9 +476,11 @@ def _register_builtin_tools(registry: ToolRegistry, *, engine_registry: EngineRe
     from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
     from .skills import register_skill_tools
+    from .subagents import register_subagent_tools
     from .task_board import register_task_board_tools
 
     register_task_board_tools(registry)
+    register_subagent_tools(registry)
     register_lane_tools(registry)
     register_memory_tools(registry)
     register_skill_tools(registry)
@@ -540,6 +546,7 @@ def run_agent_harness_loop(
     tool_registry: ToolRegistry | None = None,
     engine_registry: EngineRegistry | None = None,
     event_sink: EventSink | None = None,
+    model_factory: Any | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -556,6 +563,8 @@ def run_agent_harness_loop(
         restore_focus=resolved_focus.normalized(),
         active_skill_keys=resolved_focus.normalized().skill_keys,
         skill_registry=SkillRegistry(),
+        model_factory=model_factory,
+        engine_registry=engine_registry,
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -571,7 +580,7 @@ def run_agent_harness_loop(
             recipient="harness",
             recipient_kind=InboxParticipantKind.HARNESS,
             message_type="user_message",
-            content=harness_input.message,
+            content=harness_input.message if harness_input.persist_conversation else None,
         )
         context.emit(
             "message.received",
@@ -583,7 +592,7 @@ def run_agent_harness_loop(
         )
         activity_happened = True
 
-    if harness_input.resume is not None:
+    if harness_input.resume is not None and not harness_input.skip_resume_resolution:
         _resolve_resume(context, harness_input.resume)
         activity_happened = True
 
@@ -680,7 +689,7 @@ def run_agent_harness_loop(
                 recipient=harness_input.sender,
                 recipient_kind=harness_input.sender_kind,
                 message_type="assistant_message",
-                content=step.assistant_message,
+                content=step.assistant_message if harness_input.persist_conversation else None,
             )
             outputs.append(step.assistant_message)
             context.emit(
@@ -726,43 +735,26 @@ def run_agent_harness_loop(
                     lane_id=delegation.lane_id,
                 ),
             )
-            message = _persist_message(
-                repositories,
+            from .protocols import ProtocolService
+
+            protocol = ProtocolService(repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+            envelope = protocol.delegate(
                 session_id=delegation.session_id,
-                sender="harness",
-                sender_kind=InboxParticipantKind.HARNESS,
-                recipient=delegation.recipient,
-                recipient_kind=delegation.recipient_kind,
-                message_type="delegation_request",
+                agent_id=delegation.recipient,
+                name=delegation.recipient.removeprefix("agent:") or delegation.recipient,
+                role="delegate",
                 payload_ref=delegation.payload_ref,
-                correlation_id=delegation.correlation_id,
+                task_id=delegation.task_id,
+                lane_id=delegation.lane_id,
+                parent_agent_id=None,
+                correlation_id=delegation.correlation_id or _new_id("corr"),
             )
-            agent = _ensure_agent_member_for_delegation(repositories, delegation)
-            if agent is not None:
-                context.emit(
-                    "agent.spawned" if agent.created_at == agent.updated_at else "agent.status_updated",
-                    {
-                        "agent_id": agent.agent_id,
-                        "status": agent.status.value,
-                        "task_id": agent.task_id,
-                        "lane_id": agent.lane_id,
-                    },
-                )
             delegation_handles.append(
                 DelegationHandle(
                     request_id=delegation.request_id,
-                    message_id=message.message_id,
-                    correlation_id=delegation.correlation_id,
+                    message_id=envelope.request_message.message_id,
+                    correlation_id=envelope.correlation_id,
                 )
-            )
-            context.emit(
-                "agent.delegated",
-                {
-                    "request_id": delegation.request_id,
-                    "recipient": delegation.recipient,
-                    "task_id": delegation.task_id,
-                    "lane_id": delegation.lane_id,
-                },
             )
             activity_happened = True
 

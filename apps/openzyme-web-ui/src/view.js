@@ -9,6 +9,7 @@ function escapeHtml(value) {
 
 const sectionLabels = {
   conversation: "Conversation",
+  team: "Team",
   tasks: "Tasks",
   lanes: "Lanes",
   outputs: "Outputs",
@@ -45,6 +46,31 @@ export function renderV3TaskBoard(workspace) {
         .map((item) => {
           const task = item.task ?? {};
           return `<li><strong>${escapeHtml(task.subject)}</strong><span>${escapeHtml(task.task_id)} · ${escapeHtml(task.status)} · ${escapeHtml(item.bucket)}</span></li>`;
+        })
+        .join("")}
+    </ul>
+  `;
+}
+
+export function renderV3Delegation(workspace) {
+  const agents = workspace.delegation?.agents ?? [];
+  if (!agents.length) {
+    return `<p class="empty-copy">No delegated teammates yet.</p>`;
+  }
+  return `
+    <ul class="record-list">
+      ${agents
+        .map((item) => {
+          const agent = item.agent ?? {};
+          const latestCorrelation = item.latest_correlation_id ?? item.correlation_ids?.[0] ?? "none";
+          const pendingCount = (item.pending_correlation_ids ?? []).length;
+          return `
+            <li>
+              <strong>${escapeHtml(agent.name ?? agent.agent_id ?? "agent")}</strong>
+              <span>${escapeHtml(agent.role ?? "worker")} · ${escapeHtml(agent.status ?? "unknown")} · ${escapeHtml(agent.task_id ?? "no-task")}</span>
+              <small>${escapeHtml(latestCorrelation)}${pendingCount ? ` · ${pendingCount} pending` : ""}</small>
+            </li>
+          `;
         })
         .join("")}
     </ul>
@@ -237,6 +263,8 @@ export function renderInspectorContent(viewState) {
     return `<p class="empty-copy">Select a session to inspect structured state.</p>`;
   }
   switch (viewState.currentSection) {
+    case "team":
+      return renderV3Delegation(workspace);
     case "tasks":
       return renderV3TaskBoard(workspace);
     case "lanes":

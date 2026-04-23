@@ -11,7 +11,6 @@ from uuid import uuid4
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineRegistry
 from openzyme_core import HarnessInput
-from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import LlmConversationDriver
@@ -20,17 +19,12 @@ from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionProjectionBuilder
-from openzyme_core import SessionRuntimeContext
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
-from openzyme_core import ToolInvocation
-from openzyme_core import ToolResult
 from openzyme_core import run_agent_harness_loop
 from openzyme_domain import ApprovalRequestStatus
-from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
-from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
@@ -71,171 +65,6 @@ class V3EventStore:
 
     def list(self, session_id: str) -> list[dict[str, Any]]:
         return list(self._events.get(session_id, ()))
-
-
-@dataclass(frozen=True, slots=True)
-class EchoConversationDriver:
-    message: str | None
-
-    def plan(
-        self,
-        context: SessionRuntimeContext,
-        harness_input: HarnessInput,
-        tool_results: tuple[ToolResult, ...],
-    ) -> HarnessStep:
-        del context, harness_input
-        if tool_results:
-            rendered = "; ".join(f"{result.tool_name}: {result.content}" for result in tool_results)
-            return HarnessStep(assistant_message=rendered)
-        if self.message:
-            return HarnessStep(assistant_message=f"Received: {self.message}")
-        return HarnessStep(assistant_message="Workspace is ready.")
-
-
-@dataclass(frozen=True, slots=True)
-class EngineBackedConversationDriver:
-    message: str | None
-
-    def plan(
-        self,
-        context: SessionRuntimeContext,
-        harness_input: HarnessInput,
-        tool_results: tuple[ToolResult, ...],
-    ) -> HarnessStep:
-        if tool_results:
-            return self._after_tool_result(context, tool_results[0])
-        if harness_input.resume is not None:
-            step = self._resume_waiting_invocation(context, harness_input.resume.decision)
-            if step is not None:
-                return step
-        task = self._select_task(context, harness_input)
-        if task is None or task.kind not in {"research", "execution", "reporting"}:
-            return EchoConversationDriver(self.message).plan(context, harness_input, tool_results)
-        return self._start_task(task)
-
-    def _select_task(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> Task | None:
-        focus = harness_input.restore_focus
-        if focus is not None and focus.task_id is not None:
-            task = context.repositories.tasks.get(focus.task_id)
-            if task is not None and task.session_id == context.snapshot.session.session_id:
-                return task
-        for task in context.snapshot.ready_tasks:
-            if task.kind in {"research", "execution", "reporting"}:
-                return task
-        return None
-
-    def _start_task(self, task: Task) -> HarnessStep:
-        if task.status not in {TaskStatus.TODO, TaskStatus.BLOCKED}:
-            return HarnessStep(assistant_message=f"Task {task.task_id} is already {task.status.value}.")
-        invocation = self._tool_for_task(task)
-        return HarnessStep(
-            assistant_message=f"Starting {task.kind} task {task.task_id}.",
-            tool_invocations=(invocation,),
-            task_updates=(
-                replace(
-                    task,
-                    status=TaskStatus.IN_PROGRESS,
-                    updated_at=utc_now_iso(),
-                ),
-            ),
-            next_focus=RestoreFocus(task_id=task.task_id, lane_id=task.lane_id),
-        )
-
-    def _tool_for_task(self, task: Task) -> ToolInvocation:
-        if task.kind == "research":
-            return ToolInvocation(
-                call_id=f"call_research_{task.task_id}",
-                tool_name="deep_research.start",
-                arguments={"task_id": task.task_id, "brief": task.description or task.subject},
-                task_id=task.task_id,
-                lane_id=task.lane_id,
-            )
-        if task.kind == "execution":
-            return ToolInvocation(
-                call_id=f"call_execution_{task.task_id}",
-                tool_name="execution.start",
-                arguments={
-                    "task_id": task.task_id,
-                    "handoff": {
-                        "execution_goal": task.description or task.subject,
-                        "catalog_tool_id": "fpocket",
-                        "require_approval": True,
-                    },
-                },
-                task_id=task.task_id,
-                lane_id=task.lane_id,
-            )
-        return ToolInvocation(
-            call_id=f"call_reporting_{task.task_id}",
-            tool_name="reporting.start",
-            arguments={"task_id": task.task_id, "report_brief": task.description or task.subject},
-            task_id=task.task_id,
-            lane_id=task.lane_id,
-        )
-
-    def _resume_waiting_invocation(
-        self,
-        context: SessionRuntimeContext,
-        decision: ResumeDecision,
-    ) -> HarnessStep | None:
-        waiting = [
-            invocation
-            for invocation in context.snapshot.active_invocations
-            if invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-            and invocation.engine_name == "execution"
-            and invocation.approval_id is not None
-        ]
-        if not waiting:
-            return None
-        invocation = waiting[0]
-        return HarnessStep(
-            assistant_message=f"Resuming execution invocation {invocation.invocation_id}.",
-            tool_invocations=(
-                ToolInvocation(
-                    call_id=f"call_resume_{invocation.invocation_id}",
-                    tool_name="execution.resume",
-                    arguments={
-                        "invocation_id": invocation.invocation_id,
-                        "resolution": f"Approval {decision.value} by user.",
-                    },
-                    task_id=invocation.task_id,
-                    lane_id=invocation.lane_id,
-                ),
-            ),
-            next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
-        )
-
-    def _after_tool_result(self, context: SessionRuntimeContext, result: ToolResult) -> HarnessStep:
-        task = None if result.task_id is None else context.repositories.tasks.get(result.task_id)
-        status = self._invocation_status_from_result(result)
-        if status == EngineInvocationStatus.WAITING_APPROVAL.value:
-            return HarnessStep(assistant_message=f"{result.tool_name} is waiting for approval.")
-        if result.ok and status not in {EngineInvocationStatus.FAILED.value, EngineInvocationStatus.CANCELLED.value}:
-            updates = ()
-            if task is not None:
-                updates = (replace(task, status=TaskStatus.COMPLETED, updated_at=utc_now_iso()),)
-            return HarnessStep(
-                assistant_message=f"{result.tool_name} completed.",
-                task_updates=updates,
-            )
-        updates = ()
-        if task is not None:
-            updates = (replace(task, status=TaskStatus.BLOCKED, updated_at=utc_now_iso()),)
-        return HarnessStep(
-            assistant_message=f"{result.tool_name} did not complete successfully.",
-            task_updates=updates,
-        )
-
-    def _invocation_status_from_result(self, result: ToolResult) -> str | None:
-        try:
-            payload = json.loads(result.content)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(payload, dict):
-            invocation = payload.get("invocation")
-            if isinstance(invocation, dict) and invocation.get("status") is not None:
-                return str(invocation["status"])
-        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +214,7 @@ class V3HostApiService:
             driver=driver,
             engine_registry=self.engine_registry,
             event_sink=event_bus,
+            model_factory=self.model_factory,
         )
         events: list[dict[str, Any]] = []
         if message:
@@ -425,6 +255,7 @@ class V3HostApiService:
             ),
             driver=driver,
             engine_registry=self.engine_registry,
+            model_factory=self.model_factory,
         )
         events = [
             _event(

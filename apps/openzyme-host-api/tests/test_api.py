@@ -112,11 +112,12 @@ class FakeHarnessInvoker:
 
 class FakeHarnessModelFactory:
     def __init__(self) -> None:
-        self.invoker = FakeHarnessInvoker()
+        self.invokers: dict[str, FakeHarnessInvoker] = {}
 
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeHarnessInvoker:
-        assert purpose == "v3_harness_loop"
-        return self.invoker
+        if purpose not in self.invokers:
+            self.invokers[purpose] = FakeHarnessInvoker()
+        return self.invokers[purpose]
 
 
 class FakeEchoHarnessInvoker:
@@ -127,7 +128,7 @@ class FakeEchoHarnessInvoker:
 
 class FakeEchoHarnessModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeEchoHarnessInvoker:
-        assert purpose == "v3_harness_loop"
+        assert purpose.startswith("v3_")
         return FakeEchoHarnessInvoker()
 
 
@@ -157,8 +158,65 @@ def _tool_message_name(message: object) -> str | None:
 
 
 class FakeEngineHarnessInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+        self.calls = 0
+
     def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
         del tools
+        self.calls += 1
+        if self.purpose == "v3_teammate_loop:researcher":
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_research_start",
+                            "name": "deep_research.start",
+                            "args": {
+                                "task_id": "task_research_v3",
+                                "brief": "Collect papers for the scaffold family.",
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Research complete.", "tool_calls": []}
+        if self.purpose == "v3_teammate_loop:executor":
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_execution_start",
+                            "name": "execution.start",
+                            "args": {
+                                "task_id": "task_execution_v3",
+                                "handoff": {
+                                    "execution_goal": "Run fpocket against the candidate structure.",
+                                    "catalog_tool_id": "fpocket",
+                                    "require_approval": True,
+                                },
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Execution started and is waiting for approval.", "tool_calls": []}
+        if self.purpose == "v3_teammate_loop:reporter":
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_reporting_start",
+                            "name": "reporting.start",
+                            "args": {
+                                "task_id": "task_report_v3",
+                                "report_brief": "Produce a concise report for the completed V3 workspace.",
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Reporting complete.", "tool_calls": []}
         focused_task = next(
             (
                 line.removeprefix("Focused task: ").strip()
@@ -190,94 +248,35 @@ class FakeEngineHarnessInvoker:
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": "call_task_update_research_running",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "in_progress"},
-                        },
-                        {
-                            "id": "call_research_start",
-                            "name": "deep_research.start",
+                            "id": "call_delegate_research",
+                            "name": "task.delegate",
                             "args": {
                                 "task_id": focused_task,
-                                "brief": "Collect papers for the scaffold family.",
+                                "agent_role": "researcher",
+                                "instructions": "Collect papers for the scaffold family.",
                             },
                         },
                     ],
                 }
-            if latest_tool_name == "deep_research.start":
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_task_update_research_completed",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "completed"},
-                        }
-                    ],
-                }
-            return {"content": "deep_research.start completed.", "tool_calls": []}
+            return {"content": "Delegated research task task_research_v3.", "tool_calls": []}
 
         if focused_task == "task_execution_v3":
-            active_invocations = next(
-                (
-                    line.removeprefix("Active invocations: ").strip()
-                    for line in system_prompt.splitlines()
-                    if line.startswith("Active invocations: ")
-                ),
-                "none",
-            )
-            if latest_tool_name is None and active_invocations == "none":
+            if latest_tool_name is None:
                 return {
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": "call_task_update_execution_running",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "in_progress"},
-                        },
-                        {
-                            "id": "call_execution_start",
-                            "name": "execution.start",
+                            "id": "call_delegate_execution",
+                            "name": "task.delegate",
                             "args": {
                                 "task_id": focused_task,
-                                "handoff": {
-                                    "execution_goal": "Run fpocket against the candidate structure.",
-                                    "catalog_tool_id": "fpocket",
-                                    "require_approval": True,
-                                },
+                                "agent_role": "executor",
+                                "instructions": "Run fpocket against the candidate structure.",
                             },
                         },
                     ],
                 }
-            if latest_tool_name is None and active_invocations != "none":
-                invocation_id = active_invocations.split(",")[0].strip()
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_execution_resume",
-                            "name": "execution.resume",
-                            "args": {
-                                "invocation_id": invocation_id,
-                                "resolution": "Approval approved by user.",
-                            },
-                        }
-                    ],
-                }
-            if latest_tool_name == "execution.start":
-                return {"content": "execution.start is waiting for approval.", "tool_calls": []}
-            if latest_tool_name == "execution.resume":
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_task_update_execution_completed",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "completed"},
-                        }
-                    ],
-                }
-            return {"content": "execution.resume completed.", "tool_calls": []}
+            return {"content": "Delegated execution task task_execution_v3.", "tool_calls": []}
 
         if focused_task == "task_report_v3":
             if latest_tool_name is None:
@@ -285,32 +284,17 @@ class FakeEngineHarnessInvoker:
                     "content": "",
                     "tool_calls": [
                         {
-                            "id": "call_task_update_report_running",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "in_progress"},
-                        },
-                        {
-                            "id": "call_reporting_start",
-                            "name": "reporting.start",
+                            "id": "call_delegate_report",
+                            "name": "task.delegate",
                             "args": {
                                 "task_id": focused_task,
-                                "report_brief": "Produce a concise report for the completed V3 workspace.",
+                                "agent_role": "reporter",
+                                "instructions": "Produce a concise report for the completed V3 workspace.",
                             },
                         },
                     ],
                 }
-            if latest_tool_name == "reporting.start":
-                return {
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_task_update_report_completed",
-                            "name": "task.update",
-                            "args": {"task_id": focused_task, "status": "completed"},
-                        }
-                    ],
-                }
-            return {"content": "reporting.start completed.", "tool_calls": []}
+            return {"content": "Delegated reporting task task_report_v3.", "tool_calls": []}
 
         if "Please track extracting the design goals as a task." in latest_user_message:
             if latest_tool_name is None:
@@ -336,9 +320,14 @@ class FakeEngineHarnessInvoker:
 
 
 class FakeEngineHarnessModelFactory:
+    def __init__(self) -> None:
+        self.invokers: dict[str, FakeEngineHarnessInvoker] = {}
+
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeEngineHarnessInvoker:
-        assert purpose == "v3_harness_loop"
-        return FakeEngineHarnessInvoker()
+        assert purpose.startswith("v3_")
+        if purpose not in self.invokers:
+            self.invokers[purpose] = FakeEngineHarnessInvoker(purpose)
+        return self.invokers[purpose]
 
 
 def _resolve_next_approval(client: TestClient, episode_id: str, decision: str = "approved") -> dict[str, object]:
@@ -676,6 +665,7 @@ def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None
     assert research_payload["status"] == "completed"
     assert research_payload["workspace"]["task_board"]["items"][0]["task"]["status"] == "completed"
     assert research_payload["workspace"]["capabilities"]["deep_research"][0]["canonical_summary"]["status"] == "completed"
+    assert research_payload["workspace"]["delegation"]["agents"][0]["agent"]["role"] == "researcher"
 
     execution_task = client.post(
         "/v3/tasks",
@@ -699,6 +689,10 @@ def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None
     pending = execution_payload["workspace"]["pending_approvals"]
     assert pending[0]["kind"] == "execution_launch"
     assert execution_payload["workspace"]["capabilities"]["execution"][0]["status"] == "waiting_approval"
+    assert any(
+        agent["agent"]["role"] == "executor"
+        for agent in execution_payload["workspace"]["delegation"]["agents"]
+    )
 
     approval_id = pending[0]["approval_id"]
     resolved = client.post(
@@ -711,6 +705,7 @@ def test_v3_engine_backed_research_execution_reporting_loop(monkeypatch) -> None
     assert resolved_payload["workspace"]["pending_approvals"] == []
     assert resolved_payload["workspace"]["capabilities"]["execution"][0]["status"] == "succeeded"
     assert resolved_payload["workspace"]["artifacts"]
+    assert any(agent["agent"]["status"] == "completed" for agent in resolved_payload["workspace"]["delegation"]["agents"])
 
     reporting_task = client.post(
         "/v3/tasks",
@@ -764,6 +759,7 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monk
     assert payload["workspace"]["conversation"][0]["content"] == "Please track extracting the design goals as a task."
     assert payload["workspace"]["conversation"][1]["content"] == "Created task task_llm_001 and captured the goal."
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
+    assert payload["workspace"]["delegation"]["agents"] == []
 
 
 def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_count(monkeypatch) -> None:

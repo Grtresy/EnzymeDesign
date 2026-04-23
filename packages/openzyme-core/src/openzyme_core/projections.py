@@ -13,6 +13,7 @@ from .repositories import CoreRepositories
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
+from .protocols import ProtocolService
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,17 +34,21 @@ class ActivityFeedItem:
 class DelegationProjectionItem:
     agent: AgentMember
     correlation_ids: tuple[str, ...]
+    latest_correlation_id: str | None
     latest_message_type: str | None
     latest_message_at: str | None
     pending_correlation_ids: tuple[str, ...]
+    thread_summaries: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "agent": self.agent.to_dict(),
             "correlation_ids": list(self.correlation_ids),
+            "latest_correlation_id": self.latest_correlation_id,
             "latest_message_type": self.latest_message_type,
             "latest_message_at": self.latest_message_at,
             "pending_correlation_ids": list(self.pending_correlation_ids),
+            "thread_summaries": list(self.thread_summaries),
         }
 
 
@@ -127,6 +132,7 @@ class SessionProjectionBuilder:
 
     def build_delegation_projection(self, session_id: str) -> DelegationProjection:
         messages = self.repositories.inbox.list_by_session(session_id)
+        protocol = ProtocolService(self.repositories)
         items: list[DelegationProjectionItem] = []
         for agent in self.repositories.agents.list_by_session(session_id):
             agent_messages = [
@@ -142,26 +148,30 @@ class SessionProjectionBuilder:
                 )
             )
             pending: list[str] = []
+            thread_summaries: list[dict[str, Any]] = []
             for correlation_id in correlation_ids:
-                correlation_messages = [
-                    message for message in agent_messages if message.correlation_id == correlation_id
-                ]
-                if any(message.message_type == "background_completion" for message in correlation_messages):
-                    continue
-                if any(
-                    message.message_type.endswith("_response") or message.message_type.endswith("_result")
-                    for message in correlation_messages
-                ):
-                    continue
-                pending.append(correlation_id)
+                thread = protocol.build_thread(session_id, correlation_id)
+                thread_summaries.append(
+                    {
+                        "correlation_id": correlation_id,
+                        "status": thread.status.value,
+                        "request_message_type": None if thread.request is None else thread.request.message_type,
+                        "response_count": len(thread.responses),
+                        "latest_message_type": None if not thread.responses else thread.responses[-1].message_type,
+                    }
+                )
+                if thread.status.value == "waiting":
+                    pending.append(correlation_id)
             latest_message = None if not agent_messages else agent_messages[-1]
             items.append(
                 DelegationProjectionItem(
                     agent=agent,
                     correlation_ids=correlation_ids,
+                    latest_correlation_id=None if latest_message is None else latest_message.correlation_id,
                     latest_message_type=None if latest_message is None else latest_message.message_type,
                     latest_message_at=None if latest_message is None else latest_message.created_at,
                     pending_correlation_ids=tuple(pending),
+                    thread_summaries=tuple(thread_summaries),
                 )
             )
         return DelegationProjection(session_id=session_id, agents=tuple(items))
@@ -198,6 +208,8 @@ class SessionProjectionBuilder:
             ) else "inbox.delivered"
             if message.message_type == "background_completion":
                 event_type = "background.completed"
+            elif message.message_type == "delegation_request" and message.recipient_kind is InboxParticipantKind.AGENT:
+                event_type = "agent.delegated"
             items.append(
                 ActivityFeedItem(
                     event_type=event_type,

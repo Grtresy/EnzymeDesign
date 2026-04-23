@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 import json
+from uuid import uuid4
+
+from openzyme_domain import TaskStatus
+from openzyme_domain import EngineInvocationStatus
 
 from .engines import EngineRegistry
 from .harness import HarnessInput
 from .harness import HarnessStep
+from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolResult
@@ -42,11 +47,12 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
     restore = context.restore_context
     assert restore is not None
     sections = [
-        "You are the top-level OpenZyme harness planner.",
-        "Use tools to create and update tasks, bind lanes, start capability engines, and compact memory when useful.",
+        "You are the top-level OpenZyme master agent.",
+        "You talk to the user, understand goals, create and update tasks, and delegate concrete work to internal teammate agents.",
+        "Use tools to create, inspect, update, and delegate tasks. Do not directly start capability engines.",
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
-        "Never call deep_research.start, execution.start, or reporting.start without a concrete task_id.",
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
+        "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
@@ -137,7 +143,7 @@ class LlmConversationDriver:
         lane_id = None if "lane_id" not in args else str(args["lane_id"])
         return task_id, lane_id
 
-    def _backfill_task_bound_engine_args(self, tool_calls: list[dict[str, Any]]) -> None:
+    def _backfill_task_bound_args(self, tool_calls: list[dict[str, Any]]) -> None:
         created_tasks = [
             dict(tool_call.get("args") or {})
             for tool_call in tool_calls
@@ -147,19 +153,24 @@ class LlmConversationDriver:
         if created_task is None:
             return
         created_task_id = created_task.get("task_id")
+        if not created_task_id:
+            created_task_id = f"task_{uuid4().hex[:12]}"
+            created_task["task_id"] = created_task_id
+            for tool_call in tool_calls:
+                if str(tool_call.get("name")) == "task.create":
+                    tool_call["args"] = created_task
+                    break
         created_subject = str(created_task.get("subject") or "")
         created_description = str(created_task.get("description") or "")
         for tool_call in tool_calls:
             tool_name = str(tool_call.get("name"))
-            if tool_name not in {"deep_research.start", "reporting.start"}:
+            if tool_name not in {"task.delegate"}:
                 continue
             arguments = dict(tool_call.get("args") or {})
             if not arguments.get("task_id") and created_task_id:
                 arguments["task_id"] = str(created_task_id)
-            if tool_name == "deep_research.start" and not arguments.get("brief"):
-                arguments["brief"] = created_description or created_subject
-            if tool_name == "reporting.start" and not arguments.get("report_brief"):
-                arguments["report_brief"] = created_description or created_subject
+            if not arguments.get("instructions"):
+                arguments["instructions"] = created_description or created_subject
             tool_call["args"] = arguments
 
     def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
@@ -170,12 +181,86 @@ class LlmConversationDriver:
         missing = [field_name for field_name in required if field_name not in arguments or arguments[field_name] in (None, "")]
         if not missing:
             return None
-        if tool_name in {"deep_research.start", "execution.start", "reporting.start"} and "task_id" in missing:
+        if tool_name == "task.delegate" and "task_id" in missing:
             return (
-                f"Cannot start {tool_name} without task_id. "
-                "Create or select a task first, then start the capability."
+                "Cannot delegate a task without task_id. "
+                "Create or select a task first, then delegate it."
             )
         return f"Cannot call {tool_name}; missing required fields: {', '.join(missing)}."
+
+    def _resume_waiting_invocation(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> HarnessStep | None:
+        if harness_input.resume is None:
+            return None
+        waiting = [
+            invocation
+            for invocation in context.snapshot.active_invocations
+            if invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+            and invocation.engine_name == "execution"
+            and invocation.approval_id == harness_input.resume.approval_id
+        ]
+        if not waiting:
+            return None
+        invocation = waiting[0]
+        task = None if invocation.task_id is None else context.repositories.tasks.get(invocation.task_id)
+        agent_id = None if task is None else task.assigned_ref
+        if agent_id is not None and agent_id.startswith("agent:"):
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id=f"call_teammate_resume_{invocation.invocation_id}",
+                        tool_name="teammate.resume_execution",
+                        arguments={
+                            "invocation_id": invocation.invocation_id,
+                            "approval_id": harness_input.resume.approval_id,
+                            "decision": harness_input.resume.decision.value,
+                            "actor_ref": harness_input.resume.actor_ref,
+                            "correlation_id": invocation.approval_id or invocation.invocation_id,
+                        },
+                        task_id=invocation.task_id,
+                        lane_id=invocation.lane_id,
+                    ),
+                ),
+                next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
+            )
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id=f"call_resume_{invocation.invocation_id}",
+                    tool_name="execution.resume",
+                    arguments={
+                        "invocation_id": invocation.invocation_id,
+                        "resolution": f"Approval {harness_input.resume.decision.value} by {harness_input.resume.actor_ref}.",
+                    },
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                ),
+            ),
+            next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
+        )
+
+    def _resume_followup_step(
+        self,
+        context: SessionRuntimeContext,
+        tool_results: tuple[ToolResult, ...],
+    ) -> HarnessStep | None:
+        if len(tool_results) != 1 or tool_results[0].tool_name not in {"execution.resume", "teammate.resume_execution"}:
+            return None
+        result = tool_results[0]
+        task_updates = ()
+        if result.task_id is not None:
+            task = context.repositories.tasks.get(result.task_id)
+            if task is not None:
+                next_status = TaskStatus.COMPLETED if result.ok else TaskStatus.BLOCKED
+                task_updates = (replace(task, status=next_status),)
+        if result.ok:
+            return HarnessStep(
+                assistant_message="Approval resolved. The delegated execution task resumed under the executor teammate.",
+                task_updates=task_updates,
+            )
+        return HarnessStep(
+            assistant_message="Approval resolved, but the delegated execution task did not resume successfully.",
+            task_updates=task_updates,
+        )
 
     def plan(
         self,
@@ -183,6 +268,14 @@ class LlmConversationDriver:
         harness_input: HarnessInput,
         tool_results: tuple[ToolResult, ...],
     ) -> HarnessStep:
+        if harness_input.resume is not None and not tool_results:
+            resumed = self._resume_waiting_invocation(context, harness_input)
+            if resumed is not None:
+                return resumed
+        if harness_input.resume is not None and tool_results:
+            resume_step = self._resume_followup_step(context, tool_results)
+            if resume_step is not None:
+                return resume_step
         if not self._initialized:
             self._messages = _build_seed_messages(context, harness_input)
             self._initialized = True
@@ -200,7 +293,7 @@ class LlmConversationDriver:
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             selected = tool_calls[: self.max_parallel_tool_calls]
-            self._backfill_task_bound_engine_args(selected)
+            self._backfill_task_bound_args(selected)
             invocations: list[ToolInvocation] = []
             for index, tool_call in enumerate(selected):
                 tool_name = str(tool_call["name"])

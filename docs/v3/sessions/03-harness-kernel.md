@@ -6,7 +6,7 @@
 
 ## 目标
 
-实现最小 V3 `agent_harness_loop`、tool registry、event bus 与 session runtime。
+实现最小 V3 `agent_harness_loop`、tool registry、event bus 与 session runtime，为 master agent / teammate-agent 模型提供系统层支撑。
 
 ## 参考
 
@@ -31,8 +31,14 @@
 - 统一 harness loop
 - tool registry / dispatch layer
 - session-scoped runtime context
-- delegation interface / subagent seam
+- delegation interface / teammate seam
 - 事件发射与基本状态装载
+
+职责边界补充：
+
+- harness kernel 负责回合驱动、状态装载、工具分发、协议等待态与恢复
+- harness kernel 不负责理解用户意图，不负责代替 master agent 生成 task 内容
+- delegation seam 的目的不是提供自由消息通道，而是让 master agent 能把 task 委托给 teammate agent，并为后续 teammate loop 预留稳定运行面
 
 ## 验收标准
 
@@ -40,7 +46,8 @@
 - tool use / tool result 可以回灌
 - session runtime 可以恢复已有 tasks / approvals / memory
 - harness loop 仍保持单一 agent loop，而不是演化成产品级 orchestration graph
-- kernel 至少预留稳定的 spawn / delegate / resume seam，供后续 agent roster 与 protocol 层接入
+- kernel 至少预留稳定的 spawn / delegate / resume seam，供后续 agent roster、team protocol 与 teammate loop 层接入
+- delegation seam 应支持 `task_id` 作为默认工作归属锚点
 
 ## 建议验证
 

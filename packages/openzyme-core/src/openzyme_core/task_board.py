@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import json
 from typing import Any
+from uuid import uuid4
 
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
@@ -265,11 +266,12 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
     def create_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
+        task_id = str(arguments.get("task_id") or f"task_{uuid4().hex[:12]}")
         task = service.create_task(
             session_id=context.snapshot.session.session_id,
-            task_id=str(arguments["task_id"]),
+            task_id=task_id,
             subject=str(arguments["subject"]),
-            description=str(arguments["description"]),
+            description=str(arguments.get("description") or ""),
             priority=TaskPriority(str(arguments.get("priority", TaskPriority.NORMAL.value))),
             kind=str(arguments.get("kind", "general")),
             status=TaskStatus(str(arguments.get("status", TaskStatus.TODO.value))),

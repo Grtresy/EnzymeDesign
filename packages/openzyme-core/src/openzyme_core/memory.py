@@ -14,6 +14,8 @@ from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionReportRecord
 from openzyme_domain import Task
 from openzyme_domain.control_plane import utc_now_iso
 
@@ -56,6 +58,9 @@ class SessionRestoreContext:
     inbox: tuple[InboxMessage, ...]
     agents: tuple[AgentMember, ...]
     active_invocations: tuple[EngineInvocation, ...]
+    artifacts: tuple[SessionArtifactRecord, ...]
+    reports: tuple[SessionReportRecord, ...]
+    protocol_threads: tuple[dict[str, Any], ...]
     session_memory: ScopedMemorySummary
     lane_memory: ScopedMemorySummary | None
     task_memory: ScopedMemorySummary | None
@@ -74,6 +79,9 @@ class SessionRestoreContext:
             "inbox": [message.to_dict() for message in self.inbox],
             "agents": [agent.to_dict() for agent in self.agents],
             "active_invocations": [invocation.to_dict() for invocation in self.active_invocations],
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "reports": [report.to_dict() for report in self.reports],
+            "protocol_threads": list(self.protocol_threads),
             "session_memory": self.session_memory.to_dict(),
             "lane_memory": None if self.lane_memory is None else self.lane_memory.to_dict(),
             "task_memory": None if self.task_memory is None else self.task_memory.to_dict(),
@@ -281,6 +289,16 @@ class MemoryService:
             registry = registry or SkillRegistry()
             skill_documents = registry.load_skills(skill_keys)
         recent_conversation = load_recent_conversation(self.repositories, session_id)
+        from .protocols import ProtocolService
+
+        protocol = ProtocolService(self.repositories)
+        correlation_ids = tuple(
+            dict.fromkeys(
+                message.correlation_id
+                for message in self.repositories.inbox.list_by_session(session_id)
+                if message.correlation_id is not None
+            )
+        )
         return SessionRestoreContext(
             session=session,
             tasks=tuple(self.repositories.tasks.list_by_session(session_id)),
@@ -290,6 +308,12 @@ class MemoryService:
             inbox=tuple(self.repositories.inbox.list_by_session(session_id)),
             agents=tuple(self.repositories.agents.list_by_session(session_id)),
             active_invocations=tuple(self.repositories.invocations.list_active_by_session(session_id)),
+            artifacts=tuple(self.repositories.artifacts.list_by_session(session_id)),
+            reports=tuple(self.repositories.reports.list_by_session(session_id)),
+            protocol_threads=tuple(
+                protocol.build_thread(session_id, correlation_id).to_dict()
+                for correlation_id in correlation_ids
+            ),
             session_memory=session_memory,
             lane_memory=lane_memory,
             task_memory=task_memory,

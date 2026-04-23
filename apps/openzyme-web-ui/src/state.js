@@ -5,6 +5,7 @@ function ensureWorkspace(workspace) {
   workspace.conversation ??= [];
   workspace.task_board ??= { items: [] };
   workspace.lane_board ??= { lanes: [] };
+  workspace.delegation ??= { agents: [] };
   workspace.pending_approvals ??= [];
   workspace.activity_feed ??= [];
   workspace.artifacts ??= [];
@@ -51,6 +52,11 @@ export function eventRequiresWorkspaceRefresh(event) {
     "artifact.recorded",
     "report.generated",
     "report.updated",
+    "agent.spawned",
+    "agent.delegated",
+    "agent.status_updated",
+    "agent.message.delivered",
+    "background.completed",
   ]).has(event.event_type);
 }
 
@@ -155,6 +161,7 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "report.updated":
     case "session.created":
     case "agent.spawned":
+    case "agent.delegated":
     case "agent.status_updated":
     case "memory.compacted":
     case "research.summary.updated":
