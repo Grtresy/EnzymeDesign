@@ -35,6 +35,7 @@ from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SkillRegistry
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
+from openzyme_core import ToolResult
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import run_agent_harness_loop
@@ -946,6 +947,19 @@ def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None
         "rcsb_pdb.download_structure",
         "interpro.query",
     }.issubset(tool_names)
+
+
+def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> None:
+    descriptor = next(
+        item for item in teammate_tool_descriptors(role="reporter") if item.tool_name == "artifact.get"
+    )
+
+    properties = descriptor.input_schema["properties"]
+    assert {"artifact_id", "path", "offset", "limit", "include_full"} <= set(properties)
+    assert properties["limit"]["maximum"] == 50
+    assert "read_hint" in descriptor.description
+    assert "large dict" in descriptor.description
+    assert "pageable keys" in descriptor.description
 
 
 def test_research_teammate_direct_download_persists_workspace_artifact() -> None:

@@ -72,6 +72,7 @@ class ArtifactKind(StrEnum):
     SEQUENCE = "sequence"
     STRUCTURE = "structure"
     REPORT = "report"
+    RESEARCH_DOSSIER = "research_dossier"
     RESULT = "result"
     CACHE = "cache"
     OTHER = "other"

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import json
 from typing import Any
 
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
-from openzyme_domain import TaskStatus
 
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
@@ -17,7 +16,6 @@ from .harness import HarnessInput
 from .harness import HarnessResult
 from .harness import HarnessStatus
 from .harness import HarnessStep
-from .harness import MemoryEventBus
 from .harness import RestoreFocus
 from .harness import ResumeEnvelope
 from .harness import SessionRuntimeContext
@@ -85,10 +83,20 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="artifact.get",
-            description="Read one artifact record and linked invocation documents when available.",
+            description=(
+                "Read one artifact record. Large linked output fields are summarized by default; "
+                "use path/offset/limit from read_hint to page fields such as output_payload.evidence_items. "
+                "When path targets a large dict, the result returns pageable keys with child paths to inspect."
+            ),
             input_schema={
                 "type": "object",
-                "properties": {"artifact_id": {"type": "string"}},
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
+                    "include_full": {"type": "boolean"},
+                },
                 "required": ["artifact_id"],
                 "additionalProperties": False,
             },

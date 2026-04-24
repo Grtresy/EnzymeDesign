@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from typing import Any
-import json
 from uuid import uuid4
 
 from openzyme_domain import TaskStatus

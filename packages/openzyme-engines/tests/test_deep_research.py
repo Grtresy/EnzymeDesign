@@ -246,6 +246,13 @@ def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:
     assert repositories.research_evidence.list_by_invocation(session.session_id, "inv_001")[0].confidence_label == "high"
     assert repositories.research_source_refs.list_by_invocation(session.session_id, "inv_001")[0].locator.endswith("paper-a")
     assert repositories.research_gaps.list_by_invocation(session.session_id, "inv_001")[0].summary == "Need wet-lab validation"
+    dossier_artifact = repositories.artifacts.get("inv_001:dossier")
+    assert dossier_artifact.kind is ArtifactKind.RESEARCH_DOSSIER
+    assert dossier_artifact.storage_uri == f"engine-document://{started.invocation.output_ref}"
+    assert dossier_artifact.relative_path == "deep-research/inv_001/dossier.json"
+    assert dossier_artifact.metadata["evidence_count"] == 1
+    assert dossier_artifact.metadata["source_ref_count"] == 1
+    assert dossier_artifact.metadata["gap_count"] == 1
     assert repositories.memory.list_by_scope(
         session.session_id,
         scope_kind=MemoryScopeKind.TASK,
@@ -321,7 +328,9 @@ def test_deep_research_engine_persists_artifacts_from_dossier() -> None:
     )
 
     artifacts = repositories.artifacts.list_by_invocation(session.session_id, "inv_artifacts")
+    artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
     assert result.invocation.status.value == "succeeded"
-    assert len(artifacts) == 1
-    assert artifacts[0].kind is ArtifactKind.STRUCTURE
-    assert artifacts[0].metadata["provider"] == "rcsb_pdb"
+    assert len(artifacts) == 2
+    assert artifacts_by_id["inv_artifacts:dossier"].kind is ArtifactKind.RESEARCH_DOSSIER
+    assert artifacts_by_id["inv_artifacts:artifact:1"].kind is ArtifactKind.STRUCTURE
+    assert artifacts_by_id["inv_artifacts:artifact:1"].metadata["provider"] == "rcsb_pdb"

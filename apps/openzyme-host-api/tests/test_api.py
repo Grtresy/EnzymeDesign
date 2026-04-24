@@ -265,7 +265,6 @@ class FakeEngineHarnessInvoker:
             "none",
         )
         latest_tool_name = None
-        latest_tool_content = ""
         seen_tool_names: list[str] = []
         for message in messages:
             if _message_role(message) != "tool":
@@ -274,7 +273,6 @@ class FakeEngineHarnessInvoker:
             if tool_name is None:
                 continue
             latest_tool_name = tool_name
-            latest_tool_content = _message_content(message)
             seen_tool_names.append(tool_name)
         latest_user_message = next(
             (_message_content(message) for message in reversed(messages) if _message_role(message) == "user"),

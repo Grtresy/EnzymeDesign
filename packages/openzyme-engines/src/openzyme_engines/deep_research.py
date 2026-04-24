@@ -27,7 +27,6 @@ from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain.control_plane import utc_now_iso
 
-from .deep_research_contracts import ResearchDossier
 from .deep_research_graph import run_deep_research
 
 
@@ -402,6 +401,7 @@ class DeepResearchEngine:
             task_id=task.task_id,
             lane_id=invocation.lane_id,
             invocation_id=invocation.invocation_id,
+            output_ref=output_id,
             dossier=dossier,
             created_at=now,
         )
@@ -464,6 +464,15 @@ class DeepResearchEngine:
             invocation=invocation,
             dossier=dossier,
             updated_at=now,
+        )
+        self._persist_artifacts(
+            session_id=session.session_id,
+            task_id=task.task_id,
+            lane_id=invocation.lane_id,
+            invocation_id=invocation.invocation_id,
+            output_ref=output_id,
+            dossier=dossier,
+            created_at=now,
         )
         failed_invocation = EngineInvocation(
             invocation_id=invocation.invocation_id,
@@ -583,11 +592,37 @@ class DeepResearchEngine:
         task_id: str | None,
         lane_id: str | None,
         invocation_id: str,
+        output_ref: str,
         dossier: NormalizedResearchDossier,
         created_at: str,
     ) -> None:
         from pathlib import PurePosixPath
 
+        self.repositories.artifacts.save(
+            SessionArtifactRecord(
+                artifact_id=f"{invocation_id}:dossier",
+                session_id=session_id,
+                task_id=task_id,
+                lane_id=lane_id,
+                invocation_id=invocation_id,
+                run_id=None,
+                kind=ArtifactKind.RESEARCH_DOSSIER,
+                storage_uri=f"engine-document://{output_ref}",
+                relative_path=f"deep-research/{invocation_id}/dossier.json",
+                title="Deep research dossier",
+                description="Normalized deep research dossier output.",
+                metadata={
+                    "output_ref": output_ref,
+                    "status": dossier.status,
+                    "completion_reason": dossier.completion_reason,
+                    "evidence_count": len(dossier.evidence_items),
+                    "source_ref_count": len(dossier.source_refs),
+                    "gap_count": len(dossier.unresolved_gaps),
+                    "produced_by": "deep_research",
+                },
+                created_at=created_at,
+            )
+        )
         for index, item in enumerate(dossier.artifacts, start=1):
             filename = str(item.get("filename") or f"artifact_{index}")
             title = str(item.get("title") or PurePosixPath(filename).name)

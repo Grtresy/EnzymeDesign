@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
-from openzyme_domain import InboxParticipantKind
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
