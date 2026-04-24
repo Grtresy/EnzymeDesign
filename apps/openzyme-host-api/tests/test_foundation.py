@@ -184,6 +184,7 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
     (dist_dir / "index.html").write_text("<html><body>ui</body></html>")
+    (dist_dir / "debug.html").write_text("<html><body>debug</body></html>")
 
     @dataclass(frozen=True, slots=True)
     class DummyDependencies:
@@ -199,6 +200,7 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/ui/"
+    assert client.get("/debug").text == "<html><body>debug</body></html>"
 
 
 def test_deterministic_execution_adapter_scopes_run_ids_per_episode_and_call_count() -> None:

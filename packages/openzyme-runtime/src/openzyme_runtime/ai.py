@@ -10,6 +10,10 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from .llm_debug import current_llm_debug_context
+from .llm_debug import get_llm_debug_recorder
+from .llm_debug import serialize_llm_payload
+
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
@@ -55,6 +59,9 @@ class ChatModelFactory(Protocol):
 @dataclass(frozen=True, slots=True)
 class LangChainStructuredInvoker:
     model: Any
+    purpose: str = "structured_output"
+    model_name: str | None = None
+    base_url: str | None = None
     structured_output_method: str = "json_schema"
     max_attempts: int = 1
     retry_backoff_seconds: float = 1.0
@@ -92,11 +99,40 @@ class LangChainStructuredInvoker:
         response: Any | None = None
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
+            span = get_llm_debug_recorder().begin(
+                purpose=self.purpose,
+                kind="structured_output",
+                model=self.model_name,
+                base_url=self.base_url,
+                request_context=current_llm_debug_context(),
+                request={
+                    "system_prompt": system_prompt,
+                    "user_payload": user_payload,
+                    "schema": schema.model_json_schema(),
+                    "structured_output_method": self.structured_output_method,
+                    "attempt": attempt,
+                    "max_attempts": self.max_attempts,
+                    "messages": serialize_llm_payload(messages),
+                },
+            )
             try:
                 response = structured_model.invoke(messages)
+                parsed_response = (
+                    response
+                    if isinstance(response, schema)
+                    else schema.model_validate(response.model_dump() if isinstance(response, BaseModel) else response)
+                )
+                span.finish(
+                    response={
+                        "raw": serialize_llm_payload(response),
+                        "parsed": parsed_response.model_dump(),
+                    }
+                )
+                response = parsed_response
                 last_error = None
                 break
             except Exception as exc:
+                span.finish(error=exc)
                 if not _is_retryable_openai_error(exc) or attempt >= self.max_attempts:
                     raise
                 last_error = exc
@@ -105,14 +141,15 @@ class LangChainStructuredInvoker:
             raise last_error
         if isinstance(response, schema):
             return response
-        if isinstance(response, BaseModel):
-            return schema.model_validate(response.model_dump())
         return schema.model_validate(response)
 
 
 @dataclass(frozen=True, slots=True)
 class LangChainToolCallingInvoker:
     model: Any
+    purpose: str = "tool_calling"
+    model_name: str | None = None
+    base_url: str | None = None
 
     def invoke_with_tools(
         self,
@@ -128,7 +165,27 @@ class LangChainToolCallingInvoker:
                 "Install langchain to invoke tool-calling model calls."
             ) from exc
         runnable = self.model.bind_tools(tools)
-        return runnable.invoke([SystemMessage(content=system_prompt), *messages])
+        request_messages = [SystemMessage(content=system_prompt), *messages]
+        span = get_llm_debug_recorder().begin(
+            purpose=self.purpose,
+            kind="tool_calling",
+            model=self.model_name,
+            base_url=self.base_url,
+            request_context=current_llm_debug_context(),
+            request={
+                "system_prompt": system_prompt,
+                "messages": serialize_llm_payload(messages),
+                "tools": tools,
+                "request_messages": serialize_llm_payload(request_messages),
+            },
+        )
+        try:
+            response = runnable.invoke(request_messages)
+        except Exception as exc:
+            span.finish(error=exc)
+            raise
+        span.finish(response=response)
+        return response
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +197,6 @@ class LangChainModelFactory:
     structured_output_retry_backoff_seconds: float = 1.0
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
-        del purpose
         if not self.model:
             raise MissingLlmConfigurationError("LangChainModelFactory requires a non-empty model name.")
         try:
@@ -158,13 +214,14 @@ class LangChainModelFactory:
             ) from exc
         return LangChainStructuredInvoker(
             model=chat_model,
+            purpose=purpose,
+            model_name=self.model,
             structured_output_method=self.structured_output_method,
             max_attempts=self.structured_output_max_attempts,
             retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
         )
 
     def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker:
-        del purpose
         if not self.model:
             raise MissingLlmConfigurationError("LangChainModelFactory requires a non-empty model name.")
         try:
@@ -179,7 +236,7 @@ class LangChainModelFactory:
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
             ) from exc
-        return LangChainToolCallingInvoker(model=chat_model)
+        return LangChainToolCallingInvoker(model=chat_model, purpose=purpose, model_name=self.model)
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +278,9 @@ class OpenAICompatibleChatModelFactory:
         )
         return LangChainStructuredInvoker(
             model=chat_model,
+            purpose=purpose,
+            model_name=self.model,
+            base_url=self.base_url,
             structured_output_method=policy["structured_output_method"],
             max_attempts=policy["structured_output_max_attempts"],
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
@@ -247,7 +307,12 @@ class OpenAICompatibleChatModelFactory:
             max_retries=policy["max_retries"],
             **(self.model_kwargs or {}),
         )
-        return LangChainToolCallingInvoker(model=chat_model)
+        return LangChainToolCallingInvoker(
+            model=chat_model,
+            purpose=purpose,
+            model_name=self.model,
+            base_url=self.base_url,
+        )
 
     def _resolve_policy(self, purpose: str) -> dict[str, Any]:
         override = self.purpose_policies.get(purpose, {})

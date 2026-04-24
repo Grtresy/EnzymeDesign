@@ -1,10 +1,16 @@
 from .ai import ChatModelFactory
 from .ai import LangChainModelFactory
+from .ai import LangChainToolCallingInvoker
 from .ai import MissingLangChainDependencyError
 from .ai import MissingLangChainProviderDependencyError
 from .ai import MissingLlmConfigurationError
 from .ai import OpenAICompatibleChatModelFactory
 from .ai import StructuredOutputInvoker
+from .llm_debug import LlmDebugRecorder
+from .llm_debug import current_llm_debug_context
+from .llm_debug import get_llm_debug_recorder
+from .llm_debug import llm_debug_context
+from .llm_debug import serialize_llm_payload
 from .bootstrap import GraphAssemblyInputs
 from .bootstrap import GraphRuntimeFacade
 from .bootstrap import GRAPH_THREAD_KEY
@@ -147,7 +153,9 @@ __all__ = [
     "IntakeClarification",
     "IntakePhaseOutput",
     "LangChainModelFactory",
+    "LangChainToolCallingInvoker",
     "LiveLlmTestSettings",
+    "LlmDebugRecorder",
     "LlmPurposePolicy",
     "LlmSettings",
     "MIGRATION_IDS",
@@ -209,13 +217,17 @@ __all__ = [
     "apply_sqlite_migrations",
     "build_episode_graph_config",
     "connect_sqlite",
+    "current_llm_debug_context",
+    "get_llm_debug_recorder",
     "get_migration_sql",
     "load_env_files",
+    "llm_debug_context",
     "load_current_settings",
     "live_e2e_skip_reason",
     "live_hpc_skip_reason",
     "live_llm_skip_reason",
     "live_tavily_skip_reason",
     "quality_eval_skip_reason",
+    "serialize_llm_payload",
     "validate_runtime_foundation_support",
 ]

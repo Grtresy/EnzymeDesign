@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import UTC
 from datetime import datetime
 from typing import Any
@@ -565,8 +566,14 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         if max_workers == 1:
             unit_results = [_run_research_unit(inputs, state, scheduled_units[0])]
         else:
+            scheduled_with_context = [(unit, copy_context()) for unit in scheduled_units]
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                unit_results = list(executor.map(lambda unit: _run_research_unit(inputs, state, unit), scheduled_units))
+                unit_results = list(
+                    executor.map(
+                        lambda item: item[1].run(_run_research_unit, inputs, state, item[0]),
+                        scheduled_with_context,
+                    )
+                )
 
         recent_turns = list(state.get("recent_turns") or [])
         raw_notes = list(state.get("raw_notes") or [])

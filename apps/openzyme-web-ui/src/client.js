@@ -91,6 +91,28 @@ export class HostApiClient {
     });
   }
 
+  listLlmDebugCalls(params = {}) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        query.set(key, String(value));
+      }
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return requestJson(this.baseUrl, `/debug/llm-calls${suffix}`);
+  }
+
+  getLlmDebugCall(debugId) {
+    return requestJson(this.baseUrl, `/debug/llm-calls/${debugId}`);
+  }
+
+  clearLlmDebugCalls() {
+    return requestJson(this.baseUrl, "/debug/llm-calls/clear", {
+      method: "POST",
+      headers: jsonHeaders,
+    });
+  }
+
   streamV3Session(sessionId, onEvent) {
     const source = new EventSource(buildUrl(this.baseUrl, `/v3/sessions/${sessionId}/events?replay=1&follow=1`));
     for (const eventType of v3EventTypes) {
@@ -110,5 +132,8 @@ export function buildHostPaths(projectId, sessionId) {
     v3Messages: `/v3/sessions/${sessionId}/messages`,
     v3Events: `/v3/sessions/${sessionId}/events?replay=1&follow=1`,
     v3ApprovalResolve: "/v3/approvals/appr_001/resolve",
+    debugLlmCalls: "/debug/llm-calls",
+    debugLlmCall: "/debug/llm-calls/llmdbg_001",
+    debugLlmClear: "/debug/llm-calls/clear",
   };
 }

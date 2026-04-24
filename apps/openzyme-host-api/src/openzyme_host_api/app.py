@@ -10,6 +10,7 @@ from typing import Callable
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +20,8 @@ from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import RuntimeFoundation
+from openzyme_runtime import get_llm_debug_recorder
+from openzyme_runtime import llm_debug_context
 
 from .projections import HostProjectionLoader
 from .projections import WorkflowEventProjector
@@ -362,7 +365,8 @@ def create_app(
     def create_episode(request: CreateEpisodeRequest) -> dict[str, Any]:
         service = dependencies.build_service()
         try:
-            result = service.create_episode(request.project_id, request.objective)
+            with llm_debug_context(request_path="/commands/create_episode"):
+                result = service.create_episode(request.project_id, request.objective)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
         return {
@@ -375,7 +379,11 @@ def create_app(
     def resume_episode(request: ResumeEpisodeRequest) -> dict[str, Any]:
         service = dependencies.build_service()
         try:
-            result = service.resume_episode(request.episode_id, request.resume_payload)
+            with llm_debug_context(
+                request_path="/commands/resume_episode",
+                episode_id=request.episode_id,
+            ):
+                result = service.resume_episode(request.episode_id, request.resume_payload)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
         return {
@@ -388,11 +396,15 @@ def create_app(
     def resolve_approval(request: ResolveApprovalRequest) -> dict[str, Any]:
         service = dependencies.build_service()
         try:
-            result = service.resolve_approval(
-                request.episode_id,
-                request.approval_id,
-                request.decision,
-            )
+            with llm_debug_context(
+                request_path="/commands/resolve_approval",
+                episode_id=request.episode_id,
+            ):
+                result = service.resolve_approval(
+                    request.episode_id,
+                    request.approval_id,
+                    request.decision,
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
         return {
@@ -451,14 +463,21 @@ def create_app(
     def post_v3_message(session_id: str, request: PostV3MessageRequest) -> dict[str, Any]:
         service = dependencies.build_v3_service()
         try:
-            return service.post_message(
+            with llm_debug_context(
+                request_path=f"/v3/sessions/{session_id}/messages",
                 session_id=session_id,
-                message=request.message,
                 task_id=request.task_id,
                 lane_id=request.lane_id,
-                skill_keys=tuple(request.skill_keys),
-                max_steps=request.max_steps,
-            ).to_dict()
+                actor="user",
+            ):
+                return service.post_message(
+                    session_id=session_id,
+                    message=request.message,
+                    task_id=request.task_id,
+                    lane_id=request.lane_id,
+                    skill_keys=tuple(request.skill_keys),
+                    max_steps=request.max_steps,
+                ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -552,16 +571,55 @@ def create_app(
     def resolve_v3_approval(approval_id: str, request: ResolveV3ApprovalRequest) -> dict[str, Any]:
         service = dependencies.build_v3_service()
         try:
-            return service.resolve_approval(
-                approval_id,
-                decision=request.decision,
-                actor_ref=request.actor_ref,
-            ).to_dict()
+            with llm_debug_context(
+                request_path=f"/v3/approvals/{approval_id}/resolve",
+                approval_id=approval_id,
+                actor=request.actor_ref,
+            ):
+                return service.resolve_approval(
+                    approval_id,
+                    decision=request.decision,
+                    actor_ref=request.actor_ref,
+                ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
+    @app.get("/debug/llm-calls")
+    def list_llm_debug_calls(
+        limit: int = 100,
+        purpose: str | None = None,
+        kind: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        episode_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return get_llm_debug_recorder().list_records(
+            limit=limit,
+            purpose=purpose,
+            kind=kind,
+            status=status,
+            session_id=session_id,
+            episode_id=episode_id,
+        )
+
+    @app.get("/debug/llm-calls/{debug_id}")
+    def get_llm_debug_call(debug_id: str) -> dict[str, Any]:
+        record = get_llm_debug_recorder().get_record(debug_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"debug call {debug_id!r} does not exist")
+        return record
+
+    @app.post("/debug/llm-calls/clear")
+    def clear_llm_debug_calls() -> dict[str, Any]:
+        get_llm_debug_recorder().clear()
+        return {"ok": True}
+
     if ui_dist_dir is not None and ui_dist_dir.exists():
         app.mount("/ui", StaticFiles(directory=str(ui_dist_dir), html=True), name="ui")
+
+        @app.get("/debug", include_in_schema=False)
+        def debug_page() -> FileResponse:
+            return FileResponse(str(ui_dist_dir / "debug.html"))
 
         @app.get("/", include_in_schema=False)
         def root() -> RedirectResponse:

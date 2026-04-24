@@ -6,8 +6,11 @@ from types import ModuleType
 from pydantic import BaseModel
 
 from openzyme_runtime.ai import LangChainStructuredInvoker
+from openzyme_runtime.ai import LangChainToolCallingInvoker
 from openzyme_runtime.ai import OpenAICompatibleChatModelFactory
 from openzyme_runtime.ai import _is_retryable_openai_error
+from openzyme_runtime.llm_debug import get_llm_debug_recorder
+from openzyme_runtime.llm_debug import llm_debug_context
 
 
 class ExampleSchema(BaseModel):
@@ -19,6 +22,7 @@ class RetryableTimeoutError(Exception):
 
 
 def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None:
+    get_llm_debug_recorder().clear()
     attempts = {"count": 0}
 
     class FakeStructuredModel:
@@ -55,9 +59,14 @@ def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None
 
     assert result.value == "ok"
     assert attempts["count"] == 3
+    records = get_llm_debug_recorder().list_records(limit=10, purpose="structured_output")
+    assert [record["status"] for record in records[:3]] == ["succeeded", "error", "error"]
+    assert records[0]["request"]["attempt"] == 3
+    assert records[0]["response"]["parsed"] == {"value": "ok"}
 
 
 def test_structured_invoker_does_not_retry_non_retryable_errors(monkeypatch) -> None:
+    get_llm_debug_recorder().clear()
     attempts = {"count": 0}
 
     class FakeStructuredModel:
@@ -93,6 +102,45 @@ def test_structured_invoker_does_not_retry_non_retryable_errors(monkeypatch) -> 
         raise AssertionError("expected ValueError")
 
     assert attempts["count"] == 1
+    records = get_llm_debug_recorder().list_records(limit=1, purpose="structured_output")
+    assert records[0]["status"] == "error"
+    assert records[0]["error"]["message"] == "bad schema"
+
+
+def test_tool_calling_invoker_records_request_response_and_context() -> None:
+    get_llm_debug_recorder().clear()
+
+    class FakeRunnable:
+        def invoke(self, messages):
+            return {"content": "ok", "tool_calls": [], "message_count": len(messages)}
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            assert tools == [{"type": "function", "function": {"name": "task.list"}}]
+            return FakeRunnable()
+
+    invoker = LangChainToolCallingInvoker(
+        model=FakeModel(),
+        purpose="v3_harness_loop",
+        model_name="fake-model",
+        base_url="https://example.test/v1",
+    )
+    with llm_debug_context(session_id="sess_001"):
+        response = invoker.invoke_with_tools(
+            system_prompt="You are master.",
+            messages=[],
+            tools=[{"type": "function", "function": {"name": "task.list"}}],
+        )
+
+    records = get_llm_debug_recorder().list_records(limit=1)
+    assert response["content"] == "ok"
+    assert records[0]["purpose"] == "v3_harness_loop"
+    assert records[0]["kind"] == "tool_calling"
+    assert records[0]["model"] == "fake-model"
+    assert records[0]["base_url"] == "https://example.test/v1"
+    assert records[0]["request_context"]["session_id"] == "sess_001"
+    assert records[0]["request"]["system_prompt"] == "You are master."
+    assert records[0]["response"]["content"] == "ok"
 
 
 def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monkeypatch) -> None:

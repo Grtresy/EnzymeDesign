@@ -1152,6 +1152,25 @@ class FakeEngine:
         del registry
 
 
+def _message_role(message: object) -> str | None:
+    if isinstance(message, dict):
+        return None if message.get("role") is None else str(message["role"])
+    message_type = type(message).__name__
+    if message_type == "HumanMessage":
+        return "user"
+    if message_type == "AIMessage":
+        return "assistant"
+    if message_type == "ToolMessage":
+        return "tool"
+    return None
+
+
+def _message_content(message: object) -> str:
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
+
+
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
     assert {"task.create", "task.update", "task.delegate", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
@@ -1199,6 +1218,28 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "answer only with researcher, executor, reporter" in prompt
     assert "Do not describe provider tools or capability engines" in prompt
     assert "fpocket" in prompt
+
+
+def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = FakeModelFactory({"content": "I can help.", "tool_calls": []})
+    driver = LlmConversationDriver(model_factory)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="你是什么模型"),
+        driver=driver,
+    )
+
+    assert result.outputs == ("I can help.",)
+    messages = model_factory.invokers["v3_harness_loop"].calls[0]["messages"]
+    user_messages = [
+        _message_content(message)
+        for message in messages
+        if _message_role(message) == "user"
+    ]
+    assert user_messages == ["你是什么模型"]
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:

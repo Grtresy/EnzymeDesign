@@ -99,7 +99,13 @@ def _build_seed_messages(context: SessionRuntimeContext, harness_input: HarnessI
             messages.append(AIMessage(content=entry.content))
         else:
             messages.append(HumanMessage(content=entry.content))
-    if harness_input.message:
+    current_message_already_loaded = (
+        bool(harness_input.message)
+        and bool(restore.recent_conversation)
+        and restore.recent_conversation[-1].role == "user"
+        and restore.recent_conversation[-1].content == harness_input.message
+    )
+    if harness_input.message and not current_message_already_loaded:
         if HumanMessage is None:
             messages.append({"role": "user", "content": harness_input.message})
         else:

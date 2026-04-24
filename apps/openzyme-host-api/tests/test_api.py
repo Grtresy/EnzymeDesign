@@ -21,12 +21,14 @@ from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_runtime import GraphRuntimeFacade
+from openzyme_runtime import LangChainToolCallingInvoker
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
 from openzyme_runtime import PostgresCheckpointerFactory
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
+from openzyme_runtime import get_llm_debug_recorder
 from openzyme_tools import DefaultHpcExecutionRegistry
 from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_research import ResearchFinding
@@ -130,6 +132,24 @@ class FakeEchoHarnessModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeEchoHarnessInvoker:
         assert purpose.startswith("v3_")
         return FakeEchoHarnessInvoker()
+
+
+class DebugRecordingModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> LangChainToolCallingInvoker:
+        class _Runnable:
+            def invoke(self, messages):
+                return {"content": "Debug response.", "tool_calls": [], "message_count": len(messages)}
+
+        class _Model:
+            def bind_tools(self, tools):
+                return _Runnable()
+
+        return LangChainToolCallingInvoker(
+            model=_Model(),
+            purpose=purpose,
+            model_name="debug-model",
+            base_url="https://debug.example/v1",
+        )
 
 
 def _message_role(message: object) -> str | None:
@@ -782,6 +802,51 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monk
     assert payload["workspace"]["conversation"][1]["content"] == "Created task task_llm_001 and captured the goal."
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
     assert payload["workspace"]["delegation"]["agents"] == []
+
+
+def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) -> None:
+    get_llm_debug_recorder().clear()
+    client, foundation = _build_client(monkeypatch)
+    debug_client = TestClient(
+        create_app(
+            HostApiDependencies(
+                foundation=replace(foundation, model_factory=DebugRecordingModelFactory()),
+                graph_builder=build_v2_supervisor_graph,
+            )
+        )
+    )
+
+    created = debug_client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_v3_debug",
+            "project_id": "proj_001",
+            "objective": "Debug LLM calls",
+        },
+    )
+    assert created.status_code == 200
+
+    message = debug_client.post(
+        "/v3/sessions/sess_v3_debug/messages",
+        json={"message": "hello debug"},
+    )
+    assert message.status_code == 200
+
+    records = debug_client.get("/debug/llm-calls?session_id=sess_v3_debug").json()
+    assert len(records) == 1
+    assert records[0]["purpose"] == "v3_harness_loop"
+    assert records[0]["kind"] == "tool_calling"
+    assert records[0]["request_context"]["session_id"] == "sess_v3_debug"
+    assert records[0]["request"]["system_prompt"].startswith("You are the top-level OpenZyme master agent.")
+    assert records[0]["response"]["content"] == "Debug response."
+
+    detail = debug_client.get(f"/debug/llm-calls/{records[0]['debug_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["debug_id"] == records[0]["debug_id"]
+
+    clear = debug_client.post("/debug/llm-calls/clear")
+    assert clear.status_code == 200
+    assert debug_client.get("/debug/llm-calls").json() == []
 
 
 def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_count(monkeypatch) -> None:

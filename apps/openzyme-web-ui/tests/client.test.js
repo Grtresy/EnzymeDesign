@@ -11,5 +11,8 @@ test("buildHostPaths exposes the v3 session workspace surface", () => {
     v3Messages: "/v3/sessions/sess_001/messages",
     v3Events: "/v3/sessions/sess_001/events?replay=1&follow=1",
     v3ApprovalResolve: "/v3/approvals/appr_001/resolve",
+    debugLlmCalls: "/debug/llm-calls",
+    debugLlmCall: "/debug/llm-calls/llmdbg_001",
+    debugLlmClear: "/debug/llm-calls/clear",
   });
 });

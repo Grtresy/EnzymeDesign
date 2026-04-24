@@ -376,6 +376,147 @@ button:disabled {
   color: var(--muted);
 }
 
+.debug-shell {
+  width: min(1500px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 1rem 0 2rem;
+}
+
+.debug-header,
+.debug-filters,
+.debug-layout,
+.debug-detail-header {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.debug-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  border-radius: 18px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.debug-header h1,
+.debug-detail-header h2 {
+  margin: 0;
+}
+
+.debug-filters {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(130px, 1fr)) auto auto;
+  gap: 0.75rem;
+  align-items: end;
+  border-radius: 18px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.debug-filters label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.debug-filters input,
+.debug-filters select {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  color: var(--text);
+  background: white;
+}
+
+.debug-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.36fr) minmax(0, 1fr);
+  gap: 1rem;
+  border-radius: 18px;
+  padding: 1rem;
+}
+
+.debug-list {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.debug-row {
+  width: 100%;
+  display: grid;
+  gap: 0.25rem;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: white;
+  color: var(--text);
+}
+
+.debug-row.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(31, 107, 95, 0.12);
+}
+
+.debug-row-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 700;
+}
+
+.debug-row-meta,
+.debug-detail-header p {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.debug-detail-header {
+  border-radius: 14px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.debug-json-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.debug-json-grid article {
+  min-width: 0;
+}
+
+.debug-json-grid h3 {
+  margin: 0 0 0.5rem;
+}
+
+.debug-json-grid pre {
+  margin: 0;
+  max-height: 48vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: #101820;
+  color: #eaf2ef;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.error-copy {
+  color: var(--danger);
+}
+
 @media (max-width: 1200px) {
   .app-shell.chat-workspace {
     grid-template-columns: 280px minmax(0, 1fr);
@@ -426,5 +567,10 @@ button:disabled {
 
   .header-status-stack {
     justify-items: stretch;
+  }
+
+  .debug-filters,
+  .debug-layout {
+    grid-template-columns: 1fr;
   }
 }
