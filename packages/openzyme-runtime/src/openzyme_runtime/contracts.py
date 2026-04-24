@@ -98,6 +98,7 @@ class ResearchDossier(BaseModel):
     summary: str
     evidence_items: list[EvidenceSynthesisItem] = Field(default_factory=list)
     unresolved_gaps: list[str] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
     raw_notes: list[str] = Field(default_factory=list)
     recent_turns: list[ResearchTurnRecord] = Field(default_factory=list)
 

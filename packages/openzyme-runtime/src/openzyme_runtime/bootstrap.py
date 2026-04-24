@@ -37,6 +37,7 @@ class RuntimeFoundation:
     hpc_execution_registry: HpcExecutionRegistry | None = None
     research_adapter: ResearchAdapter | None = None
     research_tool_provider: ResearchToolProvider | None = None
+    bio_research_service: Any | None = None
     projection_loader: ProjectionLoader | None = None
     model_factory: ChatModelFactory | None = None
     settings: OpenZymeSettings | None = None

@@ -1378,13 +1378,14 @@ class SessionArtifactRepository:
 
     def save(self, artifact: SessionArtifactRecord) -> None:
         _require_session_exists(self.connection, artifact.session_id)
-        _require_linked_session_id(
-            self.connection,
-            table_name="engine_invocations",
-            id_column="invocation_id",
-            record_id=artifact.invocation_id,
-            expected_session_id=artifact.session_id,
-        )
+        if artifact.invocation_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="engine_invocations",
+                id_column="invocation_id",
+                record_id=artifact.invocation_id,
+                expected_session_id=artifact.session_id,
+            )
         if artifact.task_id is not None:
             _require_linked_session_id(
                 self.connection,

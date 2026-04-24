@@ -57,6 +57,7 @@ from .repositories import UnresolvedGapRepository
 from .repositories import ApprovalRepository
 from .repositories import connect_sqlite
 from .research_tools import CompositeResearchToolProvider
+from .research_tools import build_bio_research_tools
 from .research_tools import DefaultResearchToolProvider
 from .research_tools import ResearchAdapterSearchTool
 from .research_tools import SearchCollectArgs
@@ -165,6 +166,7 @@ __all__ = [
     "ProjectRepository",
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
+    "build_bio_research_tools",
     "ResearchAdapterSearchTool",
     "ReportRepository",
     "ResolvedLlmPolicy",

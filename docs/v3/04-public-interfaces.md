@@ -43,6 +43,26 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `report_draft.update`
 - `report.publish`
 
+默认 research direct-tool surface 还应允许 provider-specific 轻量动作：
+
+- `pubmed.search`
+- `semantic_scholar.search`
+- `uniprot.lookup`
+- `uniprot.download_fasta`
+- `rcsb_pdb.search`
+- `rcsb_pdb.download_structure`
+- `interpro.query`
+
+这些 direct provider tools 的返回内容应统一为 `ResearchObservation` JSON，而不是暴露各 provider 的原始 response shape。
+
+最低语义：
+
+- search / lookup 返回 `summary + findings + sources + unresolved_gaps`
+- download 返回 `summary + artifacts`，并在可能时附带来源 `findings / sources`
+- `sources` 是 evidence 的引用来源，不是 workspace artifact
+- 只有真实下载或生成的文件资产才进入 `artifacts`
+- raw provider payload 默认不进入长期 LLM restore context；需要调试时使用 `raw_ref` 或 engine document 追踪
+
 说明：
 
 - `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation、engine 调用与 report draft 推进
@@ -81,6 +101,11 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
 - `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
+- research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
+- 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage
+- `capabilities.deep_research[]` 默认承载每个 research invocation 的 `canonical_summary`、`evidence`、`source_refs`、`gaps` 与 output document 投影
+- direct provider search 产出的 normalized findings 后续也应能进入同一 canonical research evidence / source ref 读模型；不应只作为一次性 tool message 存在
+- `source_refs` 与 `artifacts` 是并列的 canonical workspace 信息：前者回答“证据来自哪里”，后者回答“哪些文件资产可被后续 agent / UI 读取”
 
 ## 4. CLI 语义
 
@@ -105,10 +130,17 @@ V3 Web UI 默认是 conversation-first。
 - 用户发送自然语言消息
 - top-level master agent loop 决定如何创建和编排 task
 - 具体 research / execution / reporting task 默认委托给 teammate agent 推进
-- research / execution teammate 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 engine、请求 approval，并可通过 protocol 与 peers 沟通
+- `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
+- `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 execution engine、请求 approval，并可通过 protocol 与 peers 沟通
 - report teammate 默认直接读写 `report_draft` 并在合适时机 `publish` 为 final `report`
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
+
+`research teammate` 的默认决策边界：
+
+- 简单 literature query、accession / structure id 定位、确定性 sequence / structure 下载、轻量 annotation 查询，可直接调用 provider tools
+- 开放式 research、跨来源检索、query decomposition、evidence fusion、gap detection、clarification，优先调用 `deep_research`
+- `deep_research` 是 teammate 的重能力工具，不等于 teammate 自身
 
 默认展示：
 
@@ -144,10 +176,18 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `lane.created` / `lane.bound` / `lane.removed`
 - `agent.spawned` / `agent.delegated` / `agent.message.delivered`
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
+- `research.evidence.recorded`
+- `artifact.recorded`
 - `report_draft.updated`
 - `report.generated`
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
+
+事件语义：
+
+- `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
+- `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
+- 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
 
 ## 7. 弃用策略
 

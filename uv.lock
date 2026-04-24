@@ -508,6 +508,7 @@ version = "0.1.0"
 source = { editable = "packages/openzyme-core" }
 dependencies = [
     { name = "openzyme-domain" },
+    { name = "openzyme-research" },
 ]
 
 [package.optional-dependencies]
@@ -518,6 +519,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
+    { name = "openzyme-research", editable = "packages/openzyme-research" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
 ]
 provides-extras = ["dev"]
@@ -541,9 +543,10 @@ name = "openzyme-engines"
 version = "0.1.0"
 source = { editable = "packages/openzyme-engines" }
 dependencies = [
+    { name = "langchain" },
+    { name = "langgraph" },
     { name = "openzyme-core" },
     { name = "openzyme-domain" },
-    { name = "openzyme-graph" },
     { name = "openzyme-research" },
     { name = "openzyme-runtime" },
 ]
@@ -555,9 +558,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "langchain", specifier = ">=1.0,<2.0" },
+    { name = "langgraph", specifier = ">=1.0,<2.0" },
     { name = "openzyme-core", editable = "packages/openzyme-core" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
-    { name = "openzyme-graph", editable = "packages/openzyme-graph" },
     { name = "openzyme-research", editable = "packages/openzyme-research" },
     { name = "openzyme-runtime", editable = "packages/openzyme-runtime" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
@@ -595,6 +599,7 @@ source = { editable = "packages/openzyme-graph" }
 dependencies = [
     { name = "langgraph" },
     { name = "openzyme-domain" },
+    { name = "openzyme-engines" },
     { name = "openzyme-execution" },
     { name = "openzyme-research" },
     { name = "openzyme-runtime" },
@@ -611,6 +616,7 @@ dev = [
 requires-dist = [
     { name = "langgraph", specifier = ">=1.0,<2.0" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
+    { name = "openzyme-engines", editable = "packages/openzyme-engines" },
     { name = "openzyme-execution", editable = "packages/openzyme-execution" },
     { name = "openzyme-research", editable = "packages/openzyme-research" },
     { name = "openzyme-runtime", editable = "packages/openzyme-runtime" },

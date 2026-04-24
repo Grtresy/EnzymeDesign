@@ -6,6 +6,7 @@ from openzyme_runtime import GraphAssemblyInputs
 from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import OpenZymeHostToolbox
 from openzyme_runtime import PhaseBRepositories
+from openzyme_runtime import ResearchDossier
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
@@ -86,6 +87,7 @@ def test_run_deep_research_returns_normalized_dossier() -> None:
         research_brief=None,
     )
 
+    assert isinstance(dossier, ResearchDossier)
     assert dossier.research_brief.startswith("Find evidence")
     assert dossier.summary
     assert len(dossier.evidence_items) >= 1

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
   "langgraph>=1.0,<2.0",
   "openzyme-domain",
+  "openzyme-engines",
   "openzyme-execution",
   "openzyme-research",
   "openzyme-runtime",

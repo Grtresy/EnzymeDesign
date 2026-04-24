@@ -10,6 +10,7 @@ from openzyme_domain import InboxParticipantKind
 from openzyme_domain import TaskStatus
 
 from .artifact_tools import register_artifact_tools
+from .bio_research_tools import register_bio_research_tools
 from .engines import EngineRegistry
 from .harness import HarnessDriver
 from .harness import HarnessInput
@@ -138,19 +139,130 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
     )
     role_specific: list[ToolDescriptor] = []
     if role == "researcher":
-        role_specific.append(
-            ToolDescriptor(
-                tool_name="deep_research.start",
-                description="Start deep research for the currently assigned task.",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "task_id": {"type": "string"},
-                        "brief": {"type": "string"},
+        role_specific.extend(
+            (
+                ToolDescriptor(
+                    tool_name="deep_research.start",
+                    description="Start deep research for the currently assigned task.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "brief": {"type": "string"},
+                        },
+                        "required": ["task_id", "brief"],
+                        "additionalProperties": False,
                     },
-                    "required": ["task_id", "brief"],
-                    "additionalProperties": False,
-                },
+                ),
+                ToolDescriptor(
+                    tool_name="deep_research.resume",
+                    description="Resume a deep research invocation after clarification.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "invocation_id": {"type": "string"},
+                            "resolution": {"type": "string"},
+                        },
+                        "required": ["invocation_id", "resolution"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="deep_research.status",
+                    description="Read the current status of a deep research invocation.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"invocation_id": {"type": "string"}},
+                        "required": ["invocation_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="deep_research.dossier",
+                    description="Read the current dossier output for a deep research invocation.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"invocation_id": {"type": "string"}},
+                        "required": ["invocation_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="pubmed.search",
+                    description="Search PubMed for focused biomedical literature queries.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="semantic_scholar.search",
+                    description="Search Semantic Scholar for papers and citation-backed literature hits.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="uniprot.lookup",
+                    description="Look up one UniProt accession and return normalized protein metadata.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"accession": {"type": "string"}},
+                        "required": ["accession"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="uniprot.download_fasta",
+                    description="Download a protein FASTA sequence from UniProt and persist it as a workspace artifact.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"accession": {"type": "string"}},
+                        "required": ["accession"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="rcsb_pdb.search",
+                    description="Search RCSB PDB for matching protein structures.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="rcsb_pdb.download_structure",
+                    description="Download a structure file from RCSB PDB and persist it as a workspace artifact.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "pdb_id": {"type": "string"},
+                            "format": {"type": "string", "enum": ["pdb", "cif"]},
+                        },
+                        "required": ["pdb_id"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="interpro.query",
+                    description="Query InterPro annotations for a UniProt accession.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "accession": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                        "required": ["accession"],
+                        "additionalProperties": False,
+                    },
+                ),
             )
         )
     if role == "executor":
@@ -265,7 +377,11 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
     return (*shared, *tuple(role_specific))
 
 
-def build_teammate_registry(*, engine_registry: EngineRegistry | None = None) -> ToolRegistry:
+def build_teammate_registry(
+    *,
+    engine_registry: EngineRegistry | None = None,
+    bio_research_service: Any | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
     register_task_board_tools(registry)
     register_lane_tools(registry)
@@ -274,6 +390,7 @@ def build_teammate_registry(*, engine_registry: EngineRegistry | None = None) ->
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
+    register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
@@ -472,7 +589,10 @@ def run_teammate_loop(
 ) -> HarnessResult:
     if parent_context.model_factory is None:
         raise ValueError("teammate loop requires model_factory")
-    registry = build_teammate_registry(engine_registry=parent_context.engine_registry)
+    registry = build_teammate_registry(
+        engine_registry=parent_context.engine_registry,
+        bio_research_service=parent_context.bio_research_service,
+    )
     driver = TeammateConversationDriver(
         model_factory=parent_context.model_factory,
         role=role,
@@ -497,6 +617,7 @@ def run_teammate_loop(
         engine_registry=parent_context.engine_registry,
         event_sink=parent_context.event_sink,
         model_factory=parent_context.model_factory,
+        bio_research_service=parent_context.bio_research_service,
     )
 
 

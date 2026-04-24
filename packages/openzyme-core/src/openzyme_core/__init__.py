@@ -47,6 +47,7 @@ from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
 from .artifact_tools import register_artifact_tools
+from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
 from .repositories import AgentMemberRepository
 from .repositories import CoreRepositories
@@ -78,6 +79,10 @@ from .skills import register_skill_tools
 from .subagents import default_agent_id_for_role
 from .subagents import default_agent_role_for_task
 from .subagents import register_subagent_tools
+from .teammate_roster import TEAMMATE_ROLE_NAMES
+from .teammate_roster import TEAMMATE_ROSTER
+from .teammate_roster import TeammateRole
+from .teammate_roster import teammate_role_for_task_kind
 from .teammates import TeammateConversationDriver
 from .teammates import build_teammate_registry
 from .teammates import teammate_tool_descriptors
@@ -99,6 +104,7 @@ __all__ = [
     "ApprovalRequestRepository",
     "BackgroundCompletion",
     "build_teammate_registry",
+    "register_bio_research_tools",
     "CapabilityEngine",
     "CorrelationStatus",
     "CorrelationThread",
@@ -167,6 +173,9 @@ __all__ = [
     "TaskBoardProjection",
     "TaskBoardService",
     "TaskMutation",
+    "TEAMMATE_ROLE_NAMES",
+    "TEAMMATE_ROSTER",
+    "TeammateRole",
     "ToolDescriptor",
     "ToolInvocation",
     "ToolRegistry",
@@ -186,6 +195,7 @@ __all__ = [
     "run_teammate_loop",
     "run_agent_harness_loop",
     "TeammateConversationDriver",
+    "teammate_role_for_task_kind",
     "teammate_tool_descriptors",
     "top_level_tool_descriptors",
 ]

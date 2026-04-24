@@ -69,6 +69,7 @@ class DecisionStatus(StrEnum):
 
 class ArtifactKind(StrEnum):
     LOG = "log"
+    SEQUENCE = "sequence"
     STRUCTURE = "structure"
     REPORT = "report"
     RESULT = "result"

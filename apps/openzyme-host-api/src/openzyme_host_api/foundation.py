@@ -29,6 +29,10 @@ from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_research import TavilyResearchAdapter
+from openzyme_research import BioResearchService
+from openzyme_research import DefaultBioResearchService
+from openzyme_research import DeterministicBioResearchService
+from openzyme_runtime import build_bio_research_tools
 
 
 DEFAULT_PROJECT_ID = "proj_001"
@@ -203,6 +207,11 @@ def _build_research_adapter(settings: OpenZymeSettings):
     return DeterministicResearchAdapter()
 
 
+def _build_bio_research_service(settings: OpenZymeSettings) -> BioResearchService:
+    del settings
+    return DefaultBioResearchService()
+
+
 def build_local_eval_foundation(
     *,
     sqlite_db_path: Path | None,
@@ -211,6 +220,7 @@ def build_local_eval_foundation(
     effective_settings = settings or get_settings()
     repositories = _connect_sqlite_database(sqlite_db_path)
     research_adapter = DeterministicResearchAdapter()
+    bio_research_service = DeterministicBioResearchService()
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
@@ -220,9 +230,11 @@ def build_local_eval_foundation(
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,
-            mcp_enabled=effective_settings.research.mcp_enabled,
+            mcp_tools=build_bio_research_tools(bio_research_service),
+            mcp_enabled=True,
             mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
         ),
+        bio_research_service=bio_research_service,
         model_factory=build_model_factory_from_settings(effective_settings),
         settings=effective_settings,
     )
@@ -238,6 +250,7 @@ def build_configured_foundation(
         effective_settings = apply_live_llm_test_budget(effective_settings)
     repositories = _connect_sqlite_database(sqlite_db_path)
     research_adapter = _build_research_adapter(effective_settings)
+    bio_research_service = _build_bio_research_service(effective_settings)
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
@@ -247,9 +260,11 @@ def build_configured_foundation(
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,
-            mcp_enabled=effective_settings.research.mcp_enabled,
+            mcp_tools=build_bio_research_tools(bio_research_service),
+            mcp_enabled=True,
             mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
         ),
+        bio_research_service=bio_research_service,
         model_factory=build_model_factory_from_settings(effective_settings),
         settings=effective_settings,
     )

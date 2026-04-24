@@ -16,12 +16,13 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import ArtifactKind
 from openzyme_engines import DeepResearchEngine
+from openzyme_engines import EvidenceSynthesisItem
+from openzyme_engines import ResearchDossier
+from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchTurnRecord
 from openzyme_engines import register_deep_research_tools
-from openzyme_runtime import EvidenceSynthesisItem
-from openzyme_runtime import ResearchDossier
-from openzyme_runtime import ResearchSourceItem
-from openzyme_runtime import ResearchTurnRecord
 
 
 class CompletedDeepResearchRunner:
@@ -154,6 +155,43 @@ class ClarifyThenCompleteRunner:
         )
 
 
+class CompletedWithArtifactRunner:
+    def run(
+        self,
+        *,
+        invocation_id: str,
+        objective: str,
+        design_brief: str,
+        research_brief: str,
+        resolution: str | None,
+    ) -> ResearchDossier:
+        del objective, design_brief, resolution
+        return ResearchDossier(
+            status="completed",
+            completion_reason="research_completed",
+            clarification_question=None,
+            research_brief=research_brief,
+            summary="Research completed with one downloaded structure.",
+            evidence_items=[],
+            unresolved_gaps=[],
+            artifacts=[
+                {
+                    "external_id": "1ABC",
+                    "provider": "rcsb_pdb",
+                    "kind": "structure",
+                    "format": "pdb",
+                    "filename": "1ABC.pdb",
+                    "title": "1ABC structure file",
+                    "description": "Downloaded structure file from RCSB PDB.",
+                    "source_locator": "https://files.rcsb.org/download/1ABC.pdb",
+                    "metadata": {"pdb_id": "1ABC"},
+                }
+            ],
+            raw_notes=[invocation_id],
+            recent_turns=[],
+        )
+
+
 def _build_repositories() -> CoreRepositories:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -268,3 +306,22 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
 
     assert result.ok is True
     assert "collect catalytic evidence" in result.content
+
+
+def test_deep_research_engine_persists_artifacts_from_dossier() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = DeepResearchEngine(repositories, CompletedWithArtifactRunner())
+
+    result = engine.start_research(
+        session_id=session.session_id,
+        task_id="task_001",
+        brief="download a supporting structure",
+        invocation_id="inv_artifacts",
+    )
+
+    artifacts = repositories.artifacts.list_by_invocation(session.session_id, "inv_artifacts")
+    assert result.invocation.status.value == "succeeded"
+    assert len(artifacts) == 1
+    assert artifacts[0].kind is ArtifactKind.STRUCTURE
+    assert artifacts[0].metadata["provider"] == "rcsb_pdb"

@@ -421,7 +421,7 @@ class SessionArtifactRecord:
     session_id: str
     task_id: str | None
     lane_id: str | None
-    invocation_id: str
+    invocation_id: str | None
     run_id: str | None
     kind: ArtifactKind
     storage_uri: str

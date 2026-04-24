@@ -20,14 +20,11 @@ from .harness import ToolResult
 from .protocols import ProtocolService
 from .task_board import TaskBoardService
 from .task_board import TaskMutation
+from .teammate_roster import TEAMMATE_ROLE_NAMES
+from .teammate_roster import is_valid_teammate_role
+from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
 from .teammates import run_teammate_loop
-
-_ROLE_BY_TASK_KIND = {
-    "research": "researcher",
-    "execution": "executor",
-    "reporting": "reporter",
-}
 
 
 def _new_id(prefix: str) -> str:
@@ -35,7 +32,13 @@ def _new_id(prefix: str) -> str:
 
 
 def default_agent_role_for_task(task: Task) -> str:
-    return _ROLE_BY_TASK_KIND.get(task.kind, "worker")
+    role = teammate_role_for_task_kind(task.kind)
+    if role is None:
+        raise ValueError(
+            f"Task kind {task.kind!r} does not imply a teammate role. "
+            f"Choose one of: {', '.join(TEAMMATE_ROLE_NAMES)}."
+        )
+    return role
 
 
 def default_agent_id_for_role(agent_role: str) -> str:
@@ -163,7 +166,29 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 lane_id=task.lane_id,
             )
 
-        agent_role = str(arguments.get("agent_role") or default_agent_role_for_task(task))
+        try:
+            agent_role = str(arguments.get("agent_role") or default_agent_role_for_task(task))
+        except ValueError as exc:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=str(exc),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+            )
+        if not is_valid_teammate_role(agent_role):
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=(
+                    f"Unknown teammate role {agent_role!r}. "
+                    f"Choose one of: {', '.join(TEAMMATE_ROLE_NAMES)}."
+                ),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+            )
         agent_id = str(arguments.get("agent_id") or default_agent_id_for_role(agent_role))
         correlation_id = str(arguments.get("correlation_id") or _new_id("corr"))
         instructions = str(arguments.get("instructions") or task.description or task.subject)

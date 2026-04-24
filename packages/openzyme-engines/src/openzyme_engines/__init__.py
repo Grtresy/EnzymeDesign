@@ -5,10 +5,23 @@ from openzyme_core import EngineRegistry
 from .deep_research import DeepResearchEngine
 from .deep_research import DeepResearchRunner
 from .deep_research import GraphBackedDeepResearchRunner
+from .deep_research import NativeDeepResearchRunner
 from .deep_research import NormalizedResearchDossier
 from .deep_research import ResearchEvidenceItem
 from .deep_research import ResearchStartResult
 from .deep_research import register_deep_research_tools
+from .deep_research_contracts import EvidenceSynthesis
+from .deep_research_contracts import EvidenceSynthesisItem
+from .deep_research_contracts import IntakeClarification
+from .deep_research_contracts import ResearchBriefDraft
+from .deep_research_contracts import ResearchDossier
+from .deep_research_contracts import ResearchSourceItem
+from .deep_research_contracts import ResearchSupervisorAction
+from .deep_research_contracts import ResearchTurnRecord
+from .deep_research_contracts import ResearchUnitDraft
+from .deep_research_contracts import ResearchUnitPlan
+from .deep_research_graph import build_deep_research_subgraph
+from .deep_research_graph import run_deep_research
 from .execution import DefaultExecutionRequestCompiler
 from .execution import DefaultExecutionResultParser
 from .execution import ExecutionEngine
@@ -32,6 +45,8 @@ __all__ = [
     "DefaultExecutionResultParser",
     "DeepResearchEngine",
     "DeepResearchRunner",
+    "EvidenceSynthesis",
+    "EvidenceSynthesisItem",
     "ExecutionEngine",
     "ExecutionHandoff",
     "ExecutionOutcome",
@@ -39,9 +54,20 @@ __all__ = [
     "ExecutionStartResult",
     "ExecutionStatusSnapshot",
     "GraphBackedDeepResearchRunner",
+    "IntakeClarification",
+    "NativeDeepResearchRunner",
     "NormalizedResearchDossier",
+    "ResearchBriefDraft",
+    "ResearchDossier",
     "ResearchEvidenceItem",
+    "ResearchSourceItem",
     "ResearchStartResult",
+    "ResearchSupervisorAction",
+    "ResearchTurnRecord",
+    "ResearchUnitDraft",
+    "ResearchUnitPlan",
+    "build_deep_research_subgraph",
     "register_deep_research_tools",
     "register_execution_tools",
+    "run_deep_research",
 ]

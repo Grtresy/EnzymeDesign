@@ -4,6 +4,7 @@ import json
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
@@ -41,6 +42,15 @@ from openzyme_core import EngineDescriptor
 from openzyme_core import EngineRegistry
 from openzyme_core import builtin_tool_descriptors
 from openzyme_core import top_level_tool_descriptors
+from openzyme_core import build_teammate_registry
+from openzyme_core import teammate_tool_descriptors
+from openzyme_research import DeterministicBioResearchService
+
+
+class RateLimitedBioResearchService(DeterministicBioResearchService):
+    def search_semantic_scholar(self, *, query: str, limit: int = 5):
+        del query, limit
+        raise RuntimeError("HTTP Error 429: Too Many Requests")
 
 
 def _build_repositories() -> CoreRepositories:
@@ -790,6 +800,78 @@ class BuiltinDelegationDriver:
         return HarnessStep(assistant_message="delegated")
 
 
+class FailingDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input, tool_results
+        raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+
+class ToolFailureDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_search",
+                        tool_name="semantic_scholar.search",
+                        arguments={"query": "AI systems engineering"},
+                    ),
+                )
+            )
+        result = tool_results[0]
+        return HarnessStep(assistant_message=f"Observed tool failure: {result.content}")
+
+
+def test_harness_returns_failed_result_when_driver_provider_is_rate_limited() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="search"),
+        driver=FailingDriver(),
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result.status is HarnessStatus.FAILED
+    assert "HTTP Error 429" in result.outputs[0]
+    assert "harness.failed" in {event.event_type for event in result.events}
+
+
+def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def fail_search(_context: SessionRuntimeContext, _invocation: ToolInvocation) -> ToolResult:
+        raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+    registry.register("semantic_scholar.search", fail_search)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="search"),
+        driver=ToolFailureDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.tool_results[0].ok is False
+    assert "HTTP Error 429" in result.tool_results[0].content
+    assert "Observed tool failure" in result.outputs[0]
+
+
 def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -846,6 +928,137 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     inbox_types = [message.message_type for message in repositories.inbox.list_by_session(session.session_id)]
     assert "delegation_request" in inbox_types
     assert "delegation_result" in inbox_types
+
+
+def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None:
+    tool_names = {descriptor.tool_name for descriptor in teammate_tool_descriptors(role="researcher")}
+
+    assert {
+        "deep_research.start",
+        "deep_research.resume",
+        "deep_research.status",
+        "deep_research.dossier",
+        "pubmed.search",
+        "semantic_scholar.search",
+        "uniprot.lookup",
+        "uniprot.download_fasta",
+        "rcsb_pdb.search",
+        "rcsb_pdb.download_structure",
+        "interpro.query",
+    }.issubset(tool_names)
+
+
+def test_research_teammate_direct_download_persists_workspace_artifact() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = build_teammate_registry(bio_research_service=DeterministicBioResearchService())
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_fasta",
+            tool_name="uniprot.download_fasta",
+            arguments={"accession": "P12345"},
+            task_id="task_001",
+        ),
+    )
+
+    artifact_records = repositories.artifacts.list_by_task(session.session_id, "task_001")
+    payload = json.loads(result.content)
+    assert result.ok is True
+    assert artifact_records
+    assert payload["status"] == "completed"
+    assert payload["artifacts"][0]["artifact_id"] == artifact_records[0].artifact_id
+    assert artifact_records[0].kind is ArtifactKind.SEQUENCE
+    assert artifact_records[0].invocation_id is not None
+    assert artifact_records[0].metadata["provider"] == "uniprot"
+    invocation = repositories.invocations.get(artifact_records[0].invocation_id)
+    assert invocation.engine_name == "research_tool"
+
+
+def test_research_teammate_direct_search_returns_observation_and_persists_canonical_rows() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = build_teammate_registry(bio_research_service=DeterministicBioResearchService())
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_pubmed",
+            tool_name="pubmed.search",
+            arguments={"query": "enzyme engineering", "limit": 3},
+            task_id="task_001",
+        ),
+    )
+
+    payload = json.loads(result.content)
+    invocations = [
+        invocation
+        for invocation in repositories.invocations.list_by_session(session.session_id)
+        if invocation.engine_name == "research_tool"
+    ]
+    invocation = invocations[0]
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+
+    assert result.ok is True
+    assert payload["provider"] == "pubmed"
+    assert payload["findings"][0]["sources"][0]["kind"] == "paper"
+    assert repositories.research_summaries.get_by_invocation(session.session_id, invocation.invocation_id).summary == (
+        payload["summary"]
+    )
+    assert repositories.research_evidence.list_by_invocation(session.session_id, invocation.invocation_id)
+    assert repositories.research_source_refs.list_by_invocation(session.session_id, invocation.invocation_id)
+    assert workspace["capabilities"]["research_tool"][0]["canonical_summary"]["summary"] == payload["summary"]
+    assert workspace["capabilities"]["research_tool"][0]["source_refs"][0]["kind"] == "paper"
+
+
+def test_research_teammate_direct_search_provider_429_returns_failed_observation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = build_teammate_registry(bio_research_service=RateLimitedBioResearchService())
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_semantic",
+            tool_name="semantic_scholar.search",
+            arguments={"query": "AI systems engineering", "limit": 3},
+            task_id="task_001",
+        ),
+    )
+
+    payload = json.loads(result.content)
+    invocation = repositories.invocations.list_by_session(session.session_id)[0]
+    summary = repositories.research_summaries.get_by_invocation(session.session_id, invocation.invocation_id)
+    gaps = repositories.research_gaps.list_by_invocation(session.session_id, invocation.invocation_id)
+
+    assert result.ok is False
+    assert payload["status"] == "failed"
+    assert "HTTP Error 429" in payload["unresolved_gaps"][0]
+    assert invocation.status is EngineInvocationStatus.FAILED
+    assert summary.status.value == "failed"
+    assert "HTTP Error 429" in gaps[0].summary
 
 
 def test_session_workspace_projection_exposes_delegation_threads() -> None:
@@ -951,6 +1164,43 @@ def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
     assert "reporting.start" not in tool_names
 
 
+def test_top_level_delegate_tool_documents_real_teammate_roles() -> None:
+    delegate = next(descriptor for descriptor in builtin_tool_descriptors() if descriptor.tool_name == "task.delegate")
+
+    assert delegate.input_schema["properties"]["agent_role"]["enum"] == ["researcher", "executor", "reporter"]
+    assert delegate.input_schema["required"] == ["task_id", "agent_role"]
+    assert "fpocket" not in delegate.description
+    assert "AutoDock" not in delegate.description
+    assert "AlphaFold" not in delegate.description
+
+
+def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_tools() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    model_factory = FakeModelFactory({"content": "There are researcher, executor, and reporter teammates."})
+    driver = LlmConversationDriver(model_factory)
+
+    driver.plan(context, HarnessInput(session_id=session.session_id, message="你有哪些teammate"), ())
+
+    prompt = str(model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"])
+    assert "researcher for literature and data research" in prompt
+    assert "executor for approved computational execution" in prompt
+    assert "reporter for report drafting and publishing" in prompt
+    assert "answer only with researcher, executor, reporter" in prompt
+    assert "Do not describe provider tools or capability engines" in prompt
+    assert "fpocket" in prompt
+
+
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -1030,6 +1280,47 @@ def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_
     assert step.tool_invocations[1].arguments["instructions"] == "Survey AI in systems engineering"
 
 
+def test_llm_conversation_driver_backfills_delegate_role_from_created_task_kind() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_report_001",
+                            "subject": "Write report",
+                            "description": "Publish the final report",
+                            "kind": "reporting",
+                        },
+                    },
+                    {"id": "call_delegate", "name": "task.delegate", "args": {}},
+                ],
+            }
+        )
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="write report"), ())
+
+    assert step.assistant_message is None
+    assert step.tool_invocations[1].arguments["task_id"] == "task_report_001"
+    assert step.tool_invocations[1].arguments["agent_role"] == "reporter"
+
+
 def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_task_id() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -1058,3 +1349,63 @@ def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_ta
 
     assert step.tool_invocations == ()
     assert "without task_id" in str(step.assistant_message)
+
+
+def test_llm_conversation_driver_rejects_delegate_without_agent_role() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_delegate", "name": "task.delegate", "args": {"task_id": "task_001"}},
+                ],
+            }
+        )
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="delegate task"), ())
+
+    assert step.tool_invocations == ()
+    assert "without agent_role" in str(step.assistant_message)
+
+
+def test_llm_conversation_driver_rejects_unknown_delegate_role() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_delegate", "name": "task.delegate", "args": {"task_id": "task_001", "agent_role": "worker"}},
+                ],
+            }
+        )
+    )
+
+    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="delegate task"), ())
+
+    assert step.tool_invocations == ()
+    assert "invalid agent_role" in str(step.assistant_message)

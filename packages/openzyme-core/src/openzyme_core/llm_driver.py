@@ -17,6 +17,9 @@ from .harness import ToolInvocation
 from .harness import ToolResult
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import top_level_tool_descriptors
+from .teammate_roster import TEAMMATE_ROLE_NAMES
+from .teammate_roster import teammate_role_for_task_kind
+from .teammate_roster import teammate_roster_prompt_line
 
 
 def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
@@ -49,6 +52,9 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
     sections = [
         "You are the top-level OpenZyme master agent.",
         "You talk to the user, understand goals, create and update tasks, and delegate concrete work to internal teammate agents.",
+        teammate_roster_prompt_line(),
+        f"If the user asks which teammates are available, answer only with {', '.join(TEAMMATE_ROLE_NAMES)} plus their role-level responsibilities.",
+        "Do not describe provider tools or capability engines such as fpocket, AutoDock Vina, AlphaFold, PubMed, UniProt, or RCSB PDB as teammates.",
         "Use tools to create, inspect, update, and delegate tasks. Do not directly start capability engines.",
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
@@ -171,6 +177,11 @@ class LlmConversationDriver:
                 arguments["task_id"] = str(created_task_id)
             if not arguments.get("instructions"):
                 arguments["instructions"] = created_description or created_subject
+            if not arguments.get("agent_role"):
+                created_task_kind = str(created_task.get("kind") or "")
+                inferred_role = teammate_role_for_task_kind(created_task_kind)
+                if inferred_role is not None:
+                    arguments["agent_role"] = inferred_role
             tool_call["args"] = arguments
 
     def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
@@ -179,14 +190,29 @@ class LlmConversationDriver:
             return f"Tool {tool_name} is not available in the current harness."
         required = tuple(descriptor.input_schema.get("required") or ())
         missing = [field_name for field_name in required if field_name not in arguments or arguments[field_name] in (None, "")]
-        if not missing:
-            return None
-        if tool_name == "task.delegate" and "task_id" in missing:
-            return (
-                "Cannot delegate a task without task_id. "
-                "Create or select a task first, then delegate it."
-            )
-        return f"Cannot call {tool_name}; missing required fields: {', '.join(missing)}."
+        if missing:
+            if tool_name == "task.delegate" and "task_id" in missing:
+                return (
+                    "Cannot delegate a task without task_id. "
+                    "Create or select a task first, then delegate it."
+                )
+            if tool_name == "task.delegate" and "agent_role" in missing:
+                return (
+                    "Cannot delegate a task without agent_role. "
+                    f"Choose one of: {', '.join(TEAMMATE_ROLE_NAMES)}."
+                )
+            return f"Cannot call {tool_name}; missing required fields: {', '.join(missing)}."
+        properties = descriptor.input_schema.get("properties") or {}
+        for field_name, field_schema in properties.items():
+            if field_name not in arguments or not isinstance(field_schema, dict):
+                continue
+            enum_values = field_schema.get("enum")
+            if enum_values is not None and arguments[field_name] not in enum_values:
+                return (
+                    f"Cannot call {tool_name}; invalid {field_name}: {arguments[field_name]!r}. "
+                    f"Choose one of: {', '.join(str(value) for value in enum_values)}."
+                )
+        return None
 
     def _resume_waiting_invocation(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> HarnessStep | None:
         if harness_input.resume is None:

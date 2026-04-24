@@ -58,6 +58,7 @@ class RestoreFocus:
 
 class HarnessStatus(StrEnum):
     COMPLETED = "completed"
+    FAILED = "failed"
     WAITING_APPROVAL = "waiting_approval"
     WAITING_DELEGATION = "waiting_delegation"
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
@@ -250,6 +251,7 @@ class SessionRuntimeContext:
     skill_registry: Any | None = None
     model_factory: Any | None = None
     engine_registry: EngineRegistry | None = None
+    bio_research_service: Any | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(self.repositories, self.snapshot.session.session_id)
@@ -538,6 +540,11 @@ def _pending_approval_id(snapshot: SessionRuntimeSnapshot) -> str | None:
     return snapshot.pending_approvals[0].approval_id
 
 
+def _format_runtime_error(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    return f"OpenZyme could not complete this turn: {message}"
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -547,6 +554,7 @@ def run_agent_harness_loop(
     engine_registry: EngineRegistry | None = None,
     event_sink: EventSink | None = None,
     model_factory: Any | None = None,
+    bio_research_service: Any | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -565,6 +573,7 @@ def run_agent_harness_loop(
         skill_registry=SkillRegistry(),
         model_factory=model_factory,
         engine_registry=engine_registry,
+        bio_research_service=bio_research_service,
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -602,7 +611,50 @@ def run_agent_harness_loop(
     pending_approval_id: str | None = None
 
     for _ in range(harness_input.max_steps):
-        step = driver.plan(context, harness_input, tool_results)
+        try:
+            step = driver.plan(context, harness_input, tool_results)
+        except Exception as exc:
+            assistant_message = _format_runtime_error(exc)
+            message = _persist_message(
+                repositories,
+                session_id=harness_input.session_id,
+                sender="harness",
+                sender_kind=InboxParticipantKind.HARNESS,
+                recipient=harness_input.sender,
+                recipient_kind=harness_input.sender_kind,
+                message_type="assistant_message",
+                content=assistant_message if harness_input.persist_conversation else None,
+            )
+            outputs.append(assistant_message)
+            context.emit(
+                "message.sent",
+                {
+                    "message_id": message.message_id,
+                    "recipient": message.recipient,
+                    "recipient_kind": message.recipient_kind.value,
+                },
+            )
+            context.emit(
+                "harness.failed",
+                {"error": str(exc), "error_type": exc.__class__.__name__},
+            )
+            _auto_compact_if_needed(
+                context,
+                activity_happened=True,
+                outputs=outputs,
+                all_tool_results=all_tool_results,
+            )
+            context.refresh()
+            return HarnessResult(
+                session_id=harness_input.session_id,
+                status=HarnessStatus.FAILED,
+                snapshot=context.snapshot,
+                events=tuple(sink.events),
+                outputs=tuple(outputs),
+                tool_results=tuple(all_tool_results),
+                pending_approval_id=pending_approval_id,
+                delegations=tuple(delegation_handles),
+            )
         tool_results = ()
         if step.next_focus is not None:
             context.set_focus(step.next_focus)
@@ -819,7 +871,17 @@ def run_agent_harness_loop(
                         "lane_id": invocation.lane_id,
                     },
                 )
-                result = registry.dispatch(context, invocation)
+                try:
+                    result = registry.dispatch(context, invocation)
+                except Exception as exc:
+                    result = ToolResult(
+                        call_id=invocation.call_id,
+                        tool_name=invocation.tool_name,
+                        ok=False,
+                        content=f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}",
+                        task_id=invocation.task_id,
+                        lane_id=invocation.lane_id,
+                    )
                 current_results.append(result)
                 all_tool_results.append(result)
                 context.emit(

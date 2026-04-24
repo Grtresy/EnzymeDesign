@@ -35,7 +35,7 @@ from openzyme_engines import DeepResearchEngine
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
 from openzyme_engines import ExecutionStatusSnapshot as V3ExecutionStatusSnapshot
-from openzyme_engines import GraphBackedDeepResearchRunner
+from openzyme_engines import NativeDeepResearchRunner
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
@@ -244,13 +244,15 @@ class HostApiDependencies:
             event_store=self.v3_event_store,
             engine_registry=self.build_v3_engine_registry(),
             model_factory=self.foundation.model_factory,
+            bio_research_service=self.foundation.bio_research_service,
         )
 
     def build_v3_engine_registry(self) -> EngineRegistry:
         return build_engine_registry(
             DeepResearchEngine(
                 self.v3_repositories,
-                GraphBackedDeepResearchRunner(
+                NativeDeepResearchRunner(
+                    repositories=self.v3_repositories,
                     research_adapter=self.foundation.research_adapter,
                     research_tool_provider=self.foundation.research_tool_provider,
                     model_factory=self.foundation.model_factory,

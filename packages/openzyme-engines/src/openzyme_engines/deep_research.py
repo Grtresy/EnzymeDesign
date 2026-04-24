@@ -13,10 +13,12 @@ from openzyme_core import ToolResult
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Episode
+from openzyme_domain import ArtifactKind
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Project
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SourceRefKind
 from openzyme_domain import ResearchEvidence
 from openzyme_domain import ResearchGap
@@ -24,6 +26,9 @@ from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain.control_plane import utc_now_iso
+
+from .deep_research_contracts import ResearchDossier
+from .deep_research_graph import run_deep_research
 
 
 def _new_document_id(prefix: str) -> str:
@@ -55,6 +60,7 @@ class NormalizedResearchDossier:
     evidence_items: tuple[ResearchEvidenceItem, ...]
     source_refs: tuple[dict[str, Any], ...]
     unresolved_gaps: tuple[str, ...]
+    artifacts: tuple[dict[str, Any], ...] = ()
     raw_notes: tuple[str, ...] = ()
     clarification_question: str | None = None
     recent_turns: tuple[dict[str, Any], ...] = ()
@@ -68,6 +74,7 @@ class NormalizedResearchDossier:
             "evidence_items": [item.to_dict() for item in self.evidence_items],
             "source_refs": [dict(source) for source in self.source_refs],
             "unresolved_gaps": list(self.unresolved_gaps),
+            "artifacts": [dict(item) for item in self.artifacts],
             "raw_notes": list(self.raw_notes),
             "clarification_question": self.clarification_question,
             "recent_turns": [dict(turn) for turn in self.recent_turns],
@@ -104,6 +111,7 @@ class NormalizedResearchDossier:
             evidence_items=tuple(evidence_items),
             source_refs=tuple(flattened_sources),
             unresolved_gaps=tuple(payload.unresolved_gaps),
+            artifacts=tuple(dict(item) for item in getattr(payload, "artifacts", [])),
             raw_notes=tuple(payload.raw_notes),
             clarification_question=payload.clarification_question,
             recent_turns=tuple(turn.model_dump() for turn in payload.recent_turns),
@@ -130,6 +138,7 @@ class DeepResearchRunner(Protocol):
 
 @dataclass(slots=True)
 class GraphBackedDeepResearchRunner:
+    repositories: Any
     research_adapter: Any
     research_tool_provider: Any | None = None
     model_factory: Any | None = None
@@ -145,30 +154,14 @@ class GraphBackedDeepResearchRunner:
         resolution: str | None,
     ) -> Any:
         from langgraph.checkpoint.memory import InMemorySaver
-        from openzyme_graph.deep_research import run_deep_research
         from openzyme_runtime import DefaultResearchToolProvider
         from openzyme_runtime import GraphAssemblyInputs
         from openzyme_runtime import OpenZymeHostToolbox
-        from openzyme_runtime import PhaseBRepositories
-        from openzyme_runtime import apply_sqlite_migrations as apply_v2_migrations
-        from openzyme_runtime import connect_sqlite as connect_v2_sqlite
         from openzyme_runtime import get_settings
 
         if self.research_adapter is None:
             raise ValueError("GraphBackedDeepResearchRunner requires a research_adapter")
         settings = self.settings or get_settings()
-        connection = connect_v2_sqlite(":memory:")
-        apply_v2_migrations(connection)
-        repositories = PhaseBRepositories.from_connection(connection)
-        project = Project.create(project_id=f"proj_{invocation_id}", name="V3 deep research bridge")
-        repositories.projects.save(project)
-        repositories.episodes.save(
-            Episode.create(
-                episode_id=invocation_id,
-                project_id=project.project_id,
-                objective=objective,
-            )
-        )
         effective_brief = research_brief
         if resolution:
             effective_brief = f"{research_brief}\n\nResolution:\n{resolution}"
@@ -177,8 +170,14 @@ class GraphBackedDeepResearchRunner:
             mcp_enabled=settings.research.mcp_enabled,
             mcp_tool_allowlist=settings.research.mcp_tool_allowlist,
         )
+        project = Project.create(project_id=f"proj_{invocation_id}", name="V3 deep research")
+        episode = Episode.create(
+            episode_id=invocation_id,
+            project_id=project.project_id,
+            objective=objective,
+        )
         inputs = GraphAssemblyInputs(
-            repositories=repositories,
+            repositories=self.repositories,
             checkpointer=InMemorySaver(),
             execution_adapter=None,
             hpc_catalog_provider=None,
@@ -187,17 +186,19 @@ class GraphBackedDeepResearchRunner:
             research_tool_provider=tool_provider,
             projection_loader=None,
             model_factory=self.model_factory,
-            host_toolbox=OpenZymeHostToolbox(repositories),
+            host_toolbox=OpenZymeHostToolbox(self.repositories),
             settings=settings,
         )
         return run_deep_research(
             inputs,
-            episode_id=invocation_id,
+            episode_id=episode.episode_id,
             project_id=project.project_id,
             objective=objective,
             design_brief=design_brief,
             research_brief=effective_brief,
         )
+
+NativeDeepResearchRunner = GraphBackedDeepResearchRunner
 
 
 @dataclass(slots=True)
@@ -396,6 +397,14 @@ class DeepResearchEngine:
             dossier=dossier,
             updated_at=now,
         )
+        self._persist_artifacts(
+            session_id=session.session_id,
+            task_id=task.task_id,
+            lane_id=invocation.lane_id,
+            invocation_id=invocation.invocation_id,
+            dossier=dossier,
+            created_at=now,
+        )
         updated_invocation = EngineInvocation(
             invocation_id=invocation.invocation_id,
             session_id=invocation.session_id,
@@ -567,6 +576,46 @@ class DeepResearchEngine:
                 )
             )
 
+    def _persist_artifacts(
+        self,
+        *,
+        session_id: str,
+        task_id: str | None,
+        lane_id: str | None,
+        invocation_id: str,
+        dossier: NormalizedResearchDossier,
+        created_at: str,
+    ) -> None:
+        from pathlib import PurePosixPath
+
+        for index, item in enumerate(dossier.artifacts, start=1):
+            filename = str(item.get("filename") or f"artifact_{index}")
+            title = str(item.get("title") or PurePosixPath(filename).name)
+            self.repositories.artifacts.save(
+                SessionArtifactRecord(
+                    artifact_id=f"{invocation_id}:artifact:{index}",
+                    session_id=session_id,
+                    task_id=task_id,
+                    lane_id=lane_id,
+                    invocation_id=invocation_id,
+                    run_id=None,
+                    kind=ArtifactKind(str(item.get("kind") or "other")),
+                    storage_uri=str(item.get("storage_uri") or item.get("source_locator") or f"research://{filename}"),
+                    relative_path=filename,
+                    title=title,
+                    description=None if item.get("description") is None else str(item.get("description")),
+                    metadata={
+                        "provider": item.get("provider"),
+                        "external_id": item.get("external_id"),
+                        "format": item.get("format"),
+                        "source_locator": item.get("source_locator"),
+                        "produced_by": "deep_research",
+                        **({} if item.get("metadata") is None else dict(item.get("metadata"))),
+                    },
+                    created_at=created_at,
+                )
+            )
+
     def _require_session(self, session_id: str) -> Any:
         session = self.repositories.sessions.get(session_id)
         if session is None:
@@ -649,6 +698,7 @@ class DeepResearchEngine:
             ),
             source_refs=tuple(dict(source) for source in payload.get("source_refs", [])),
             unresolved_gaps=tuple(str(gap) for gap in payload.get("unresolved_gaps", [])),
+            artifacts=tuple(dict(item) for item in payload.get("artifacts", [])),
             raw_notes=tuple(str(note) for note in payload.get("raw_notes", [])),
             clarification_question=payload.get("clarification_question"),
             recent_turns=tuple(dict(turn) for turn in payload.get("recent_turns", [])),

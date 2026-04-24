@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .engines import EngineRegistry
+from .teammate_roster import TEAMMATE_ROLE_NAMES
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,17 +94,20 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="task.delegate",
-            description="Delegate a concrete task to an internal teammate agent for execution.",
+            description=(
+                "Delegate a concrete task to one internal teammate agent. "
+                f"Valid teammate roles are {', '.join(TEAMMATE_ROLE_NAMES)}."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
-                    "agent_role": {"type": "string"},
+                    "agent_role": {"type": "string", "enum": list(TEAMMATE_ROLE_NAMES)},
                     "agent_id": {"type": "string"},
                     "instructions": {"type": "string"},
                     "correlation_id": {"type": "string"},
                 },
-                "required": ["task_id"],
+                "required": ["task_id", "agent_role"],
                 "additionalProperties": False,
             },
         ),

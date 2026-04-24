@@ -5,9 +5,10 @@ description = "V3 capability engine bridge package for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "langchain>=1.0,<2.0",
+  "langgraph>=1.0,<2.0",
   "openzyme-core",
   "openzyme-domain",
-  "openzyme-graph",
   "openzyme-runtime",
   "openzyme-research",
 ]

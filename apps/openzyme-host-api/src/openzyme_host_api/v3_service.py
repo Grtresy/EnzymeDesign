@@ -91,6 +91,7 @@ class V3HostApiService:
     event_store: V3EventStore
     engine_registry: EngineRegistry | None = None
     model_factory: Any | None = None
+    bio_research_service: Any | None = None
 
     def create_session(
         self,
@@ -215,6 +216,7 @@ class V3HostApiService:
             engine_registry=self.engine_registry,
             event_sink=event_bus,
             model_factory=self.model_factory,
+            bio_research_service=self.bio_research_service,
         )
         events: list[dict[str, Any]] = []
         if message:
@@ -256,6 +258,7 @@ class V3HostApiService:
             driver=driver,
             engine_registry=self.engine_registry,
             model_factory=self.model_factory,
+            bio_research_service=self.bio_research_service,
         )
         events = [
             _event(
