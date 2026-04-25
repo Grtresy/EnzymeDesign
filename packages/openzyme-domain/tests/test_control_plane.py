@@ -33,6 +33,7 @@ def test_control_plane_entity_names_are_stable() -> None:
         "InboxMessage",
         "MemoryEntry",
         "AgentMember",
+        "AgentRuntimeSignal",
         "EngineInvocation",
         "RunRecord",
         "SessionArtifactRecord",

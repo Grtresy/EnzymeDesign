@@ -24,6 +24,7 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "InboxMessage",
     "MemoryEntry",
     "AgentMember",
+    "AgentRuntimeSignal",
     "EngineInvocation",
     "RunRecord",
     "SessionArtifactRecord",
@@ -99,6 +100,7 @@ class InboxParticipantKind(StrEnum):
 
 
 class InboxStatus(StrEnum):
+    UNREAD = "unread"
     PENDING = "pending"
     DELIVERED = "delivered"
     ACKNOWLEDGED = "acknowledged"
@@ -124,15 +126,38 @@ class MemoryKind(StrEnum):
 
 class AgentMemberStatus(StrEnum):
     ACTIVE = "active"
+    WORKING = "working"
     IDLE = "idle"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
+    SHUTDOWN = "shutdown"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.COMPLETED, self.FAILED, self.STOPPED}
+        return self in {self.COMPLETED, self.FAILED, self.STOPPED, self.SHUTDOWN}
+
+
+class AgentRuntimeSignalReason(StrEnum):
+    DELEGATION_ASSIGNED = "delegation_assigned"
+    INBOX_UNREAD = "inbox_unread"
+    TASK_AVAILABLE = "task_available"
+    APPROVAL_RESOLVED = "approval_resolved"
+    ENGINE_COMPLETED = "engine_completed"
+    MANUAL_RESUME = "manual_resume"
+
+
+class AgentRuntimeSignalStatus(StrEnum):
+    PENDING = "pending"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.COMPLETED, self.FAILED, self.CANCELLED}
 
 
 class EngineInvocationStatus(StrEnum):
@@ -363,9 +388,38 @@ class AgentMember:
     parent_agent_id: str | None
     created_at: str
     updated_at: str
+    runtime_state: str | None = None
+    current_correlation_id: str | None = None
+    wakeup_reason: str | None = None
+    last_active_at: str | None = None
+    idle_since: str | None = None
+    shutdown_requested_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeSignal:
+    signal_id: str
+    session_id: str
+    agent_id: str
+    reason: AgentRuntimeSignalReason
+    status: AgentRuntimeSignalStatus
+    created_at: str
+    task_id: str | None = None
+    lane_id: str | None = None
+    correlation_id: str | None = None
+    source_ref: str | None = None
+    claimed_at: str | None = None
+    completed_at: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["reason"] = self.reason.value
         data["status"] = self.status.value
         return data
 

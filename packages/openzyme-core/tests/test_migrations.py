@@ -14,6 +14,7 @@ def test_migration_asset_is_available() -> None:
     reporting_sql = get_migration_sql("006_v3_reporting_control_plane")
     report_draft_sql = get_migration_sql("007_v3_report_draft_control_plane")
     direct_artifacts_sql = get_migration_sql("008_v3_research_direct_artifacts")
+    agent_runtime_sql = get_migration_sql("009_v3_agent_runtime")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -25,6 +26,7 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS session_report_records" in reporting_sql
     assert "CREATE TABLE IF NOT EXISTS session_report_draft_records" in report_draft_sql
     assert "session_artifact_records" in direct_artifacts_sql
+    assert "CREATE TABLE IF NOT EXISTS agent_runtime_signals" in agent_runtime_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -34,6 +36,7 @@ def test_migration_asset_is_available() -> None:
         "006_v3_reporting_control_plane",
         "007_v3_report_draft_control_plane",
         "008_v3_research_direct_artifacts",
+        "009_v3_agent_runtime",
     )
 
 
@@ -57,6 +60,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "inbox_messages",
         "memory_entries",
         "agent_members",
+        "agent_runtime_signals",
         "engine_invocations",
         "engine_documents",
         "session_run_records",
@@ -73,6 +77,11 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
     }
     assert "lane_id" in task_columns
+    agent_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(agent_members)").fetchall()
+    }
+    assert {"runtime_state", "current_correlation_id", "wakeup_reason"}.issubset(agent_columns)
 
 
 def test_v2_and_v3_migrations_can_coexist_in_one_database() -> None:

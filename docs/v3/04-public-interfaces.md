@@ -69,8 +69,8 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - 当 `model_factory` 可用时，该入口默认走真实 top-level LLM harness driver
 - Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 master agent 在 loop 中创建和编排，再通过 workspace projection 展示
 - task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台
-- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol 状态
-- 默认主路径是 `conversation -> master planning -> task -> delegation -> teammate loop -> teammate work surface -> user feedback`，而不是用户消息直接裸触发 capability
+- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol / wakeup 状态
+- 默认主路径是 `conversation -> master planning -> task -> resident teammate wakeup -> teammate work surface -> user feedback`，而不是用户消息直接裸触发 capability
 
 ## 3. Workspace Contract
 
@@ -99,6 +99,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
+- `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread、unread inbox count、wakeup reason 与 last active time
 - `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
@@ -129,12 +130,13 @@ V3 Web UI 默认是 conversation-first。
 
 - 用户发送自然语言消息
 - top-level master agent loop 决定如何创建和编排 task
-- 具体 research / execution / reporting task 默认委托给 teammate agent 推进
+- 具体 research / execution / reporting task 默认由 resident teammate agent 推进；master 可显式委托，idle teammate 也可按 role 自动认领 ready task
 - `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
 - `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 execution engine、请求 approval，并可通过 protocol 与 peers 沟通
 - report teammate 默认直接读写 `report_draft` 并在合适时机 `publish` 为 final `report`
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
+- teammate idle 不代表任务失败；它表示当前没有可立即执行的 work turn，后续 inbox、approval、engine completion 或 task availability 可再次唤醒
 
 `research teammate` 的默认决策边界：
 
@@ -148,6 +150,7 @@ V3 Web UI 默认是 conversation-first。
 - approval cards
 - tool / engine / report / artifact activity cards
 - task board、lane/workspace 状态、delegation、artifacts / runs / reports 的只读 inspector
+- teammate roster 中的 working / idle / blocked / waiting approval / failed / shutdown 状态
 
 不要求用户理解：
 
@@ -158,6 +161,7 @@ V3 Web UI 默认是 conversation-first。
 同时也不应要求用户理解：
 
 - 具体哪个 teammate 在什么时刻被 spawn
+- teammate runtime 如何调度 wakeup signal
 - 为什么某个 capability 缺少 `task_id`
 - 内部 team protocol / lane / engine / artifact catalog 是如何串起来的
 
@@ -174,7 +178,9 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `task.updated`
 - `approval.requested` / `approval.resolved`
 - `lane.created` / `lane.bound` / `lane.removed`
-- `agent.spawned` / `agent.delegated` / `agent.message.delivered`
+- `agent.spawned` / `agent.delegated` / `agent.woken` / `agent.idle` / `agent.task_claimed`
+- `agent.message.delivered` / `agent.inbox_unread`
+- `agent.shutdown_requested` / `agent.shutdown_completed`
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
 - `research.evidence.recorded`
 - `artifact.recorded`
@@ -188,6 +194,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
 - `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
+- `agent.woken` 表示 scheduler 已为 resident teammate 开始一次 work turn；wakeup reason 必须能回链到 inbox、task、approval、engine invocation 或 manual resume
+- `agent.idle` 表示 teammate 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
 
 ## 7. 弃用策略
 

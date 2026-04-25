@@ -742,7 +742,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert resolved_payload["workspace"]["pending_approvals"] == []
     assert resolved_payload["workspace"]["capabilities"]["execution"][0]["status"] == "succeeded"
     assert resolved_payload["workspace"]["artifacts"]
-    assert any(agent["agent"]["status"] == "completed" for agent in resolved_payload["workspace"]["delegation"]["agents"])
+    assert any(agent["agent"]["status"] == "idle" for agent in resolved_payload["workspace"]["delegation"]["agents"])
 
     reporting_task = client.post(
         "/v3/tasks",

@@ -16,6 +16,7 @@ from .harness import ResumeEnvelope
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .agent_runtime import AgentRuntimeService
 from .protocols import ProtocolService
 from .task_board import TaskBoardService
 from .task_board import TaskMutation
@@ -64,6 +65,12 @@ def _update_agent_status(
         parent_agent_id=agent.parent_agent_id,
         created_at=agent.created_at,
         updated_at=utc_now_iso(),
+        runtime_state=status.value,
+        current_correlation_id=agent.current_correlation_id,
+        wakeup_reason=agent.wakeup_reason,
+        last_active_at=utc_now_iso(),
+        idle_since=utc_now_iso() if status is AgentMemberStatus.IDLE else None,
+        shutdown_requested_at=agent.shutdown_requested_at,
     )
     context.repositories.agents.save(updated)
     context.emit(
@@ -122,7 +129,7 @@ def _execute_teammate_turn(
     )
     next_task_status = (
         TaskStatus.BLOCKED if loop_result.pending_approval_id else
-        TaskStatus.COMPLETED if loop_result.status is HarnessStatus.COMPLETED else
+        TaskStatus.COMPLETED if agent_status is AgentMemberStatus.IDLE else
         updated_task.status
     )
     updated_task = service.update_task(updated_task.task_id, TaskMutation(status=next_task_status))
@@ -212,14 +219,43 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
             lane_id=task.lane_id,
             correlation_id=correlation_id,
         )
-        updated_task, updated_agent, payload, ok = _execute_teammate_turn(
-            context,
-            task=task,
-            agent_id=agent_id,
-            agent_role=agent_role,
-            correlation_id=correlation_id,
-            instructions=instructions,
+        runtime = AgentRuntimeService(context)
+        delegation_signal_ids = {
+            signal.signal_id
+            for signal in context.repositories.runtime_signals.list_pending_by_session(task.session_id)
+            if signal.agent_id == agent_id
+            and signal.correlation_id == correlation_id
+            and signal.source_ref == delegation.request_message.message_id
+            and signal.reason.value == "delegation_assigned"
+        }
+        outcomes = runtime.drain_session(
+            task.session_id,
+            max_signals=max(1, len(delegation_signal_ids)),
+            signal_ids=delegation_signal_ids or None,
         )
+        if outcomes:
+            outcome = outcomes[-1]
+            updated_task = outcome.task or context.repositories.tasks.get(task.task_id) or task
+            updated_agent = outcome.agent or context.repositories.agents.get(agent_id)
+            payload = {
+                "task": updated_task.to_dict(),
+                "agent": None if updated_agent is None else updated_agent.to_dict(),
+                "correlation_id": correlation_id,
+                "summary": outcome.summary,
+                "teammate_status": outcome.teammate_status,
+                "teammate_outputs": list(outcome.outputs),
+                "waiting_approval_id": outcome.waiting_approval_id,
+            }
+            ok = outcome.ok
+        else:
+            updated_task, updated_agent, payload, ok = _execute_teammate_turn(
+                context,
+                task=task,
+                agent_id=agent_id,
+                agent_role=agent_role,
+                correlation_id=correlation_id,
+                instructions=instructions,
+            )
         payload["delegation_message_id"] = delegation.request_message.message_id
         payload["agent"] = (
             (updated_agent or context.repositories.agents.get(agent_id) or delegation.agent).to_dict()

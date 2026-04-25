@@ -56,6 +56,14 @@ export function eventRequiresWorkspaceRefresh(event) {
     "report.updated",
     "agent.spawned",
     "agent.delegated",
+    "agent.woken",
+    "agent.idle",
+    "agent.inbox_unread",
+    "agent.task_claimed",
+    "agent.shutdown_requested",
+    "agent.shutdown_completed",
+    "agent.wakeup_pending",
+    "agent.runtime_signal.updated",
     "agent.status_updated",
     "agent.message.delivered",
     "background.completed",
@@ -165,6 +173,14 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "session.created":
     case "agent.spawned":
     case "agent.delegated":
+    case "agent.woken":
+    case "agent.idle":
+    case "agent.inbox_unread":
+    case "agent.task_claimed":
+    case "agent.shutdown_requested":
+    case "agent.shutdown_completed":
+    case "agent.wakeup_pending":
+    case "agent.runtime_signal.updated":
     case "agent.status_updated":
     case "memory.compacted":
     case "research.summary.updated":

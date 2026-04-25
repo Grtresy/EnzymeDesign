@@ -19,9 +19,14 @@ from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionProjectionBuilder
+from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
+from openzyme_core import ToolRegistry
+from openzyme_core import AgentRuntimeService
 from openzyme_core import run_agent_harness_loop
+from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
@@ -190,6 +195,23 @@ class V3HostApiService:
             events.append(event)
             current.add(fingerprint)
 
+    def _drain_agent_runtime(self, session_id: str, events: list[dict[str, Any]]) -> None:
+        event_bus = MemoryEventBus()
+        context = SessionRuntimeContext(
+            repositories=self.repositories,
+            event_sink=event_bus,
+            snapshot=SessionRuntimeSnapshot.load(self.repositories, session_id),
+            tool_registry=ToolRegistry(),
+            restore_focus=RestoreFocus(),
+            model_factory=self.model_factory,
+            engine_registry=self.engine_registry,
+            bio_research_service=self.bio_research_service,
+        )
+        runtime = AgentRuntimeService(context)
+        runtime.auto_enqueue_ready_tasks(session_id)
+        runtime.drain_session(session_id, max_signals=3)
+        events.extend(event.to_dict() for event in event_bus.events)
+
     def post_message(
         self,
         *,
@@ -224,6 +246,7 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", session_id, {"content": output}))
+        self._drain_agent_runtime(session_id, events)
         self._touch_session(session_id)
         self._extend_with_activity_events(session_id, events)
         self.event_store.append(session_id, events)
@@ -270,6 +293,30 @@ class V3HostApiService:
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
             events.append(_event("conversation.assistant_message", approval.session_id, {"content": output}))
+        if approval.task_id is not None:
+            task = self.repositories.tasks.get(approval.task_id)
+            if task is not None and task.assigned_ref and task.assigned_ref.startswith("agent:"):
+                event_bus = MemoryEventBus()
+                context = SessionRuntimeContext(
+                    repositories=self.repositories,
+                    event_sink=event_bus,
+                    snapshot=SessionRuntimeSnapshot.load(self.repositories, approval.session_id),
+                    tool_registry=ToolRegistry(),
+                    restore_focus=RestoreFocus(task_id=approval.task_id, lane_id=approval.lane_id),
+                    model_factory=self.model_factory,
+                    engine_registry=self.engine_registry,
+                    bio_research_service=self.bio_research_service,
+                )
+                AgentRuntimeService(context).enqueue_signal(
+                    agent_id=task.assigned_ref,
+                    task_id=approval.task_id,
+                    lane_id=approval.lane_id,
+                    correlation_id=approval.approval_id,
+                    reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
+                    source_ref=approval.approval_id,
+                )
+                events.extend(event.to_dict() for event in event_bus.events)
+        self._drain_agent_runtime(approval.session_id, events)
         self._touch_session(approval.session_id)
         self._extend_with_activity_events(approval.session_id, events)
         self.event_store.append(approval.session_id, events)
@@ -302,6 +349,7 @@ class V3HostApiService:
             blocked_by=tuple(payload.get("blocked_by") or ()),
         )
         events = [_event("task.created", task.session_id, {"task": task.to_dict()})]
+        self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}
@@ -327,6 +375,7 @@ class V3HostApiService:
         mutation = TaskMutation(**mutation_kwargs)
         task = TaskBoardService(self.repositories).update_task(task_id, mutation)
         events = [_event("task.updated", task.session_id, {"task": task.to_dict()})]
+        self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}

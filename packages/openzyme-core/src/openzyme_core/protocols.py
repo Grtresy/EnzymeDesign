@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
@@ -101,10 +104,16 @@ class ProtocolService:
             task_id=task_id if task_id is not None else (None if existing is None else existing.task_id),
             name=name if existing is None else existing.name,
             role=role if existing is None else existing.role,
-            status=AgentMemberStatus.ACTIVE,
+            status=AgentMemberStatus.IDLE if existing is None else existing.status,
             parent_agent_id=parent_agent_id if existing is None else existing.parent_agent_id,
             created_at=now if existing is None else existing.created_at,
             updated_at=now,
+            runtime_state="idle" if existing is None else existing.runtime_state,
+            current_correlation_id=correlation_id,
+            wakeup_reason=AgentRuntimeSignalReason.DELEGATION_ASSIGNED.value,
+            last_active_at=None if existing is None else existing.last_active_at,
+            idle_since=now if existing is None else existing.idle_since,
+            shutdown_requested_at=None if existing is None else existing.shutdown_requested_at,
         )
         self.repositories.agents.save(agent)
         self._emit(
@@ -135,6 +144,15 @@ class ProtocolService:
                 "correlation_id": correlation_id,
                 "message_id": message.message_id,
             },
+        )
+        self._enqueue_signal(
+            session_id=session_id,
+            agent_id=agent.agent_id,
+            task_id=agent.task_id,
+            lane_id=agent.lane_id,
+            correlation_id=correlation_id,
+            reason=AgentRuntimeSignalReason.DELEGATION_ASSIGNED,
+            source_ref=message.message_id,
         )
         return DelegationEnvelope(agent=agent, request_message=message, correlation_id=correlation_id)
 
@@ -194,9 +212,10 @@ class ProtocolService:
         message_type: str,
         correlation_id: str | None = None,
         payload_ref: str | None = None,
-        status: InboxStatus = InboxStatus.DELIVERED,
+        status: InboxStatus | None = None,
     ) -> InboxMessage:
         now = utc_now_iso()
+        resolved_status = status or (InboxStatus.UNREAD if recipient_kind is InboxParticipantKind.AGENT else InboxStatus.DELIVERED)
         message = InboxMessage(
             message_id=f"msg_{uuid4().hex[:12]}",
             session_id=session_id,
@@ -207,7 +226,7 @@ class ProtocolService:
             message_type=message_type,
             correlation_id=correlation_id,
             payload_ref=payload_ref,
-            status=status,
+            status=resolved_status,
             created_at=now,
         )
         self.repositories.inbox.save(message)
@@ -224,6 +243,26 @@ class ProtocolService:
                 "recipient": message.recipient,
             },
         )
+        if recipient_kind is InboxParticipantKind.AGENT:
+            self._emit(
+                "agent.inbox_unread",
+                {
+                    "message_id": message.message_id,
+                    "message_type": message.message_type,
+                    "correlation_id": message.correlation_id,
+                    "sender": message.sender,
+                    "recipient": message.recipient,
+                },
+            )
+            self._enqueue_signal(
+                session_id=session_id,
+                agent_id=recipient,
+                task_id=None,
+                lane_id=None,
+                correlation_id=correlation_id,
+                reason=AgentRuntimeSignalReason.INBOX_UNREAD,
+                source_ref=message.message_id,
+            )
         return message
 
     def complete_background_task(
@@ -271,7 +310,7 @@ class ProtocolService:
             agent = self.repositories.agents.get(agent_id)
             if agent is None:
                 raise ValueError(f"agent {agent_id!r} does not exist")
-            updated_status = AgentMemberStatus.COMPLETED if success else AgentMemberStatus.FAILED
+            updated_status = AgentMemberStatus.IDLE if success else AgentMemberStatus.FAILED
             agent = AgentMember(
                 agent_id=agent.agent_id,
                 session_id=agent.session_id,
@@ -283,6 +322,12 @@ class ProtocolService:
                 parent_agent_id=agent.parent_agent_id,
                 created_at=agent.created_at,
                 updated_at=utc_now_iso(),
+                runtime_state="idle" if success else "failed",
+                current_correlation_id=correlation_id,
+                wakeup_reason=AgentRuntimeSignalReason.ENGINE_COMPLETED.value,
+                last_active_at=utc_now_iso(),
+                idle_since=utc_now_iso() if success else agent.idle_since,
+                shutdown_requested_at=agent.shutdown_requested_at,
             )
             self.repositories.agents.save(agent)
             self._emit(
@@ -293,6 +338,15 @@ class ProtocolService:
                     "task_id": agent.task_id,
                     "lane_id": agent.lane_id,
                 },
+            )
+            self._enqueue_signal(
+                session_id=session_id,
+                agent_id=agent.agent_id,
+                task_id=agent.task_id,
+                lane_id=agent.lane_id,
+                correlation_id=correlation_id,
+                reason=AgentRuntimeSignalReason.ENGINE_COMPLETED,
+                source_ref=invocation_id or payload_ref,
             )
         notification = self.send_message(
             session_id=session_id,
@@ -338,6 +392,44 @@ class ProtocolService:
             responses=responses,
             status=status,
         )
+
+    def _enqueue_signal(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        reason: AgentRuntimeSignalReason,
+        task_id: str | None,
+        lane_id: str | None,
+        correlation_id: str | None,
+        source_ref: str | None,
+    ) -> AgentRuntimeSignal | None:
+        if not hasattr(self.repositories, "runtime_signals"):
+            return None
+        if self.repositories.agents.get(agent_id) is None:
+            return None
+        existing = self.repositories.runtime_signals.find_pending_duplicate(
+            session_id=session_id,
+            agent_id=agent_id,
+            reason=reason,
+            source_ref=source_ref,
+        )
+        if existing is not None:
+            return existing
+        signal = AgentRuntimeSignal(
+            signal_id=f"sig_{uuid4().hex[:12]}",
+            session_id=session_id,
+            agent_id=agent_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            correlation_id=correlation_id,
+            reason=reason,
+            source_ref=source_ref,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at=utc_now_iso(),
+        )
+        self.repositories.runtime_signals.save(signal)
+        return signal
 
     def _resolve_effective_lane_id(
         self,

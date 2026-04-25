@@ -7,6 +7,7 @@ from typing import Any
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import ResearchSummaryStatus
 
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
@@ -594,6 +595,7 @@ def run_teammate_loop(
     correlation_id: str,
     instructions: str,
     resume: ResumeEnvelope | None = None,
+    max_steps: int = 8,
 ) -> HarnessResult:
     if parent_context.model_factory is None:
         raise ValueError("teammate loop requires model_factory")
@@ -614,6 +616,7 @@ def run_teammate_loop(
         HarnessInput(
             session_id=parent_context.snapshot.session.session_id,
             resume=resume,
+            max_steps=max_steps,
             sender=agent_id,
             sender_kind=InboxParticipantKind.AGENT,
             restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id),
@@ -655,7 +658,34 @@ def finalize_teammate_result(
             ),
         )
         return message, AgentMemberStatus.BLOCKED
-    message = result.outputs[-1] if result.outputs else f"{agent_id} completed delegated work."
+    recovered_completion = _recover_completion_from_workspace(
+        context,
+        task_id=task_id,
+        correlation_id=correlation_id,
+    )
+    if result.status is HarnessStatus.MAX_STEPS_EXCEEDED and recovered_completion is None:
+        message = result.outputs[-1] if result.outputs else f"{agent_id} exceeded the delegated work step budget."
+        protocol.reply(
+            session_id=context.snapshot.session.session_id,
+            sender=agent_id,
+            sender_kind=InboxParticipantKind.AGENT,
+            recipient="harness",
+            recipient_kind=InboxParticipantKind.HARNESS,
+            message_type="delegation_result",
+            correlation_id=correlation_id,
+            payload_ref=protocol.persist_payload(
+                session_id=context.snapshot.session.session_id,
+                document_kind="protocol_payload",
+                payload={
+                    "task_id": task_id,
+                    "status": result.status.value,
+                    "summary": message,
+                    "outputs": list(result.outputs),
+                },
+            ),
+        )
+        return message, AgentMemberStatus.FAILED
+    message = recovered_completion or (result.outputs[-1] if result.outputs else f"{agent_id} completed delegated work.")
     protocol.reply(
         session_id=context.snapshot.session.session_id,
         sender=agent_id,
@@ -669,13 +699,39 @@ def finalize_teammate_result(
             document_kind="protocol_payload",
             payload={
                 "task_id": task_id,
-                "status": "completed" if result.status is HarnessStatus.COMPLETED else result.status.value,
+                "status": "completed" if result.status in {HarnessStatus.COMPLETED, HarnessStatus.MAX_STEPS_EXCEEDED} and recovered_completion else result.status.value,
                 "summary": message,
                 "outputs": list(result.outputs),
             },
         ),
     )
-    return message, AgentMemberStatus.COMPLETED if result.status is HarnessStatus.COMPLETED else AgentMemberStatus.ACTIVE
+    if result.status is HarnessStatus.COMPLETED or recovered_completion is not None:
+        return message, AgentMemberStatus.IDLE
+    return message, AgentMemberStatus.FAILED
+
+
+def _recover_completion_from_workspace(
+    context: SessionRuntimeContext,
+    *,
+    task_id: str,
+    correlation_id: str,
+) -> str | None:
+    thread = ProtocolService(context.repositories).build_thread(context.snapshot.session.session_id, correlation_id)
+    for message in reversed(thread.responses):
+        if message.message_type not in {"research_completion", "delegation_result", "background_completion"}:
+            continue
+        if message.payload_ref is None:
+            continue
+        document = context.repositories.engine_documents.get(message.payload_ref)
+        if document is None:
+            continue
+        payload = document.payload
+        if str(payload.get("status") or "").lower() in {"completed", "succeeded", "success"}:
+            return str(payload.get("summary") or payload.get("canonical_summary") or f"{message.sender} completed delegated work.")
+    for summary in reversed(context.repositories.research_summaries.list_by_session(context.snapshot.session.session_id)):
+        if summary.task_id == task_id and summary.status is ResearchSummaryStatus.COMPLETED:
+            return summary.summary
+    return None
 
 
 __all__ = [

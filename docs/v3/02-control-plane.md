@@ -103,6 +103,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 用途：
 
 - 支持 request-response 协议、agent team 协同、后台通知
+- 作为 resident teammate 的 wakeup source，而不只是调试消息记录
 
 建议字段：
 
@@ -117,6 +118,13 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `payload_ref`
 - `status`
 - `created_at`
+
+状态语义：
+
+- `unread` 表示消息尚未被 recipient teammate 的 restore context 消费
+- `delivered` 表示消息已进入 recipient 的一次 work turn
+- `acknowledged` 表示 recipient 已处理并完成必要回复或状态更新
+- request-response message 必须通过 `correlation_id` 回链到同一 protocol thread
 
 ### 2.6 MemoryEntry
 
@@ -142,6 +150,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 - 表达可被 harness 恢复、投影、协议化通信的 teammate agent
 - 表达哪个 teammate 正在代表 agent team 推进哪个 task，以及它当前的 role / focus / 生命周期
+- 表达 resident teammate 在 working / idle / blocked / failed / shutdown 之间的可恢复运行状态
 
 建议字段：
 
@@ -152,7 +161,13 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `name`
 - `role`
 - `status`
+- `runtime_state`
 - `parent_agent_id`
+- `current_correlation_id`
+- `wakeup_reason`
+- `last_active_at`
+- `idle_since`
+- `shutdown_requested_at`
 - `created_at`
 - `updated_at`
 
@@ -161,6 +176,37 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - teammate 在“是否是 agent”这件事上与 master 平级；差异在于职责，而不是本体类型
 - master 是 team leader 与 user-facing agent；teammate 是 internal worker / specialist
 - teammate 应拥有自己的 restore context、tool surface、protocol thread 与状态投影
+- teammate 的身份与 inbox 默认常驻；idle 状态不持续调用 LLM，但必须可被 scheduler 恢复
+- master delegation 与 teammate auto-claim 并存；前者表达显式指派，后者用于 role 匹配的自组织推进
+
+### 2.7.1 AgentRuntimeSignal
+
+用途：
+
+- 表达哪些事件需要唤醒 resident teammate
+- 将 inbox、task、approval、engine completion、manual resume 等变化统一接入 scheduler
+- 避免 `protocol.send` 只写入数据库但无人消费
+
+建议字段：
+
+- `signal_id`
+- `session_id`
+- `agent_id`
+- `task_id`
+- `lane_id`
+- `correlation_id`
+- `reason`
+- `source_ref`
+- `status`
+- `created_at`
+- `claimed_at`
+- `completed_at`
+
+补充约束：
+
+- `reason` 至少覆盖 `delegation_assigned`、`inbox_unread`、`task_available`、`approval_resolved`、`engine_completed`、`manual_resume`
+- scheduler 只能 claim 未完成 signal；claim 后必须要么完成，要么释放/标记失败
+- signal 是调度语义，不替代 canonical task、inbox、approval 或 engine invocation
 
 ### 2.8 EngineInvocation
 
@@ -238,7 +284,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 
 - `conversation` 看用户与 master agent 的往来
 - `task_board` 看内部工作如何被拆解和推进
-- `delegation` 看哪些 teammate 正在推进哪些 task、持有哪些 correlation thread
+- `delegation` 看 resident team roster、teammate 生命周期、哪些 teammate 正在推进哪些 task、持有哪些 correlation thread、是否有 unread wakeup
 - `lane_board` / `capabilities` 看 task 在什么执行上下文里运行
 - `report_drafts` 看 report teammate 正在如何组织、修订、准备发布交付物
 - `artifacts` 看 agent team 当前共享工作面中已产出的证据、结果与中间产物
@@ -257,9 +303,15 @@ control plane 需要最小事件流，便于 streaming 与审计。
 - `lane.bound`
 - `lane.removed`
 - `agent.spawned`
+- `agent.woken`
+- `agent.idle`
 - `agent.status_updated`
 - `agent.message.delivered`
+- `agent.inbox_unread`
 - `agent.delegated`
+- `agent.task_claimed`
+- `agent.shutdown_requested`
+- `agent.shutdown_completed`
 - `approval.requested`
 - `approval.resolved`
 - `memory.compacted`

@@ -6,6 +6,8 @@ from .conversation import ConversationEntry
 from .conversation import build_conversation_projection
 from .conversation import load_recent_conversation
 from .conversation import persist_conversation_message
+from .agent_runtime import AgentRuntimeOutcome
+from .agent_runtime import AgentRuntimeService
 from .harness import DelegationHandle
 from .harness import DelegationRequest
 from .harness import HarnessDriver
@@ -50,6 +52,7 @@ from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
 from .repositories import AgentMemberRepository
+from .repositories import AgentRuntimeSignalRepository
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
@@ -100,7 +103,10 @@ from .llm_driver import LlmConversationDriver
 
 __all__ = [
     "ActivityFeedItem",
+    "AgentRuntimeOutcome",
+    "AgentRuntimeService",
     "AgentMemberRepository",
+    "AgentRuntimeSignalRepository",
     "ApprovalRequestRepository",
     "BackgroundCompletion",
     "build_teammate_registry",

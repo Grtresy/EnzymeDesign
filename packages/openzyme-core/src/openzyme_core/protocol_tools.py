@@ -52,11 +52,16 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             correlation_id=correlation_id,
             payload_ref=payload_ref,
         )
+        pending_signals = [
+            signal.to_dict()
+            for signal in context.repositories.runtime_signals.list_pending_by_session(session_id)
+            if signal.source_ref == message.message_id
+        ]
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(message.to_dict(), sort_keys=True),
+            content=json.dumps({"message": message.to_dict(), "signals": pending_signals}, sort_keys=True),
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
         )

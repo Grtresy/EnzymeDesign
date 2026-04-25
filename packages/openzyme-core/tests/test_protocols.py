@@ -4,6 +4,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
@@ -99,6 +100,40 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
     assert thread.request.message_type == "delegation_request"
     assert [message.message_type for message in thread.responses] == ["delegation_result"]
     assert thread.status is CorrelationStatus.RESPONDED
+    assert envelope.request_message.status is InboxStatus.UNREAD
+    assert any(
+        signal.reason.value == "delegation_assigned"
+        for signal in repositories.runtime_signals.list_by_session(session.session_id)
+    )
+
+
+def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    service.delegate(
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        name="Researcher",
+        role="delegate",
+        payload_ref="artifact://delegations/deleg_001.json",
+        task_id="task_001",
+        correlation_id="corr_001",
+    )
+
+    message = service.send_message(
+        session_id=session.session_id,
+        sender="agent:planner",
+        sender_kind=InboxParticipantKind.AGENT,
+        recipient="agent:researcher",
+        recipient_kind=InboxParticipantKind.AGENT,
+        message_type="status_update",
+        correlation_id="corr_peer",
+    )
+
+    signals = repositories.runtime_signals.list_by_session(session.session_id)
+    assert message.status is InboxStatus.UNREAD
+    assert any(signal.source_ref == message.message_id and signal.reason.value == "inbox_unread" for signal in signals)
 
 
 def test_background_completion_updates_agent_and_invocation_state() -> None:
@@ -141,9 +176,13 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
     )
 
     assert completion.notification.message_type == "background_completion"
-    assert repositories.agents.get("agent:executor").status is AgentMemberStatus.COMPLETED
+    assert repositories.agents.get("agent:executor").status is AgentMemberStatus.IDLE
     assert repositories.invocations.get("inv_001").status is EngineInvocationStatus.SUCCEEDED
     assert service.build_thread(session.session_id, "corr_bg_001").status is CorrelationStatus.COMPLETED
+    assert any(
+        signal.reason.value == "engine_completed"
+        for signal in repositories.runtime_signals.list_by_session(session.session_id)
+    )
 
 
 def test_background_completion_preserves_existing_invocation_output_ref() -> None:

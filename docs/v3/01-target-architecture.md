@@ -34,6 +34,15 @@ V3 Host Control Plane
   +--> projection engine
   |
   v
+Agent Runtime / Scheduler
+  |
+  +--> resident teammate roster
+  +--> inbox wakeups
+  +--> task auto-claim
+  +--> approval / engine completion wakeups
+  +--> idle / shutdown policy
+  |
+  v
 Agent Harness Kernel
   |
   +--> tool registry
@@ -74,6 +83,13 @@ V3 的产品主语义改为：
 - `workspace projection` 统一对外暴露当前状态
 
 V3 里不再要求所有产品动作都投射为顶层 phase。
+
+同时，V3 的 teammate 不应继续建模为一次性 subagent。默认语义是 resident teammate：
+
+- teammate 的身份、role、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在
+- 常驻不表示持续占用 LLM 推理；idle teammate 不运行模型，只等待 scheduler 的 wakeup signal
+- teammate 可以被 master delegation 唤醒，也可以被 inbox message、task auto-claim、approval resolution、engine completion 或 manual resume 唤醒
+- `protocol.send` 不只是写入消息记录，还应产生 recipient 可消费的 wakeup signal
 
 ## 3. 顶层组件边界
 
@@ -119,6 +135,26 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 直接替代 external runner
 - 在顶层重新引入 graph orchestration
 
+### 3.2.1 Agent Runtime / Scheduler
+
+Agent runtime / scheduler 负责让 teammate 以“持久 agent 成员”存在，而不是只在 `task.delegate` 调用栈中短暂运行。
+
+职责：
+
+- 维护 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`
+- 根据 inbox unread、pending task、approval resolved、engine completed、manual resume 等信号唤醒对应 teammate
+- 在 teammate idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
+- 将 `protocol.send`、task assignment、task auto-claim、background completion 转化为可审计的 wakeup event
+- 为被唤醒 teammate 构建 focused restore context，包括 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
+- 执行 idle timeout、shutdown handshake、failure recovery 与重试策略
+
+不负责：
+
+- 直接决定业务任务内容
+- 替代 master 做项目管理
+- 把所有 teammate 变成永远运行的后台 LLM process
+- 把 runtime 内部队列暴露成普通用户需要操作的产品界面
+
 顶层 loop 的默认形态是一个 bounded turn loop：
 
 ```text
@@ -162,10 +198,13 @@ restore context
 create session
   -> master agent understands user goal
   -> master agent create / prioritize tasks
-  -> master agent assign concrete tasks to teammate agents when needed
-  -> teammate agent restore on shared session workspace with task/lane focus
+  -> master agent spawn / assign / resume teammate agents when needed
+  -> agent runtime records roster state and wakeup signals
+  -> teammate agent wakes on delegation, inbox, task claim, approval, or engine completion
+  -> teammate agent restores on shared session workspace with task/lane focus
   -> teammate inspects artifacts / protocols / task state
   -> teammate chooses tools / capability calls when needed
+  -> teammate returns to idle when no immediate work remains
   -> report teammate may update report draft directly on shared workspace
   -> assign / claim lane for delegated task when execution context is required
   -> resolve approvals through unified protocol
@@ -205,6 +244,7 @@ reload session
   -> restore lane bindings
   -> restore pending approvals
   -> restore inbox / agent roster / background completions
+  -> derive pending wakeup signals for resident teammates
   -> restore memory summary / compressed context
   -> restore engine invocations
   -> continue harness loop
@@ -227,6 +267,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - master agent 创建和编排 task
 - master agent 将具体 task 分配给 teammate agents
 - teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / report drafts / reports
+- idle teammate 可以根据 role、priority、blocked_by 与 assignment policy 自动认领可做 task
 - teammate 之间通过 team protocol 协作，master 负责对外汇报和最终交付
 
 ## 5. 关键设计默认值
@@ -240,6 +281,9 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `workspace.conversation` 是 V3 对话真读模型
 - teammate 默认拥有 session-wide artifact catalog 的读视野，并以 task / lane focused restore context 工作
 - teammate 默认采用 role-scoped tool surface；共享读工具可见，危险写操作保持结构化约束
+- teammate 默认是 resident agent member：身份与 inbox 常驻，LLM 推理只在 scheduler 唤醒后运行
+- teammate lifecycle 默认包含 `working`、`idle`、`blocked`、`failed`、`shutdown` 等可投影状态
+- `protocol.send` 默认产生可被 recipient teammate 消费的 wakeup signal；recipient 下一次恢复时必须看到相关 thread 与 unread payload
 - `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
@@ -290,6 +334,9 @@ V3 默认不沿用 V2 那种偏细的 package 切法。
 Harness 思想参考：
 
 - `/home/grtresy/VSCodeRepo/learn-claude-code/README-zh.md`
+- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s09-agent-teams.md`
+- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s10-team-protocols.md`
+- `/home/grtresy/VSCodeRepo/learn-claude-code/docs/zh/s11-autonomous-agents.md`
 - `/home/grtresy/VSCodeRepo/learn-claude-code/agents/s_full.py`
 
 Deep research 参考：

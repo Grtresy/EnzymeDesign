@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from openzyme_domain import AgentMember
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
@@ -39,6 +40,12 @@ class DelegationProjectionItem:
     latest_message_at: str | None
     pending_correlation_ids: tuple[str, ...]
     thread_summaries: tuple[dict[str, Any], ...]
+    unread_inbox_count: int
+    pending_signal_count: int
+    latest_signal_reason: str | None
+    last_active_at: str | None
+    idle_since: str | None
+    wakeup_reason: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +56,12 @@ class DelegationProjectionItem:
             "latest_message_at": self.latest_message_at,
             "pending_correlation_ids": list(self.pending_correlation_ids),
             "thread_summaries": list(self.thread_summaries),
+            "unread_inbox_count": self.unread_inbox_count,
+            "pending_signal_count": self.pending_signal_count,
+            "latest_signal_reason": self.latest_signal_reason,
+            "last_active_at": self.last_active_at,
+            "idle_since": self.idle_since,
+            "wakeup_reason": self.wakeup_reason,
         }
 
 
@@ -136,6 +149,7 @@ class SessionProjectionBuilder:
 
     def build_delegation_projection(self, session_id: str) -> DelegationProjection:
         messages = self.repositories.inbox.list_by_session(session_id)
+        signals = self.repositories.runtime_signals.list_by_session(session_id)
         protocol = ProtocolService(self.repositories)
         items: list[DelegationProjectionItem] = []
         for agent in self.repositories.agents.list_by_session(session_id):
@@ -167,6 +181,9 @@ class SessionProjectionBuilder:
                 if thread.status.value == "waiting":
                     pending.append(correlation_id)
             latest_message = None if not agent_messages else agent_messages[-1]
+            agent_signals = [signal for signal in signals if signal.agent_id == agent.agent_id]
+            pending_signals = [signal for signal in agent_signals if signal.status is AgentRuntimeSignalStatus.PENDING]
+            latest_signal = None if not agent_signals else agent_signals[-1]
             items.append(
                 DelegationProjectionItem(
                     agent=agent,
@@ -176,6 +193,12 @@ class SessionProjectionBuilder:
                     latest_message_at=None if latest_message is None else latest_message.created_at,
                     pending_correlation_ids=tuple(pending),
                     thread_summaries=tuple(thread_summaries),
+                    unread_inbox_count=len(self.repositories.inbox.list_unread_for_recipient(session_id, agent.agent_id)),
+                    pending_signal_count=len(pending_signals),
+                    latest_signal_reason=None if latest_signal is None else latest_signal.reason.value,
+                    last_active_at=agent.last_active_at,
+                    idle_since=agent.idle_since,
+                    wakeup_reason=agent.wakeup_reason,
                 )
             )
         return DelegationProjection(session_id=session_id, agents=tuple(items))
@@ -246,6 +269,22 @@ class SessionProjectionBuilder:
                         payload=agent.to_dict(),
                     )
                 )
+        for signal in self.repositories.runtime_signals.list_by_session(session_id):
+            if signal.status is AgentRuntimeSignalStatus.PENDING:
+                event_type = "agent.inbox_unread" if signal.reason.value == "inbox_unread" else "agent.wakeup_pending"
+            elif signal.status is AgentRuntimeSignalStatus.CLAIMED:
+                event_type = "agent.woken"
+            elif signal.reason.value == "task_available" and signal.status is AgentRuntimeSignalStatus.COMPLETED:
+                event_type = "agent.task_claimed"
+            else:
+                event_type = "agent.runtime_signal.updated"
+            items.append(
+                ActivityFeedItem(
+                    event_type=event_type,
+                    created_at=signal.completed_at or signal.claimed_at or signal.created_at,
+                    payload=signal.to_dict(),
+                )
+            )
         for invocation in self.repositories.invocations.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(

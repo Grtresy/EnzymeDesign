@@ -28,6 +28,9 @@ from .models import UnresolvedGapRecord
 from .control_plane import CONTROL_PLANE_ENTITY_NAMES
 from .control_plane import AgentMember
 from .control_plane import AgentMemberStatus
+from .control_plane import AgentRuntimeSignal
+from .control_plane import AgentRuntimeSignalReason
+from .control_plane import AgentRuntimeSignalStatus
 from .control_plane import ApprovalRequest
 from .control_plane import ApprovalRequestStatus
 from .control_plane import EngineInvocation
@@ -62,6 +65,9 @@ __all__ = [
     "ARTIFACT_EXTENSION_TARGETS",
     "AgentMember",
     "AgentMemberStatus",
+    "AgentRuntimeSignal",
+    "AgentRuntimeSignalReason",
+    "AgentRuntimeSignalStatus",
     "ApprovalRequest",
     "ApprovalRequestStatus",
     "CORE_ENTITY_NAMES",

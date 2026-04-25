@@ -7,6 +7,9 @@ from typing import Any
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
@@ -755,6 +758,47 @@ class InboxMessageRepository:
         ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
+    def list_unread_for_recipient(self, session_id: str, recipient: str) -> list[InboxMessage]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM inbox_messages
+            WHERE session_id = ? AND recipient = ? AND status IN (?, ?)
+            ORDER BY created_at, rowid
+            """,
+            (session_id, recipient, InboxStatus.UNREAD.value, InboxStatus.PENDING.value),
+        ).fetchall()
+        return [self._row_to_message(row) for row in rows]
+
+    def set_status(self, message_id: str, status: InboxStatus) -> InboxMessage | None:
+        existing = self.get(message_id)
+        if existing is None:
+            return None
+        updated = InboxMessage(
+            message_id=existing.message_id,
+            session_id=existing.session_id,
+            sender=existing.sender,
+            sender_kind=existing.sender_kind,
+            recipient=existing.recipient,
+            recipient_kind=existing.recipient_kind,
+            message_type=existing.message_type,
+            correlation_id=existing.correlation_id,
+            payload_ref=existing.payload_ref,
+            status=status,
+            created_at=existing.created_at,
+        )
+        self.save(updated)
+        return updated
+
+    def get(self, message_id: str) -> InboxMessage | None:
+        row = self.connection.execute(
+            "SELECT * FROM inbox_messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_message(row)
+
     def _row_to_message(self, row: sqlite3.Row) -> InboxMessage:
         return InboxMessage(
             message_id=row["message_id"],
@@ -906,9 +950,10 @@ class AgentMemberRepository:
         self.connection.execute(
             """
             INSERT INTO agent_members (
-                agent_id, session_id, lane_id, task_id, name, role, status, parent_agent_id, created_at, updated_at
+                agent_id, session_id, lane_id, task_id, name, role, status, parent_agent_id, created_at, updated_at,
+                runtime_state, current_correlation_id, wakeup_reason, last_active_at, idle_since, shutdown_requested_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(agent_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 lane_id = excluded.lane_id,
@@ -917,7 +962,13 @@ class AgentMemberRepository:
                 role = excluded.role,
                 status = excluded.status,
                 parent_agent_id = excluded.parent_agent_id,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                runtime_state = excluded.runtime_state,
+                current_correlation_id = excluded.current_correlation_id,
+                wakeup_reason = excluded.wakeup_reason,
+                last_active_at = excluded.last_active_at,
+                idle_since = excluded.idle_since,
+                shutdown_requested_at = excluded.shutdown_requested_at
             """,
             (
                 agent.agent_id,
@@ -930,6 +981,12 @@ class AgentMemberRepository:
                 agent.parent_agent_id,
                 agent.created_at,
                 agent.updated_at,
+                agent.runtime_state,
+                agent.current_correlation_id,
+                agent.wakeup_reason,
+                agent.last_active_at,
+                agent.idle_since,
+                agent.shutdown_requested_at,
             ),
         )
         self.connection.commit()
@@ -962,6 +1019,154 @@ class AgentMemberRepository:
             parent_agent_id=row["parent_agent_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            runtime_state=row["runtime_state"],
+            current_correlation_id=row["current_correlation_id"],
+            wakeup_reason=row["wakeup_reason"],
+            last_active_at=row["last_active_at"],
+            idle_since=row["idle_since"],
+            shutdown_requested_at=row["shutdown_requested_at"],
+        )
+
+
+@dataclass(slots=True)
+class AgentRuntimeSignalRepository:
+    connection: sqlite3.Connection
+
+    def save(self, signal: AgentRuntimeSignal) -> None:
+        _require_session_exists(self.connection, signal.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="agent_members",
+            id_column="agent_id",
+            record_id=signal.agent_id,
+            expected_session_id=signal.session_id,
+        )
+        if signal.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=signal.task_id,
+                expected_session_id=signal.session_id,
+            )
+        if signal.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=signal.lane_id,
+                expected_session_id=signal.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO agent_runtime_signals (
+                signal_id, session_id, agent_id, task_id, lane_id, correlation_id, reason, source_ref, status,
+                created_at, claimed_at, completed_at, error_message
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(signal_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                agent_id = excluded.agent_id,
+                task_id = excluded.task_id,
+                lane_id = excluded.lane_id,
+                correlation_id = excluded.correlation_id,
+                reason = excluded.reason,
+                source_ref = excluded.source_ref,
+                status = excluded.status,
+                claimed_at = excluded.claimed_at,
+                completed_at = excluded.completed_at,
+                error_message = excluded.error_message
+            """,
+            (
+                signal.signal_id,
+                signal.session_id,
+                signal.agent_id,
+                signal.task_id,
+                signal.lane_id,
+                signal.correlation_id,
+                signal.reason.value,
+                signal.source_ref,
+                signal.status.value,
+                signal.created_at,
+                signal.claimed_at,
+                signal.completed_at,
+                signal.error_message,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, signal_id: str) -> AgentRuntimeSignal | None:
+        row = self.connection.execute(
+            "SELECT * FROM agent_runtime_signals WHERE signal_id = ?",
+            (signal_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_signal(row)
+
+    def list_by_session(self, session_id: str) -> list[AgentRuntimeSignal]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM agent_runtime_signals
+            WHERE session_id = ?
+            ORDER BY created_at, rowid
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_signal(row) for row in rows]
+
+    def list_pending_by_session(self, session_id: str) -> list[AgentRuntimeSignal]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM agent_runtime_signals
+            WHERE session_id = ? AND status = ?
+            ORDER BY created_at, rowid
+            """,
+            (session_id, AgentRuntimeSignalStatus.PENDING.value),
+        ).fetchall()
+        return [self._row_to_signal(row) for row in rows]
+
+    def find_pending_duplicate(
+        self,
+        *,
+        session_id: str,
+        agent_id: str,
+        reason: AgentRuntimeSignalReason,
+        source_ref: str | None,
+    ) -> AgentRuntimeSignal | None:
+        if source_ref is None:
+            return None
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM agent_runtime_signals
+            WHERE session_id = ? AND agent_id = ? AND reason = ? AND source_ref = ? AND status = ?
+            ORDER BY created_at, rowid
+            LIMIT 1
+            """,
+            (session_id, agent_id, reason.value, source_ref, AgentRuntimeSignalStatus.PENDING.value),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_signal(row)
+
+    def _row_to_signal(self, row: sqlite3.Row) -> AgentRuntimeSignal:
+        return AgentRuntimeSignal(
+            signal_id=row["signal_id"],
+            session_id=row["session_id"],
+            agent_id=row["agent_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            correlation_id=row["correlation_id"],
+            reason=AgentRuntimeSignalReason(row["reason"]),
+            source_ref=row["source_ref"],
+            status=AgentRuntimeSignalStatus(row["status"]),
+            created_at=row["created_at"],
+            claimed_at=row["claimed_at"],
+            completed_at=row["completed_at"],
+            error_message=row["error_message"],
         )
 
 
@@ -2253,6 +2458,7 @@ class CoreRepositories:
     inbox: InboxMessageRepository
     memory: MemoryEntryRepository
     agents: AgentMemberRepository
+    runtime_signals: AgentRuntimeSignalRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
     runs: RunRecordRepository
@@ -2275,6 +2481,7 @@ class CoreRepositories:
             inbox=InboxMessageRepository(connection),
             memory=MemoryEntryRepository(connection),
             agents=AgentMemberRepository(connection),
+            runtime_signals=AgentRuntimeSignalRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),
             runs=RunRecordRepository(connection),
