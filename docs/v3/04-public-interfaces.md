@@ -43,6 +43,13 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `report_draft.update`
 - `report.publish`
 
+默认 master 内部 team coordination tool surface 还应包括：
+
+- `protocol.thread`
+- `protocol.send`
+
+这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败、`max_steps_exceeded` 或摘要不足时发送 `diagnostic_request`。workspace projection 继续通过 `delegation`、`inbox` 与 `activity_feed` 展示 unread、wakeup、thread 与 responded 状态。
+
 默认 research direct-tool surface 还应允许 provider-specific 轻量动作：
 
 - `pubmed.search`

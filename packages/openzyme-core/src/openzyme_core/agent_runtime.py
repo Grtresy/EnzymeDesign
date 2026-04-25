@@ -147,12 +147,14 @@ class AgentRuntimeService:
             self.context.repositories.runtime_signals.save(failed)
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
 
-        task = self._resolve_task(signal, agent)
+        payload = self._payload_for_signal(signal)
+        task = self._resolve_task(signal, agent, payload)
+        lane_id = signal.lane_id or (None if payload is None else payload.get("lane_id"))
         agent = self._update_agent(
             agent,
             status=AgentMemberStatus.WORKING,
             task_id=None if task is None else task.task_id,
-            lane_id=signal.lane_id if signal.lane_id is not None else (None if task is None else task.lane_id),
+            lane_id=str(lane_id) if lane_id is not None else (None if task is None else task.lane_id),
             correlation_id=signal.correlation_id,
             wakeup_reason=signal.reason.value,
             runtime_state="working",
@@ -191,7 +193,7 @@ class AgentRuntimeService:
                     {"agent_id": agent.agent_id, "task_id": task.task_id, "signal_id": signal.signal_id},
                 )
 
-        instructions = self._instructions_for_signal(signal, task)
+        instructions = self._instructions_for_signal(signal, task, payload)
         correlation_id = signal.correlation_id or _new_id("corr")
         result = run_teammate_loop(
             self.context,
@@ -210,12 +212,14 @@ class AgentRuntimeService:
             correlation_id=correlation_id,
             result=result,
         )
+        is_diagnostic = self._is_diagnostic_signal(signal, payload)
         if result.pending_approval_id is not None:
             task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.BLOCKED))
             signal_status = AgentRuntimeSignalStatus.COMPLETED
             ok = True
         elif final_status is AgentMemberStatus.IDLE:
-            task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.COMPLETED))
+            if not is_diagnostic:
+                task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.COMPLETED))
             signal_status = AgentRuntimeSignalStatus.COMPLETED
             ok = True
         else:
@@ -260,28 +264,64 @@ class AgentRuntimeService:
             waiting_approval_id=result.pending_approval_id,
         )
 
-    def _resolve_task(self, signal: AgentRuntimeSignal, agent: AgentMember) -> Task | None:
-        task_id = signal.task_id or agent.task_id
-        if task_id is None and signal.source_ref:
-            message = self.context.repositories.inbox.get(signal.source_ref)
-            if message is not None and message.payload_ref is not None:
-                document = self.context.repositories.engine_documents.get(message.payload_ref)
-                if document is not None:
-                    task_id = document.payload.get("task_id")
+    def _payload_for_signal(self, signal: AgentRuntimeSignal) -> dict[str, Any] | None:
+        message = self._message_for_signal(signal)
+        if message is None or message.payload_ref is None:
+            return None
+        document = self.context.repositories.engine_documents.get(message.payload_ref)
+        if document is None:
+            return None
+        return dict(document.payload)
+
+    def _message_for_signal(self, signal: AgentRuntimeSignal):
+        if not signal.source_ref:
+            return None
+        return self.context.repositories.inbox.get(signal.source_ref)
+
+    def _resolve_task(self, signal: AgentRuntimeSignal, agent: AgentMember, payload: dict[str, Any] | None) -> Task | None:
+        task_id = signal.task_id
+        if task_id is None and payload is not None:
+            task_id = payload.get("task_id")
+        if task_id is None:
+            task_id = agent.task_id
         if task_id is None:
             return None
         return self.context.repositories.tasks.get(str(task_id))
 
-    def _instructions_for_signal(self, signal: AgentRuntimeSignal, task: Task) -> str:
-        if signal.source_ref:
-            message = self.context.repositories.inbox.get(signal.source_ref)
-            if message is not None and message.payload_ref is not None:
-                document = self.context.repositories.engine_documents.get(message.payload_ref)
-                if document is not None:
-                    instructions = document.payload.get("instructions")
-                    if instructions:
-                        return str(instructions)
+    def _instructions_for_signal(self, signal: AgentRuntimeSignal, task: Task, payload: dict[str, Any] | None) -> str:
+        message = self._message_for_signal(signal)
+        if payload is not None:
+            instructions = payload.get("instructions")
+            if self._is_diagnostic_signal(signal, payload):
+                lines = [
+                    "Handle this diagnostic request from the team protocol.",
+                    f"Message type: {None if message is None else message.message_type}",
+                    f"Sender: {None if message is None else message.sender}",
+                    f"Correlation id: {signal.correlation_id or (None if message is None else message.correlation_id)}",
+                    f"Task id: {payload.get('task_id') or task.task_id}",
+                ]
+                if payload.get("question"):
+                    lines.append(f"Diagnostic question: {payload['question']}")
+                if payload.get("failed_summary"):
+                    lines.append(f"Failed summary: {payload['failed_summary']}")
+                if instructions:
+                    lines.append(f"Instructions: {instructions}")
+                if payload.get("expected_response"):
+                    lines.append(f"Expected response: {payload['expected_response']}")
+                lines.append(
+                    "Reply on the same correlation thread with diagnostic_response or delegation_result. "
+                    "Do not mark the original task complete unless you actually completed it."
+                )
+                return "\n".join(lines)
+            if instructions:
+                return str(instructions)
         return task.description or task.subject
+
+    def _is_diagnostic_signal(self, signal: AgentRuntimeSignal, payload: dict[str, Any] | None) -> bool:
+        message = self._message_for_signal(signal)
+        if message is not None and message.message_type == "diagnostic_request":
+            return True
+        return payload is not None and any(key in payload for key in ("question", "failed_summary", "expected_response"))
 
     def _update_agent(
         self,

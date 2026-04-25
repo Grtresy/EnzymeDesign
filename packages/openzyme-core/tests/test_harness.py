@@ -44,6 +44,7 @@ from openzyme_core import EngineRegistry
 from openzyme_core import builtin_tool_descriptors
 from openzyme_core import top_level_tool_descriptors
 from openzyme_core import build_teammate_registry
+from openzyme_core import ProtocolService
 from openzyme_core import teammate_tool_descriptors
 from openzyme_research import DeterministicBioResearchService
 
@@ -834,6 +835,40 @@ class ToolFailureDriver:
         return HarnessStep(assistant_message=f"Observed tool failure: {result.content}")
 
 
+class ProtocolSendDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_protocol_send",
+                        tool_name="protocol.send",
+                        arguments={
+                            "recipient": "agent:researcher",
+                            "message_type": "diagnostic_request",
+                            "correlation_id": "corr_diag_001",
+                            "task_id": "task_001",
+                            "payload": {
+                                "task_id": "task_001",
+                                "question": "Why did delegation fail?",
+                                "instructions": "Explain the blocking issue.",
+                                "failed_summary": "step budget exhausted",
+                                "expected_response": "diagnostic_response with root cause",
+                            },
+                        },
+                        task_id="task_001",
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="diagnostic requested")
+
+
 def test_harness_returns_failed_result_when_driver_provider_is_rate_limited() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -871,6 +906,36 @@ def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
     assert result.tool_results[0].ok is False
     assert "HTTP Error 429" in result.tool_results[0].content
     assert "Observed tool failure" in result.outputs[0]
+
+
+def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    ProtocolService(repositories).delegate(
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        name="Researcher",
+        role="researcher",
+        payload_ref=None,
+        task_id="task_001",
+        correlation_id="corr_original",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="diagnose"),
+        driver=ProtocolSendDriver(),
+    )
+
+    sent = json.loads(result.tool_results[0].content)
+    message = repositories.inbox.get(sent["message"]["message_id"])
+    signal = next(signal for signal in repositories.runtime_signals.list_by_session(session.session_id) if signal.source_ref == message.message_id)
+    thread = ProtocolService(repositories).build_thread(session.session_id, "corr_diag_001").to_dict()
+    assert result.status is HarnessStatus.COMPLETED
+    assert message.status.value == "unread"
+    assert signal.reason.value == "inbox_unread"
+    assert signal.task_id == "task_001"
+    assert thread["request"]["payload"]["question"] == "Why did delegation fail?"
 
 
 def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent() -> None:
@@ -1187,7 +1252,17 @@ def _message_content(message: object) -> str:
 
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
-    assert {"task.create", "task.update", "task.delegate", "lane.create", "lane.bind_task", "memory.compact", "skill.load"} <= tool_names
+    assert {
+        "task.create",
+        "task.update",
+        "task.delegate",
+        "protocol.thread",
+        "protocol.send",
+        "lane.create",
+        "lane.bind_task",
+        "memory.compact",
+        "skill.load",
+    } <= tool_names
 
 
 def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
@@ -1231,6 +1306,7 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "reporter for report drafting and publishing" in prompt
     assert "answer only with researcher, executor, reporter" in prompt
     assert "Do not describe provider tools or capability engines" in prompt
+    assert "diagnostic_request" in prompt
     assert "fpocket" in prompt
 
 

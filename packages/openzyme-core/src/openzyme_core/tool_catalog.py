@@ -112,6 +112,41 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             },
         ),
         ToolDescriptor(
+            tool_name="protocol.thread",
+            description="Inspect one internal team protocol thread by correlation id, including small structured payloads.",
+            input_schema={
+                "type": "object",
+                "properties": {"correlation_id": {"type": "string"}},
+                "required": ["correlation_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="protocol.send",
+            description=(
+                "Send a structured internal team protocol message to a teammate or the harness. "
+                "Use diagnostic_request to ask a failed teammate for a focused explanation."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "recipient": {"type": "string"},
+                    "recipient_kind": {"type": "string", "enum": ["agent", "harness", "user", "system"]},
+                    "sender": {"type": "string"},
+                    "sender_kind": {"type": "string", "enum": ["agent", "harness", "user", "system"]},
+                    "message_type": {"type": "string"},
+                    "correlation_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "lane_id": {"type": "string"},
+                    "payload": {"type": "object"},
+                    "await_response": {"type": "boolean"},
+                    "max_steps": {"type": "integer", "minimum": 1, "maximum": 16},
+                },
+                "required": ["recipient", "correlation_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
             tool_name="lane.create",
             description="Create a lane when work needs an isolated execution context.",
             input_schema={

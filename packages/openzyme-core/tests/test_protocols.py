@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
@@ -15,8 +17,43 @@ from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
 from openzyme_core import CorrelationStatus
 from openzyme_core import ProtocolService
+from openzyme_core import MemoryEventBus
+from openzyme_core import RestoreFocus
+from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeSnapshot
+from openzyme_core import ToolInvocation
+from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core import register_protocol_tools
+
+
+class FakeToolCallingInvoker:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
+        self.calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": list(tools)})
+        if isinstance(self.response, list):
+            index = min(len(self.calls) - 1, len(self.response) - 1)
+            return self.response[index]
+        return self.response
+
+
+class FakeModelFactory:
+    def __init__(self, response: object | dict[str, object]) -> None:
+        self.response = response
+        self.invokers: dict[str, FakeToolCallingInvoker] = {}
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
+        if purpose not in self.invokers:
+            if isinstance(self.response, dict) and purpose in self.response:
+                response = self.response[purpose]
+            else:
+                response = self.response
+            self.invokers[purpose] = FakeToolCallingInvoker(response)
+        return self.invokers[purpose]
 
 
 def _build_repositories() -> CoreRepositories:
@@ -134,6 +171,138 @@ def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
     signals = repositories.runtime_signals.list_by_session(session.session_id)
     assert message.status is InboxStatus.UNREAD
     assert any(signal.source_ref == message.message_id and signal.reason.value == "inbox_unread" for signal in signals)
+
+
+def test_protocol_thread_expands_small_payloads() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    payload_ref = service.persist_payload(
+        session_id=session.session_id,
+        document_kind="protocol_payload",
+        payload={
+            "task_id": "task_001",
+            "question": "What failed?",
+            "instructions": "Reply with the root cause.",
+            "failed_summary": "max steps exceeded",
+            "expected_response": "diagnostic_response",
+        },
+    )
+
+    service.send_message(
+        session_id=session.session_id,
+        sender="harness",
+        sender_kind=InboxParticipantKind.HARNESS,
+        recipient="agent:researcher",
+        recipient_kind=InboxParticipantKind.AGENT,
+        message_type="diagnostic_request",
+        correlation_id="corr_diag_payload",
+        payload_ref=payload_ref,
+        task_id="task_001",
+        lane_id="lane_001",
+    )
+
+    thread = service.build_thread(session.session_id, "corr_diag_payload").to_dict()
+    assert thread["request"]["payload"]["question"] == "What failed?"
+    assert thread["request"]["payload"]["task_id"] == "task_001"
+
+
+def test_protocol_send_await_response_drains_signal_and_returns_runtime_outcome() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    service.delegate(
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        name="Researcher",
+        role="researcher",
+        payload_ref=None,
+        task_id="task_001",
+        lane_id="lane_001",
+        correlation_id="corr_original",
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    model_factory = FakeModelFactory(
+        {
+            "v3_teammate_loop:researcher": [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_reply",
+                            "name": "protocol.send",
+                            "args": {
+                                "recipient": "harness",
+                                "recipient_kind": "harness",
+                                "message_type": "diagnostic_response",
+                                "correlation_id": "corr_diag_await",
+                                "payload": {
+                                    "task_id": "task_001",
+                                    "status": "diagnosed",
+                                    "summary": "The previous turn ran out of steps before using the research tool.",
+                                },
+                            },
+                        }
+                    ],
+                },
+                {"content": "diagnostic response sent", "tool_calls": []},
+            ]
+        }
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+        model_factory=model_factory,
+    )
+    context.refresh_restore_context()
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_diag",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "agent:researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_diag_await",
+                "task_id": "task_001",
+                "lane_id": "lane_001",
+                "await_response": True,
+                "max_steps": 4,
+                "payload": {
+                    "task_id": "task_001",
+                    "lane_id": "lane_001",
+                    "question": "Why did you fail?",
+                    "instructions": "Answer with a concise root cause.",
+                    "failed_summary": "max_steps_exceeded",
+                    "expected_response": "diagnostic_response",
+                },
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    content = json.loads(result.content)
+    message = repositories.inbox.get(content["message"]["message_id"])
+    thread = content["thread"]
+    prompt = model_factory.invokers["v3_teammate_loop:researcher"].calls[0]["system_prompt"]
+    seed_message = model_factory.invokers["v3_teammate_loop:researcher"].calls[0]["messages"][0]
+    seed = seed_message.get("content") if isinstance(seed_message, dict) else seed_message.content
+    task = repositories.tasks.get("task_001")
+    assert result.ok is True
+    assert message.status is InboxStatus.ACKNOWLEDGED
+    assert content["runtime_outcomes"][0]["ok"] is True
+    assert thread["status"] == CorrelationStatus.RESPONDED.value
+    assert [response["message_type"] for response in thread["responses"]] == ["diagnostic_response", "delegation_result"]
+    assert "Diagnostic question: Why did you fail?" in prompt
+    assert "max_steps_exceeded" in prompt
+    assert "corr_diag_await" in seed
+    assert task.status is TaskStatus.IN_PROGRESS
 
 
 def test_background_completion_updates_agent_and_invocation_state() -> None:

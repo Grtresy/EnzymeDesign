@@ -76,6 +76,24 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
+### Failed Delegation Diagnostic Flow
+
+失败委托的默认恢复路径由 master 主动发起，不由 `task.delegate` 或 protocol tool 自动追问：
+
+```text
+task.delegate returns failed / max_steps_exceeded / unclear summary
+  -> master inspects protocol.thread(correlation_id)
+  -> master sends protocol.send(message_type="diagnostic_request", recipient=failed teammate)
+  -> protocol persists unread inbox + inbox_unread wakeup signal
+  -> runtime wakes the same resident teammate with task/lane/correlation focus
+  -> restore context renders the diagnostic question, failed summary, expected response, sender, message type and correlation id
+  -> teammate replies on the same thread with diagnostic_response or delegation_result
+```
+
+`protocol.send` may set bounded `await_response=true` when master wants one immediate diagnostic turn. This is a best-effort drain of the wakeup signal and must return the message, signal updates, runtime outcomes, and refreshed thread. The default is `await_response=false`, so ordinary teammate-to-teammate messages only enqueue work.
+
+Diagnostic payloads must at least support `question`, `instructions`, `task_id`, `failed_summary`, and `expected_response`; `lane_id` should be included when the failed task is lane-bound. A diagnostic wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly completes work or the runtime can recover a successful result from workspace state.
+
 ## 5. Task Auto-Claim
 
 idle teammate 可以自动扫描 task board 并认领工作，但必须受 control-plane policy 约束：

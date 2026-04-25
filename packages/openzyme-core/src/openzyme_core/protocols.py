@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -35,13 +36,29 @@ class CorrelationThread:
     request: InboxMessage | None
     responses: tuple[InboxMessage, ...]
     status: CorrelationStatus
+    payloads: dict[str, dict[str, Any]]
 
     def to_dict(self) -> dict[str, Any]:
+        def message_to_dict(message: InboxMessage) -> dict[str, Any]:
+            data = message.to_dict()
+            payload = self.payloads.get(message.message_id)
+            if payload is None:
+                return data
+            try:
+                payload_text = json.dumps(payload, sort_keys=True)
+            except TypeError:
+                payload_text = str(payload)
+            if len(payload_text) <= 4000:
+                data["payload"] = payload
+            else:
+                data["payload_preview"] = payload_text[:1000]
+            return data
+
         return {
             "session_id": self.session_id,
             "correlation_id": self.correlation_id,
-            "request": None if self.request is None else self.request.to_dict(),
-            "responses": [message.to_dict() for message in self.responses],
+            "request": None if self.request is None else message_to_dict(self.request),
+            "responses": [message_to_dict(message) for message in self.responses],
             "status": self.status.value,
         }
 
@@ -213,6 +230,8 @@ class ProtocolService:
         correlation_id: str | None = None,
         payload_ref: str | None = None,
         status: InboxStatus | None = None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
     ) -> InboxMessage:
         now = utc_now_iso()
         resolved_status = status or (InboxStatus.UNREAD if recipient_kind is InboxParticipantKind.AGENT else InboxStatus.DELIVERED)
@@ -257,8 +276,8 @@ class ProtocolService:
             self._enqueue_signal(
                 session_id=session_id,
                 agent_id=recipient,
-                task_id=None,
-                lane_id=None,
+                task_id=task_id,
+                lane_id=lane_id,
                 correlation_id=correlation_id,
                 reason=AgentRuntimeSignalReason.INBOX_UNREAD,
                 source_ref=message.message_id,
@@ -378,6 +397,13 @@ class ProtocolService:
         messages = tuple(self.repositories.inbox.list_by_correlation(session_id, correlation_id))
         request = next((message for message in messages if message.message_type.endswith("_request")), None)
         responses = tuple(message for message in messages if request is None or message.message_id != request.message_id)
+        payloads: dict[str, dict[str, Any]] = {}
+        for message in messages:
+            if message.payload_ref is None:
+                continue
+            document = self.repositories.engine_documents.get(message.payload_ref)
+            if document is not None:
+                payloads[message.message_id] = dict(document.payload)
         status = CorrelationStatus.WAITING
         if any(message.message_type == "background_completion" for message in responses):
             status = CorrelationStatus.COMPLETED
@@ -391,6 +417,7 @@ class ProtocolService:
             request=request,
             responses=responses,
             status=status,
+            payloads=payloads,
         )
 
     def _enqueue_signal(

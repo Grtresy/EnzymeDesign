@@ -58,6 +58,8 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
+        "If task.delegate reports teammate_status=max_steps_exceeded or failed, or the failure summary is not enough to explain the cause, inspect protocol.thread for that correlation and use protocol.send with message_type=diagnostic_request to ask the same teammate a focused diagnostic question.",
+        "Diagnostic protocol payloads should include question, instructions, task_id, failed_summary, and expected_response. Set await_response only when you need one bounded teammate turn before deciding next steps.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
