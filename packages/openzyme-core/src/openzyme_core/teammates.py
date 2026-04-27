@@ -11,6 +11,7 @@ from openzyme_domain import ResearchSummaryStatus
 
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
+from .bio_research_tools import register_web_research_tools
 from .engines import EngineRegistry
 from .harness import HarnessDriver
 from .harness import HarnessInput
@@ -34,7 +35,17 @@ from .task_board import register_task_board_tools
 from .tool_catalog import ToolDescriptor
 
 
-def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
+def _web_tool_enabled(adapter: object | None) -> bool:
+    return (
+        adapter is not None
+        and callable(getattr(adapter, "web_search", None))
+        and callable(getattr(adapter, "fetch_url", None))
+    )
+
+
+def teammate_tool_descriptors(
+    *, role: str, research_adapter: object | None = None
+) -> tuple[ToolDescriptor, ...]:
     shared = (
         ToolDescriptor(
             tool_name="task.get",
@@ -49,7 +60,11 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="task.list",
             description="List current tasks to understand related work in the session.",
-            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
         ),
         ToolDescriptor(
             tool_name="task.update",
@@ -60,8 +75,20 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     "task_id": {"type": "string"},
                     "subject": {"type": "string"},
                     "description": {"type": "string"},
-                    "status": {"type": "string", "enum": ["todo", "in_progress", "blocked", "completed", "cancelled"]},
-                    "priority": {"type": "string", "enum": ["low", "normal", "high", "urgent"]},
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "todo",
+                            "in_progress",
+                            "blocked",
+                            "completed",
+                            "cancelled",
+                        ],
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high", "urgent"],
+                    },
                     "kind": {"type": "string"},
                     "assigned_ref": {"type": ["string", "null"]},
                     "blocked_by": {"type": "array", "items": {"type": "string"}},
@@ -120,9 +147,15 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                 "properties": {
                     "correlation_id": {"type": "string"},
                     "recipient": {"type": "string"},
-                    "recipient_kind": {"type": "string", "enum": ["agent", "harness", "system", "user"]},
+                    "recipient_kind": {
+                        "type": "string",
+                        "enum": ["agent", "harness", "system", "user"],
+                    },
                     "sender": {"type": "string"},
-                    "sender_kind": {"type": "string", "enum": ["agent", "harness", "system", "user"]},
+                    "sender_kind": {
+                        "type": "string",
+                        "enum": ["agent", "harness", "system", "user"],
+                    },
                     "message_type": {"type": "string"},
                     "payload": {"type": "object"},
                 },
@@ -136,7 +169,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "scope_kind": {"type": "string", "enum": ["session", "lane", "task"]},
+                    "scope_kind": {
+                        "type": "string",
+                        "enum": ["session", "lane", "task"],
+                    },
                     "scope_ref": {"type": "string"},
                     "task_id": {"type": "string"},
                     "lane_id": {"type": "string"},
@@ -148,8 +184,51 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
     )
     role_specific: list[ToolDescriptor] = []
     if role == "researcher":
+        web_tools: tuple[ToolDescriptor, ...] = ()
+        if _web_tool_enabled(research_adapter):
+            web_tools = (
+                ToolDescriptor(
+                    tool_name="web.search",
+                    description="Search the web for a query and return normalized evidence sources.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "max_results": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                            },
+                            "topic": {"type": "string"},
+                            "include_raw_content": {"type": "boolean"},
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="web.fetch",
+                    description="Fetch and extract readable content from one web page URL.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "url": {"type": "string"},
+                            "query": {"type": ["string", "null"]},
+                            "extract_depth": {
+                                "type": "string",
+                                "enum": ["basic", "advanced"],
+                            },
+                            "format": {"type": "string", "enum": ["markdown", "text"]},
+                            "include_images": {"type": "boolean"},
+                        },
+                        "required": ["url"],
+                        "additionalProperties": False,
+                    },
+                ),
+            )
         role_specific.extend(
             (
+                *web_tools,
                 ToolDescriptor(
                     tool_name="deep_research.start",
                     description="Start deep research for the currently assigned task.",
@@ -201,7 +280,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     description="Search PubMed for focused biomedical literature queries.",
                     input_schema={
                         "type": "object",
-                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
                         "required": ["query"],
                         "additionalProperties": False,
                     },
@@ -211,7 +293,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     description="Search Semantic Scholar for papers and citation-backed literature hits.",
                     input_schema={
                         "type": "object",
-                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
                         "required": ["query"],
                         "additionalProperties": False,
                     },
@@ -241,7 +326,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     description="Search RCSB PDB for matching protein structures.",
                     input_schema={
                         "type": "object",
-                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
                         "required": ["query"],
                         "additionalProperties": False,
                     },
@@ -297,7 +385,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     description="Bind the assigned task to a lane.",
                     input_schema={
                         "type": "object",
-                        "properties": {"task_id": {"type": "string"}, "lane_id": {"type": "string"}},
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "lane_id": {"type": "string"},
+                        },
                         "required": ["task_id", "lane_id"],
                         "additionalProperties": False,
                     },
@@ -305,7 +396,11 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                 ToolDescriptor(
                     tool_name="lane.list",
                     description="List execution lanes in the session.",
-                    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                    input_schema={
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
                 ),
                 ToolDescriptor(
                     tool_name="execution.start",
@@ -325,7 +420,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                     description="Resume an execution invocation after approval.",
                     input_schema={
                         "type": "object",
-                        "properties": {"invocation_id": {"type": "string"}, "resolution": {"type": "string"}},
+                        "properties": {
+                            "invocation_id": {"type": "string"},
+                            "resolution": {"type": "string"},
+                        },
                         "required": ["invocation_id"],
                         "additionalProperties": False,
                     },
@@ -357,7 +455,16 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                             "title": {"type": "string"},
                             "summary": {"type": "string"},
                             "markdown": {"type": "string"},
-                            "status": {"type": "string", "enum": ["draft", "in_review", "ready", "published", "failed"]},
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "draft",
+                                    "in_review",
+                                    "ready",
+                                    "published",
+                                    "failed",
+                                ],
+                            },
                             "owner_agent_id": {"type": "string"},
                         },
                         "required": ["task_id"],
@@ -376,7 +483,10 @@ def teammate_tool_descriptors(*, role: str) -> tuple[ToolDescriptor, ...]:
                             "title": {"type": "string"},
                             "summary": {"type": "string"},
                             "stage_summary": {"type": "string"},
-                            "status": {"type": "string", "enum": ["ready", "published", "failed"]},
+                            "status": {
+                                "type": "string",
+                                "enum": ["ready", "published", "failed"],
+                            },
                         },
                         "additionalProperties": False,
                     },
@@ -390,6 +500,7 @@ def build_teammate_registry(
     *,
     engine_registry: EngineRegistry | None = None,
     bio_research_service: Any | None = None,
+    research_adapter: Any | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     register_task_board_tools(registry)
@@ -399,6 +510,7 @@ def build_teammate_registry(
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
+    register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
     register_protocol_tools(registry)
@@ -448,7 +560,11 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
                 }
             )
         else:
-            messages.append(ToolMessage(content=content, tool_call_id=result.call_id, name=result.tool_name))
+            messages.append(
+                ToolMessage(
+                    content=content, tool_call_id=result.call_id, name=result.tool_name
+                )
+            )
     return messages
 
 
@@ -461,16 +577,28 @@ class TeammateConversationDriver(HarnessDriver):
     task_id: str
     instructions: str
     max_parallel_tool_calls: int = 3
+    research_adapter: Any | None = None
     _messages: list[Any] = field(default_factory=list)
     _initialized: bool = False
 
     def _system_prompt(self, context: SessionRuntimeContext) -> str:
         restore = context.restore_context
         assert restore is not None
-        artifact_titles = ", ".join(artifact.title for artifact in restore.artifacts[:8]) or "none"
-        draft_titles = ", ".join(draft.title for draft in restore.report_drafts[:8]) or "none"
-        protocol_bits = ", ".join(thread["correlation_id"] for thread in restore.protocol_threads[:8]) or "none"
-        report_titles = ", ".join(report.title for report in restore.reports[:8]) or "none"
+        artifact_titles = (
+            ", ".join(artifact.title for artifact in restore.artifacts[:8]) or "none"
+        )
+        draft_titles = (
+            ", ".join(draft.title for draft in restore.report_drafts[:8]) or "none"
+        )
+        protocol_bits = (
+            ", ".join(
+                thread["correlation_id"] for thread in restore.protocol_threads[:8]
+            )
+            or "none"
+        )
+        report_titles = (
+            ", ".join(report.title for report in restore.reports[:8]) or "none"
+        )
         return "\n".join(
             [
                 f"You are teammate agent {self.agent_id}.",
@@ -491,11 +619,14 @@ class TeammateConversationDriver(HarnessDriver):
                 "Report draft catalog: " + draft_titles,
                 "Report catalog: " + report_titles,
                 "Known protocol threads: " + protocol_bits,
-                "Ready tasks: " + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
+                "Ready tasks: "
+                + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
             ]
         )
 
-    def _seed_messages(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> list[Any]:
+    def _seed_messages(
+        self, context: SessionRuntimeContext, harness_input: HarnessInput
+    ) -> list[Any]:
         del harness_input
         try:
             from langchain_core.messages import HumanMessage
@@ -505,7 +636,9 @@ class TeammateConversationDriver(HarnessDriver):
         if context.restore_context is not None:
             for thread in context.restore_context.protocol_threads:
                 if thread.get("correlation_id") == self.correlation_id:
-                    payload_lines.append(f"Protocol thread: {json.dumps(thread, sort_keys=True)}")
+                    payload_lines.append(
+                        f"Protocol thread: {json.dumps(thread, sort_keys=True)}"
+                    )
                     break
         content = "\n".join(payload_lines)
         if HumanMessage is None:
@@ -513,7 +646,9 @@ class TeammateConversationDriver(HarnessDriver):
         return [HumanMessage(content=content)]
 
     def _allowed_tools(self) -> tuple[ToolDescriptor, ...]:
-        return teammate_tool_descriptors(role=self.role)
+        return teammate_tool_descriptors(
+            role=self.role, research_adapter=self.research_adapter
+        )
 
     def plan(
         self,
@@ -521,7 +656,11 @@ class TeammateConversationDriver(HarnessDriver):
         harness_input: HarnessInput,
         tool_results: tuple[ToolResult, ...],
     ) -> HarnessStep:
-        if harness_input.resume is not None and not tool_results and self.role == "executor":
+        if (
+            harness_input.resume is not None
+            and not tool_results
+            and self.role == "executor"
+        ):
             waiting = [
                 invocation
                 for invocation in context.snapshot.active_invocations
@@ -547,16 +686,25 @@ class TeammateConversationDriver(HarnessDriver):
                     )
                 )
         if harness_input.resume is not None and tool_results:
-            if len(tool_results) == 1 and tool_results[0].tool_name == "execution.resume":
+            if (
+                len(tool_results) == 1
+                and tool_results[0].tool_name == "execution.resume"
+            ):
                 if tool_results[0].ok:
-                    return HarnessStep(assistant_message="Approval resolved. Execution resumed under the executor teammate.")
-                return HarnessStep(assistant_message="Approval resolved, but execution did not resume successfully.")
+                    return HarnessStep(
+                        assistant_message="Approval resolved. Execution resumed under the executor teammate."
+                    )
+                return HarnessStep(
+                    assistant_message="Approval resolved, but execution did not resume successfully."
+                )
         if not self._initialized:
             self._messages = self._seed_messages(context, harness_input)
             self._initialized = True
         elif tool_results:
             self._messages.extend(_tool_messages(tool_results))
-        invoker = self.model_factory.create_tool_calling_invoker(purpose=f"v3_teammate_loop:{self.role}")
+        invoker = self.model_factory.create_tool_calling_invoker(
+            purpose=f"v3_teammate_loop:{self.role}"
+        )
         tools = [descriptor.to_openai_tool() for descriptor in self._allowed_tools()]
         response = invoker.invoke_with_tools(
             system_prompt=self._system_prompt(context),
@@ -567,9 +715,13 @@ class TeammateConversationDriver(HarnessDriver):
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             invocations: list[ToolInvocation] = []
-            for index, tool_call in enumerate(tool_calls[: self.max_parallel_tool_calls]):
+            for index, tool_call in enumerate(
+                tool_calls[: self.max_parallel_tool_calls]
+            ):
                 args = dict(tool_call.get("args") or {})
-                if "task_id" not in args and tool_call["name"].startswith(("deep_research.", "execution.", "report_draft.", "report.")):
+                if "task_id" not in args and tool_call["name"].startswith(
+                    ("deep_research.", "execution.", "report_draft.", "report.")
+                ):
                     args["task_id"] = self.task_id
                 invocations.append(
                     ToolInvocation(
@@ -581,9 +733,14 @@ class TeammateConversationDriver(HarnessDriver):
                     )
                 )
             return HarnessStep(tool_invocations=tuple(invocations))
-        assistant_message = _stringify_content(
-            getattr(response, "content", None) if not isinstance(response, dict) else response.get("content")
-        ) or f"{self.agent_id} completed delegated work."
+        assistant_message = (
+            _stringify_content(
+                getattr(response, "content", None)
+                if not isinstance(response, dict)
+                else response.get("content")
+            )
+            or f"{self.agent_id} completed delegated work."
+        )
         return HarnessStep(assistant_message=assistant_message)
 
 
@@ -604,6 +761,7 @@ def run_teammate_loop(
     registry = build_teammate_registry(
         engine_registry=parent_context.engine_registry,
         bio_research_service=parent_context.bio_research_service,
+        research_adapter=parent_context.research_adapter,
     )
     driver = TeammateConversationDriver(
         model_factory=parent_context.model_factory,
@@ -612,6 +770,7 @@ def run_teammate_loop(
         correlation_id=correlation_id,
         task_id=task_id,
         instructions=instructions,
+        research_adapter=parent_context.research_adapter,
     )
     return run_agent_harness_loop(
         parent_context.repositories,
@@ -631,6 +790,7 @@ def run_teammate_loop(
         event_sink=parent_context.event_sink,
         model_factory=parent_context.model_factory,
         bio_research_service=parent_context.bio_research_service,
+        research_adapter=parent_context.research_adapter,
     )
 
 
@@ -642,9 +802,16 @@ def finalize_teammate_result(
     correlation_id: str,
     result: HarnessResult,
 ) -> tuple[str, AgentMemberStatus]:
-    protocol = ProtocolService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+    protocol = ProtocolService(
+        context.repositories,
+        event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+    )
     if result.status is HarnessStatus.WAITING_APPROVAL:
-        message = result.outputs[-1] if result.outputs else f"{agent_id} is waiting for approval."
+        message = (
+            result.outputs[-1]
+            if result.outputs
+            else f"{agent_id} is waiting for approval."
+        )
         protocol.reply(
             session_id=context.snapshot.session.session_id,
             sender=agent_id,
@@ -656,7 +823,11 @@ def finalize_teammate_result(
             payload_ref=protocol.persist_payload(
                 session_id=context.snapshot.session.session_id,
                 document_kind="protocol_payload",
-                payload={"task_id": task_id, "status": "waiting_approval", "summary": message},
+                payload={
+                    "task_id": task_id,
+                    "status": "waiting_approval",
+                    "summary": message,
+                },
             ),
         )
         return message, AgentMemberStatus.BLOCKED
@@ -665,8 +836,15 @@ def finalize_teammate_result(
         task_id=task_id,
         correlation_id=correlation_id,
     )
-    if result.status is HarnessStatus.MAX_STEPS_EXCEEDED and recovered_completion is None:
-        message = result.outputs[-1] if result.outputs else f"{agent_id} exceeded the delegated work step budget."
+    if (
+        result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+        and recovered_completion is None
+    ):
+        message = (
+            result.outputs[-1]
+            if result.outputs
+            else f"{agent_id} exceeded the delegated work step budget."
+        )
         protocol.reply(
             session_id=context.snapshot.session.session_id,
             sender=agent_id,
@@ -687,7 +865,11 @@ def finalize_teammate_result(
             ),
         )
         return message, AgentMemberStatus.FAILED
-    message = recovered_completion or (result.outputs[-1] if result.outputs else f"{agent_id} completed delegated work.")
+    message = recovered_completion or (
+        result.outputs[-1]
+        if result.outputs
+        else f"{agent_id} completed delegated work."
+    )
     protocol.reply(
         session_id=context.snapshot.session.session_id,
         sender=agent_id,
@@ -701,7 +883,11 @@ def finalize_teammate_result(
             document_kind="protocol_payload",
             payload={
                 "task_id": task_id,
-                "status": "completed" if result.status in {HarnessStatus.COMPLETED, HarnessStatus.MAX_STEPS_EXCEEDED} and recovered_completion else result.status.value,
+                "status": "completed"
+                if result.status
+                in {HarnessStatus.COMPLETED, HarnessStatus.MAX_STEPS_EXCEEDED}
+                and recovered_completion
+                else result.status.value,
                 "summary": message,
                 "outputs": list(result.outputs),
             },
@@ -718,9 +904,15 @@ def _recover_completion_from_workspace(
     task_id: str,
     correlation_id: str,
 ) -> str | None:
-    thread = ProtocolService(context.repositories).build_thread(context.snapshot.session.session_id, correlation_id)
+    thread = ProtocolService(context.repositories).build_thread(
+        context.snapshot.session.session_id, correlation_id
+    )
     for message in reversed(thread.responses):
-        if message.message_type not in {"research_completion", "delegation_result", "background_completion"}:
+        if message.message_type not in {
+            "research_completion",
+            "delegation_result",
+            "background_completion",
+        }:
             continue
         if message.payload_ref is None:
             continue
@@ -728,10 +920,25 @@ def _recover_completion_from_workspace(
         if document is None:
             continue
         payload = document.payload
-        if str(payload.get("status") or "").lower() in {"completed", "succeeded", "success"}:
-            return str(payload.get("summary") or payload.get("canonical_summary") or f"{message.sender} completed delegated work.")
-    for summary in reversed(context.repositories.research_summaries.list_by_session(context.snapshot.session.session_id)):
-        if summary.task_id == task_id and summary.status is ResearchSummaryStatus.COMPLETED:
+        if str(payload.get("status") or "").lower() in {
+            "completed",
+            "succeeded",
+            "success",
+        }:
+            return str(
+                payload.get("summary")
+                or payload.get("canonical_summary")
+                or f"{message.sender} completed delegated work."
+            )
+    for summary in reversed(
+        context.repositories.research_summaries.list_by_session(
+            context.snapshot.session.session_id
+        )
+    ):
+        if (
+            summary.task_id == task_id
+            and summary.status is ResearchSummaryStatus.COMPLETED
+        ):
             return summary.summary
     return None
 

@@ -31,3 +31,51 @@ def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> 
     assert result.summary.startswith("thermostable catalase homologs:")
     assert result.findings[0].query == "thermostable catalase homolog activity 60C"
     assert result.findings[0].sources[0].locator == "https://example.org/paper"
+
+
+def test_tavily_adapter_normalizes_fetch_results() -> None:
+    def fake_extract(**kwargs: object) -> dict[str, object]:
+        assert kwargs["urls"] == ["https://example.org/article"]
+        return {
+            "results": [
+                {
+                    "title": "Article",
+                    "url": "https://example.org/article",
+                    "raw_content": "Extracted article content about enzyme design.",
+                }
+            ]
+        }
+
+    adapter = TavilyResearchAdapter(extract_callable=fake_extract)
+    raw_response = adapter.fetch_url(url="https://example.org/article")
+    result = adapter.normalize_fetch_response(
+        url="https://example.org/article",
+        query="enzyme design",
+        response=raw_response,
+    )
+
+    assert result.status == "completed"
+    assert (
+        result.findings[0].summary == "Extracted article content about enzyme design."
+    )
+    assert result.findings[0].query == "enzyme design"
+    assert result.findings[0].sources[0].locator == "https://example.org/article"
+
+
+def test_tavily_adapter_reports_failed_fetch_results() -> None:
+    adapter = TavilyResearchAdapter(
+        extract_callable=lambda **_: {
+            "results": [],
+            "failed_results": [{"url": "https://example.org/missing"}],
+        }
+    )
+
+    result = adapter.normalize_fetch_response(
+        url="https://example.org/missing",
+        query=None,
+        response=adapter.fetch_url(url="https://example.org/missing"),
+    )
+
+    assert result.status == "failed"
+    assert result.findings == ()
+    assert "https://example.org/missing" in result.unresolved_gaps[0]

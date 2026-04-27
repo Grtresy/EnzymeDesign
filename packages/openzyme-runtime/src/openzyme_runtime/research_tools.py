@@ -23,9 +23,19 @@ from .seams import ResearchToolProvider
 from .seams import ResearchToolResult
 
 
-class SearchCollectArgs(BaseModel):
+class WebSearchArgs(BaseModel):
     query: str
-    topic: str = "general evidence"
+    max_results: int = Field(default=3, ge=1, le=20)
+    topic: str = "general"
+    include_raw_content: bool = True
+
+
+class WebFetchArgs(BaseModel):
+    url: str = Field(min_length=1)
+    query: str | None = None
+    extract_depth: str = Field(default="basic", pattern="^(basic|advanced)$")
+    format: str = Field(default="markdown", pattern="^(markdown|text)$")
+    include_images: bool = False
 
 
 class ThinkToolArgs(BaseModel):
@@ -70,27 +80,47 @@ def _stage_asset(asset: object) -> dict[str, object]:
     return manifest
 
 
-def _tool_result(tool_name: str, observation: ResearchObservation) -> ResearchToolResult:
+def _tool_result(
+    tool_name: str, observation: ResearchObservation
+) -> ResearchToolResult:
     payload = observation.to_dict()
-    return ResearchToolResult(tool_name=tool_name, summary=payload["summary"], payload=payload)
+    return ResearchToolResult(
+        tool_name=tool_name, summary=payload["summary"], payload=payload
+    )
+
+
+def _web_tool_enabled(adapter: object) -> bool:
+    return callable(getattr(adapter, "web_search", None)) and callable(
+        getattr(adapter, "fetch_url", None)
+    )
 
 
 @dataclass(frozen=True, slots=True)
-class ResearchAdapterSearchTool:
+class WebSearchTool:
     adapter: ResearchAdapter
-    name: str = "search.collect"
-    description: str = "Collect evidence for a research query and return normalized findings."
-    args_schema: type[BaseModel] = SearchCollectArgs
+    name: str = "web.search"
+    description: str = (
+        "Search the web for a query and return normalized evidence sources."
+    )
+    args_schema: type[BaseModel] = WebSearchArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
-        payload = SearchCollectArgs.model_validate(args)
-        result = self.adapter.conduct(
-            episode_id=context.episode_id,
-            research_brief=context.research_brief,
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
+        payload = WebSearchArgs.model_validate(args)
+        search = getattr(self.adapter, "web_search")
+        normalize = getattr(self.adapter, "normalize_search_response")
+        result = normalize(
             unit=ResearchUnit(
-                unit_id=f"search-{context.tool_call_iterations + 1}",
+                unit_id=f"web-search-{context.tool_call_iterations + 1}",
                 topic=payload.topic,
                 query=payload.query,
+            ),
+            response=search(
+                query=payload.query,
+                max_results=payload.max_results,
+                topic=payload.topic,
+                include_raw_content=payload.include_raw_content,
             ),
         )
         return _tool_result(
@@ -100,7 +130,48 @@ class ResearchAdapterSearchTool:
                 summary=result.summary,
                 findings=result.findings,
                 unresolved_gaps=result.unresolved_gaps,
-                provider=self.name,
+                provider="web",
+                raw_ref={
+                    "unit_id": result.unit_id,
+                    "error_message": result.error_message,
+                    "escalation_reason": result.escalation_reason,
+                },
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WebFetchTool:
+    adapter: ResearchAdapter
+    name: str = "web.fetch"
+    description: str = "Fetch and extract readable content from one web page URL."
+    args_schema: type[BaseModel] = WebFetchArgs
+
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
+        payload = WebFetchArgs.model_validate(args)
+        fetch = getattr(self.adapter, "fetch_url")
+        normalize = getattr(self.adapter, "normalize_fetch_response")
+        result = normalize(
+            url=payload.url,
+            query=payload.query,
+            response=fetch(
+                url=payload.url,
+                query=payload.query,
+                extract_depth=payload.extract_depth,
+                format=payload.format,
+                include_images=payload.include_images,
+            ),
+        )
+        return _tool_result(
+            self.name,
+            ResearchObservation(
+                status=result.status,
+                summary=result.summary,
+                findings=result.findings,
+                unresolved_gaps=result.unresolved_gaps,
+                provider="web",
                 raw_ref={
                     "unit_id": result.unit_id,
                     "error_message": result.error_message,
@@ -116,7 +187,9 @@ class ThinkResearchTool:
     description: str = "Record strategic reflection about current research progress."
     args_schema: type[BaseModel] = ThinkToolArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         del context
         payload = ThinkToolArgs.model_validate(args)
         return ResearchToolResult(
@@ -133,7 +206,9 @@ class PubMedSearchTool:
     description: str = "Search PubMed for biomedical literature."
     args_schema: type[BaseModel] = ProviderSearchArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = ProviderSearchArgs.model_validate(args)
         hits = self.service.search_pubmed(query=payload.query, limit=payload.limit)
         return _tool_result(
@@ -150,12 +225,18 @@ class PubMedSearchTool:
 class SemanticScholarSearchTool:
     service: BioResearchService
     name: str = "semantic_scholar.search"
-    description: str = "Search Semantic Scholar for literature and citation-backed evidence."
+    description: str = (
+        "Search Semantic Scholar for literature and citation-backed evidence."
+    )
     args_schema: type[BaseModel] = ProviderSearchArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = ProviderSearchArgs.model_validate(args)
-        hits = self.service.search_semantic_scholar(query=payload.query, limit=payload.limit)
+        hits = self.service.search_semantic_scholar(
+            query=payload.query, limit=payload.limit
+        )
         return _tool_result(
             self.name,
             ResearchObservation.completed(
@@ -173,7 +254,9 @@ class UniProtLookupTool:
     description: str = "Look up normalized UniProt protein metadata."
     args_schema: type[BaseModel] = UniProtLookupArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = UniProtLookupArgs.model_validate(args)
         record = self.service.lookup_uniprot(accession=payload.accession)
         return _tool_result(
@@ -208,7 +291,9 @@ class UniProtDownloadFastaTool:
     description: str = "Download FASTA sequence from UniProt."
     args_schema: type[BaseModel] = UniProtDownloadArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = UniProtDownloadArgs.model_validate(args)
         asset = self.service.download_uniprot_fasta(accession=payload.accession)
         return _tool_result(
@@ -228,7 +313,9 @@ class RcsbSearchTool:
     description: str = "Search RCSB PDB for structure records."
     args_schema: type[BaseModel] = ProviderSearchArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = ProviderSearchArgs.model_validate(args)
         hits = self.service.search_rcsb_pdb(query=payload.query, limit=payload.limit)
         return _tool_result(
@@ -248,9 +335,13 @@ class RcsbDownloadStructureTool:
     description: str = "Download a PDB or mmCIF structure file."
     args_schema: type[BaseModel] = RcsbDownloadArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = RcsbDownloadArgs.model_validate(args)
-        asset = self.service.download_rcsb_structure(pdb_id=payload.pdb_id, file_format=payload.format)
+        asset = self.service.download_rcsb_structure(
+            pdb_id=payload.pdb_id, file_format=payload.format
+        )
         return _tool_result(
             self.name,
             ResearchObservation.completed(
@@ -268,9 +359,13 @@ class InterProQueryTool:
     description: str = "Fetch InterPro annotation records for a UniProt accession."
     args_schema: type[BaseModel] = InterProQueryArgs
 
-    def invoke(self, *, args: dict[str, object], context: ResearchToolContext) -> ResearchToolResult:
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
         payload = InterProQueryArgs.model_validate(args)
-        record = self.service.query_interpro(accession=payload.accession, limit=payload.limit)
+        record = self.service.query_interpro(
+            accession=payload.accession, limit=payload.limit
+        )
         summary = f"Loaded {len(record.entries)} InterPro annotations for {payload.accession}."
         return _tool_result(
             self.name,
@@ -286,7 +381,9 @@ class InterProQueryTool:
                                 "title": f"InterPro annotations for {payload.accession}",
                                 "locator": record.locator,
                                 "kind": "dataset",
-                                "snippet": None if not record.entries else str(record.entries[0].get("name") or ""),
+                                "snippet": None
+                                if not record.entries
+                                else str(record.entries[0].get("name") or ""),
                             }
                         ],
                     },
@@ -334,9 +431,20 @@ class DefaultResearchToolProvider:
     mcp_tool_allowlist: tuple[str, ...] = ()
 
     def list_tools(self, context: ResearchToolContext) -> Sequence[ResearchTool]:
-        providers: list[ResearchToolProvider] = [StaticResearchToolProvider([ThinkResearchTool()])]
-        if self.research_adapter is not None:
-            providers.append(StaticResearchToolProvider([ResearchAdapterSearchTool(self.research_adapter)]))
+        providers: list[ResearchToolProvider] = [
+            StaticResearchToolProvider([ThinkResearchTool()])
+        ]
+        if self.research_adapter is not None and _web_tool_enabled(
+            self.research_adapter
+        ):
+            providers.append(
+                StaticResearchToolProvider(
+                    [
+                        WebSearchTool(self.research_adapter),
+                        WebFetchTool(self.research_adapter),
+                    ]
+                )
+            )
         if self.mcp_enabled and self.mcp_tools:
             providers.append(
                 StaticResearchToolProvider(
@@ -375,9 +483,11 @@ __all__ = [
     "CompositeResearchToolProvider",
     "DefaultResearchToolProvider",
     "build_bio_research_tools",
-    "ResearchAdapterSearchTool",
-    "SearchCollectArgs",
     "StaticResearchToolProvider",
     "ThinkResearchTool",
     "ThinkToolArgs",
+    "WebFetchArgs",
+    "WebFetchTool",
+    "WebSearchArgs",
+    "WebSearchTool",
 ]

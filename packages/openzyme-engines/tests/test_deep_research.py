@@ -66,7 +66,7 @@ class CompletedDeepResearchRunner:
                     status="completed",
                     summary="Collected scaffold family evidence.",
                     rationale="The initial brief was sufficiently specific.",
-                    tool_names=["search.collect"],
+                    tool_names=["web.search"],
                     observation_summary="One strong paper found.",
                     created_at="2026-04-20T10:05:00+00:00",
                 )
@@ -147,7 +147,7 @@ class ClarifyThenCompleteRunner:
                     status="completed",
                     summary="Collected scaffold family evidence.",
                     rationale="Resolution narrowed the search space.",
-                    tool_names=["search.collect"],
+                    tool_names=["web.search"],
                     observation_summary="One strong paper found.",
                     created_at="2026-04-20T10:05:00+00:00",
                 )
@@ -241,14 +241,36 @@ def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:
 
     assert started.invocation.status.value == "succeeded"
     assert started.dossier.source_refs[0]["kind"] == "paper"
-    assert repositories.engine_documents.list_by_invocation(session.session_id, "inv_001")
-    assert repositories.research_summaries.get_by_invocation(session.session_id, "inv_001").status is ResearchSummaryStatus.COMPLETED
-    assert repositories.research_evidence.list_by_invocation(session.session_id, "inv_001")[0].confidence_label == "high"
-    assert repositories.research_source_refs.list_by_invocation(session.session_id, "inv_001")[0].locator.endswith("paper-a")
-    assert repositories.research_gaps.list_by_invocation(session.session_id, "inv_001")[0].summary == "Need wet-lab validation"
+    assert repositories.engine_documents.list_by_invocation(
+        session.session_id, "inv_001"
+    )
+    assert (
+        repositories.research_summaries.get_by_invocation(
+            session.session_id, "inv_001"
+        ).status
+        is ResearchSummaryStatus.COMPLETED
+    )
+    assert (
+        repositories.research_evidence.list_by_invocation(
+            session.session_id, "inv_001"
+        )[0].confidence_label
+        == "high"
+    )
+    assert repositories.research_source_refs.list_by_invocation(
+        session.session_id, "inv_001"
+    )[0].locator.endswith("paper-a")
+    assert (
+        repositories.research_gaps.list_by_invocation(session.session_id, "inv_001")[
+            0
+        ].summary
+        == "Need wet-lab validation"
+    )
     dossier_artifact = repositories.artifacts.get("inv_001:dossier")
     assert dossier_artifact.kind is ArtifactKind.RESEARCH_DOSSIER
-    assert dossier_artifact.storage_uri == f"engine-document://{started.invocation.output_ref}"
+    assert (
+        dossier_artifact.storage_uri
+        == f"engine-document://{started.invocation.output_ref}"
+    )
     assert dossier_artifact.relative_path == "deep-research/inv_001/dossier.json"
     assert dossier_artifact.metadata["evidence_count"] == 1
     assert dossier_artifact.metadata["source_ref_count"] == 1
@@ -279,8 +301,12 @@ def test_deep_research_resume_overwrites_canonical_rows_for_same_invocation() ->
 
     assert first.dossier.status == "needs_clarification"
     assert second.dossier.status == "completed"
-    summary = repositories.research_summaries.get_by_invocation(session.session_id, "inv_resume")
-    evidence = repositories.research_evidence.list_by_invocation(session.session_id, "inv_resume")
+    summary = repositories.research_summaries.get_by_invocation(
+        session.session_id, "inv_resume"
+    )
+    evidence = repositories.research_evidence.list_by_invocation(
+        session.session_id, "inv_resume"
+    )
     assert summary.status is ResearchSummaryStatus.COMPLETED
     assert summary.clarification_question is None
     assert len(evidence) == 1
@@ -327,10 +353,16 @@ def test_deep_research_engine_persists_artifacts_from_dossier() -> None:
         invocation_id="inv_artifacts",
     )
 
-    artifacts = repositories.artifacts.list_by_invocation(session.session_id, "inv_artifacts")
+    artifacts = repositories.artifacts.list_by_invocation(
+        session.session_id, "inv_artifacts"
+    )
     artifacts_by_id = {artifact.artifact_id: artifact for artifact in artifacts}
     assert result.invocation.status.value == "succeeded"
     assert len(artifacts) == 2
-    assert artifacts_by_id["inv_artifacts:dossier"].kind is ArtifactKind.RESEARCH_DOSSIER
+    assert (
+        artifacts_by_id["inv_artifacts:dossier"].kind is ArtifactKind.RESEARCH_DOSSIER
+    )
     assert artifacts_by_id["inv_artifacts:artifact:1"].kind is ArtifactKind.STRUCTURE
-    assert artifacts_by_id["inv_artifacts:artifact:1"].metadata["provider"] == "rcsb_pdb"
+    assert (
+        artifacts_by_id["inv_artifacts:artifact:1"].metadata["provider"] == "rcsb_pdb"
+    )

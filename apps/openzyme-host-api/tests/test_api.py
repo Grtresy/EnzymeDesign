@@ -40,7 +40,9 @@ from openzyme_domain import RunStatus
 
 
 class FakeExecutionAdapter:
-    def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+    def submit_execution(
+        self, episode_id: str, payload: dict[str, object]
+    ) -> ExecutionOutcome:
         return ExecutionOutcome(
             run_id="run_001",
             status=RunStatus.SUCCEEDED,
@@ -63,19 +65,86 @@ class FakeExecutionAdapter:
 
 
 class FakeResearchAdapter:
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult:
+        del episode_id, research_brief
+        return self.normalize_search_response(
+            unit=unit,
+            response=self.web_search(
+                query=unit.query,
+                max_results=3,
+                topic=unit.topic,
+                include_raw_content=True,
+            ),
+        )
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int = 3,
+        topic: str = "general",
+        include_raw_content: bool = True,
+    ) -> dict[str, object]:
+        del max_results, include_raw_content
+        return {
+            "results": [
+                {
+                    "title": f"Source for {topic}",
+                    "url": f"https://example.org/{topic.replace(' ', '-')}",
+                    "content": f"Finding for {query}",
+                }
+            ]
+        }
+
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, object]:
+        del query, extract_depth, format, include_images
+        return {
+            "results": [
+                {
+                    "title": "Fetched source",
+                    "url": url,
+                    "raw_content": "Fetched content.",
+                }
+            ]
+        }
+
+    def normalize_search_response(
+        self,
+        *,
+        unit: ResearchUnit,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        results = list(response.get("results", []))
+        result = dict(results[0]) if results else {}
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} supports the brief.",
             findings=(
                 ResearchFinding(
-                    summary=f"Finding for {unit.query}",
+                    summary=str(
+                        result.get("content")
+                        or result.get("raw_content")
+                        or f"Finding for {unit.query}"
+                    ),
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
                             title=f"Source for {unit.unit_id}",
-                            locator=f"https://example.org/{unit.unit_id}",
+                            locator=str(
+                                result.get("url")
+                                or f"https://example.org/{unit.unit_id}"
+                            ),
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
@@ -84,12 +153,28 @@ class FakeResearchAdapter:
             unresolved_gaps=("Need structural follow-up",),
         )
 
+    def normalize_fetch_response(
+        self,
+        *,
+        url: str,
+        query: str | None,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        return self.normalize_search_response(
+            unit=ResearchUnit(
+                unit_id="web-fetch", topic="web fetch", query=query or url
+            ),
+            response=response,
+        )
+
 
 class FakeHarnessInvoker:
     def __init__(self) -> None:
         self.calls = 0
 
-    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
         del system_prompt, messages, tools
         self.calls += 1
         if self.calls == 1:
@@ -109,7 +194,10 @@ class FakeHarnessInvoker:
                     }
                 ],
             }
-        return {"content": "Created task task_llm_001 and captured the goal.", "tool_calls": []}
+        return {
+            "content": "Created task task_llm_001 and captured the goal.",
+            "tool_calls": [],
+        }
 
 
 class FakeHarnessModelFactory:
@@ -123,7 +211,9 @@ class FakeHarnessModelFactory:
 
 
 class FakeEchoHarnessInvoker:
-    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
         del system_prompt, messages, tools
         return {"content": "Planning started.", "tool_calls": []}
 
@@ -135,10 +225,16 @@ class FakeEchoHarnessModelFactory:
 
 
 class DebugRecordingModelFactory:
-    def create_tool_calling_invoker(self, *, purpose: str) -> LangChainToolCallingInvoker:
+    def create_tool_calling_invoker(
+        self, *, purpose: str
+    ) -> LangChainToolCallingInvoker:
         class _Runnable:
             def invoke(self, messages):
-                return {"content": "Debug response.", "tool_calls": [], "message_count": len(messages)}
+                return {
+                    "content": "Debug response.",
+                    "tool_calls": [],
+                    "message_count": len(messages),
+                }
 
         class _Model:
             def bind_tools(self, tools):
@@ -174,7 +270,11 @@ def _message_content(message: object) -> str:
 def _tool_message_name(message: object) -> str | None:
     if isinstance(message, dict):
         return None if message.get("name") is None else str(message["name"])
-    return None if getattr(message, "name", None) is None else str(getattr(message, "name"))
+    return (
+        None
+        if getattr(message, "name", None) is None
+        else str(getattr(message, "name"))
+    )
 
 
 class FakeEngineHarnessInvoker:
@@ -182,7 +282,9 @@ class FakeEngineHarnessInvoker:
         self.purpose = purpose
         self.calls = 0
 
-    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> dict[str, object]:
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
         del tools
         self.calls += 1
         if self.purpose == "v3_teammate_loop:researcher":
@@ -220,7 +322,10 @@ class FakeEngineHarnessInvoker:
                         }
                     ],
                 }
-            return {"content": "Execution started and is waiting for approval.", "tool_calls": []}
+            return {
+                "content": "Execution started and is waiting for approval.",
+                "tool_calls": [],
+            }
         if self.purpose == "v3_teammate_loop:reporter":
             if self.calls == 1:
                 return {
@@ -275,7 +380,11 @@ class FakeEngineHarnessInvoker:
             latest_tool_name = tool_name
             seen_tool_names.append(tool_name)
         latest_user_message = next(
-            (_message_content(message) for message in reversed(messages) if _message_role(message) == "user"),
+            (
+                _message_content(message)
+                for message in reversed(messages)
+                if _message_role(message) == "user"
+            ),
             "",
         )
 
@@ -295,7 +404,10 @@ class FakeEngineHarnessInvoker:
                         },
                     ],
                 }
-            return {"content": "Delegated research task task_research_v3.", "tool_calls": []}
+            return {
+                "content": "Delegated research task task_research_v3.",
+                "tool_calls": [],
+            }
 
         if focused_task == "task_execution_v3":
             if latest_tool_name is None:
@@ -313,7 +425,10 @@ class FakeEngineHarnessInvoker:
                         },
                     ],
                 }
-            return {"content": "Delegated execution task task_execution_v3.", "tool_calls": []}
+            return {
+                "content": "Delegated execution task task_execution_v3.",
+                "tool_calls": [],
+            }
 
         if focused_task == "task_report_v3":
             if latest_tool_name is None:
@@ -331,7 +446,10 @@ class FakeEngineHarnessInvoker:
                         },
                     ],
                 }
-            return {"content": "Delegated reporting task task_report_v3.", "tool_calls": []}
+            return {
+                "content": "Delegated reporting task task_report_v3.",
+                "tool_calls": [],
+            }
 
         if "Please track extracting the design goals as a task." in latest_user_message:
             if latest_tool_name is None:
@@ -351,9 +469,14 @@ class FakeEngineHarnessInvoker:
                         }
                     ],
                 }
-            return {"content": "Created task task_llm_001 and captured the goal.", "tool_calls": []}
+            return {
+                "content": "Created task task_llm_001 and captured the goal.",
+                "tool_calls": [],
+            }
 
-        raise AssertionError(f"Unhandled fake harness request for focused task {focused_task!r}")
+        raise AssertionError(
+            f"Unhandled fake harness request for focused task {focused_task!r}"
+        )
 
 
 class FakeEngineHarnessModelFactory:
@@ -367,7 +490,9 @@ class FakeEngineHarnessModelFactory:
         return self.invokers[purpose]
 
 
-def _resolve_next_approval(client: TestClient, episode_id: str, decision: str = "approved") -> dict[str, object]:
+def _resolve_next_approval(
+    client: TestClient, episode_id: str, decision: str = "approved"
+) -> dict[str, object]:
     pending = client.get(f"/episodes/{episode_id}/pending-actions")
     assert pending.status_code == 200
     pending_actions = pending.json()
@@ -407,7 +532,9 @@ def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         ),
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
         research_adapter=FakeResearchAdapter(),
     )
     return (
@@ -429,7 +556,9 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         TestClient(
             create_app(
                 HostApiDependencies(
-                    foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
+                    foundation=replace(
+                        foundation, model_factory=FakeHarnessModelFactory()
+                    ),
                     graph_builder=build_v2_supervisor_graph,
                 )
             )
@@ -444,7 +573,9 @@ def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundat
         TestClient(
             create_app(
                 HostApiDependencies(
-                    foundation=replace(foundation, model_factory=FakeEngineHarnessModelFactory()),
+                    foundation=replace(
+                        foundation, model_factory=FakeEngineHarnessModelFactory()
+                    ),
                     graph_builder=build_v2_supervisor_graph,
                 )
             )
@@ -459,7 +590,9 @@ def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundatio
         TestClient(
             create_app(
                 HostApiDependencies(
-                    foundation=replace(foundation, model_factory=FakeEchoHarnessModelFactory()),
+                    foundation=replace(
+                        foundation, model_factory=FakeEchoHarnessModelFactory()
+                    ),
                     graph_builder=build_v2_supervisor_graph,
                 )
             )
@@ -533,7 +666,9 @@ def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
         ),
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
     )
     runtime = GraphRuntimeFacade(foundation)
     with runtime.compile_graph(build_phase_c_design_graph) as graph:
@@ -587,7 +722,9 @@ def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> N
     episode_id = payload["episode_id"]
     workspace = client.get(f"/episodes/{episode_id}/workspace")
     assert workspace.status_code == 200
-    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(f"{episode_id}-execution-approval-")
+    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(
+        f"{episode_id}-execution-approval-"
+    )
 
 
 def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
@@ -635,7 +772,10 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
 
     message = client.post(
         "/v3/sessions/sess_v3_001/messages",
-        json={"message": "Start by planning the literature extraction.", "task_id": "task_v3_001"},
+        json={
+            "message": "Start by planning the literature extraction.",
+            "task_id": "task_v3_001",
+        },
     )
     assert message.status_code == 200
     payload = message.json()
@@ -700,9 +840,20 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert research.status_code == 200
     research_payload = research.json()
     assert research_payload["status"] == "completed"
-    assert research_payload["workspace"]["task_board"]["items"][0]["task"]["status"] == "completed"
-    assert research_payload["workspace"]["capabilities"]["deep_research"][0]["canonical_summary"]["status"] == "completed"
-    assert research_payload["workspace"]["delegation"]["agents"][0]["agent"]["role"] == "researcher"
+    assert (
+        research_payload["workspace"]["task_board"]["items"][0]["task"]["status"]
+        == "completed"
+    )
+    assert (
+        research_payload["workspace"]["capabilities"]["deep_research"][0][
+            "canonical_summary"
+        ]["status"]
+        == "completed"
+    )
+    assert (
+        research_payload["workspace"]["delegation"]["agents"][0]["agent"]["role"]
+        == "researcher"
+    )
 
     execution_task = client.post(
         "/v3/tasks",
@@ -725,7 +876,10 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert execution_payload["status"] == "waiting_approval"
     pending = execution_payload["workspace"]["pending_approvals"]
     assert pending[0]["kind"] == "execution_launch"
-    assert execution_payload["workspace"]["capabilities"]["execution"][0]["status"] == "waiting_approval"
+    assert (
+        execution_payload["workspace"]["capabilities"]["execution"][0]["status"]
+        == "waiting_approval"
+    )
     assert any(
         agent["agent"]["role"] == "executor"
         for agent in execution_payload["workspace"]["delegation"]["agents"]
@@ -740,9 +894,15 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     resolved_payload = resolved.json()
     assert resolved_payload["status"] == "completed"
     assert resolved_payload["workspace"]["pending_approvals"] == []
-    assert resolved_payload["workspace"]["capabilities"]["execution"][0]["status"] == "succeeded"
+    assert (
+        resolved_payload["workspace"]["capabilities"]["execution"][0]["status"]
+        == "succeeded"
+    )
     assert resolved_payload["workspace"]["artifacts"]
-    assert any(agent["agent"]["status"] == "idle" for agent in resolved_payload["workspace"]["delegation"]["agents"])
+    assert any(
+        agent["agent"]["status"] == "idle"
+        for agent in resolved_payload["workspace"]["delegation"]["agents"]
+    )
 
     reporting_task = client.post(
         "/v3/tasks",
@@ -763,7 +923,9 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert report.status_code == 200
     report_payload = report.json()
     assert report_payload["status"] == "completed"
-    assert report_payload["workspace"]["report_drafts"][0]["task_id"] == "task_report_v3"
+    assert (
+        report_payload["workspace"]["report_drafts"][0]["task_id"] == "task_report_v3"
+    )
     assert report_payload["workspace"]["report_drafts"][0]["status"] == "published"
     assert report_payload["workspace"]["reports"][0]["status"] == "ready"
     assert "reporting" not in report_payload["workspace"]["capabilities"]
@@ -775,7 +937,9 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert "event: report.generated" in events.text
 
 
-def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monkeypatch) -> None:
+def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(
+    monkeypatch,
+) -> None:
     client, _ = _build_v3_llm_client(monkeypatch)
 
     created = client.post(
@@ -795,9 +959,18 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(monk
     assert message.status_code == 200
     payload = message.json()
     assert payload["outputs"] == ["Created task task_llm_001 and captured the goal."]
-    assert payload["workspace"]["task_board"]["items"][0]["task"]["task_id"] == "task_llm_001"
-    assert payload["workspace"]["conversation"][0]["content"] == "Please track extracting the design goals as a task."
-    assert payload["workspace"]["conversation"][1]["content"] == "Created task task_llm_001 and captured the goal."
+    assert (
+        payload["workspace"]["task_board"]["items"][0]["task"]["task_id"]
+        == "task_llm_001"
+    )
+    assert (
+        payload["workspace"]["conversation"][0]["content"]
+        == "Please track extracting the design goals as a task."
+    )
+    assert (
+        payload["workspace"]["conversation"][1]["content"]
+        == "Created task task_llm_001 and captured the goal."
+    )
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
     assert payload["workspace"]["delegation"]["agents"] == []
 
@@ -808,7 +981,9 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
     debug_client = TestClient(
         create_app(
             HostApiDependencies(
-                foundation=replace(foundation, model_factory=DebugRecordingModelFactory()),
+                foundation=replace(
+                    foundation, model_factory=DebugRecordingModelFactory()
+                ),
                 graph_builder=build_v2_supervisor_graph,
             )
         )
@@ -835,7 +1010,9 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
     assert records[0]["purpose"] == "v3_harness_loop"
     assert records[0]["kind"] == "tool_calling"
     assert records[0]["request_context"]["session_id"] == "sess_v3_debug"
-    assert records[0]["request"]["system_prompt"].startswith("You are the top-level OpenZyme master agent.")
+    assert records[0]["request"]["system_prompt"].startswith(
+        "You are the top-level OpenZyme master agent."
+    )
     assert records[0]["response"]["content"] == "Debug response."
 
     detail = debug_client.get(f"/debug/llm-calls/{records[0]['debug_id']}")
@@ -847,7 +1024,9 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
     assert debug_client.get("/debug/llm-calls").json() == []
 
 
-def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_count(monkeypatch) -> None:
+def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_count(
+    monkeypatch,
+) -> None:
     client, _ = _build_v3_llm_client(monkeypatch)
 
     created_a = client.post(
@@ -880,14 +1059,22 @@ def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_coun
     listing = client.get("/v3/projects/proj_001/sessions")
     assert listing.status_code == 200
     payload = listing.json()
-    assert [item["session_id"] for item in payload] == ["sess_v3_list_a", "sess_v3_list_b"]
+    assert [item["session_id"] for item in payload] == [
+        "sess_v3_list_a",
+        "sess_v3_list_b",
+    ]
     assert payload[0]["title"] == "Session A"
-    assert payload[0]["latest_message_preview"] == "Created task task_llm_001 and captured the goal."
+    assert (
+        payload[0]["latest_message_preview"]
+        == "Created task task_llm_001 and captured the goal."
+    )
     assert payload[0]["pending_approval_count"] == 0
     assert payload[0]["updated_at"] >= payload[1]["updated_at"]
 
 
-def test_v3_message_ingress_returns_service_unavailable_without_model_factory(monkeypatch) -> None:
+def test_v3_message_ingress_returns_service_unavailable_without_model_factory(
+    monkeypatch,
+) -> None:
     client, _ = _build_client(monkeypatch)
 
     created = client.post(
@@ -908,7 +1095,9 @@ def test_v3_message_ingress_returns_service_unavailable_without_model_factory(mo
     assert "requires a configured model_factory" in message.json()["detail"]
 
 
-def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(monkeypatch) -> None:
+def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(
+    monkeypatch,
+) -> None:
     client, _ = _build_client(monkeypatch)
 
     created = client.post(
@@ -971,7 +1160,9 @@ def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> N
 
     stream_response = client.get(f"/episodes/{episode_id}/stream")
     assert stream_response.status_code == 200
-    lines = [line for line in stream_response.text.splitlines() if line.startswith("data: ")]
+    lines = [
+        line for line in stream_response.text.splitlines() if line.startswith("data: ")
+    ]
     events = [json.loads(line[6:]) for line in lines]
     event_types = {event["event_type"] for event in events}
 
@@ -987,7 +1178,10 @@ def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> Non
 
     created = client.post(
         "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
+        json={
+            "project_id": "proj_001",
+            "objective": "Research thermostability evidence",
+        },
     ).json()
     episode_id = created["episode_id"]
 
@@ -1036,15 +1230,22 @@ def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> Non
     assert research["summary"]["summary"].startswith("Public literature indicates")
     assert research["evidence"][0]["query"] == "thermostable homolog catalase"
     assert research["evidence"][0]["source_refs"][0]["kind"] == "paper"
-    assert research["unresolved_gaps"][0]["summary"].startswith("Missing structure-backed")
+    assert research["unresolved_gaps"][0]["summary"].startswith(
+        "Missing structure-backed"
+    )
 
 
-def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(monkeypatch) -> None:
+def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(
+    monkeypatch,
+) -> None:
     client, _ = _build_client(monkeypatch)
 
     created = client.post(
         "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Research thermostability evidence"},
+        json={
+            "project_id": "proj_001",
+            "objective": "Research thermostability evidence",
+        },
     ).json()
     episode_id = created["episode_id"]
     assert created["workspace"]["workflow"]["current_phase"] == "execution"
@@ -1067,7 +1268,9 @@ def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> No
     assert "artifact_workspace_summary" in created.json()["design"]
 
 
-def test_report_query_and_projection_become_available_after_supervisor_completion(monkeypatch) -> None:
+def test_report_query_and_projection_become_available_after_supervisor_completion(
+    monkeypatch,
+) -> None:
     client, _ = _build_client(monkeypatch)
 
     created = client.post(
@@ -1087,7 +1290,9 @@ def test_report_query_and_projection_become_available_after_supervisor_completio
     assert query.json()[0]["report_id"] == report["report_id"]
 
 
-def test_project_and_episode_queries_support_browser_shell_bootstrap(monkeypatch) -> None:
+def test_project_and_episode_queries_support_browser_shell_bootstrap(
+    monkeypatch,
+) -> None:
     client, _ = _build_client(monkeypatch)
 
     created = client.post(
@@ -1101,4 +1306,6 @@ def test_project_and_episode_queries_support_browser_shell_bootstrap(monkeypatch
     assert projects.status_code == 200
     assert projects.json()[0]["project_id"] == "proj_001"
     assert episodes.status_code == 200
-    assert {episode["episode_id"] for episode in episodes.json()} >= {created["episode_id"]}
+    assert {episode["episode_id"] for episode in episodes.json()} >= {
+        created["episode_id"]
+    }

@@ -65,11 +65,13 @@ from .repositories import connect_sqlite
 from .research_tools import CompositeResearchToolProvider
 from .research_tools import build_bio_research_tools
 from .research_tools import DefaultResearchToolProvider
-from .research_tools import ResearchAdapterSearchTool
-from .research_tools import SearchCollectArgs
 from .research_tools import StaticResearchToolProvider
 from .research_tools import ThinkResearchTool
 from .research_tools import ThinkToolArgs
+from .research_tools import WebFetchArgs
+from .research_tools import WebFetchTool
+from .research_tools import WebSearchArgs
+from .research_tools import WebSearchTool
 from .seams import ExecutionAdapter
 from .seams import DesignTool
 from .seams import DesignToolContext
@@ -175,13 +177,11 @@ __all__ = [
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",
-    "ResearchAdapterSearchTool",
     "ReportRepository",
     "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",
     "ResearchSupervisorAction",
-    "SearchCollectArgs",
     "ResearchTool",
     "ResearchToolContext",
     "ResearchToolProvider",
@@ -201,6 +201,10 @@ __all__ = [
     "StaticResearchToolProvider",
     "ThinkResearchTool",
     "ThinkToolArgs",
+    "WebFetchArgs",
+    "WebFetchTool",
+    "WebSearchArgs",
+    "WebSearchTool",
     "TracingSettings",
     "UnresolvedGapRepository",
     "RuntimeFoundation",

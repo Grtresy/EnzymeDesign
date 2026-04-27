@@ -26,7 +26,9 @@ from openzyme_tools import RepoBackedHpcCatalogProvider
 
 
 class FakeExecutionAdapter:
-    def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+    def submit_execution(
+        self, episode_id: str, payload: dict[str, object]
+    ) -> ExecutionOutcome:
         del payload
         return ExecutionOutcome(
             run_id="run_001",
@@ -47,22 +49,81 @@ class FakeExecutionAdapter:
 class FakeResearchAdapter:
     def conduct(self, *, episode_id: str, research_brief: str, unit) -> object:
         del episode_id, research_brief
+        return self.normalize_search_response(
+            unit=unit,
+            response=self.web_search(
+                query=unit.query,
+                max_results=3,
+                topic=unit.topic,
+                include_raw_content=True,
+            ),
+        )
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int = 3,
+        topic: str = "general",
+        include_raw_content: bool = True,
+    ) -> dict[str, object]:
+        del max_results, include_raw_content
+        return {
+            "results": [
+                {
+                    "title": f"Source for {topic}",
+                    "url": f"https://example.org/{topic.replace(' ', '-')}",
+                    "content": f"Finding for {query}",
+                }
+            ]
+        }
+
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, object]:
+        del query, extract_depth, format, include_images
+        return {
+            "results": [
+                {
+                    "title": "Fetched source",
+                    "url": url,
+                    "raw_content": "Fetched content.",
+                }
+            ]
+        }
+
+    def normalize_search_response(self, *, unit, response: dict[str, object]) -> object:
         from openzyme_research import ResearchFinding
         from openzyme_research import ResearchSource
         from openzyme_research import ResearchUnitResult
 
+        results = list(response.get("results", []))
+        result = dict(results[0]) if results else {}
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} supports the design objective.",
             findings=(
                 ResearchFinding(
-                    summary=f"Finding for {unit.query}",
+                    summary=str(
+                        result.get("content")
+                        or result.get("raw_content")
+                        or f"Finding for {unit.query}"
+                    ),
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
                             title=f"Source for {unit.unit_id}",
-                            locator=f"https://example.org/{unit.unit_id}",
+                            locator=str(
+                                result.get("url")
+                                or f"https://example.org/{unit.unit_id}"
+                            ),
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
@@ -71,14 +132,30 @@ class FakeResearchAdapter:
             unresolved_gaps=("Need follow-up validation.",),
         )
 
+    def normalize_fetch_response(
+        self, *, url: str, query: str | None, response: dict[str, object]
+    ) -> object:
+        return self.normalize_search_response(
+            unit=type(
+                "ResearchUnit",
+                (),
+                {"unit_id": "web-fetch", "topic": "web fetch", "query": query or url},
+            )(),
+            response=response,
+        )
+
 
 class FakeStructuredInvoker:
-    def __init__(self, responses: dict[str, object], calls: list[str], purpose: str) -> None:
+    def __init__(
+        self, responses: dict[str, object], calls: list[str], purpose: str
+    ) -> None:
         self._response = responses[purpose]
         self._calls = calls
         self._purpose = purpose
 
-    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+    def invoke_structured(
+        self, *, schema, system_prompt: str, user_payload: dict[str, object]
+    ):
         del schema, system_prompt, user_payload
         self._calls.append(self._purpose)
         return self._response
@@ -98,7 +175,9 @@ def _memory_checkpointer_open(self: PostgresCheckpointerFactory):
     yield InMemorySaver()
 
 
-def _build_foundation(*, with_research: bool = True, with_research_adapter: bool = False) -> RuntimeFoundation:
+def _build_foundation(
+    *, with_research: bool = True, with_research_adapter: bool = False
+) -> RuntimeFoundation:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     repositories = PhaseBRepositories.from_connection(connection)
@@ -159,12 +238,16 @@ def _build_foundation(*, with_research: bool = True, with_research_adapter: bool
         ),
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
         research_adapter=FakeResearchAdapter() if with_research_adapter else None,
     )
 
 
-def test_phase_c_design_graph_curates_artifacts_and_prepares_execution_handoff(monkeypatch) -> None:
+def test_phase_c_design_graph_curates_artifacts_and_prepares_execution_handoff(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -184,11 +267,15 @@ def test_phase_c_design_graph_curates_artifacts_and_prepares_execution_handoff(m
         )
     assert first["status"] == "completed"
     assert first["recommended_next_phase"] == "execution"
-    assert first["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
+    assert first["execution_handoff"]["required_artifact_ids"] == [
+        "art_input_structure"
+    ]
     assert first["artifact_workspace_summary"]["artifact_count"] >= 1
 
 
-def test_phase_c_design_graph_routes_curated_artifacts_into_execution(monkeypatch) -> None:
+def test_phase_c_design_graph_routes_curated_artifacts_into_execution(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -209,11 +296,18 @@ def test_phase_c_design_graph_routes_curated_artifacts_into_execution(monkeypatc
 
     assert result["status"] == "completed"
     assert result["recommended_next_phase"] == "execution"
-    assert result["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
-    assert "art_input_structure" in result["artifact_workspace_summary"]["execution_ready_artifact_ids"]
+    assert result["execution_handoff"]["required_artifact_ids"] == [
+        "art_input_structure"
+    ]
+    assert (
+        "art_input_structure"
+        in result["artifact_workspace_summary"]["execution_ready_artifact_ids"]
+    )
 
 
-def test_phase_c_design_graph_collects_research_inside_design_when_missing(monkeypatch) -> None:
+def test_phase_c_design_graph_collects_research_inside_design_when_missing(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -233,7 +327,9 @@ def test_phase_c_design_graph_collects_research_inside_design_when_missing(monke
         )
 
     assert result["recommended_next_phase"] == "execution"
-    assert foundation.repositories.research_summaries.get_by_episode("ep_001") is not None
+    assert (
+        foundation.repositories.research_summaries.get_by_episode("ep_001") is not None
+    )
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) >= 1
 
 
@@ -277,5 +373,10 @@ def test_phase_c_design_graph_uses_structured_next_action_output(monkeypatch) ->
         )
 
     assert result["execution_handoff"]["recommended_next_phase"] == "execution"
-    assert result["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
-    assert result["execution_handoff"]["preferred_stage_tags"] == ["execution", "evaluator"]
+    assert result["execution_handoff"]["required_artifact_ids"] == [
+        "art_input_structure"
+    ]
+    assert result["execution_handoff"]["preferred_stage_tags"] == [
+        "execution",
+        "evaluator",
+    ]

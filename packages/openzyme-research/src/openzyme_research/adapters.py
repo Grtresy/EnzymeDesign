@@ -86,10 +86,13 @@ class ResearchUnitResult:
 
 
 class ResearchAdapter(Protocol):
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult: ...
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult: ...
 
 
 SearchCallable = Callable[..., dict[str, Any]]
+ExtractCallable = Callable[..., dict[str, Any]]
 
 
 def _clip_text(value: str | None, *, limit: int = 280) -> str:
@@ -108,22 +111,44 @@ class TavilyResearchAdapter:
     topic: str = "general"
     include_raw_content: bool = True
     search_callable: SearchCallable | None = None
+    extract_callable: ExtractCallable | None = None
 
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult:
         del episode_id, research_brief
-        response = self.search(unit.query)
-        return self.normalize_response(unit=unit, response=response)
+        response = self.web_search(query=unit.query, topic=unit.topic)
+        return self.normalize_search_response(unit=unit, response=response)
 
     def search(self, query: str) -> dict[str, Any]:
+        return self.web_search(query=query)
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int | None = None,
+        topic: str | None = None,
+        include_raw_content: bool | None = None,
+    ) -> dict[str, Any]:
         search = self.search_callable or self._load_search_callable()
         return search(
             query=query,
-            max_results=self.max_results,
-            include_raw_content=self.include_raw_content,
-            topic=self.topic,
+            max_results=self.max_results if max_results is None else max_results,
+            include_raw_content=self.include_raw_content
+            if include_raw_content is None
+            else include_raw_content,
+            topic=self.topic if topic is None else topic,
         )
 
-    def normalize_response(self, *, unit: ResearchUnit, response: dict[str, Any]) -> ResearchUnitResult:
+    def normalize_response(
+        self, *, unit: ResearchUnit, response: dict[str, Any]
+    ) -> ResearchUnitResult:
+        return self.normalize_search_response(unit=unit, response=response)
+
+    def normalize_search_response(
+        self, *, unit: ResearchUnit, response: dict[str, Any]
+    ) -> ResearchUnitResult:
         raw_results = list(response.get("results", []))
         if not raw_results:
             return ResearchUnitResult(
@@ -138,7 +163,9 @@ class TavilyResearchAdapter:
         for result in raw_results:
             title = str(result.get("title") or unit.topic)
             locator = str(result.get("url") or "")
-            content = _clip_text(str(result.get("content") or result.get("raw_content") or title))
+            content = _clip_text(
+                str(result.get("content") or result.get("raw_content") or title)
+            )
             findings.append(
                 ResearchFinding(
                     summary=content or title,
@@ -149,7 +176,13 @@ class TavilyResearchAdapter:
                             title=title,
                             locator=locator,
                             kind=SourceRefKind.WEB_PAGE,
-                            snippet=_clip_text(str(result.get("raw_content") or result.get("content") or "")),
+                            snippet=_clip_text(
+                                str(
+                                    result.get("raw_content")
+                                    or result.get("content")
+                                    or ""
+                                )
+                            ),
                         ),
                     ),
                 )
@@ -158,22 +191,110 @@ class TavilyResearchAdapter:
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=_clip_text(
-                f"{unit.topic}: " + " ".join(finding.summary for finding in findings[:2]),
+                f"{unit.topic}: "
+                + " ".join(finding.summary for finding in findings[:2]),
                 limit=400,
             ),
             findings=tuple(findings),
         )
 
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, Any]:
+        extract = self.extract_callable or self._load_extract_callable()
+        return extract(
+            urls=[url],
+            extract_depth=extract_depth,
+            format=format,
+            include_images=include_images,
+        )
+
+    def normalize_fetch_response(
+        self,
+        *,
+        url: str,
+        query: str | None,
+        response: dict[str, Any],
+    ) -> ResearchUnitResult:
+        raw_results = list(response.get("results", []))
+        if not raw_results:
+            failures = list(response.get("failed_results", []))
+            reason = "No extracted content was returned."
+            if failures:
+                failure = dict(failures[0])
+                reason = str(failure.get("error") or failure.get("message") or reason)
+            return ResearchUnitResult(
+                unit_id="web-fetch",
+                summary=f"No extracted content was returned for {url}.",
+                findings=(),
+                unresolved_gaps=(f"Could not fetch URL {url}: {reason}",),
+                error_message="no_extracted_content",
+            )
+
+        result = dict(raw_results[0])
+        title = str(result.get("title") or result.get("url") or url)
+        locator = str(result.get("url") or url)
+        content = _clip_text(
+            str(result.get("raw_content") or result.get("content") or title), limit=600
+        )
+        return ResearchUnitResult(
+            unit_id="web-fetch",
+            summary=content or f"Fetched content from {locator}.",
+            findings=(
+                ResearchFinding(
+                    summary=content or title,
+                    query=query or url,
+                    confidence_label="medium",
+                    sources=(
+                        ResearchSource(
+                            title=title,
+                            locator=locator,
+                            kind=SourceRefKind.WEB_PAGE,
+                            snippet=content or None,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
     def _load_search_callable(self) -> SearchCallable:
         api_key = self.api_key
         if not api_key:
-            raise MissingTavilyApiKeyError("TavilyResearchAdapter requires TAVILY_API_KEY")
+            raise MissingTavilyApiKeyError(
+                "TavilyResearchAdapter requires TAVILY_API_KEY"
+            )
         try:
             from tavily import TavilyClient
-        except ImportError as exc:  # pragma: no cover - exercised only when dependency is missing
+        except (
+            ImportError
+        ) as exc:  # pragma: no cover - exercised only when dependency is missing
             raise MissingTavilyDependencyError(
                 "Install openzyme-research[tavily] to use TavilyResearchAdapter"
             ) from exc
 
         client = TavilyClient(api_key=api_key)
         return client.search
+
+    def _load_extract_callable(self) -> ExtractCallable:
+        api_key = self.api_key
+        if not api_key:
+            raise MissingTavilyApiKeyError(
+                "TavilyResearchAdapter requires TAVILY_API_KEY"
+            )
+        try:
+            from tavily import TavilyClient
+        except (
+            ImportError
+        ) as exc:  # pragma: no cover - exercised only when dependency is missing
+            raise MissingTavilyDependencyError(
+                "Install openzyme-research[tavily] to use TavilyResearchAdapter"
+            ) from exc
+
+        client = TavilyClient(api_key=api_key)
+        return client.extract

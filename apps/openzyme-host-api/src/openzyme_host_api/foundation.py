@@ -44,7 +44,9 @@ DEFAULT_PROJECT_DESCRIPTION = "Preloaded project for local OpenZyme Host API wor
 class DeterministicExecutionAdapter:
     _episode_call_counts: dict[str, int] = field(default_factory=dict)
 
-    def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+    def submit_execution(
+        self, episode_id: str, payload: dict[str, object]
+    ) -> ExecutionOutcome:
         call_count = self._episode_call_counts.get(episode_id, 0) + 1
         self._episode_call_counts[episode_id] = call_count
         run_id = f"run_{episode_id}_{call_count}"
@@ -71,25 +73,104 @@ class DeterministicExecutionAdapter:
 
 @dataclass(slots=True)
 class DeterministicResearchAdapter:
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult:
+        del episode_id, research_brief
+        return self.normalize_search_response(
+            unit=unit,
+            response=self.web_search(
+                query=unit.query,
+                max_results=3,
+                topic=unit.topic,
+                include_raw_content=True,
+            ),
+        )
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int = 3,
+        topic: str = "general",
+        include_raw_content: bool = True,
+    ) -> dict[str, object]:
+        del max_results, include_raw_content
+        return {
+            "results": [
+                {
+                    "title": f"Reference source for {topic}",
+                    "url": f"https://example.org/reference/{topic.replace(' ', '-')}",
+                    "content": f"Deterministic finding for {query}",
+                }
+            ]
+        }
+
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, object]:
+        del query, extract_depth, format, include_images
+        return {
+            "results": [
+                {
+                    "title": "Deterministic web page",
+                    "url": url,
+                    "raw_content": f"Deterministic extracted content for {url}",
+                }
+            ]
+        }
+
+    def normalize_search_response(
+        self, *, unit: ResearchUnit, response: dict[str, object]
+    ) -> ResearchUnitResult:
+        results = list(response.get("results", []))
+        result = dict(results[0]) if results else {}
+        locator = str(
+            result.get("url") or f"https://example.org/reference/{unit.unit_id}"
+        )
+        summary = str(
+            result.get("content")
+            or result.get("raw_content")
+            or f"Deterministic finding for {unit.query}"
+        )
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} supports the current design objective.",
             findings=(
                 ResearchFinding(
-                    summary=f"Deterministic finding for {unit.query}",
+                    summary=summary,
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
                             title=f"Reference source for {unit.unit_id}",
-                            locator=f"https://example.org/reference/{unit.unit_id}",
+                            locator=locator,
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
                 ),
             ),
             unresolved_gaps=("Need wet-lab follow-up for the top hypothesis.",),
+        )
+
+    def normalize_fetch_response(
+        self,
+        *,
+        url: str,
+        query: str | None,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        return self.normalize_search_response(
+            unit=ResearchUnit(
+                unit_id="web-fetch", topic="web fetch", query=query or url
+            ),
+            response=response,
         )
 
 
@@ -108,9 +189,13 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
         settings,
         llm=replace(
             settings.llm,
-            max_tokens=300 if live_policy.max_tokens is None else live_policy.max_tokens,
+            max_tokens=300
+            if live_policy.max_tokens is None
+            else live_policy.max_tokens,
             timeout=45.0 if live_policy.timeout is None else live_policy.timeout,
-            max_retries=5 if live_policy.max_retries is None else max(0, live_policy.max_retries),
+            max_retries=5
+            if live_policy.max_retries is None
+            else max(0, live_policy.max_retries),
             structured_output_method=(
                 "function_calling"
                 if live_policy.structured_output_method is None
@@ -193,7 +278,9 @@ def _build_execution_adapter(settings: OpenZymeSettings):
     if settings.execution.backend == "demo":
         return DeterministicExecutionAdapter()
     if settings.execution.backend == "hpc":
-        return HpcRunnerExecutionAdapter(config_path=settings.execution.hpc_runner_config)
+        return HpcRunnerExecutionAdapter(
+            config_path=settings.execution.hpc_runner_config
+        )
     raise ValueError(f"Unsupported execution backend: {settings.execution.backend}")
 
 
@@ -226,7 +313,9 @@ def build_local_eval_foundation(
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DeterministicExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,
@@ -256,7 +345,9 @@ def build_configured_foundation(
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=_build_execution_adapter(effective_settings),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
         research_adapter=research_adapter,
         research_tool_provider=DefaultResearchToolProvider(
             research_adapter,

@@ -33,7 +33,9 @@ def _nested_values(snapshot):
 
 
 class FakeExecutionAdapter:
-    def submit_execution(self, episode_id: str, payload: dict[str, object]) -> ExecutionOutcome:
+    def submit_execution(
+        self, episode_id: str, payload: dict[str, object]
+    ) -> ExecutionOutcome:
         return ExecutionOutcome(
             run_id="run_001",
             status=RunStatus.SUCCEEDED,
@@ -56,25 +58,106 @@ class FakeExecutionAdapter:
 
 
 class FakeResearchAdapter:
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult:
+        del episode_id, research_brief
+        return self.normalize_search_response(
+            unit=unit,
+            response=self.web_search(
+                query=unit.query,
+                max_results=3,
+                topic=unit.topic,
+                include_raw_content=True,
+            ),
+        )
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int = 3,
+        topic: str = "general",
+        include_raw_content: bool = True,
+    ) -> dict[str, object]:
+        del max_results, include_raw_content
+        return {
+            "results": [
+                {
+                    "title": f"Source for {topic}",
+                    "url": f"https://example.org/{topic.replace(' ', '-')}",
+                    "content": f"Finding for {query}",
+                }
+            ]
+        }
+
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, object]:
+        del query, extract_depth, format, include_images
+        return {
+            "results": [
+                {
+                    "title": "Fetched source",
+                    "url": url,
+                    "raw_content": "Fetched content.",
+                }
+            ]
+        }
+
+    def normalize_search_response(
+        self,
+        *,
+        unit: ResearchUnit,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        results = list(response.get("results", []))
+        result = dict(results[0]) if results else {}
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} supports the research brief.",
             findings=(
                 ResearchFinding(
-                    summary=f"Finding for {unit.query}",
+                    summary=str(
+                        result.get("content")
+                        or result.get("raw_content")
+                        or f"Finding for {unit.query}"
+                    ),
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
                             title=f"Source for {unit.unit_id}",
-                            locator=f"https://example.org/{unit.unit_id}",
+                            locator=str(
+                                result.get("url")
+                                or f"https://example.org/{unit.unit_id}"
+                            ),
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
                 ),
             ),
             unresolved_gaps=(f"Need follow-up for {unit.unit_id}",),
+        )
+
+    def normalize_fetch_response(
+        self,
+        *,
+        url: str,
+        query: str | None,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        return self.normalize_search_response(
+            unit=ResearchUnit(
+                unit_id="web-fetch", topic="web fetch", query=query or url
+            ),
+            response=response,
         )
 
 
@@ -116,12 +199,16 @@ def _build_foundation() -> RuntimeFoundation:
         ),
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider()),
+        hpc_execution_registry=DefaultHpcExecutionRegistry(
+            RepoBackedHpcCatalogProvider()
+        ),
         research_adapter=FakeResearchAdapter(),
     )
 
 
-def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thread(monkeypatch) -> None:
+def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thread(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -146,7 +233,9 @@ def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thr
     assert first["recommended_next_phase"] == "execution"
     assert first_snapshot.values["current_phase"] == "execution"
     assert len(foundation.repositories.evidence_records.list_by_episode("ep_001")) == 2
-    assert first["execution_handoff"]["required_artifact_ids"] == ["art_input_structure"]
+    assert first["execution_handoff"]["required_artifact_ids"] == [
+        "art_input_structure"
+    ]
     assert second["status"] == "completed"
     assert second["current_phase"] == "report_review"
     assert second["run_summary"]["run_id"] == "run_001"
@@ -155,7 +244,9 @@ def test_unified_supervisor_routes_design_execution_and_report_review_on_one_thr
     assert foundation.repositories.reports.get("ep_001-report") is not None
 
 
-def test_unified_supervisor_only_completes_after_report_review_finishes(monkeypatch) -> None:
+def test_unified_supervisor_only_completes_after_report_review_finishes(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
@@ -182,4 +273,7 @@ def test_unified_supervisor_only_completes_after_report_review_finishes(monkeypa
     assert design_resume["report_artifact_id"] == "ep_001-report-artifact"
     assert final_snapshot.values["current_phase"] == "report_review"
     assert final_snapshot.values["status"] == "completed"
-    assert foundation.repositories.reports.list_by_episode("ep_001")[0].artifact_id == "ep_001-report-artifact"
+    assert (
+        foundation.repositories.reports.list_by_episode("ep_001")[0].artifact_id
+        == "ep_001-report-artifact"
+    )

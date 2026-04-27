@@ -20,20 +20,80 @@ from openzyme_graph.deep_research import run_deep_research
 
 
 class FakeResearchAdapter:
-    def conduct(self, *, episode_id: str, research_brief: str, unit: ResearchUnit) -> ResearchUnitResult:
+    def conduct(
+        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+    ) -> ResearchUnitResult:
         del episode_id, research_brief
+        return self.normalize_search_response(
+            unit=unit,
+            response=self.web_search(
+                query=unit.query,
+                max_results=3,
+                topic=unit.topic,
+                include_raw_content=True,
+            ),
+        )
+
+    def web_search(
+        self,
+        *,
+        query: str,
+        max_results: int = 3,
+        topic: str = "general",
+        include_raw_content: bool = True,
+    ) -> dict[str, object]:
+        del max_results, include_raw_content
+        return {
+            "results": [
+                {
+                    "title": f"Source for {topic}",
+                    "url": "https://example.org/overview",
+                    "content": f"Finding for {query}",
+                }
+            ]
+        }
+
+    def fetch_url(
+        self,
+        *,
+        url: str,
+        query: str | None = None,
+        extract_depth: str = "basic",
+        format: str = "markdown",
+        include_images: bool = False,
+    ) -> dict[str, object]:
+        del query, extract_depth, format, include_images
+        return {
+            "results": [
+                {
+                    "title": "Fetched source",
+                    "url": url,
+                    "raw_content": "Fetched page content.",
+                }
+            ]
+        }
+
+    def normalize_search_response(
+        self, *, unit: ResearchUnit, response: dict[str, object]
+    ) -> ResearchUnitResult:
+        result = dict(list(response["results"])[0])  # type: ignore[index]
+        content = str(
+            result.get("content")
+            or result.get("raw_content")
+            or f"Finding for {unit.query}"
+        )
         return ResearchUnitResult(
             unit_id=unit.unit_id,
             summary=f"{unit.topic} summary for {unit.query}",
             findings=(
                 ResearchFinding(
-                    summary=f"Finding for {unit.query}",
+                    summary=content,
                     query=unit.query,
                     confidence_label="high",
                     sources=(
                         ResearchSource(
                             title=f"Source for {unit.unit_id}",
-                            locator=f"https://example.org/{unit.unit_id}",
+                            locator=str(result["url"]),
                             kind=SourceRefKind.WEB_PAGE,
                         ),
                     ),
@@ -41,6 +101,16 @@ class FakeResearchAdapter:
             ),
             unresolved_gaps=("Need experimental validation.",),
         )
+
+    def normalize_fetch_response(
+        self,
+        *,
+        url: str,
+        query: str | None,
+        response: dict[str, object],
+    ) -> ResearchUnitResult:
+        unit = ResearchUnit(unit_id="web-fetch", topic="web fetch", query=query or url)
+        return self.normalize_search_response(unit=unit, response=response)
 
 
 def _build_foundation() -> RuntimeFoundation:
@@ -91,6 +161,8 @@ def test_run_deep_research_returns_normalized_dossier() -> None:
     assert dossier.research_brief.startswith("Find evidence")
     assert dossier.summary
     assert len(dossier.evidence_items) >= 1
-    assert dossier.evidence_items[0].sources[0].locator.startswith("https://example.org/")
+    assert (
+        dossier.evidence_items[0].sources[0].locator.startswith("https://example.org/")
+    )
     assert "Need experimental validation." in dossier.unresolved_gaps
     assert dossier.recent_turns[0].action_kind == "conduct_research"

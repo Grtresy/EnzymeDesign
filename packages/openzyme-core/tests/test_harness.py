@@ -47,6 +47,7 @@ from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
 from openzyme_core import teammate_tool_descriptors
 from openzyme_research import DeterministicBioResearchService
+from openzyme_research import TavilyResearchAdapter
 
 
 class RateLimitedBioResearchService(DeterministicBioResearchService):
@@ -171,7 +172,9 @@ def test_runtime_context_can_build_restore_context_with_skills() -> None:
         event_sink=MemoryEventBus(),
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(task_id="task_001", lane_id=lane.lane_id, skill_keys=("vina",)),
+        restore_focus=RestoreFocus(
+            task_id="task_001", lane_id=lane.lane_id, skill_keys=("vina",)
+        ),
         active_skill_keys=("vina",),
         skill_registry=SkillRegistry(),
     )
@@ -259,7 +262,9 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
     session = _seed_session(repositories)
     event_bus = MemoryEventBus()
     registry = ToolRegistry()
-    registry.register("echo", lambda _context, invocation: str(invocation.arguments["text"]).upper())
+    registry.register(
+        "echo", lambda _context, invocation: str(invocation.arguments["text"]).upper()
+    )
 
     result = run_agent_harness_loop(
         repositories,
@@ -299,7 +304,10 @@ class RegistryBackedEngine:
     )
 
     def register_tools(self, registry: ToolRegistry) -> None:
-        registry.register("registry.echo", lambda _context, invocation: f"engine:{invocation.arguments['text']}")
+        registry.register(
+            "registry.echo",
+            lambda _context, invocation: f"engine:{invocation.arguments['text']}",
+        )
 
 
 class RegistryToolDriver:
@@ -340,7 +348,9 @@ def test_harness_loop_registers_engine_tools_from_engine_registry() -> None:
 
     assert result.status is HarnessStatus.COMPLETED
     assert result.outputs == ("engine:ready",)
-    assert [tool_result.tool_name for tool_result in result.tool_results] == ["registry.echo"]
+    assert [tool_result.tool_name for tool_result in result.tool_results] == [
+        "registry.echo"
+    ]
 
 
 class ToolCreatedApprovalDriver:
@@ -370,7 +380,9 @@ def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -
     session = _seed_session(repositories)
     registry = ToolRegistry()
 
-    def approval_tool(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
+    def approval_tool(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> str:
         context.repositories.approvals.save(
             ApprovalRequest(
                 approval_id="appr_tool_001",
@@ -442,7 +454,9 @@ def test_harness_loop_waits_for_approval_and_resumes_cleanly() -> None:
     )
     assert first.status is HarnessStatus.WAITING_APPROVAL
     assert first.pending_approval_id == "appr_001"
-    assert repositories.approvals.get("appr_001").status is ApprovalRequestStatus.PENDING
+    assert (
+        repositories.approvals.get("appr_001").status is ApprovalRequestStatus.PENDING
+    )
 
     second = run_agent_harness_loop(
         repositories,
@@ -458,7 +472,9 @@ def test_harness_loop_waits_for_approval_and_resumes_cleanly() -> None:
     )
     assert second.status is HarnessStatus.COMPLETED
     assert second.outputs == ("approval resumed",)
-    assert repositories.approvals.get("appr_001").status is ApprovalRequestStatus.APPROVED
+    assert (
+        repositories.approvals.get("appr_001").status is ApprovalRequestStatus.APPROVED
+    )
     assert "approval.resolved" in {event.event_type for event in second.events}
 
 
@@ -497,7 +513,10 @@ def test_harness_loop_exposes_delegation_seam_via_inbox_and_handles() -> None:
 
     assert result.status is HarnessStatus.WAITING_DELEGATION
     assert result.delegations[0].request_id == "deleg_001"
-    inbox_types = [message.message_type for message in repositories.inbox.list_by_session(session.session_id)]
+    inbox_types = [
+        message.message_type
+        for message in repositories.inbox.list_by_session(session.session_id)
+    ]
     assert "delegation_request" in inbox_types
     assert repositories.agents.get("agent:researcher") is not None
     assert "agent.delegated" in {event.event_type for event in result.events}
@@ -545,7 +564,9 @@ def test_harness_infers_lane_from_bound_task_for_tools_and_engines() -> None:
     session = _seed_session(repositories)
     lane = _seed_lane(repositories, session)
     registry = ToolRegistry()
-    registry.register("lane_echo", lambda _context, invocation: invocation.lane_id or "none")
+    registry.register(
+        "lane_echo", lambda _context, invocation: invocation.lane_id or "none"
+    )
 
     result = run_agent_harness_loop(
         repositories,
@@ -556,7 +577,10 @@ def test_harness_infers_lane_from_bound_task_for_tools_and_engines() -> None:
 
     assert result.outputs == (lane.lane_id,)
     assert result.tool_results[0].lane_id == lane.lane_id
-    assert repositories.invocations.list_by_session(session.session_id)[0].lane_id == lane.lane_id
+    assert (
+        repositories.invocations.list_by_session(session.session_id)[0].lane_id
+        == lane.lane_id
+    )
 
 
 class SkillLoadingDriver:
@@ -581,7 +605,10 @@ class SkillLoadingDriver:
             )
         assert context.restore_context is not None
         return HarnessStep(
-            assistant_message="skills:" + ",".join(skill.skill_key for skill in context.restore_context.skill_documents)
+            assistant_message="skills:"
+            + ",".join(
+                skill.skill_key for skill in context.restore_context.skill_documents
+            )
         )
 
 
@@ -627,11 +654,16 @@ def test_harness_memory_compact_tool_writes_task_scope_summary() -> None:
 
     result = run_agent_harness_loop(
         repositories,
-        HarnessInput(session_id=session.session_id, restore_focus=RestoreFocus(task_id="task_001")),
+        HarnessInput(
+            session_id=session.session_id,
+            restore_focus=RestoreFocus(task_id="task_001"),
+        ),
         driver=ExplicitCompactionDriver(),
     )
 
-    task_memory = repositories.memory.list_by_scope(session.session_id, MemoryScopeKind.TASK, "task_001")
+    task_memory = repositories.memory.list_by_scope(
+        session.session_id, MemoryScopeKind.TASK, "task_001"
+    )
     assert any(entry.kind is MemoryKind.COMPACTION for entry in task_memory)
     assert result.outputs == ("compacted",)
 
@@ -641,7 +673,9 @@ def test_harness_auto_compaction_keeps_lane_restore_state() -> None:
     session = _seed_session(repositories)
     lane = _seed_lane(repositories, session)
     registry = ToolRegistry()
-    registry.register("lane_echo", lambda _context, invocation: invocation.lane_id or "none")
+    registry.register(
+        "lane_echo", lambda _context, invocation: invocation.lane_id or "none"
+    )
 
     run_agent_harness_loop(
         repositories,
@@ -651,11 +685,16 @@ def test_harness_auto_compaction_keeps_lane_restore_state() -> None:
     )
     second = run_agent_harness_loop(
         repositories,
-        HarnessInput(session_id=session.session_id, restore_focus=RestoreFocus(task_id="task_001", lane_id=lane.lane_id)),
+        HarnessInput(
+            session_id=session.session_id,
+            restore_focus=RestoreFocus(task_id="task_001", lane_id=lane.lane_id),
+        ),
         driver=ApprovalDriver(),
     )
 
-    lane_memory = repositories.memory.list_by_scope(session.session_id, MemoryScopeKind.LANE, lane.lane_id)
+    lane_memory = repositories.memory.list_by_scope(
+        session.session_id, MemoryScopeKind.LANE, lane.lane_id
+    )
     assert any(entry.kind is MemoryKind.COMPACTION for entry in lane_memory)
     assert second.pending_approval_id == "appr_001"
 
@@ -730,7 +769,11 @@ class BuiltinTaskLaneToolDriver:
                     ToolInvocation(
                         call_id="call_create_lane",
                         tool_name="lane.create",
-                        arguments={"lane_id": "lane_builtin", "name": "builtin", "cwd": "/tmp/builtin"},
+                        arguments={
+                            "lane_id": "lane_builtin",
+                            "name": "builtin",
+                            "cwd": "/tmp/builtin",
+                        },
                     ),
                     ToolInvocation(
                         call_id="call_create_task",
@@ -749,7 +792,10 @@ class BuiltinTaskLaneToolDriver:
                     ToolInvocation(
                         call_id="call_bind_task",
                         tool_name="lane.bind_task",
-                        arguments={"task_id": "task_builtin", "lane_id": "lane_builtin"},
+                        arguments={
+                            "task_id": "task_builtin",
+                            "lane_id": "lane_builtin",
+                        },
                     ),
                 )
             )
@@ -890,7 +936,9 @@ def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
     session = _seed_session(repositories)
     registry = ToolRegistry()
 
-    def fail_search(_context: SessionRuntimeContext, _invocation: ToolInvocation) -> ToolResult:
+    def fail_search(
+        _context: SessionRuntimeContext, _invocation: ToolInvocation
+    ) -> ToolResult:
         raise RuntimeError("HTTP Error 429: Too Many Requests")
 
     registry.register("semantic_scholar.search", fail_search)
@@ -936,7 +984,9 @@ def test_tool_registry_wraps_handler_exception_as_standard_envelope() -> None:
     session = _seed_session(repositories)
     registry = ToolRegistry()
 
-    def explode(_context: SessionRuntimeContext, _invocation: ToolInvocation) -> ToolResult:
+    def explode(
+        _context: SessionRuntimeContext, _invocation: ToolInvocation
+    ) -> ToolResult:
         raise RuntimeError("boom")
 
     registry.register("explode", explode)
@@ -948,7 +998,10 @@ def test_tool_registry_wraps_handler_exception_as_standard_envelope() -> None:
         restore_focus=RestoreFocus(),
     )
 
-    result = registry.dispatch(context, ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}))
+    result = registry.dispatch(
+        context,
+        ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
+    )
 
     envelope = result.envelope()
     assert result.ok is False
@@ -979,8 +1032,16 @@ def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> No
 
     sent = json.loads(result.tool_results[0].content)
     message = repositories.inbox.get(sent["message"]["message_id"])
-    signal = next(signal for signal in repositories.runtime_signals.list_by_session(session.session_id) if signal.source_ref == message.message_id)
-    thread = ProtocolService(repositories).build_thread(session.session_id, "corr_diag_001").to_dict()
+    signal = next(
+        signal
+        for signal in repositories.runtime_signals.list_by_session(session.session_id)
+        if signal.source_ref == message.message_id
+    )
+    thread = (
+        ProtocolService(repositories)
+        .build_thread(session.session_id, "corr_diag_001")
+        .to_dict()
+    )
     assert result.status is HarnessStatus.COMPLETED
     assert message.status.value == "unread"
     assert signal.reason.value == "inbox_unread"
@@ -988,7 +1049,9 @@ def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> No
     assert thread["request"]["payload"]["question"] == "Why did delegation fail?"
 
 
-def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent() -> None:
+def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     task = repositories.tasks.get("task_001")
@@ -1010,7 +1073,12 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     )
 
     registry = ToolRegistry()
-    registry.register("deep_research.start", lambda _context, invocation: json.dumps({"brief": invocation.arguments["brief"]}))
+    registry.register(
+        "deep_research.start",
+        lambda _context, invocation: json.dumps(
+            {"brief": invocation.arguments["brief"]}
+        ),
+    )
 
     result = run_agent_harness_loop(
         repositories,
@@ -1026,7 +1094,10 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
                             {
                                 "id": "call_research",
                                 "name": "deep_research.start",
-                                "args": {"task_id": "task_001", "brief": "Run the first harness step."},
+                                "args": {
+                                    "task_id": "task_001",
+                                    "brief": "Run the first harness step.",
+                                },
                             }
                         ],
                     },
@@ -1041,13 +1112,19 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     assert delegated_task.assigned_ref == "agent:researcher"
     assert delegated_task.status is TaskStatus.COMPLETED
     assert repositories.agents.get("agent:researcher") is not None
-    inbox_types = [message.message_type for message in repositories.inbox.list_by_session(session.session_id)]
+    inbox_types = [
+        message.message_type
+        for message in repositories.inbox.list_by_session(session.session_id)
+    ]
     assert "delegation_request" in inbox_types
     assert "delegation_result" in inbox_types
 
 
 def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None:
-    tool_names = {descriptor.tool_name for descriptor in teammate_tool_descriptors(role="researcher")}
+    tool_names = {
+        descriptor.tool_name
+        for descriptor in teammate_tool_descriptors(role="researcher")
+    }
 
     assert {
         "deep_research.start",
@@ -1062,11 +1139,33 @@ def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None
         "rcsb_pdb.download_structure",
         "interpro.query",
     }.issubset(tool_names)
+    assert "web.search" not in tool_names
+    assert "web.fetch" not in tool_names
+
+
+def test_researcher_tool_descriptors_include_web_tools_when_adapter_supports_them() -> (
+    None
+):
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {"results": []},
+    )
+    tool_names = {
+        descriptor.tool_name
+        for descriptor in teammate_tool_descriptors(
+            role="researcher", research_adapter=adapter
+        )
+    }
+
+    assert "web.search" in tool_names
+    assert "web.fetch" in tool_names
 
 
 def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> None:
     descriptor = next(
-        item for item in teammate_tool_descriptors(role="reporter") if item.tool_name == "artifact.get"
+        item
+        for item in teammate_tool_descriptors(role="reporter")
+        if item.tool_name == "artifact.get"
     )
 
     properties = descriptor.input_schema["properties"]
@@ -1080,7 +1179,9 @@ def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> No
 def test_research_teammate_direct_download_persists_workspace_artifact() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    registry = build_teammate_registry(bio_research_service=DeterministicBioResearchService())
+    registry = build_teammate_registry(
+        bio_research_service=DeterministicBioResearchService()
+    )
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -1099,7 +1200,9 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
         ),
     )
 
-    artifact_records = repositories.artifacts.list_by_task(session.session_id, "task_001")
+    artifact_records = repositories.artifacts.list_by_task(
+        session.session_id, "task_001"
+    )
     payload = json.loads(result.content)
     assert result.ok is True
     assert artifact_records
@@ -1112,10 +1215,14 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
     assert invocation.engine_name == "research_tool"
 
 
-def test_research_teammate_direct_search_returns_observation_and_persists_canonical_rows() -> None:
+def test_research_teammate_direct_search_returns_observation_and_persists_canonical_rows() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    registry = build_teammate_registry(bio_research_service=DeterministicBioResearchService())
+    registry = build_teammate_registry(
+        bio_research_service=DeterministicBioResearchService()
+    )
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -1141,24 +1248,100 @@ def test_research_teammate_direct_search_returns_observation_and_persists_canoni
         if invocation.engine_name == "research_tool"
     ]
     invocation = invocations[0]
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
 
     assert result.ok is True
     assert payload["provider"] == "pubmed"
     assert payload["findings"][0]["sources"][0]["kind"] == "paper"
-    assert repositories.research_summaries.get_by_invocation(session.session_id, invocation.invocation_id).summary == (
-        payload["summary"]
+    assert (
+        repositories.research_summaries.get_by_invocation(
+            session.session_id, invocation.invocation_id
+        ).summary
+        == (payload["summary"])
     )
-    assert repositories.research_evidence.list_by_invocation(session.session_id, invocation.invocation_id)
-    assert repositories.research_source_refs.list_by_invocation(session.session_id, invocation.invocation_id)
-    assert workspace["capabilities"]["research_tool"][0]["canonical_summary"]["summary"] == payload["summary"]
-    assert workspace["capabilities"]["research_tool"][0]["source_refs"][0]["kind"] == "paper"
+    assert repositories.research_evidence.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+    assert repositories.research_source_refs.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+    assert (
+        workspace["capabilities"]["research_tool"][0]["canonical_summary"]["summary"]
+        == payload["summary"]
+    )
+    assert (
+        workspace["capabilities"]["research_tool"][0]["source_refs"][0]["kind"]
+        == "paper"
+    )
 
 
-def test_research_teammate_direct_search_provider_429_returns_failed_observation() -> None:
+def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    registry = build_teammate_registry(bio_research_service=RateLimitedBioResearchService())
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {
+            "results": [
+                {
+                    "title": "Fetched article",
+                    "url": "https://example.org/article",
+                    "raw_content": "Fetched article content.",
+                }
+            ]
+        },
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_fetch",
+            tool_name="web.fetch",
+            arguments={"url": "https://example.org/article"},
+            task_id="task_001",
+        ),
+    )
+
+    payload = json.loads(result.content)
+    invocations = [
+        invocation
+        for invocation in repositories.invocations.list_by_session(session.session_id)
+        if invocation.engine_name == "research_tool"
+    ]
+    invocation = invocations[0]
+
+    assert result.ok is True
+    assert payload["provider"] == "web"
+    assert payload["findings"][0]["summary"] == "Fetched article content."
+    assert payload["findings"][0]["sources"][0]["kind"] == "web_page"
+    assert repositories.research_evidence.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+    assert repositories.research_source_refs.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+
+
+def test_research_teammate_direct_search_provider_429_returns_failed_observation() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = build_teammate_registry(
+        bio_research_service=RateLimitedBioResearchService()
+    )
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -1179,8 +1362,12 @@ def test_research_teammate_direct_search_provider_429_returns_failed_observation
 
     payload = json.loads(result.content)
     invocation = repositories.invocations.list_by_session(session.session_id)[0]
-    summary = repositories.research_summaries.get_by_invocation(session.session_id, invocation.invocation_id)
-    gaps = repositories.research_gaps.list_by_invocation(session.session_id, invocation.invocation_id)
+    summary = repositories.research_summaries.get_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+    gaps = repositories.research_gaps.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
 
     assert result.ok is False
     assert payload["status"] == "failed"
@@ -1211,7 +1398,12 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
         )
     )
     registry = ToolRegistry()
-    registry.register("deep_research.start", lambda _context, invocation: json.dumps({"brief": invocation.arguments["brief"]}))
+    registry.register(
+        "deep_research.start",
+        lambda _context, invocation: json.dumps(
+            {"brief": invocation.arguments["brief"]}
+        ),
+    )
 
     run_agent_harness_loop(
         repositories,
@@ -1227,7 +1419,10 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
                             {
                                 "id": "call_research",
                                 "name": "deep_research.start",
-                                "args": {"task_id": "task_001", "brief": "Run the first harness step."},
+                                "args": {
+                                    "task_id": "task_001",
+                                    "brief": "Run the first harness step.",
+                                },
                             }
                         ],
                     },
@@ -1237,7 +1432,11 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
         ),
     )
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
     delegation = workspace["delegation"]["agents"][0]
 
     assert delegation["agent"]["agent_id"] == "agent:researcher"
@@ -1250,8 +1449,16 @@ class FakeToolCallingInvoker:
         self.response = response
         self.calls: list[dict[str, object]] = []
 
-    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
-        self.calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": list(tools)})
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> object:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": list(messages),
+                "tools": list(tools),
+            }
+        )
         if isinstance(self.response, list):
             index = min(len(self.calls) - 1, len(self.response) - 1)
             return self.response[index]
@@ -1323,16 +1530,26 @@ def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
 
 
 def test_top_level_delegate_tool_documents_real_teammate_roles() -> None:
-    delegate = next(descriptor for descriptor in builtin_tool_descriptors() if descriptor.tool_name == "task.delegate")
+    delegate = next(
+        descriptor
+        for descriptor in builtin_tool_descriptors()
+        if descriptor.tool_name == "task.delegate"
+    )
 
-    assert delegate.input_schema["properties"]["agent_role"]["enum"] == ["researcher", "executor", "reporter"]
+    assert delegate.input_schema["properties"]["agent_role"]["enum"] == [
+        "researcher",
+        "executor",
+        "reporter",
+    ]
     assert delegate.input_schema["required"] == ["task_id", "agent_role"]
     assert "fpocket" not in delegate.description
     assert "AutoDock" not in delegate.description
     assert "AlphaFold" not in delegate.description
 
 
-def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_tools() -> None:
+def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_tools() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -1345,10 +1562,16 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
         skill_registry=SkillRegistry(),
     )
     context.refresh_restore_context()
-    model_factory = FakeModelFactory({"content": "There are researcher, executor, and reporter teammates."})
+    model_factory = FakeModelFactory(
+        {"content": "There are researcher, executor, and reporter teammates."}
+    )
     driver = LlmConversationDriver(model_factory)
 
-    driver.plan(context, HarnessInput(session_id=session.session_id, message="你有哪些teammate"), ())
+    driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="你有哪些teammate"),
+        (),
+    )
 
     prompt = str(model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"])
     assert "researcher for literature and data research" in prompt
@@ -1360,7 +1583,9 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "fpocket" in prompt
 
 
-def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> None:
+def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     model_factory = FakeModelFactory({"content": "I can help.", "tool_calls": []})
@@ -1398,7 +1623,9 @@ def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
     model_factory = FakeModelFactory({"content": "handled", "tool_calls": []})
     driver = LlmConversationDriver(model_factory)
 
-    driver.plan(context, HarnessInput(session_id=session.session_id, message="start"), ())
+    driver.plan(
+        context, HarnessInput(session_id=session.session_id, message="start"), ()
+    )
     driver.plan(
         context,
         HarnessInput(session_id=session.session_id, message="start"),
@@ -1446,20 +1673,32 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
             {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_task", "name": "task.create", "args": {"task_id": "task_002", "subject": "Plan", "description": "Plan next step"}},
+                    {
+                        "id": "call_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_002",
+                            "subject": "Plan",
+                            "description": "Plan next step",
+                        },
+                    },
                 ],
             }
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="plan work"), ())
+    step = driver.plan(
+        context, HarnessInput(session_id=session.session_id, message="plan work"), ()
+    )
 
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
 
 
-def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> None:
+def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -1499,15 +1738,27 @@ def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())
+    step = driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="start research"),
+        (),
+    )
 
     assert step.assistant_message is None
-    assert [invocation.tool_name for invocation in step.tool_invocations] == ["task.create", "task.delegate"]
+    assert [invocation.tool_name for invocation in step.tool_invocations] == [
+        "task.create",
+        "task.delegate",
+    ]
     assert step.tool_invocations[1].arguments["task_id"] == "task_research_001"
-    assert step.tool_invocations[1].arguments["instructions"] == "Survey AI in systems engineering"
+    assert (
+        step.tool_invocations[1].arguments["instructions"]
+        == "Survey AI in systems engineering"
+    )
 
 
-def test_llm_conversation_driver_backfills_delegate_role_from_created_task_kind() -> None:
+def test_llm_conversation_driver_backfills_delegate_role_from_created_task_kind() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -1541,14 +1792,18 @@ def test_llm_conversation_driver_backfills_delegate_role_from_created_task_kind(
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="write report"), ())
+    step = driver.plan(
+        context, HarnessInput(session_id=session.session_id, message="write report"), ()
+    )
 
     assert step.assistant_message is None
     assert step.tool_invocations[1].arguments["task_id"] == "task_report_001"
     assert step.tool_invocations[1].arguments["agent_role"] == "reporter"
 
 
-def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_task_id() -> None:
+def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_task_id() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     context = SessionRuntimeContext(
@@ -1566,13 +1821,21 @@ def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_ta
             {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_delegate", "name": "task.delegate", "args": {"agent_role": "researcher"}},
+                    {
+                        "id": "call_delegate",
+                        "name": "task.delegate",
+                        "args": {"agent_role": "researcher"},
+                    },
                 ],
             }
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="start research"), ())
+    step = driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="start research"),
+        (),
+    )
 
     assert step.tool_invocations == ()
     assert "without task_id" in str(step.assistant_message)
@@ -1596,13 +1859,21 @@ def test_llm_conversation_driver_rejects_delegate_without_agent_role() -> None:
             {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_delegate", "name": "task.delegate", "args": {"task_id": "task_001"}},
+                    {
+                        "id": "call_delegate",
+                        "name": "task.delegate",
+                        "args": {"task_id": "task_001"},
+                    },
                 ],
             }
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="delegate task"), ())
+    step = driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="delegate task"),
+        (),
+    )
 
     assert step.tool_invocations == ()
     assert "without agent_role" in str(step.assistant_message)
@@ -1626,13 +1897,21 @@ def test_llm_conversation_driver_rejects_unknown_delegate_role() -> None:
             {
                 "content": "",
                 "tool_calls": [
-                    {"id": "call_delegate", "name": "task.delegate", "args": {"task_id": "task_001", "agent_role": "worker"}},
+                    {
+                        "id": "call_delegate",
+                        "name": "task.delegate",
+                        "args": {"task_id": "task_001", "agent_role": "worker"},
+                    },
                 ],
             }
         )
     )
 
-    step = driver.plan(context, HarnessInput(session_id=session.session_id, message="delegate task"), ())
+    step = driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="delegate task"),
+        (),
+    )
 
     assert step.tool_invocations == ()
     assert "invalid agent_role" in str(step.assistant_message)

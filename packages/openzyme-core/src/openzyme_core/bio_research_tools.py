@@ -21,6 +21,7 @@ from openzyme_research import DownloadedResearchAsset
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import ResearchArtifactManifest
 from openzyme_research import ResearchObservation
+from openzyme_research import ResearchUnit
 from openzyme_research import literature_hits_to_findings
 from openzyme_research import structure_hits_to_findings
 
@@ -224,7 +225,9 @@ def persist_research_observation(
                 created_at=now,
             )
         )
-        for source_index, source in enumerate(list(finding_payload.get("sources") or []), start=1):
+        for source_index, source in enumerate(
+            list(finding_payload.get("sources") or []), start=1
+        ):
             source_payload = dict(source)
             context.repositories.research_source_refs.save(
                 ResearchSourceRef(
@@ -237,11 +240,15 @@ def persist_research_observation(
                     title=str(source_payload.get("title") or "Untitled source"),
                     locator=str(source_payload.get("locator") or ""),
                     kind=_source_kind(source_payload.get("kind")),
-                    snippet=None if source_payload.get("snippet") is None else str(source_payload["snippet"]),
+                    snippet=None
+                    if source_payload.get("snippet") is None
+                    else str(source_payload["snippet"]),
                     created_at=now,
                 )
             )
-    for index, gap in enumerate(list(observation.get("unresolved_gaps") or []), start=1):
+    for index, gap in enumerate(
+        list(observation.get("unresolved_gaps") or []), start=1
+    ):
         context.repositories.research_gaps.save(
             ResearchGap(
                 gap_id=f"{engine_invocation.invocation_id}:gap:{index}",
@@ -284,7 +291,9 @@ def _research_brief(invocation: ToolInvocation, observation: dict[str, Any]) -> 
     return str(observation.get("summary") or invocation.tool_name)
 
 
-def _artifact_manifest(asset: DownloadedResearchAsset, artifact: SessionArtifactRecord) -> ResearchArtifactManifest:
+def _artifact_manifest(
+    asset: DownloadedResearchAsset, artifact: SessionArtifactRecord
+) -> ResearchArtifactManifest:
     return ResearchArtifactManifest(
         artifact_id=artifact.artifact_id,
         external_id=asset.external_id,
@@ -306,7 +315,9 @@ class BioResearchToolRegistrar:
     service: BioResearchService
 
     def register(self, registry: ToolRegistry) -> None:
-        def _payload_result(invocation: ToolInvocation, payload: dict[str, object], *, ok: bool = True) -> ToolResult:
+        def _payload_result(
+            invocation: ToolInvocation, payload: dict[str, object], *, ok: bool = True
+        ) -> ToolResult:
             return ToolResult(
                 call_id=invocation.call_id,
                 tool_name=invocation.tool_name,
@@ -324,7 +335,9 @@ class BioResearchToolRegistrar:
             engine_invocation = _start_research_tool_invocation(context, invocation)
             return _payload_result(
                 invocation,
-                _finish_research_tool_invocation(context, invocation, engine_invocation, observation),
+                _finish_research_tool_invocation(
+                    context, invocation, engine_invocation, observation
+                ),
             )
 
         def _failed_observation_result(
@@ -350,11 +363,15 @@ class BioResearchToolRegistrar:
             engine_invocation = _start_research_tool_invocation(context, invocation)
             return _payload_result(
                 invocation,
-                _finish_research_tool_invocation(context, invocation, engine_invocation, observation),
+                _finish_research_tool_invocation(
+                    context, invocation, engine_invocation, observation
+                ),
                 ok=False,
             )
 
-        def pubmed_search(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def pubmed_search(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             query = str(invocation.arguments["query"])
             limit = int(invocation.arguments.get("limit", 5))
             try:
@@ -379,7 +396,9 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def semantic_scholar_search(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def semantic_scholar_search(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             query = str(invocation.arguments["query"])
             limit = int(invocation.arguments.get("limit", 5))
             try:
@@ -404,7 +423,9 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def uniprot_lookup(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def uniprot_lookup(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             accession = str(invocation.arguments["accession"])
             record = self.service.lookup_uniprot(accession=accession)
             return _observation_result(
@@ -432,7 +453,9 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def uniprot_download_fasta(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def uniprot_download_fasta(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             accession = str(invocation.arguments["accession"])
             asset = self.service.download_uniprot_fasta(accession=accession)
             engine_invocation = _start_research_tool_invocation(context, invocation)
@@ -458,7 +481,9 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def rcsb_search(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def rcsb_search(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             query = str(invocation.arguments["query"])
             limit = int(invocation.arguments.get("limit", 5))
             hits = self.service.search_rcsb_pdb(query=query, limit=limit)
@@ -473,10 +498,14 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def rcsb_download_structure(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def rcsb_download_structure(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             pdb_id = str(invocation.arguments["pdb_id"])
             file_format = str(invocation.arguments.get("format", "pdb"))
-            asset = self.service.download_rcsb_structure(pdb_id=pdb_id, file_format=file_format)
+            asset = self.service.download_rcsb_structure(
+                pdb_id=pdb_id, file_format=file_format
+            )
             engine_invocation = _start_research_tool_invocation(context, invocation)
             artifact = _persist_asset(
                 context,
@@ -500,11 +529,15 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def interpro_query(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        def interpro_query(
+            context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
             accession = str(invocation.arguments["accession"])
             limit = int(invocation.arguments.get("limit", 10))
             record = self.service.query_interpro(accession=accession, limit=limit)
-            summary = f"Loaded {len(record.entries)} InterPro annotations for {accession}."
+            summary = (
+                f"Loaded {len(record.entries)} InterPro annotations for {accession}."
+            )
             return _observation_result(
                 context,
                 invocation,
@@ -520,7 +553,9 @@ class BioResearchToolRegistrar:
                                     "title": f"InterPro annotations for {accession}",
                                     "locator": record.locator,
                                     "kind": SourceRefKind.DATASET.value,
-                                    "snippet": None if not record.entries else str(record.entries[0].get("name") or ""),
+                                    "snippet": None
+                                    if not record.entries
+                                    else str(record.entries[0].get("name") or ""),
                                 }
                             ],
                         },
@@ -544,7 +579,194 @@ def register_bio_research_tools(
     *,
     service: BioResearchService | None = None,
 ) -> None:
-    BioResearchToolRegistrar(service or DeterministicBioResearchService()).register(registry)
+    BioResearchToolRegistrar(service or DeterministicBioResearchService()).register(
+        registry
+    )
 
 
-__all__ = ["persist_research_observation", "register_bio_research_tools"]
+def _web_tool_enabled(adapter: object | None) -> bool:
+    return (
+        adapter is not None
+        and callable(getattr(adapter, "web_search", None))
+        and callable(getattr(adapter, "fetch_url", None))
+    )
+
+
+def register_web_research_tools(
+    registry: ToolRegistry,
+    *,
+    adapter: object | None = None,
+) -> None:
+    if not _web_tool_enabled(adapter):
+        return
+
+    def _payload_result(
+        invocation: ToolInvocation, payload: dict[str, object], *, ok: bool = True
+    ) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=ok,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+        )
+
+    def _observation_result(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+        observation: ResearchObservation,
+        *,
+        ok: bool = True,
+    ) -> ToolResult:
+        engine_invocation = _start_research_tool_invocation(context, invocation)
+        return _payload_result(
+            invocation,
+            _finish_research_tool_invocation(
+                context, invocation, engine_invocation, observation
+            ),
+            ok=ok,
+        )
+
+    def _failed_result(
+        context: SessionRuntimeContext,
+        invocation: ToolInvocation,
+        *,
+        summary: str,
+        error: Exception,
+        raw_ref: dict[str, object],
+    ) -> ToolResult:
+        return _observation_result(
+            context,
+            invocation,
+            ResearchObservation(
+                status="failed",
+                summary=summary,
+                unresolved_gaps=(str(error).strip() or error.__class__.__name__,),
+                provider="web",
+                raw_ref={
+                    **raw_ref,
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                },
+            ),
+            ok=False,
+        )
+
+    def web_search(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
+        query = str(invocation.arguments["query"])
+        max_results = int(invocation.arguments.get("max_results", 3))
+        topic = str(invocation.arguments.get("topic", "general"))
+        include_raw_content = bool(
+            invocation.arguments.get("include_raw_content", True)
+        )
+        try:
+            search = getattr(adapter, "web_search")
+            normalize = getattr(adapter, "normalize_search_response")
+            result = normalize(
+                unit=ResearchUnit(
+                    unit_id=f"web-search-{invocation.call_id}",
+                    topic=topic,
+                    query=query,
+                ),
+                response=search(
+                    query=query,
+                    max_results=max_results,
+                    topic=topic,
+                    include_raw_content=include_raw_content,
+                ),
+            )
+        except Exception as exc:
+            return _failed_result(
+                context,
+                invocation,
+                summary=f"Web search failed for {query}.",
+                error=exc,
+                raw_ref={"query": query, "max_results": max_results, "topic": topic},
+            )
+        return _observation_result(
+            context,
+            invocation,
+            ResearchObservation(
+                status=result.status,
+                summary=result.summary,
+                findings=result.findings,
+                unresolved_gaps=result.unresolved_gaps,
+                provider="web",
+                raw_ref={
+                    "unit_id": result.unit_id,
+                    "error_message": result.error_message,
+                    "escalation_reason": result.escalation_reason,
+                },
+            ),
+            ok=result.status != "failed",
+        )
+
+    def web_fetch(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
+        url = str(invocation.arguments["url"])
+        query = (
+            None
+            if invocation.arguments.get("query") is None
+            else str(invocation.arguments["query"])
+        )
+        extract_depth = str(invocation.arguments.get("extract_depth", "basic"))
+        output_format = str(invocation.arguments.get("format", "markdown"))
+        include_images = bool(invocation.arguments.get("include_images", False))
+        try:
+            fetch = getattr(adapter, "fetch_url")
+            normalize = getattr(adapter, "normalize_fetch_response")
+            result = normalize(
+                url=url,
+                query=query,
+                response=fetch(
+                    url=url,
+                    query=query,
+                    extract_depth=extract_depth,
+                    format=output_format,
+                    include_images=include_images,
+                ),
+            )
+        except Exception as exc:
+            return _failed_result(
+                context,
+                invocation,
+                summary=f"Web fetch failed for {url}.",
+                error=exc,
+                raw_ref={
+                    "url": url,
+                    "query": query,
+                    "extract_depth": extract_depth,
+                    "format": output_format,
+                },
+            )
+        return _observation_result(
+            context,
+            invocation,
+            ResearchObservation(
+                status=result.status,
+                summary=result.summary,
+                findings=result.findings,
+                unresolved_gaps=result.unresolved_gaps,
+                provider="web",
+                raw_ref={
+                    "unit_id": result.unit_id,
+                    "error_message": result.error_message,
+                    "escalation_reason": result.escalation_reason,
+                },
+            ),
+            ok=result.status != "failed",
+        )
+
+    registry.register("web.search", web_search)
+    registry.register("web.fetch", web_fetch)
+
+
+__all__ = [
+    "persist_research_observation",
+    "register_bio_research_tools",
+    "register_web_research_tools",
+]

@@ -105,7 +105,9 @@ class SessionRuntimeSnapshot:
     active_invocations: tuple[EngineInvocation, ...]
 
     @classmethod
-    def load(cls, repositories: CoreRepositories, session_id: str) -> "SessionRuntimeSnapshot":
+    def load(
+        cls, repositories: CoreRepositories, session_id: str
+    ) -> "SessionRuntimeSnapshot":
         session = repositories.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} does not exist")
@@ -114,11 +116,15 @@ class SessionRuntimeSnapshot:
             tasks=tuple(repositories.tasks.list_by_session(session_id)),
             ready_tasks=tuple(repositories.tasks.list_ready_by_session(session_id)),
             lanes=tuple(repositories.lanes.list_by_session(session_id)),
-            pending_approvals=tuple(repositories.approvals.list_pending_by_session(session_id)),
+            pending_approvals=tuple(
+                repositories.approvals.list_pending_by_session(session_id)
+            ),
             inbox=tuple(repositories.inbox.list_by_session(session_id)),
             memory=tuple(repositories.memory.list_by_session(session_id)),
             agents=tuple(repositories.agents.list_by_session(session_id)),
-            active_invocations=tuple(repositories.invocations.list_active_by_session(session_id)),
+            active_invocations=tuple(
+                repositories.invocations.list_active_by_session(session_id)
+            ),
         )
 
 
@@ -241,7 +247,9 @@ class ToolRegistry:
     def register(self, tool_name: str, handler: ToolHandler) -> None:
         self._handlers[tool_name] = handler
 
-    def dispatch(self, context: "SessionRuntimeContext", invocation: ToolInvocation) -> ToolResult:
+    def dispatch(
+        self, context: "SessionRuntimeContext", invocation: ToolInvocation
+    ) -> ToolResult:
         handler = self._handlers.get(invocation.tool_name)
         if handler is None:
             return ToolResult(
@@ -300,9 +308,12 @@ class SessionRuntimeContext:
     model_factory: Any | None = None
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
+    research_adapter: Any | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
-        self.snapshot = SessionRuntimeSnapshot.load(self.repositories, self.snapshot.session.session_id)
+        self.snapshot = SessionRuntimeSnapshot.load(
+            self.repositories, self.snapshot.session.session_id
+        )
         self.refresh_restore_context()
         return self.snapshot
 
@@ -344,7 +355,9 @@ class SessionRuntimeContext:
             self.add_skill_keys(normalized.skill_keys)
         return normalized
 
-    def add_skill_keys(self, skill_keys: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    def add_skill_keys(
+        self, skill_keys: tuple[str, ...] | list[str]
+    ) -> tuple[str, ...]:
         merged = tuple(dict.fromkeys((*self.active_skill_keys, *tuple(skill_keys))))
         self.active_skill_keys = merged
         return merged
@@ -425,13 +438,19 @@ def _resolve_effective_lane_id(
     if task is None:
         raise ValueError(f"task {task_id!r} does not exist")
     if task.session_id != session_id:
-        raise ValueError(f"task {task_id!r} belongs to session {task.session_id!r}, not {session_id!r}")
+        raise ValueError(
+            f"task {task_id!r} belongs to session {task.session_id!r}, not {session_id!r}"
+        )
     if lane_id is not None and task.lane_id is not None and lane_id != task.lane_id:
-        raise ValueError(f"task {task_id!r} is bound to lane {task.lane_id!r}, not {lane_id!r}")
+        raise ValueError(
+            f"task {task_id!r} is bound to lane {task.lane_id!r}, not {lane_id!r}"
+        )
     return task.lane_id if lane_id is None else lane_id
 
 
-def _resolve_resume(context: SessionRuntimeContext, resume: ResumeEnvelope) -> ApprovalRequest:
+def _resolve_resume(
+    context: SessionRuntimeContext, resume: ResumeEnvelope
+) -> ApprovalRequest:
     approval = context.repositories.approvals.get(resume.approval_id)
     if approval is None:
         raise ValueError(f"approval {resume.approval_id!r} does not exist")
@@ -498,8 +517,12 @@ def _ensure_agent_member_for_delegation(
     updated = AgentMember(
         agent_id=existing.agent_id,
         session_id=existing.session_id,
-        lane_id=delegation.lane_id if delegation.lane_id is not None else existing.lane_id,
-        task_id=delegation.task_id if delegation.task_id is not None else existing.task_id,
+        lane_id=delegation.lane_id
+        if delegation.lane_id is not None
+        else existing.lane_id,
+        task_id=delegation.task_id
+        if delegation.task_id is not None
+        else existing.task_id,
         name=existing.name,
         role=existing.role,
         status=AgentMemberStatus.ACTIVE,
@@ -515,14 +538,18 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
     if len(snapshot.ready_tasks) == 1:
         task = snapshot.ready_tasks[0]
         return RestoreFocus(task_id=task.task_id, lane_id=task.lane_id)
-    in_progress = [task for task in snapshot.tasks if task.status is TaskStatus.IN_PROGRESS]
+    in_progress = [
+        task for task in snapshot.tasks if task.status is TaskStatus.IN_PROGRESS
+    ]
     if len(in_progress) == 1:
         task = in_progress[0]
         return RestoreFocus(task_id=task.task_id, lane_id=task.lane_id)
     return RestoreFocus()
 
 
-def _register_builtin_tools(registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None) -> None:
+def _register_builtin_tools(
+    registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None
+) -> None:
     from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
     from .protocol_tools import register_protocol_tools
@@ -553,7 +580,10 @@ def _auto_compact_if_needed(
     from .memory import MemoryService
 
     context.refresh()
-    service = MemoryService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+    service = MemoryService(
+        context.repositories,
+        event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+    )
     recent_output = outputs[-1] if outputs else None
     recent_tool = None if not all_tool_results else all_tool_results[-1]
     session_summary = service.render_compaction_summary(
@@ -605,6 +635,7 @@ def run_agent_harness_loop(
     event_sink: EventSink | None = None,
     model_factory: Any | None = None,
     bio_research_service: Any | None = None,
+    research_adapter: Any | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -624,6 +655,7 @@ def run_agent_harness_loop(
         model_factory=model_factory,
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
+        research_adapter=research_adapter,
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -639,7 +671,9 @@ def run_agent_harness_loop(
             recipient="harness",
             recipient_kind=InboxParticipantKind.HARNESS,
             message_type="user_message",
-            content=harness_input.message if harness_input.persist_conversation else None,
+            content=harness_input.message
+            if harness_input.persist_conversation
+            else None,
         )
         context.emit(
             "message.received",
@@ -673,7 +707,9 @@ def run_agent_harness_loop(
                 recipient=harness_input.sender,
                 recipient_kind=harness_input.sender_kind,
                 message_type="assistant_message",
-                content=assistant_message if harness_input.persist_conversation else None,
+                content=assistant_message
+                if harness_input.persist_conversation
+                else None,
             )
             outputs.append(assistant_message)
             context.emit(
@@ -791,7 +827,9 @@ def run_agent_harness_loop(
                 recipient=harness_input.sender,
                 recipient_kind=harness_input.sender_kind,
                 message_type="assistant_message",
-                content=step.assistant_message if harness_input.persist_conversation else None,
+                content=step.assistant_message
+                if harness_input.persist_conversation
+                else None,
             )
             outputs.append(step.assistant_message)
             context.emit(
@@ -839,11 +877,17 @@ def run_agent_harness_loop(
             )
             from .protocols import ProtocolService
 
-            protocol = ProtocolService(repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+            protocol = ProtocolService(
+                repositories,
+                event_emitter=lambda event_type, payload: context.emit(
+                    event_type, payload
+                ),
+            )
             envelope = protocol.delegate(
                 session_id=delegation.session_id,
                 agent_id=delegation.recipient,
-                name=delegation.recipient.removeprefix("agent:") or delegation.recipient,
+                name=delegation.recipient.removeprefix("agent:")
+                or delegation.recipient,
                 role="delegate",
                 payload_ref=delegation.payload_ref,
                 task_id=delegation.task_id,

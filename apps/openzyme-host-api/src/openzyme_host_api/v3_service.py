@@ -97,6 +97,7 @@ class V3HostApiService:
     engine_registry: EngineRegistry | None = None
     model_factory: Any | None = None
     bio_research_service: Any | None = None
+    research_adapter: Any | None = None
 
     def create_session(
         self,
@@ -130,7 +131,11 @@ class V3HostApiService:
         }
 
     def workspace(self, session_id: str) -> dict[str, Any]:
-        return SessionProjectionBuilder(self.repositories).build_session_workspace(session_id).to_dict()
+        return (
+            SessionProjectionBuilder(self.repositories)
+            .build_session_workspace(session_id)
+            .to_dict()
+        )
 
     def list_sessions(self, project_id: str) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
@@ -139,7 +144,10 @@ class V3HostApiService:
             approvals = self.repositories.approvals.list_by_session(session.session_id)
             latest_preview = ""
             for message in reversed(messages):
-                if message.message_type not in {"user_message", "assistant_message"} or not message.payload_ref:
+                if (
+                    message.message_type not in {"user_message", "assistant_message"}
+                    or not message.payload_ref
+                ):
                     continue
                 payload = self.repositories.engine_documents.get(message.payload_ref)
                 if payload is None:
@@ -159,11 +167,15 @@ class V3HostApiService:
                     "updated_at": session.updated_at,
                     "latest_message_preview": latest_preview,
                     "pending_approval_count": sum(
-                        1 for approval in approvals if approval.status is ApprovalRequestStatus.PENDING
+                        1
+                        for approval in approvals
+                        if approval.status is ApprovalRequestStatus.PENDING
                     ),
                 }
             )
-        summaries.sort(key=lambda item: (item["updated_at"], item["session_id"]), reverse=True)
+        summaries.sort(
+            key=lambda item: (item["updated_at"], item["session_id"]), reverse=True
+        )
         return summaries
 
     def events(self, session_id: str) -> list[dict[str, Any]]:
@@ -175,11 +187,17 @@ class V3HostApiService:
             return
         next_updated_at = utc_now_iso()
         if next_updated_at <= session.updated_at:
-            next_updated_at = (datetime.fromisoformat(session.updated_at) + timedelta(seconds=1)).isoformat()
+            next_updated_at = (
+                datetime.fromisoformat(session.updated_at) + timedelta(seconds=1)
+            ).isoformat()
         self.repositories.sessions.save(replace(session, updated_at=next_updated_at))
 
-    def _extend_with_activity_events(self, session_id: str, events: list[dict[str, Any]]) -> None:
-        existing = {_event_fingerprint(event) for event in self.event_store.list(session_id)}
+    def _extend_with_activity_events(
+        self, session_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        existing = {
+            _event_fingerprint(event) for event in self.event_store.list(session_id)
+        }
         current = {_event_fingerprint(event) for event in events}
         for item in self.workspace(session_id).get("activity_feed", []):
             event = {
@@ -195,7 +213,9 @@ class V3HostApiService:
             events.append(event)
             current.add(fingerprint)
 
-    def _drain_agent_runtime(self, session_id: str, events: list[dict[str, Any]]) -> None:
+    def _drain_agent_runtime(
+        self, session_id: str, events: list[dict[str, Any]]
+    ) -> None:
         event_bus = MemoryEventBus()
         context = SessionRuntimeContext(
             repositories=self.repositories,
@@ -206,6 +226,7 @@ class V3HostApiService:
             model_factory=self.model_factory,
             engine_registry=self.engine_registry,
             bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
         )
         runtime = AgentRuntimeService(context)
         runtime.auto_enqueue_ready_tasks(session_id)
@@ -232,20 +253,29 @@ class V3HostApiService:
                 session_id=session_id,
                 message=message,
                 max_steps=max_steps,
-                restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id, skill_keys=skill_keys),
+                restore_focus=RestoreFocus(
+                    task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
+                ),
             ),
             driver=driver,
             engine_registry=self.engine_registry,
             event_sink=event_bus,
             model_factory=self.model_factory,
             bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
         )
         events: list[dict[str, Any]] = []
         if message:
-            events.append(_event("conversation.user_message", session_id, {"content": message}))
+            events.append(
+                _event("conversation.user_message", session_id, {"content": message})
+            )
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
-            events.append(_event("conversation.assistant_message", session_id, {"content": output}))
+            events.append(
+                _event(
+                    "conversation.assistant_message", session_id, {"content": output}
+                )
+            )
         self._drain_agent_runtime(session_id, events)
         self._touch_session(session_id)
         self._extend_with_activity_events(session_id, events)
@@ -258,7 +288,9 @@ class V3HostApiService:
             workspace=self.workspace(session_id),
         )
 
-    def resolve_approval(self, approval_id: str, *, decision: str, actor_ref: str = "user") -> V3CommandResult:
+    def resolve_approval(
+        self, approval_id: str, *, decision: str, actor_ref: str = "user"
+    ) -> V3CommandResult:
         approval = self.repositories.approvals.get(approval_id)
         if approval is None:
             raise KeyError(f"approval {approval_id!r} does not exist")
@@ -273,39 +305,63 @@ class V3HostApiService:
                 session_id=approval.session_id,
                 resume=ResumeEnvelope(
                     approval_id=approval_id,
-                    decision=ResumeDecision.APPROVED if decision == "approved" else ResumeDecision.REJECTED,
+                    decision=ResumeDecision.APPROVED
+                    if decision == "approved"
+                    else ResumeDecision.REJECTED,
                     actor_ref=actor_ref,
                 ),
-                restore_focus=RestoreFocus(task_id=approval.task_id, lane_id=approval.lane_id),
+                restore_focus=RestoreFocus(
+                    task_id=approval.task_id, lane_id=approval.lane_id
+                ),
             ),
             driver=driver,
             engine_registry=self.engine_registry,
             model_factory=self.model_factory,
             bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
         )
         events = [
             _event(
                 "approval.resolved",
                 approval.session_id,
-                {"approval_id": approval_id, "decision": decision, "actor_ref": actor_ref},
+                {
+                    "approval_id": approval_id,
+                    "decision": decision,
+                    "actor_ref": actor_ref,
+                },
             )
         ]
         events.extend(event.to_dict() for event in result.events)
         for output in result.outputs:
-            events.append(_event("conversation.assistant_message", approval.session_id, {"content": output}))
+            events.append(
+                _event(
+                    "conversation.assistant_message",
+                    approval.session_id,
+                    {"content": output},
+                )
+            )
         if approval.task_id is not None:
             task = self.repositories.tasks.get(approval.task_id)
-            if task is not None and task.assigned_ref and task.assigned_ref.startswith("agent:"):
+            if (
+                task is not None
+                and task.assigned_ref
+                and task.assigned_ref.startswith("agent:")
+            ):
                 event_bus = MemoryEventBus()
                 context = SessionRuntimeContext(
                     repositories=self.repositories,
                     event_sink=event_bus,
-                    snapshot=SessionRuntimeSnapshot.load(self.repositories, approval.session_id),
+                    snapshot=SessionRuntimeSnapshot.load(
+                        self.repositories, approval.session_id
+                    ),
                     tool_registry=ToolRegistry(),
-                    restore_focus=RestoreFocus(task_id=approval.task_id, lane_id=approval.lane_id),
+                    restore_focus=RestoreFocus(
+                        task_id=approval.task_id, lane_id=approval.lane_id
+                    ),
                     model_factory=self.model_factory,
                     engine_registry=self.engine_registry,
                     bio_research_service=self.bio_research_service,
+                    research_adapter=self.research_adapter,
                 )
                 AgentRuntimeService(context).enqueue_signal(
                     agent_id=task.assigned_ref,
@@ -322,7 +378,9 @@ class V3HostApiService:
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(
             session_id=approval.session_id,
-            status=HarnessStatus.WAITING_APPROVAL.value if result.pending_approval_id else result.status.value,
+            status=HarnessStatus.WAITING_APPROVAL.value
+            if result.pending_approval_id
+            else result.status.value,
             outputs=result.outputs,
             events=events,
             workspace=self.workspace(approval.session_id),
@@ -333,7 +391,9 @@ class V3HostApiService:
             raise MissingLlmConfigurationError(
                 "V3 top-level harness loop requires a configured model_factory; deterministic fallback has been removed."
             )
-        return LlmConversationDriver(self.model_factory, engine_registry=self.engine_registry)
+        return LlmConversationDriver(
+            self.model_factory, engine_registry=self.engine_registry
+        )
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = TaskBoardService(self.repositories).create_task(
@@ -341,7 +401,9 @@ class V3HostApiService:
             task_id=str(payload.get("task_id") or _new_id("task")),
             subject=str(payload["subject"]),
             description=str(payload.get("description") or ""),
-            priority=TaskPriority(str(payload.get("priority") or TaskPriority.NORMAL.value)),
+            priority=TaskPriority(
+                str(payload.get("priority") or TaskPriority.NORMAL.value)
+            ),
             kind=str(payload.get("kind") or "general"),
             status=TaskStatus(str(payload.get("status") or TaskStatus.TODO.value)),
             assigned_ref=payload.get("assigned_ref"),
@@ -352,7 +414,11 @@ class V3HostApiService:
         self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
-        return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}
+        return {
+            "task": task.to_dict(),
+            "workspace": self.workspace(task.session_id),
+            "events": events,
+        }
 
     def update_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         mutation_kwargs: dict[str, Any] = {}
@@ -378,7 +444,11 @@ class V3HostApiService:
         self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
-        return {"task": task.to_dict(), "workspace": self.workspace(task.session_id), "events": events}
+        return {
+            "task": task.to_dict(),
+            "workspace": self.workspace(task.session_id),
+            "events": events,
+        }
 
     def create_lane(self, payload: dict[str, Any]) -> dict[str, Any]:
         lane = LaneManager(self.repositories).create_lane(
@@ -391,25 +461,43 @@ class V3HostApiService:
         events = [_event("lane.created", lane.session_id, {"lane": lane.to_dict()})]
         self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
-        return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
+        return {
+            "lane": lane.to_dict(),
+            "workspace": self.workspace(lane.session_id),
+            "events": events,
+        }
 
     def claim_lane(self, lane_id: str, *, claimed_ref: str) -> dict[str, Any]:
-        lane = LaneManager(self.repositories).claim_lane(lane_id, claimed_ref=claimed_ref)
+        lane = LaneManager(self.repositories).claim_lane(
+            lane_id, claimed_ref=claimed_ref
+        )
         events = [_event("lane.claimed", lane.session_id, {"lane": lane.to_dict()})]
         self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
-        return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
+        return {
+            "lane": lane.to_dict(),
+            "workspace": self.workspace(lane.session_id),
+            "events": events,
+        }
 
     def keep_lane(self, lane_id: str) -> dict[str, Any]:
         lane = LaneManager(self.repositories).keep_lane(lane_id)
         events = [_event("lane.released", lane.session_id, {"lane": lane.to_dict()})]
         self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
-        return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
+        return {
+            "lane": lane.to_dict(),
+            "workspace": self.workspace(lane.session_id),
+            "events": events,
+        }
 
     def remove_lane(self, lane_id: str) -> dict[str, Any]:
         lane = LaneManager(self.repositories).remove_lane(lane_id)
         events = [_event("lane.removed", lane.session_id, {"lane": lane.to_dict()})]
         self._extend_with_activity_events(lane.session_id, events)
         self.event_store.append(lane.session_id, events)
-        return {"lane": lane.to_dict(), "workspace": self.workspace(lane.session_id), "events": events}
+        return {
+            "lane": lane.to_dict(),
+            "workspace": self.workspace(lane.session_id),
+            "events": events,
+        }

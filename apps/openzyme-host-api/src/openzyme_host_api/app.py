@@ -94,8 +94,12 @@ class V3ExecutionRunnerAdapter:
     execution_adapter: Any
     _outcomes_by_run_id: dict[str, V3ExecutionOutcome] = field(default_factory=dict)
 
-    def submit_execution(self, session_id: str, payload: dict[str, Any]) -> V3ExecutionOutcome:
-        outcome = self._convert_outcome(self.execution_adapter.submit_execution(session_id, payload))
+    def submit_execution(
+        self, session_id: str, payload: dict[str, Any]
+    ) -> V3ExecutionOutcome:
+        outcome = self._convert_outcome(
+            self.execution_adapter.submit_execution(session_id, payload)
+        )
         self._outcomes_by_run_id[outcome.run_id] = outcome
         return outcome
 
@@ -126,7 +130,9 @@ class V3ExecutionRunnerAdapter:
                 run_id=run_id,
                 status=RunStatus.FAILED,
                 remote_run_dir=remote_run_dir,
-                raw_result={"error": "execution adapter does not expose status polling"},
+                raw_result={
+                    "error": "execution adapter does not expose status polling"
+                },
                 job_id=job_id,
             )
         return V3ExecutionStatusSnapshot(
@@ -164,7 +170,9 @@ class V3ExecutionRunnerAdapter:
                 status=RunStatus.FAILED,
                 execution_mode="unknown",
                 remote_run_dir=remote_run_dir,
-                raw_result={"error": "execution adapter does not expose artifact fetch"},
+                raw_result={
+                    "error": "execution adapter does not expose artifact fetch"
+                },
                 artifacts=(),
                 job_id=job_id,
             )
@@ -211,7 +219,9 @@ class V3ExecutionRunnerAdapter:
             remote_run_dir=str(outcome.remote_run_dir),
             raw_result=dict(outcome.raw_result),
             artifacts=artifacts,
-            job_id=None if getattr(outcome, "job_id", None) is None else str(outcome.job_id),
+            job_id=None
+            if getattr(outcome, "job_id", None) is None
+            else str(outcome.job_id),
             exit_code=getattr(outcome, "exit_code", None),
         )
 
@@ -220,7 +230,9 @@ class V3ExecutionRunnerAdapter:
 class HostApiDependencies:
     foundation: RuntimeFoundation
     graph_builder: GraphBuilder = build_v2_supervisor_graph
-    v3_repositories: CoreRepositories = field(default_factory=_build_default_v3_repositories)
+    v3_repositories: CoreRepositories = field(
+        default_factory=_build_default_v3_repositories
+    )
     v3_event_store: V3EventStore = field(default_factory=V3EventStore)
 
     def build_runtime(self) -> GraphRuntimeFacade:
@@ -236,7 +248,9 @@ class HostApiDependencies:
         runtime = self.build_runtime()
         return HostApiService(
             runtime=runtime,
-            projection_loader=HostProjectionLoader(runtime=runtime, graph_builder=self.graph_builder),
+            projection_loader=HostProjectionLoader(
+                runtime=runtime, graph_builder=self.graph_builder
+            ),
             event_projector=WorkflowEventProjector(),
             graph_builder=self.graph_builder,
         )
@@ -248,6 +262,7 @@ class HostApiDependencies:
             engine_registry=self.build_v3_engine_registry(),
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
+            research_adapter=self.foundation.research_adapter,
         )
 
     def build_v3_engine_registry(self) -> EngineRegistry:
@@ -383,7 +398,9 @@ def create_app(
                 request_path="/commands/resume_episode",
                 episode_id=request.episode_id,
             ):
-                result = service.resume_episode(request.episode_id, request.resume_payload)
+                result = service.resume_episode(
+                    request.episode_id, request.resume_payload
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
         return {
@@ -414,7 +431,9 @@ def create_app(
         }
 
     @app.get("/episodes/{episode_id}/stream")
-    def stream_episode_events(episode_id: str, replay: bool = True) -> StreamingResponse:
+    def stream_episode_events(
+        episode_id: str, replay: bool = True
+    ) -> StreamingResponse:
         loader = dependencies.build_projection_loader()
         projector = WorkflowEventProjector()
         try:
@@ -460,7 +479,9 @@ def create_app(
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/sessions/{session_id}/messages")
-    def post_v3_message(session_id: str, request: PostV3MessageRequest) -> dict[str, Any]:
+    def post_v3_message(
+        session_id: str, request: PostV3MessageRequest
+    ) -> dict[str, Any]:
         service = dependencies.build_v3_service()
         try:
             with llm_debug_context(
@@ -490,7 +511,9 @@ def create_app(
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}/events")
-    def stream_v3_events(session_id: str, replay: bool = True, follow: bool = False) -> StreamingResponse:
+    def stream_v3_events(
+        session_id: str, replay: bool = True, follow: bool = False
+    ) -> StreamingResponse:
         service = dependencies.build_v3_service()
         try:
             service.workspace(session_id)
@@ -547,7 +570,9 @@ def create_app(
     def claim_v3_lane(lane_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         service = dependencies.build_v3_service()
         try:
-            return service.claim_lane(lane_id, claimed_ref=str(payload.get("claimed_ref") or "user"))
+            return service.claim_lane(
+                lane_id, claimed_ref=str(payload.get("claimed_ref") or "user")
+            )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -568,7 +593,9 @@ def create_app(
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/approvals/{approval_id}/resolve")
-    def resolve_v3_approval(approval_id: str, request: ResolveV3ApprovalRequest) -> dict[str, Any]:
+    def resolve_v3_approval(
+        approval_id: str, request: ResolveV3ApprovalRequest
+    ) -> dict[str, Any]:
         service = dependencies.build_v3_service()
         try:
             with llm_debug_context(
@@ -606,7 +633,9 @@ def create_app(
     def get_llm_debug_call(debug_id: str) -> dict[str, Any]:
         record = get_llm_debug_recorder().get_record(debug_id)
         if record is None:
-            raise HTTPException(status_code=404, detail=f"debug call {debug_id!r} does not exist")
+            raise HTTPException(
+                status_code=404, detail=f"debug call {debug_id!r} does not exist"
+            )
         return record
 
     @app.post("/debug/llm-calls/clear")
