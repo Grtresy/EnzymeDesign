@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
+from openzyme_host_api.evals import run_v3_live_evals
 from openzyme_host_api.foundation import build_configured_foundation
 from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_runtime import get_settings
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.live_llm]
@@ -86,3 +88,16 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
     assert payload["workspace"]["conversation"]
     assert payload["outputs"]
+
+
+def test_live_v3_eval_generates_design_task_plan() -> None:
+    with _AlarmTimeout(120):
+        summary = run_v3_live_evals(
+            upload_results=get_settings().test.upload_langsmith,
+        )
+
+    assert summary["scenario_count"] == 1
+    assert summary["failed"] == 0
+    result = summary["results"][0]
+    assert result["scenario_id"] == "v3_live_design_task_plan"
+    assert result["task_count"] >= 3
