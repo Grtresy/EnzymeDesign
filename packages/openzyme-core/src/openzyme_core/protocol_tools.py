@@ -5,6 +5,7 @@ import json
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
+from openzyme_domain import Task
 from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext
@@ -55,18 +56,84 @@ def _create_resident_teammate(context: SessionRuntimeContext, *, role: str) -> A
 def _resolve_agent_recipient(
     context: SessionRuntimeContext,
     recipient: str,
+    *,
+    create_missing: bool = True,
 ) -> tuple[str | None, str, AgentMember | None]:
     existing = context.repositories.agents.get(recipient)
     if existing is not None and existing.session_id == context.snapshot.session.session_id:
-        return existing.agent_id, "agent_id", None
+        return existing.agent_id, "agent_id", existing
     if recipient in TEAMMATE_ROLE_NAMES:
         agent_id = _default_agent_id_for_role(recipient)
         existing = context.repositories.agents.get(agent_id)
         if existing is not None and existing.session_id == context.snapshot.session.session_id:
-            return existing.agent_id, "role_alias", None
+            return existing.agent_id, "role_alias", existing
+        if not create_missing:
+            return agent_id, "role_alias_missing", None
         created = _create_resident_teammate(context, role=recipient)
         return created.agent_id, "role_alias_created", created
     return None, "unresolved", None
+
+
+def _resolve_task_focus(
+    context: SessionRuntimeContext,
+    invocation: ToolInvocation,
+    payload: object,
+    agent: AgentMember | None,
+) -> tuple[Task | None, str | None, str | None]:
+    payload_task_id = payload.get("task_id") if isinstance(payload, dict) else None
+    for candidate in (
+        invocation.arguments.get("task_id"),
+        payload_task_id,
+        invocation.task_id,
+        None if agent is None else agent.task_id,
+    ):
+        if candidate is None:
+            continue
+        task = context.repositories.tasks.get(str(candidate))
+        if task is None:
+            return None, str(candidate), "focused_task_not_found"
+        return task, str(candidate), None
+    return None, None, "focused_task_missing"
+
+
+def _focused_task_failure(
+    invocation: ToolInvocation,
+    *,
+    recipient: str,
+    resolved_recipient: str | None,
+    recipient_resolution: str,
+    task_id: str | None,
+    error_code: str,
+) -> ToolResult:
+    hint = (
+        "Agent protocol messages require a focused task. "
+        "Create or delegate a task first, or pass task_id in protocol.send or payload.task_id."
+    )
+    payload_data = {
+        "recipient": recipient,
+        "resolved_recipient": resolved_recipient,
+        "recipient_resolution": recipient_resolution,
+        "created_agent": None,
+        "task_id": task_id,
+    }
+    status = "focused_task_missing"
+    summary = f"protocol.send {status}: no valid focused task for recipient {recipient!r}."
+    if error_code == "focused_task_not_found":
+        status = "focused_task_not_found"
+        summary = f"protocol.send {status}: task {task_id!r} does not exist."
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(payload_data, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=status,
+        summary=summary,
+        error_code=error_code,
+        hint=hint,
+        details=payload_data,
+    )
 
 
 def register_protocol_tools(registry: ToolRegistry) -> None:
@@ -104,8 +171,13 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
         resolved_recipient = recipient
         recipient_resolution = "literal"
         created_agent = None
+        resolved_agent = None
         if recipient_kind is InboxParticipantKind.AGENT:
-            resolved_recipient, recipient_resolution, created_agent = _resolve_agent_recipient(context, recipient)
+            resolved_recipient, recipient_resolution, resolved_agent = _resolve_agent_recipient(
+                context,
+                recipient,
+                create_missing=False,
+            )
             if resolved_recipient is None:
                 payload_data = {
                     "recipient": recipient,
@@ -126,6 +198,22 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                     hint="Use an existing agent_id or one of the role aliases: researcher, executor, reporter.",
                     details=payload_data,
                 )
+            focused_task, focused_task_id, focus_error = _resolve_task_focus(context, invocation, payload, resolved_agent)
+            if focus_error is not None:
+                return _focused_task_failure(
+                    invocation,
+                    recipient=recipient,
+                    resolved_recipient=resolved_recipient,
+                    recipient_resolution=recipient_resolution,
+                    task_id=focused_task_id,
+                    error_code=focus_error,
+                )
+            task_id = focused_task.task_id if focused_task is not None else task_id
+            lane_id = lane_id or (None if focused_task is None else focused_task.lane_id)
+            if resolved_agent is None:
+                resolved_recipient, recipient_resolution, created_agent = _resolve_agent_recipient(context, recipient)
+            else:
+                created_agent = None
         payload_ref = None
         if isinstance(payload, dict):
             payload_ref = protocol.persist_payload(
@@ -194,9 +282,20 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                     ok = False
                     failed = next((outcome for outcome in runtime_outcomes if not outcome.get("ok", False)), {})
                     teammate_status = failed.get("teammate_status")
-                    status = "max_steps_exceeded" if teammate_status == "max_steps_exceeded" else "runtime_failed"
+                    if teammate_status == "focused_task_missing":
+                        status = "focused_task_missing"
+                    elif teammate_status == "max_steps_exceeded":
+                        status = "max_steps_exceeded"
+                    else:
+                        status = "runtime_failed"
                     error_code = status
-                    hint = "Inspect runtime_outcomes and protocol.thread before deciding whether to retry or ask a focused diagnostic question."
+                    if status == "focused_task_missing":
+                        hint = (
+                            "Agent protocol messages require a focused task. "
+                            "Create or delegate a task first, or pass task_id in protocol.send or payload.task_id."
+                        )
+                    else:
+                        hint = "Inspect runtime_outcomes and protocol.thread before deciding whether to retry or ask a focused diagnostic question."
                 elif thread.get("status") == "responded":
                     status = "responded"
                 else:

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 
+from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
@@ -15,6 +17,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import AgentRuntimeService
 from openzyme_core import CorrelationStatus
 from openzyme_core import ProtocolService
 from openzyme_core import MemoryEventBus
@@ -217,6 +220,98 @@ def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() 
     assert len(content["signals"]) == 1
 
 
+def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_alias_without_task",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_no_task",
+                "payload": {"question": "Can you reply?"},
+            },
+        ),
+    )
+
+    content = json.loads(result.content)
+    assert result.ok is False
+    assert result.status == "focused_task_missing"
+    assert result.error_code == "focused_task_missing"
+    assert content["resolved_recipient"] == "agent:researcher"
+    assert content["recipient_resolution"] == "role_alias_missing"
+    assert repositories.agents.get("agent:researcher") is None
+    assert repositories.inbox.list_by_correlation(session.session_id, "corr_no_task") == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+
+def test_protocol_send_existing_agent_without_task_rejects_before_inbox_delivery() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:03+00:00",
+            updated_at="2026-04-17T12:00:03+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+            wakeup_reason=None,
+            last_active_at=None,
+            idle_since="2026-04-17T12:00:03+00:00",
+            shutdown_requested_at=None,
+        )
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_existing_without_task",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "agent:researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_existing_no_task",
+                "payload": {"question": "Can you reply?"},
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "focused_task_missing"
+    assert result.error_code == "focused_task_missing"
+    assert repositories.inbox.list_by_correlation(session.session_id, "corr_existing_no_task") == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+
 def test_protocol_send_unknown_agent_recipient_returns_failure_envelope() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -381,6 +476,63 @@ def test_protocol_send_await_response_drains_signal_and_returns_runtime_outcome(
     assert "max_steps_exceeded" in prompt
     assert "corr_diag_await" in seed
     assert task.status is TaskStatus.IN_PROGRESS
+
+
+def test_runtime_missing_focused_task_fails_signal_without_consuming_unread_message() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:03+00:00",
+            updated_at="2026-04-17T12:00:03+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+            wakeup_reason=None,
+            last_active_at=None,
+            idle_since="2026-04-17T12:00:03+00:00",
+            shutdown_requested_at=None,
+        )
+    )
+    protocol = ProtocolService(repositories)
+    message = protocol.send_message(
+        session_id=session.session_id,
+        sender="harness",
+        sender_kind=InboxParticipantKind.HARNESS,
+        recipient="agent:researcher",
+        recipient_kind=InboxParticipantKind.AGENT,
+        message_type="diagnostic_request",
+        correlation_id="corr_runtime_no_task",
+    )
+    signal = repositories.runtime_signals.list_by_session(session.session_id)[0]
+    model_factory = FakeModelFactory({"content": "should not be invoked", "tool_calls": []})
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=model_factory,
+    )
+
+    outcome = AgentRuntimeService(context).wake_agent(signal)
+
+    updated_message = repositories.inbox.get(message.message_id)
+    updated_signal = repositories.runtime_signals.get(signal.signal_id)
+    assert outcome.ok is False
+    assert outcome.teammate_status == "focused_task_missing"
+    assert outcome.summary == "Focused task required for wakeup."
+    assert updated_signal.status is AgentRuntimeSignalStatus.FAILED
+    assert updated_signal.error_message == "Focused task required for wakeup."
+    assert updated_message.status is InboxStatus.UNREAD
+    assert model_factory.invokers == {}
 
 
 def test_background_completion_updates_agent_and_invocation_state() -> None:

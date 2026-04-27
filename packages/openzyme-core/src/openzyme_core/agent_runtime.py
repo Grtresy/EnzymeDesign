@@ -149,6 +149,31 @@ class AgentRuntimeService:
 
         payload = self._payload_for_signal(signal)
         task = self._resolve_task(signal, agent, payload)
+        if task is None:
+            summary = "Focused task required for wakeup."
+            failed = replace(
+                claimed,
+                status=AgentRuntimeSignalStatus.FAILED,
+                completed_at=utc_now_iso(),
+                error_message=summary,
+            )
+            self.context.repositories.runtime_signals.save(failed)
+            agent = self._update_agent(
+                agent,
+                status=AgentMemberStatus.IDLE,
+                correlation_id=signal.correlation_id,
+                wakeup_reason=signal.reason.value,
+                runtime_state="idle",
+                idle_since=utc_now_iso(),
+            )
+            return AgentRuntimeOutcome(
+                signal=failed,
+                task=None,
+                agent=agent,
+                ok=False,
+                summary=summary,
+                teammate_status="focused_task_missing",
+            )
         lane_id = signal.lane_id or (None if payload is None else payload.get("lane_id"))
         agent = self._update_agent(
             agent,
@@ -176,13 +201,6 @@ class AgentRuntimeService:
         for message in self.context.repositories.inbox.list_unread_for_recipient(agent.session_id, agent.agent_id):
             consumed_message_ids.append(message.message_id)
             self.context.repositories.inbox.set_status(message.message_id, InboxStatus.DELIVERED)
-
-        if task is None:
-            completed = replace(claimed, status=AgentRuntimeSignalStatus.COMPLETED, completed_at=utc_now_iso())
-            self.context.repositories.runtime_signals.save(completed)
-            agent = self._update_agent(agent, status=AgentMemberStatus.IDLE, runtime_state="idle", idle_since=utc_now_iso())
-            self.context.emit("agent.idle", {"agent_id": agent.agent_id, "signal_id": signal.signal_id})
-            return AgentRuntimeOutcome(signal=completed, task=None, agent=agent, ok=True, summary="No focused task for wakeup.")
 
         service = TaskBoardService(self.context.repositories, event_emitter=self.context.emit)
         if task.status in {TaskStatus.TODO, TaskStatus.BLOCKED}:
