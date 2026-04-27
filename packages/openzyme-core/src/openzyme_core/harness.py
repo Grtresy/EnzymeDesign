@@ -4,6 +4,7 @@ from dataclasses import asdict
 from dataclasses import replace
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -159,6 +160,31 @@ class ToolResult:
     content: str
     task_id: str | None = None
     lane_id: str | None = None
+    status: str | None = None
+    summary: str | None = None
+    error_code: str | None = None
+    hint: str | None = None
+    details: dict[str, Any] | None = None
+
+    def envelope(self) -> dict[str, Any]:
+        details = dict(self.details or {})
+        envelope: dict[str, Any] = {
+            "ok": self.ok,
+            "status": self.status or ("ok" if self.ok else "failed"),
+            "summary": self.summary or self.content,
+            "error_code": self.error_code,
+            "hint": self.hint,
+            "details": details,
+            "content": self.content,
+        }
+        try:
+            envelope["payload"] = json.loads(self.content)
+        except (TypeError, json.JSONDecodeError):
+            pass
+        return envelope
+
+    def to_tool_message_content(self) -> str:
+        return json.dumps(self.envelope(), sort_keys=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,8 +251,28 @@ class ToolRegistry:
                 content=f"unknown tool: {invocation.tool_name}",
                 task_id=invocation.task_id,
                 lane_id=invocation.lane_id,
+                status="unknown_tool",
+                summary=f"Tool {invocation.tool_name!r} is not registered.",
+                error_code="unknown_tool",
+                hint="Use one of the tools exposed in the current V3 tool catalog.",
             )
-        result = handler(context, invocation)
+        try:
+            result = handler(context, invocation)
+        except Exception as exc:
+            message = f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}"
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=message,
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                status="handler_exception",
+                summary=message,
+                error_code="handler_exception",
+                hint="Inspect the error details before deciding whether to retry or use a different tool.",
+                details={"exception_type": exc.__class__.__name__},
+            )
         if isinstance(result, ToolResult):
             return result
         return ToolResult(
@@ -236,6 +282,8 @@ class ToolRegistry:
             content=str(result),
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
+            status="ok",
+            summary=str(result),
         )
 
 

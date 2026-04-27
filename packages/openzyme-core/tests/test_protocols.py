@@ -173,6 +173,84 @@ def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
     assert any(signal.source_ref == message.message_id and signal.reason.value == "inbox_unread" for signal in signals)
 
 
+def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_alias",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_alias",
+                "task_id": "task_001",
+                "payload": {"task_id": "task_001", "question": "What happened?"},
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    content = json.loads(result.content)
+    agent = repositories.agents.get("agent:researcher")
+    assert result.ok is True
+    assert result.status == "wakeup_queued"
+    assert content["recipient"] == "researcher"
+    assert content["resolved_recipient"] == "agent:researcher"
+    assert content["recipient_resolution"] == "role_alias_created"
+    assert content["created_agent"]["agent_id"] == "agent:researcher"
+    assert agent is not None
+    assert agent.status is AgentMemberStatus.IDLE
+    assert repositories.inbox.get(content["message"]["message_id"]).status is InboxStatus.UNREAD
+    assert len(content["signals"]) == 1
+
+
+def test_protocol_send_unknown_agent_recipient_returns_failure_envelope() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_missing",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "agent:missing",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_missing",
+            },
+        ),
+    )
+
+    envelope = result.envelope()
+    assert result.ok is False
+    assert result.status == "recipient_not_found"
+    assert envelope["error_code"] == "recipient_not_found"
+    assert envelope["details"]["resolved_recipient"] is None
+    assert repositories.inbox.list_by_correlation(session.session_id, "corr_missing") == []
+
+
 def test_protocol_thread_expands_small_payloads() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

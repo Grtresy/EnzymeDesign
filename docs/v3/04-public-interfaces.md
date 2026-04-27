@@ -50,6 +50,21 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败、`max_steps_exceeded` 或摘要不足时发送 `diagnostic_request`。workspace projection 继续通过 `delegation`、`inbox` 与 `activity_feed` 展示 unread、wakeup、thread 与 responded 状态。
 
+### Internal Tool Result Envelope
+
+V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.content` field remains available for compatibility, but tool messages fed back into master/teammate models are serialized as JSON with at least:
+
+- `ok`: whether the tool's core semantic action completed
+- `status`: machine-readable outcome such as `delivered`, `wakeup_queued`, `responded`, `recipient_not_found`, `runtime_failed`
+- `summary`: short human-readable outcome
+- `error_code`: stable failure code, or `null`
+- `hint`: actionable next step, or `null`
+- `details`: structured diagnostic metadata
+- `content`: legacy content string
+- `payload`: parsed JSON payload when `content` is JSON
+
+`ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
+
 默认 research direct-tool surface 还应允许 provider-specific 轻量动作：
 
 - `pubmed.search`

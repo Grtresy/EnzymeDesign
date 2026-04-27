@@ -92,6 +92,21 @@ task.delegate returns failed / max_steps_exceeded / unclear summary
 
 `protocol.send` may set bounded `await_response=true` when master wants one immediate diagnostic turn. This is a best-effort drain of the wakeup signal and must return the message, signal updates, runtime outcomes, and refreshed thread. The default is `await_response=false`, so ordinary teammate-to-teammate messages only enqueue work.
 
+`protocol.send` recipient resolution:
+
+- exact `AgentMember.agent_id` wins first
+- `researcher`, `executor`, and `reporter` are role aliases for default resident agents `agent:{role}`
+- if a default resident agent does not exist, `protocol.send` creates it in the current session with `status=idle`
+- unresolvable agent recipients return `ok=false/status=recipient_not_found/error_code=recipient_not_found`
+
+Delivery success semantics:
+
+- non-agent recipient: persisted message is `ok=true/status=delivered`
+- agent recipient with `await_response=false`: an `inbox_unread` wakeup signal must exist for `ok=true/status=wakeup_queued`
+- agent recipient with `await_response=true`: the bounded drain must either produce a response thread (`status=responded`) or return `status=no_response_within_bound` with a hint
+- persisted message without a wakeup signal is `ok=false/status=wakeup_not_created/error_code=wakeup_signal_missing`
+- failed or exhausted runtime outcomes return `ok=false/status=runtime_failed` or `ok=false/status=max_steps_exceeded` and include `runtime_outcomes`
+
 Diagnostic payloads must at least support `question`, `instructions`, `task_id`, `failed_summary`, and `expected_response`; `lane_id` should be included when the failed task is lane-bound. A diagnostic wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly completes work or the runtime can recover a successful result from workspace state.
 
 ## 5. Task Auto-Claim

@@ -60,6 +60,7 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
         "If task.delegate reports teammate_status=max_steps_exceeded or failed, or the failure summary is not enough to explain the cause, inspect protocol.thread for that correlation and use protocol.send with message_type=diagnostic_request to ask the same teammate a focused diagnostic question.",
         "Diagnostic protocol payloads should include question, instructions, task_id, failed_summary, and expected_response. Set await_response only when you need one bounded teammate turn before deciding next steps.",
+        "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
@@ -121,17 +122,18 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
         ToolMessage = None  # type: ignore[assignment]
     messages: list[Any] = []
     for result in tool_results:
+        content = result.to_tool_message_content()
         if ToolMessage is None:
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": result.call_id,
-                    "content": result.content,
+                    "content": content,
                     "name": result.tool_name,
                 }
             )
         else:
-            messages.append(ToolMessage(content=result.content, tool_call_id=result.call_id, name=result.tool_name))
+            messages.append(ToolMessage(content=content, tool_call_id=result.call_id, name=result.tool_name))
     return messages
 
 

@@ -437,17 +437,18 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
         ToolMessage = None  # type: ignore[assignment]
     messages: list[Any] = []
     for result in tool_results:
+        content = result.to_tool_message_content()
         if ToolMessage is None:
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": result.call_id,
-                    "content": result.content,
+                    "content": content,
                     "name": result.tool_name,
                 }
             )
         else:
-            messages.append(ToolMessage(content=result.content, tool_call_id=result.call_id, name=result.tool_name))
+            messages.append(ToolMessage(content=content, tool_call_id=result.call_id, name=result.tool_name))
     return messages
 
 
@@ -479,6 +480,7 @@ class TeammateConversationDriver(HarnessDriver):
                 "Prefer tools over narration. Complete or advance the assigned task, then send a structured protocol update if useful.",
                 "You may read any session artifact through artifact tools. Stay focused on your assigned task and lane.",
                 "Never request more than 3 tool calls in one response.",
+                "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
                 f"Instructions: {self.instructions}",

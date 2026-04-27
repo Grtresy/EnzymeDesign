@@ -908,6 +908,56 @@ def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
     assert "Observed tool failure" in result.outputs[0]
 
 
+def test_tool_registry_returns_standard_envelope_for_unknown_tool() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+    )
+
+    result = context.tool_registry.dispatch(
+        context,
+        ToolInvocation(call_id="call_missing", tool_name="missing.tool", arguments={}),
+    )
+
+    envelope = result.envelope()
+    assert result.ok is False
+    assert result.status == "unknown_tool"
+    assert envelope["error_code"] == "unknown_tool"
+    assert envelope["summary"] == "Tool 'missing.tool' is not registered."
+
+
+def test_tool_registry_wraps_handler_exception_as_standard_envelope() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def explode(_context: SessionRuntimeContext, _invocation: ToolInvocation) -> ToolResult:
+        raise RuntimeError("boom")
+
+    registry.register("explode", explode)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(context, ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}))
+
+    envelope = result.envelope()
+    assert result.ok is False
+    assert result.status == "handler_exception"
+    assert envelope["error_code"] == "handler_exception"
+    assert envelope["details"] == {"exception_type": "RuntimeError"}
+    assert "boom" in envelope["summary"]
+
+
 def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -1330,6 +1380,52 @@ def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harn
         if _message_role(message) == "user"
     ]
     assert user_messages == ["你是什么模型"]
+
+
+def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    model_factory = FakeModelFactory({"content": "handled", "tool_calls": []})
+    driver = LlmConversationDriver(model_factory)
+
+    driver.plan(context, HarnessInput(session_id=session.session_id, message="start"), ())
+    driver.plan(
+        context,
+        HarnessInput(session_id=session.session_id, message="start"),
+        (
+            ToolResult(
+                call_id="call_1",
+                tool_name="example",
+                ok=False,
+                content="failed raw content",
+                status="runtime_failed",
+                summary="The tool did not finish.",
+                error_code="runtime_failed",
+                hint="Inspect details.",
+                details={"reason": "test"},
+            ),
+        ),
+    )
+
+    messages = model_factory.invokers["v3_harness_loop"].calls[1]["messages"]
+    envelope = json.loads(_message_content(messages[-1]))
+    assert envelope["ok"] is False
+    assert envelope["status"] == "runtime_failed"
+    assert envelope["summary"] == "The tool did not finish."
+    assert envelope["error_code"] == "runtime_failed"
+    assert envelope["hint"] == "Inspect details."
+    assert envelope["details"] == {"reason": "test"}
+    assert envelope["content"] == "failed raw content"
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:

@@ -36,6 +36,14 @@ user message
   -> project workspace
 ```
 
+After every tool call, master must first read the tool-result envelope fields `ok`, `status`, `summary`, `error_code`, `hint`, and `details`.
+
+- if `ok=false`, master must not assume the requested action completed
+- if `status` is `recipient_not_found`, master should choose an existing agent id or a valid role alias
+- if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
+- if `status` is `no_response_within_bound`, master should inspect the thread or continue asynchronously instead of inventing a teammate response
+- if `status` is `runtime_failed` or `max_steps_exceeded`, master should inspect `runtime_outcomes` and may ask a focused diagnostic question
+
 ## 4. 顶层模型接入
 
 顶层模型接入直接复用现有 OpenAI-compatible / LangChain 封装：
