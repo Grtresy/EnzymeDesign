@@ -232,12 +232,26 @@ button:disabled {
 .session-select span,
 .session-select small {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-select strong,
+.session-select small {
+  white-space: nowrap;
 }
 
 .session-select span,
 .session-select small {
   margin-top: 0.2rem;
   color: var(--muted);
+}
+
+.session-select span {
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .section-tree {
@@ -289,6 +303,11 @@ button:disabled {
 .chat-message.from-user {
   margin-left: auto;
   background: var(--accent-soft);
+}
+
+.chat-message.is-error {
+  border-color: rgba(181, 64, 64, 0.35);
+  background: rgba(181, 64, 64, 0.08);
 }
 
 .chat-message span {
@@ -347,6 +366,19 @@ button:disabled {
 .composer-panel {
   display: grid;
   gap: 0.85rem;
+}
+
+.composer-send-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  justify-self: end;
+}
+
+.composer-shortcut-hint {
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
 }
 
 .error-banner {

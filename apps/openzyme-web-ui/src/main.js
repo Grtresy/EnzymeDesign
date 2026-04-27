@@ -148,12 +148,30 @@ async function onSubmit(event) {
   }
   if (form.id === "message-form") {
     event.preventDefault();
-    const formData = new FormData(form);
-    const success = await controller.sendMessage(String(formData.get("message") ?? ""));
-    if (success) {
-      document.querySelector("#message-form")?.reset();
+    const message = String(new FormData(form).get("message") ?? "");
+    const shouldReset = Boolean(controller.state.currentSessionId && !controller.state.messageBusy && message.trim());
+    const pending = controller.sendMessage(message);
+    if (shouldReset) {
+      form.reset();
     }
+    await pending;
   }
+}
+
+function onKeydown(event) {
+  if (!event.ctrlKey || event.key !== "Enter" || event.shiftKey || event.altKey || event.metaKey) {
+    return;
+  }
+  const target = event.target;
+  if (!(target instanceof HTMLTextAreaElement) || target.name !== "message") {
+    return;
+  }
+  const form = target.closest("#message-form");
+  if (!(form instanceof HTMLFormElement) || controller.state.messageBusy) {
+    return;
+  }
+  event.preventDefault();
+  form.requestSubmit();
 }
 
 async function onClick(event) {
@@ -198,6 +216,7 @@ function bindActions() {
   appElement.addEventListener("click", (event) => {
     void onClick(event);
   });
+  appElement.addEventListener("keydown", onKeydown);
   appElement.dataset.actionsBound = "true";
 }
 

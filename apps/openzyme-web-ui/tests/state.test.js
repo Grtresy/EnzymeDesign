@@ -95,6 +95,28 @@ test("session summary is derived from workspace and sorted to the top", () => {
   assert.equal(sorted[0].latest_message_preview, "");
 });
 
+test("session tree shows title and objective instead of conversation preview", () => {
+  const html = renderApp({
+    ...buildInitialViewState(),
+    sessionSummaries: [
+      {
+        session_id: "sess_001",
+        project_id: "proj_001",
+        title: "Thermostability run",
+        objective: "Design a thermostable enzyme candidate",
+        status: "active",
+        updated_at: "2026-04-21T00:00:00+00:00",
+        latest_message_preview: "This is a full assistant response that belongs in the chat transcript, not the session sidebar.",
+        pending_approval_count: 0,
+      },
+    ],
+  });
+
+  assert.match(html, /Thermostability run/);
+  assert.match(html, /Design a thermostable enzyme candidate/);
+  assert.doesNotMatch(html, /full assistant response/);
+});
+
 test("v3 conversation events render in the central chat column", () => {
   let workspace = buildV3Workspace();
   workspace = reduceWorkspaceWithEvent(workspace, {

@@ -148,7 +148,7 @@ export function renderV3Conversation(workspace) {
       ${conversation
         .map(
           (item) => `
-            <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}" data-message-id="${escapeHtml(item.message_id ?? item.event_id ?? "")}">
+            <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}${item.error ? " is-error" : ""}" data-message-id="${escapeHtml(item.message_id ?? item.event_id ?? "")}">
               <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}</span>
               <p>${escapeHtml(item.content)}</p>
             </li>
@@ -344,7 +344,7 @@ export function renderSessionTree(viewState) {
                   ${viewState.sidebarBusy ? "disabled" : ""}
                 >
                   <strong>${escapeHtml(session.title || session.objective)}</strong>
-                  <span>${escapeHtml(session.latest_message_preview || session.objective)}</span>
+                  <span>${escapeHtml(session.objective)}</span>
                   <small>${escapeHtml(session.status)}${session.pending_approval_count ? ` · ${session.pending_approval_count} approval` : ""}</small>
                 </button>
               </div>
@@ -399,6 +399,9 @@ export function renderConversationHeader(viewState) {
 export function renderComposerStatus(viewState) {
   if (viewState.errors?.message) {
     return renderPanelError(viewState.errors.message);
+  }
+  if (viewState.messageBusy) {
+    return `<span class="status-line">Waiting for OpenZyme response…</span>`;
   }
   return `<span class="status-line">Selected section: ${escapeHtml(sectionLabels[viewState.currentSection] ?? "Conversation")}</span>`;
 }
@@ -487,7 +490,10 @@ export function renderMainColumn(viewState) {
         ></textarea>
         <div class="composer-actions">
           <div id="composer-status-root">${renderComposerStatus(viewState)}</div>
-          <button id="message-submit" type="submit" ${viewState.messageBusy ? "disabled" : ""}>Send</button>
+          <div class="composer-send-group">
+            <span class="composer-shortcut-hint">Ctrl+Enter to send</span>
+            <button id="message-submit" type="submit" ${viewState.messageBusy ? "disabled" : ""}>Send</button>
+          </div>
         </div>
       </form>
     </section>

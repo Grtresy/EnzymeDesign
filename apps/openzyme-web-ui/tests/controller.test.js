@@ -210,6 +210,9 @@ test("sendMessage is ignored while another request is already in flight", async 
 
   const pending = controller.sendMessage("hello");
   await Promise.resolve();
+  assert.equal(controller.state.messageBusy, true);
+  assert.equal(controller.state.workspace.conversation.at(-1).content, "hello");
+  assert.equal(controller.state.workspace.conversation.at(-1).pending, true);
   await controller.sendMessage("hello again");
   releasePost();
   await pending;
@@ -261,4 +264,26 @@ test("stale sendMessage responses do not overwrite the currently selected sessio
   assert.equal(controller.state.currentSessionId, "sess_002");
   assert.equal(controller.state.workspace.session.session_id, "sess_002");
   assert.equal(controller.state.messageBusy, false);
+});
+
+test("failed sendMessage keeps the user message and appends chat error", async () => {
+  const fakeClient = {
+    async postV3Message() {
+      throw new Error("LLM provider unavailable");
+    },
+  };
+  const controller = new WorkspaceController(fakeClient);
+  controller.state.currentProjectId = "proj_001";
+  controller.state.currentSessionId = "sess_001";
+  controller.state.workspace = buildV3Workspace("sess_001", "First");
+
+  const success = await controller.sendMessage("hello");
+
+  assert.equal(success, false);
+  assert.equal(controller.state.workspace.conversation.length, 2);
+  assert.equal(controller.state.workspace.conversation[0].role, "user");
+  assert.equal(controller.state.workspace.conversation[0].content, "hello");
+  assert.equal(controller.state.workspace.conversation[1].role, "assistant");
+  assert.equal(controller.state.workspace.conversation[1].error, true);
+  assert.match(controller.state.workspace.conversation[1].content, /LLM provider unavailable/);
 });

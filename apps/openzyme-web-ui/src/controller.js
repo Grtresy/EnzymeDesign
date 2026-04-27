@@ -86,6 +86,40 @@ export class WorkspaceController {
     this.state.errors.approvals = next;
   }
 
+  _appendOptimisticUserMessage(message) {
+    if (!this.state.workspace?.session) {
+      return null;
+    }
+    const optimisticId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    this.state.workspace = structuredClone(this.state.workspace);
+    this.state.workspace.conversation = [
+      ...(this.state.workspace.conversation ?? []),
+      {
+        role: "user",
+        content: message,
+        event_id: optimisticId,
+        pending: true,
+      },
+    ];
+    return optimisticId;
+  }
+
+  _appendMessageError(optimisticId, message) {
+    if (!this.state.workspace?.session) {
+      return;
+    }
+    this.state.workspace = structuredClone(this.state.workspace);
+    this.state.workspace.conversation = [
+      ...(this.state.workspace.conversation ?? []),
+      {
+        role: "assistant",
+        content: `Message failed: ${message}`,
+        event_id: optimisticId ? `${optimisticId}_error` : `local_error_${Date.now()}`,
+        error: true,
+      },
+    ];
+  }
+
   async _refreshSessionSummaries(projectId = this.state.currentProjectId) {
     this.state.sessionSummaries = await this.client.listV3Sessions(projectId);
   }
@@ -280,7 +314,8 @@ export class WorkspaceController {
   }
 
   async sendMessage(message) {
-    if (!this.state.currentSessionId || this.state.messageBusy || !message.trim()) {
+    const trimmedMessage = message.trim();
+    if (!this.state.currentSessionId || this.state.messageBusy || !trimmedMessage) {
       return false;
     }
     const sessionId = this.state.currentSessionId;
@@ -288,9 +323,10 @@ export class WorkspaceController {
     const requestVersion = this.messageRequestVersion;
     this.state.messageBusy = true;
     this._clearErrors("message");
+    const optimisticId = this._appendOptimisticUserMessage(trimmedMessage);
     this._emit();
     try {
-      const response = await this.client.postV3Message(sessionId, { message });
+      const response = await this.client.postV3Message(sessionId, { message: trimmedMessage });
       if (requestVersion !== this.messageRequestVersion) {
         return false;
       }
@@ -306,6 +342,7 @@ export class WorkspaceController {
       if (requestVersion !== this.messageRequestVersion || this.state.currentSessionId !== sessionId) {
         return false;
       }
+      this._appendMessageError(optimisticId, error.message);
       this.state.errors.message = error.message;
     } finally {
       if (requestVersion === this.messageRequestVersion && this.state.currentSessionId === sessionId) {
