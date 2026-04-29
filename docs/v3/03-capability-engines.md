@@ -151,7 +151,9 @@ deep research 对 harness 至少提供：
 要求：
 
 - 对 harness 至少提供 `start_execution(invocation_id, task_id, handoff)`、`resume_execution(invocation_id, resolution)`、`get_execution_status(invocation_id)`
-- approval 由 harness 统一发起和恢复
+- `execution.start(require_approval=true)` 创建 `execution_launch` approval 后，当前 master/teammate loop 必须立即返回 `waiting_approval`，不得继续把 tool result 喂给 LLM 推进下一轮
+- approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
+- execution engine 不代表用户批准；`execution.resume` 只消费已 resolved 的 approval，pending approval 下必须保持 invocation 为 `waiting_approval`
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
 

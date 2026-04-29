@@ -139,6 +139,8 @@ master delegation 仍然存在；auto-claim 是减少 master 微管理的补充�
 ## 7. Failure And Recovery Defaults
 
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
+- 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
+- approval resolved 是唤醒 resident teammate 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
 - 如果 bounded loop 到达 max steps，但 protocol thread、task state 或 artifact 已显示工作完成，runtime 应优先恢复并交付 completion，而不是只把 delegation 标记为失败。
 - 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
@@ -154,4 +156,4 @@ Workspace projection 中的 `delegation` 不应只表达最近一次 `task.deleg
 - last active time、idle since、wakeup reason
 - shutdown / failed 状态与可诊断摘要
 
-UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。
+UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。等待 approval 时，approval card 与 `workspace.pending_approvals` 是 canonical UI 信号；后端不得把 waiting approval 表述成最终完成消息。

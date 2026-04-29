@@ -417,7 +417,10 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="execution.resume",
-                    description="Resume an execution invocation after approval.",
+                    description=(
+                        "Resume an execution invocation only after its approval has already been resolved "
+                        "through the harness/API approval flow. This tool does not approve an execution."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
@@ -540,6 +543,32 @@ def _stringify_content(content: Any) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+def _execution_resume_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
+    if len(tool_results) != 1:
+        return None
+    result = tool_results[0]
+    if result.tool_name != "execution.resume" or not result.ok:
+        return None
+    try:
+        payload = json.loads(result.content)
+    except json.JSONDecodeError:
+        return result.summary or result.content or None
+    run = payload.get("run")
+    if isinstance(run, dict):
+        summary = run.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    parsed_result = payload.get("parsed_result")
+    if isinstance(parsed_result, dict):
+        summary = parsed_result.get("result_summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        return f"Execution completed with {len(artifacts)} artifact(s)."
+    return result.summary or result.content or None
 
 
 def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
@@ -685,22 +714,10 @@ class TeammateConversationDriver(HarnessDriver):
                         ),
                     )
                 )
-        if harness_input.resume is not None and tool_results:
-            if (
-                len(tool_results) == 1
-                and tool_results[0].tool_name == "execution.resume"
-            ):
-                if tool_results[0].ok:
-                    return HarnessStep(
-                        assistant_message="Approval resolved. Execution resumed under the executor teammate."
-                    )
-                return HarnessStep(
-                    assistant_message="Approval resolved, but execution did not resume successfully."
-                )
         if not self._initialized:
             self._messages = self._seed_messages(context, harness_input)
             self._initialized = True
-        elif tool_results:
+        if tool_results:
             self._messages.extend(_tool_messages(tool_results))
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose=f"v3_teammate_loop:{self.role}"
@@ -738,6 +755,11 @@ class TeammateConversationDriver(HarnessDriver):
                 getattr(response, "content", None)
                 if not isinstance(response, dict)
                 else response.get("content")
+            )
+            or (
+                _execution_resume_summary(tool_results)
+                if harness_input.resume is not None
+                else None
             )
             or f"{self.agent_id} completed delegated work."
         )

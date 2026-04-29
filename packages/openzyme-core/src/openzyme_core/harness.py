@@ -625,6 +625,46 @@ def _format_runtime_error(exc: Exception) -> str:
     return f"OpenZyme could not complete this turn: {message}"
 
 
+def _fallback_output_from_tool_results(tool_results: list[ToolResult]) -> str | None:
+    if not tool_results:
+        return None
+    result = tool_results[-1]
+    if result.tool_name not in {"execution.resume", "teammate.resume_execution"} or not result.ok:
+        return None
+    try:
+        payload = json.loads(result.content)
+    except json.JSONDecodeError:
+        return result.summary or result.content or None
+    if result.tool_name == "teammate.resume_execution":
+        summary = payload.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+        delegation_result = payload.get("delegation_result")
+        if isinstance(delegation_result, dict):
+            summary = delegation_result.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        outputs = payload.get("outputs") or payload.get("teammate_outputs")
+        if isinstance(outputs, list):
+            for item in reversed(outputs):
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+    run = payload.get("run")
+    if isinstance(run, dict):
+        summary = run.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    parsed_result = payload.get("parsed_result")
+    if isinstance(parsed_result, dict):
+        summary = parsed_result.get("result_summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        return f"Execution completed with {len(artifacts)} artifact(s)."
+    return result.summary or result.content or None
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -987,6 +1027,26 @@ def run_agent_harness_loop(
                     },
                 )
                 activity_happened = True
+                context.refresh()
+                pending_approval_id = _pending_approval_id(context.snapshot)
+                if pending_approval_id is not None:
+                    _auto_compact_if_needed(
+                        context,
+                        activity_happened=activity_happened,
+                        outputs=outputs,
+                        all_tool_results=all_tool_results,
+                    )
+                    context.refresh()
+                    return HarnessResult(
+                        session_id=harness_input.session_id,
+                        status=HarnessStatus.WAITING_APPROVAL,
+                        snapshot=context.snapshot,
+                        events=tuple(sink.events),
+                        outputs=tuple(outputs),
+                        tool_results=tuple(all_tool_results),
+                        pending_approval_id=pending_approval_id,
+                        delegations=tuple(delegation_handles),
+                    )
             tool_results = tuple(current_results)
             context.refresh()
             continue
@@ -1010,6 +1070,35 @@ def run_agent_harness_loop(
                 pending_approval_id=pending_approval_id,
                 delegations=tuple(delegation_handles),
             )
+        if (
+            harness_input.resume is not None
+            and last_status is HarnessStatus.COMPLETED
+            and not outputs
+        ):
+            fallback_output = _fallback_output_from_tool_results(all_tool_results)
+            if fallback_output:
+                message = _persist_message(
+                    repositories,
+                    session_id=harness_input.session_id,
+                    sender="harness",
+                    sender_kind=InboxParticipantKind.HARNESS,
+                    recipient=harness_input.sender,
+                    recipient_kind=harness_input.sender_kind,
+                    message_type="assistant_message",
+                    content=fallback_output
+                    if harness_input.persist_conversation
+                    else None,
+                )
+                outputs.append(fallback_output)
+                context.emit(
+                    "message.sent",
+                    {
+                        "message_id": message.message_id,
+                        "recipient": message.recipient,
+                        "recipient_kind": message.recipient_kind.value,
+                    },
+                )
+                context.refresh()
         return HarnessResult(
             session_id=harness_input.session_id,
             status=last_status,

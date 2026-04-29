@@ -452,6 +452,10 @@ class ExecutionEngine:
                 {"invocation_id": running.invocation_id, "engine_name": running.engine_name, "status": "running"},
             )
             return self._submit_execution(session=session, task=task, invocation=running, handoff=handoff)
+        if approval.status is ApprovalRequestStatus.PENDING:
+            waiting = self._replace_invocation(invocation, status=EngineInvocationStatus.WAITING_APPROVAL, finished_at=None)
+            self.repositories.invocations.save(waiting)
+            return ExecutionStartResult(invocation=waiting, run=None, approval=approval)
         cancelled = self._replace_invocation(invocation, status=EngineInvocationStatus.CANCELLED, finished_at=utc_now_iso())
         self.repositories.invocations.save(cancelled)
         self._emit(

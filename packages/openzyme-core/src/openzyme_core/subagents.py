@@ -92,6 +92,21 @@ def _protocol_service(context: SessionRuntimeContext) -> ProtocolService:
     )
 
 
+def _latest_delegation_result_payload(
+    context: SessionRuntimeContext, *, correlation_id: str
+) -> dict[str, object] | None:
+    thread = ProtocolService(context.repositories).build_thread(
+        context.snapshot.session.session_id, correlation_id
+    )
+    for message in reversed(thread.responses):
+        if message.message_type != "delegation_result" or message.payload_ref is None:
+            continue
+        document = context.repositories.engine_documents.get(message.payload_ref)
+        if document is not None:
+            return dict(document.payload)
+    return None
+
+
 def _execute_teammate_turn(
     context: SessionRuntimeContext,
     *,
@@ -139,6 +154,9 @@ def _execute_teammate_turn(
         "agent": None if updated_agent is None else updated_agent.to_dict(),
         "correlation_id": correlation_id,
         "summary": summary,
+        "delegation_result": _latest_delegation_result_payload(
+            context, correlation_id=correlation_id
+        ),
         "teammate_status": loop_result.status.value,
         "teammate_outputs": list(loop_result.outputs),
         "waiting_approval_id": loop_result.pending_approval_id,

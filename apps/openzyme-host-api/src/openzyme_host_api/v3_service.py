@@ -270,12 +270,15 @@ class V3HostApiService:
                 _event("conversation.user_message", session_id, {"content": message})
             )
         events.extend(event.to_dict() for event in result.events)
-        for output in result.outputs:
-            events.append(
-                _event(
-                    "conversation.assistant_message", session_id, {"content": output}
+        if result.status is not HarnessStatus.WAITING_APPROVAL:
+            for output in result.outputs:
+                events.append(
+                    _event(
+                        "conversation.assistant_message",
+                        session_id,
+                        {"content": output},
+                    )
                 )
-            )
         self._drain_agent_runtime(session_id, events)
         self._touch_session(session_id)
         self._extend_with_activity_events(session_id, events)

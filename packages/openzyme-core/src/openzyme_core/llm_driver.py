@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import json
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from openzyme_domain import TaskStatus
 from openzyme_domain import EngineInvocationStatus
 
 from .engines import EngineRegistry
@@ -43,6 +43,46 @@ def _stringify_content(content: Any) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+def _resume_result_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
+    if len(tool_results) != 1:
+        return None
+    result = tool_results[0]
+    if result.tool_name not in {"execution.resume", "teammate.resume_execution"} or not result.ok:
+        return None
+    try:
+        payload = json.loads(result.content)
+    except json.JSONDecodeError:
+        return result.summary or result.content or None
+    if result.tool_name == "teammate.resume_execution":
+        summary = payload.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+        delegation_result = payload.get("delegation_result")
+        if isinstance(delegation_result, dict):
+            summary = delegation_result.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        outputs = payload.get("outputs") or payload.get("teammate_outputs")
+        if isinstance(outputs, list):
+            for item in reversed(outputs):
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+    run = payload.get("run")
+    if isinstance(run, dict):
+        summary = run.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    parsed_result = payload.get("parsed_result")
+    if isinstance(parsed_result, dict):
+        summary = parsed_result.get("result_summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, list) and artifacts:
+        return f"Execution completed with {len(artifacts)} artifact(s)."
+    return result.summary or result.content or None
 
 
 def _build_system_prompt(context: SessionRuntimeContext) -> str:
@@ -273,30 +313,6 @@ class LlmConversationDriver:
             next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
         )
 
-    def _resume_followup_step(
-        self,
-        context: SessionRuntimeContext,
-        tool_results: tuple[ToolResult, ...],
-    ) -> HarnessStep | None:
-        if len(tool_results) != 1 or tool_results[0].tool_name not in {"execution.resume", "teammate.resume_execution"}:
-            return None
-        result = tool_results[0]
-        task_updates = ()
-        if result.task_id is not None:
-            task = context.repositories.tasks.get(result.task_id)
-            if task is not None:
-                next_status = TaskStatus.COMPLETED if result.ok else TaskStatus.BLOCKED
-                task_updates = (replace(task, status=next_status),)
-        if result.ok:
-            return HarnessStep(
-                assistant_message="Approval resolved. The delegated execution task resumed under the executor teammate.",
-                task_updates=task_updates,
-            )
-        return HarnessStep(
-            assistant_message="Approval resolved, but the delegated execution task did not resume successfully.",
-            task_updates=task_updates,
-        )
-
     def plan(
         self,
         context: SessionRuntimeContext,
@@ -307,14 +323,10 @@ class LlmConversationDriver:
             resumed = self._resume_waiting_invocation(context, harness_input)
             if resumed is not None:
                 return resumed
-        if harness_input.resume is not None and tool_results:
-            resume_step = self._resume_followup_step(context, tool_results)
-            if resume_step is not None:
-                return resume_step
         if not self._initialized:
             self._messages = _build_seed_messages(context, harness_input)
             self._initialized = True
-        elif tool_results:
+        if tool_results:
             self._messages.extend(_tool_messages(tool_results))
 
         invoker = self.model_factory.create_tool_calling_invoker(purpose="v3_harness_loop")
@@ -348,6 +360,12 @@ class LlmConversationDriver:
                 )
             return HarnessStep(tool_invocations=tuple(invocations))
         assistant_message = _stringify_content(getattr(response, "content", None) if not isinstance(response, dict) else response.get("content"))
+        if not assistant_message:
+            assistant_message = (
+                _resume_result_summary(tool_results)
+                if harness_input.resume is not None
+                else None
+            )
         if not assistant_message:
             assistant_message = "No user-facing response was generated."
         return HarnessStep(assistant_message=assistant_message)

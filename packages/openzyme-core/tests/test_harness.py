@@ -354,12 +354,16 @@ def test_harness_loop_registers_engine_tools_from_engine_registry() -> None:
 
 
 class ToolCreatedApprovalDriver:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def plan(
         self,
         context: SessionRuntimeContext,
         harness_input: HarnessInput,
         tool_results: tuple[object, ...],
     ) -> HarnessStep:
+        self.calls += 1
         del context, harness_input
         if not tool_results:
             return HarnessStep(
@@ -367,6 +371,12 @@ class ToolCreatedApprovalDriver:
                     ToolInvocation(
                         call_id="call_approval",
                         tool_name="approval_tool",
+                        arguments={},
+                        task_id="task_001",
+                    ),
+                    ToolInvocation(
+                        call_id="call_after_approval",
+                        tool_name="after_approval_tool",
                         arguments={},
                         task_id="task_001",
                     ),
@@ -379,10 +389,13 @@ def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
+    calls: list[str] = []
+    driver = ToolCreatedApprovalDriver()
 
     def approval_tool(
         context: SessionRuntimeContext, invocation: ToolInvocation
     ) -> str:
+        calls.append(invocation.tool_name)
         context.repositories.approvals.save(
             ApprovalRequest(
                 approval_id="appr_tool_001",
@@ -400,17 +413,27 @@ def test_harness_returns_waiting_approval_when_tool_creates_pending_approval() -
         return "pending approval"
 
     registry.register("approval_tool", approval_tool)
+    registry.register(
+        "after_approval_tool",
+        lambda _context, invocation: calls.append(invocation.tool_name) or "late",
+    )
 
     result = run_agent_harness_loop(
         repositories,
         HarnessInput(session_id=session.session_id),
-        driver=ToolCreatedApprovalDriver(),
+        driver=driver,
         tool_registry=registry,
     )
 
     assert result.status is HarnessStatus.WAITING_APPROVAL
     assert result.pending_approval_id == "appr_tool_001"
     assert result.snapshot.pending_approvals[0].approval_id == "appr_tool_001"
+    assert result.outputs == ()
+    assert [tool_result.call_id for tool_result in result.tool_results] == [
+        "call_approval"
+    ]
+    assert calls == ["approval_tool"]
+    assert driver.calls == 1
 
 
 class ApprovalDriver:
@@ -1480,6 +1503,96 @@ class FakeModelFactory:
         return self.invokers[purpose]
 
 
+class ResumeAwareInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+        self.calls: list[dict[str, object]] = []
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del system_prompt, tools
+        self.calls.append({"messages": list(messages)})
+        if self.purpose == "v3_teammate_loop:executor":
+            return {"content": "", "tool_calls": []}
+        tool_payload = json.loads(_message_content(messages[-1]))
+        payload = tool_payload["payload"]
+        summary = payload["summary"]
+        return {"content": f"Execution finished: {summary}", "tool_calls": []}
+
+
+class ResumeAwareModelFactory:
+    def __init__(self) -> None:
+        self.invokers: dict[str, ResumeAwareInvoker] = {}
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> ResumeAwareInvoker:
+        if purpose not in self.invokers:
+            self.invokers[purpose] = ResumeAwareInvoker(purpose)
+        return self.invokers[purpose]
+
+
+class FakeExecutionResumeEngine:
+    descriptor = EngineDescriptor(
+        engine_name="execution",
+        tool_names=("execution.resume",),
+        input_schema={},
+        output_schema={},
+        requires_approval=True,
+        supports_background=False,
+        idempotency_key_shape="",
+        produces_artifact_types=(),
+        capability_key="execution",
+    )
+
+    def __init__(self, repositories: CoreRepositories) -> None:
+        self.repositories = repositories
+
+    def register_tools(self, registry: ToolRegistry) -> None:
+        def resume_execution(
+            _context: SessionRuntimeContext, invocation: ToolInvocation
+        ) -> ToolResult:
+            engine_invocation = self.repositories.invocations.get(
+                str(invocation.arguments["invocation_id"])
+            )
+            assert engine_invocation is not None
+            updated = EngineInvocation(
+                invocation_id=engine_invocation.invocation_id,
+                session_id=engine_invocation.session_id,
+                task_id=engine_invocation.task_id,
+                lane_id=engine_invocation.lane_id,
+                engine_name=engine_invocation.engine_name,
+                status=EngineInvocationStatus.SUCCEEDED,
+                input_ref=engine_invocation.input_ref,
+                output_ref="doc_execution_result",
+                approval_id=engine_invocation.approval_id,
+                idempotency_key=engine_invocation.idempotency_key,
+                started_at=engine_invocation.started_at,
+                finished_at="2026-04-17T09:10:00+00:00",
+            )
+            self.repositories.invocations.save(updated)
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=True,
+                content=json.dumps(
+                    {
+                        "invocation": updated.to_dict(),
+                        "run": {"summary": "fpocket found 2 pocket(s)."},
+                        "approval": None,
+                        "artifacts": [{"artifact_id": "art_stdout"}],
+                        "parsed_result": {
+                            "result_summary": "fpocket found 2 pocket(s)."
+                        },
+                    },
+                    sort_keys=True,
+                ),
+                task_id=updated.task_id,
+                lane_id=updated.lane_id,
+            )
+
+        registry.register("execution.resume", resume_execution)
+
+
 class FakeEngine:
     def __init__(self, descriptor: EngineDescriptor) -> None:
         self.descriptor = descriptor
@@ -1653,6 +1766,144 @@ def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
     assert envelope["hint"] == "Inspect details."
     assert envelope["details"] == {"reason": "test"}
     assert envelope["content"] == "failed raw content"
+
+
+def test_approval_resume_feeds_execution_resume_result_through_executor_and_master() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=TaskStatus.BLOCKED,
+            priority=task.priority,
+            kind="execution",
+            assigned_ref="agent:executor",
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id="appr_execution_resume",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id=None,
+            kind="execution_launch",
+            requested_action="Run fpocket",
+            status=ApprovalRequestStatus.PENDING,
+            request_ref="artifact://approvals/appr_execution_resume.json",
+            resolution_ref=None,
+            created_at="2026-04-17T09:02:00+00:00",
+        )
+    )
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_execution_resume",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id=None,
+            engine_name="execution",
+            status=EngineInvocationStatus.WAITING_APPROVAL,
+            input_ref="doc_input",
+            output_ref=None,
+            approval_id="appr_execution_resume",
+            idempotency_key="resume:inv_execution_resume",
+            started_at="2026-04-17T09:03:00+00:00",
+            finished_at=None,
+        )
+    )
+    engine_registry = EngineRegistry()
+    engine_registry.register(FakeExecutionResumeEngine(repositories))
+    model_factory = ResumeAwareModelFactory()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            resume=ResumeEnvelope(
+                approval_id="appr_execution_resume",
+                decision=ResumeDecision.APPROVED,
+                actor_ref="tester",
+            ),
+        ),
+        driver=LlmConversationDriver(model_factory),
+        engine_registry=engine_registry,
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("Execution finished: fpocket found 2 pocket(s).",)
+    assert result.tool_results[0].tool_name == "teammate.resume_execution"
+    payload = json.loads(result.tool_results[0].content)
+    assert payload["outputs"] == ["fpocket found 2 pocket(s)."]
+    assert payload["delegation_result"]["summary"] == "fpocket found 2 pocket(s)."
+    assert "Approval resolved" not in result.outputs[0]
+    master_messages = model_factory.invokers["v3_harness_loop"].calls[0]["messages"]
+    master_tool_payload = json.loads(_message_content(master_messages[-1]))
+    assert master_tool_payload["payload"]["outputs"] == ["fpocket found 2 pocket(s)."]
+
+
+def test_resume_falls_back_to_executor_summary_when_master_has_no_output() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id="appr_direct_resume",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id=None,
+            kind="execution_launch",
+            requested_action="Run fpocket",
+            status=ApprovalRequestStatus.PENDING,
+            request_ref="artifact://approvals/appr_direct_resume.json",
+            resolution_ref=None,
+            created_at="2026-04-17T09:02:00+00:00",
+        )
+    )
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_direct_resume",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id=None,
+            engine_name="execution",
+            status=EngineInvocationStatus.WAITING_APPROVAL,
+            input_ref="doc_input",
+            output_ref=None,
+            approval_id="appr_direct_resume",
+            idempotency_key="resume:inv_direct_resume",
+            started_at="2026-04-17T09:03:00+00:00",
+            finished_at=None,
+        )
+    )
+    engine_registry = EngineRegistry()
+    engine_registry.register(FakeExecutionResumeEngine(repositories))
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            resume=ResumeEnvelope(
+                approval_id="appr_direct_resume",
+                decision=ResumeDecision.APPROVED,
+                actor_ref="tester",
+            ),
+        ),
+        driver=LlmConversationDriver(
+            FakeModelFactory({"content": "", "tool_calls": []})
+        ),
+        engine_registry=engine_registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.outputs == ("fpocket found 2 pocket(s).",)
+    assert "Approval resolved" not in result.outputs[0]
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:

@@ -252,8 +252,87 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
     assert resumed.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert resumed.run is not None
     assert resumed.run.status is RunStatus.SUCCEEDED
+    assert resumed.run.summary == "fpocket found 2 pocket(s) for the selected artifact set."
+    assert resumed.parsed_result is not None
+    assert (
+        resumed.parsed_result.result_summary
+        == "fpocket found 2 pocket(s) for the selected artifact set."
+    )
     assert resumed.artifacts[0].artifact_id == "run_inv_exec_001:stdout.log"
+    payload = resumed.to_dict()
+    assert payload["run"]["summary"] == payload["parsed_result"]["result_summary"]
+    assert payload["artifacts"]
     assert repositories.runs.get_by_invocation(session.session_id, "inv_exec_001").summary is not None
+
+
+def test_execution_engine_resume_keeps_pending_approval_waiting() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    first = engine.start_execution(
+        session_id=session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Run fpocket on the selected structure",
+            "required_artifact_ids": ["art_001"],
+            "catalog_tool_id": "fpocket",
+            "require_approval": True,
+        },
+        invocation_id="inv_exec_pending_resume",
+    )
+
+    resumed = engine.resume_execution(
+        invocation_id="inv_exec_pending_resume",
+        resolution="Attempted direct resume.",
+    )
+
+    assert first.approval is not None
+    assert resumed.approval is not None
+    assert resumed.approval.status is ApprovalRequestStatus.PENDING
+    assert resumed.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+    assert repositories.invocations.get("inv_exec_pending_resume").status is EngineInvocationStatus.WAITING_APPROVAL
+    assert repositories.runs.list_by_invocation(session.session_id, "inv_exec_pending_resume") == []
+
+
+def test_execution_engine_resume_cancels_rejected_approval() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    first = engine.start_execution(
+        session_id=session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Run fpocket on the selected structure",
+            "required_artifact_ids": ["art_001"],
+            "catalog_tool_id": "fpocket",
+            "require_approval": True,
+        },
+        invocation_id="inv_exec_rejected_resume",
+    )
+    approval = first.approval
+    assert approval is not None
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id=approval.approval_id,
+            session_id=approval.session_id,
+            task_id=approval.task_id,
+            lane_id=approval.lane_id,
+            kind=approval.kind,
+            requested_action=approval.requested_action,
+            status=ApprovalRequestStatus.REJECTED,
+            request_ref=approval.request_ref,
+            resolution_ref="artifact://approvals/rejected-resolution.json",
+            created_at=approval.created_at,
+            resolved_at="2026-04-20T12:00:04+00:00",
+        )
+    )
+
+    resumed = engine.resume_execution(invocation_id="inv_exec_rejected_resume")
+
+    assert resumed.invocation.status is EngineInvocationStatus.CANCELLED
+    assert resumed.approval is not None
+    assert resumed.approval.status is ApprovalRequestStatus.REJECTED
+    assert repositories.runs.list_by_invocation(session.session_id, "inv_exec_rejected_resume") == []
 
 
 def test_execution_engine_status_polling_finalizes_background_run() -> None:

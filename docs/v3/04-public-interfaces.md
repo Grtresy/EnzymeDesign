@@ -28,6 +28,8 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `GET /v3/sessions/{session_id}/events`
 - `POST /v3/approvals/{approval_id}/resolve`
 
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，runtime signal 唤醒对应 resident teammate 或 harness resume path；在 resolve 前，`execution.resume` 不能被当成批准入口。
+
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
 - `POST /v3/tasks`
@@ -173,6 +175,8 @@ V3 Web UI 默认是 conversation-first。
 - tool / engine / report / artifact activity cards
 - task board、lane/workspace 状态、delegation、artifacts / runs / reports 的只读 inspector
 - teammate roster 中的 working / idle / blocked / waiting approval / failed / shutdown 状态
+
+Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_approval` 响应中不得把普通 assistant message 当作最终完成消息写入 conversation。
 
 不要求用户理解：
 

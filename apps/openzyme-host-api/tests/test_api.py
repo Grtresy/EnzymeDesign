@@ -304,6 +304,11 @@ class FakeEngineHarnessInvoker:
                 }
             return {"content": "Research complete.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
+            if any(
+                _tool_message_name(message) == "execution.resume"
+                for message in messages
+            ):
+                return {"content": "", "tool_calls": []}
             if self.calls == 1:
                 return {
                     "content": "",
@@ -387,6 +392,13 @@ class FakeEngineHarnessInvoker:
             ),
             "",
         )
+        if latest_tool_name == "teammate.resume_execution":
+            tool_payload = json.loads(_message_content(messages[-1]))
+            summary = tool_payload["payload"]["summary"]
+            return {
+                "content": f"Execution finished: {summary}",
+                "tool_calls": [],
+            }
 
         if focused_task == "task_research_v3":
             if latest_tool_name is None:
@@ -880,6 +892,11 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         execution_payload["workspace"]["capabilities"]["execution"][0]["status"]
         == "waiting_approval"
     )
+    assert execution_payload["outputs"] == []
+    assert not any(
+        event["event_type"] == "conversation.assistant_message"
+        for event in execution_payload["events"]
+    )
     assert any(
         agent["agent"]["role"] == "executor"
         for agent in execution_payload["workspace"]["delegation"]["agents"]
@@ -899,6 +916,22 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         == "succeeded"
     )
     assert resolved_payload["workspace"]["artifacts"]
+    assert resolved_payload["outputs"] == [
+        "Execution finished: fpocket found 1 pocket(s) for the selected artifact set."
+    ]
+    conversation = resolved_payload["workspace"]["conversation"]
+    assistant_messages = [
+        message["content"]
+        for message in conversation
+        if message["role"] == "assistant"
+    ]
+    assert assistant_messages.count(
+        "Execution finished: fpocket found 1 pocket(s) for the selected artifact set."
+    ) == 1
+    assert not any(
+        "Approval resolved. The delegated execution task resumed" in message
+        for message in assistant_messages
+    )
     assert any(
         agent["agent"]["status"] == "idle"
         for agent in resolved_payload["workspace"]["delegation"]["agents"]
