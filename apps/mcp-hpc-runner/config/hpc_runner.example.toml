@@ -13,7 +13,7 @@ mem_threshold_mb = 32768
 [execution]
 default_mode = "auto"
 create_remote_dir_for_ssh = true
-artifact_root = "../.mcp_hpc_runner/artifacts"
+artifact_root = "../../../.mcp_hpc_runner/artifacts"
 use_rsync = true
 
 [logging]

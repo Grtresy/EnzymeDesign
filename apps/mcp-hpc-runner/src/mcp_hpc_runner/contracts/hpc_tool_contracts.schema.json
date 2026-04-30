@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openzyme.local/schemas/hpc_tool_contracts.schema.json",
+  "title": "OpenZyme HPC tool contract manifest",
+  "type": "object",
+  "required": ["schema_version", "tools"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "tool_id",
+          "stage",
+          "deployment_mode",
+          "entrypoint",
+          "resource_profile",
+          "required_inputs",
+          "optional_params",
+          "expected_outputs",
+          "success_checks",
+          "known_failure_signatures",
+          "support_status",
+          "executor_relevance"
+        ],
+        "properties": {
+          "tool_id": { "type": "string", "minLength": 1 },
+          "adapter_id": { "type": "string" },
+          "stage": { "type": "string", "minLength": 1 },
+          "deployment_mode": { "enum": ["wrapper", "sif", "native", "spack"] },
+          "entrypoint": {
+            "type": "object",
+            "required": ["kind", "path"],
+            "properties": {
+              "kind": { "enum": ["wrapper", "sif", "native", "spack"] },
+              "path": { "type": "string", "minLength": 1 },
+              "entrypoint": { "type": "string" },
+              "usage_args": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "bind_paths": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": true
+          },
+          "resource_profile": {
+            "type": "object",
+            "required": ["cpus", "mem_mb", "gpus", "time_minutes"],
+            "properties": {
+              "cpus": { "type": "integer", "minimum": 1 },
+              "mem_mb": { "type": "integer", "minimum": 1 },
+              "gpus": { "type": "integer", "minimum": 0 },
+              "time_minutes": { "type": "integer", "minimum": 1 },
+              "partition": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          },
+          "required_inputs": { "type": "array" },
+          "optional_params": { "type": "array" },
+          "expected_outputs": { "type": "array" },
+          "success_checks": { "type": "array" },
+          "known_failure_signatures": { "type": "array" },
+          "support_status": {
+            "enum": [
+              "smoke_runnable",
+              "entrypoint_only",
+              "blocked_missing_db_or_sample",
+              "documented_only"
+            ]
+          },
+          "executor_relevance": {
+            "enum": [
+              "compile_and_parse",
+              "compile_only",
+              "discovery_only",
+              "blocked"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -137,7 +138,94 @@ def test_execution_registry_rejects_query_only_tools() -> None:
         )
 
 
-def test_execution_registry_parses_vina_results_into_structured_findings() -> None:
+def test_execution_registry_parses_vina_results_into_structured_findings(tmp_path: Path) -> None:
+    registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
+
+    @dataclass
+    class Outcome:
+        raw_result: dict[str, object]
+
+    result_dir = _write_vina_artifacts(tmp_path)
+    result = registry.parse_result(
+        tool_id="vina",
+        outcome=Outcome(raw_result={"best_affinity": -7.2}),
+        plan=ExecutionPlanDraft(
+            catalog_tool_id="vina",
+            rationale="dock ligand",
+            tool_inputs={"ligand_path": "/tmp/ligand.pdbqt"},
+            execution_mode="ssh",
+            expected_result_summary="Affinity estimate",
+        ),
+        artifact_refs=[
+            {
+                "artifact_id": "vina_log",
+                "storage_uri": str(result_dir / "vina.log"),
+            },
+            {
+                "artifact_id": "vina_pose",
+                "storage_uri": str(result_dir / "vina_out.pdbqt"),
+            },
+        ],
+    )
+
+    assert result.structured_findings["design_signal"] == "revise"
+    assert result.structured_findings["parser_status"] == "parsed"
+    assert result.structured_findings["best_affinity"] == 0.0
+    assert result.structured_findings["mode_count"] == 1
+    assert result.structured_findings["best_mode"]["rmsd_ub"] == 0.0
+
+
+def test_execution_registry_parses_fpocket_target_info_from_artifacts(tmp_path: Path) -> None:
+    registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
+
+    fpocket_out = tmp_path / "target_out" / "target_out"
+    fpocket_out.mkdir(parents=True)
+    (fpocket_out / "target_info.txt").write_text(
+        """Pocket 1 :
+\tScore : \t0.928
+\tDruggability Score : \t0.907
+\tNumber of Alpha Spheres : \t94
+\tVolume : \t1006.516
+
+Pocket 2 :
+\tScore : \t0.215
+\tDruggability Score : \t0.009
+\tNumber of Alpha Spheres : \t26
+\tVolume : \t326.310
+""",
+        encoding="utf-8",
+    )
+
+    @dataclass
+    class Outcome:
+        raw_result: dict[str, object]
+
+    result = registry.parse_result(
+        tool_id="fpocket",
+        outcome=Outcome(raw_result={"pockets_found": 999}),
+        plan=ExecutionPlanDraft(
+            catalog_tool_id="fpocket",
+            rationale="inspect pockets",
+            tool_inputs={},
+            execution_mode="ssh",
+            expected_result_summary="Pocket ranking",
+        ),
+        artifact_refs=[
+            {
+                "artifact_id": "fpocket_out",
+                "storage_uri": str(tmp_path / "target_out"),
+            }
+        ],
+    )
+
+    assert result.structured_findings["design_signal"] == "proceed"
+    assert result.structured_findings["parser_status"] == "parsed"
+    assert result.structured_findings["pockets_found"] == 2
+    assert result.structured_findings["top_pocket"]["score"] == 0.928
+    assert result.structured_findings["top_pocket"]["volume"] == 1006.516
+
+
+def test_execution_registry_does_not_fabricate_results_when_artifact_missing() -> None:
     registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
 
     @dataclass
@@ -150,12 +238,37 @@ def test_execution_registry_parses_vina_results_into_structured_findings() -> No
         plan=ExecutionPlanDraft(
             catalog_tool_id="vina",
             rationale="dock ligand",
-            tool_inputs={"ligand_path": "/tmp/ligand.pdbqt"},
+            tool_inputs={},
             execution_mode="ssh",
             expected_result_summary="Affinity estimate",
         ),
-        artifact_refs=[{"artifact_id": "art_result"}],
+        artifact_refs=[
+            {
+                "artifact_id": "missing",
+                "storage_uri": "/tmp/does-not-exist/vina.log",
+            }
+        ],
     )
 
-    assert result.structured_findings["design_signal"] == "proceed"
-    assert result.structured_findings["best_affinity"] == -7.2
+    assert result.structured_findings["design_signal"] == "revise"
+    assert result.structured_findings["parser_status"] == "missing_artifact"
+    assert "best_affinity" not in result.structured_findings
+
+
+def _write_vina_artifacts(result_dir: Path) -> Path:
+    result_dir.mkdir(exist_ok=True)
+    (result_dir / "vina.log").write_text(
+        """Detected 96 CPUs
+Reading input ... done.
+Performing search ... done.
+
+mode |   affinity | dist from best mode
+     | (kcal/mol) | rmsd l.b.| rmsd u.b.
+-----+------------+----------+----------
+   1          0.0      0.000      0.000
+Writing output ... done.
+""",
+        encoding="utf-8",
+    )
+    (result_dir / "vina_out.pdbqt").write_text("MODEL 1\nENDMDL\n", encoding="utf-8")
+    return result_dir

@@ -143,6 +143,24 @@ HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
   uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest -m integration
 ```
 
+Live tool contract smoke tests use the same `integration` + `live_hpc` gates and
+must be explicitly enabled with `OPENZYME_TEST_ENABLE_LIVE_HPC=true`. They load
+the manifest at `src/mcp_hpc_runner/contracts/hpc_tool_contracts.json`, discover
+each declared entrypoint, run smoke jobs for `fpocket` and `vina`, and write
+redacted records under `.mcp_hpc_runner/contract_runs/<timestamp>/`.
+
+```bash
+OPENZYME_TEST_ENABLE_LIVE_HPC=true \
+HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
+  uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest \
+  -m "integration and live_hpc" tests/integration/test_hpc_contract_smoke.py
+```
+
+Set `HPC_CONTRACT_RECORD_ROOT=/path/to/records` to override the local record
+directory. The committed schema and sanitized examples live under
+`src/mcp_hpc_runner/contracts/` and `fixtures/contract_records/`; live records
+and fetched artifacts stay gitignored.
+
 ## Integration Boundary: Tool Contracts
 
 This repository provides a stable run-contract surface (`RunSpec` in,

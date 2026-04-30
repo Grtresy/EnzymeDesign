@@ -7,16 +7,8 @@ from openzyme_runtime import ExecutionPlanDraft
 
 from .catalog import RepoBackedHpcCatalogProvider
 from .models import ParsedExecutionResult
-
-
-def _default_signal(summary: str, *, proceed: bool) -> ParsedExecutionResult:
-    return ParsedExecutionResult(
-        result_summary=summary,
-        structured_findings={
-            "design_signal": "proceed" if proceed else "revise",
-            "confidence": "medium",
-        },
-    )
+from .parsers import parse_fpocket_artifacts
+from .parsers import parse_vina_artifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,30 +113,44 @@ class DefaultHpcExecutionRegistry:
         plan: ExecutionPlanDraft,
         artifact_refs: list[dict[str, Any]],
     ) -> ParsedExecutionResult:
-        raw_result = dict(getattr(outcome, "raw_result", {}) or {})
         if tool_id == "fpocket":
-            pockets_found = int(raw_result.get("pockets_found") or 1)
-            return _default_signal(
-                f"fpocket found {pockets_found} pocket(s) for the focused artifact set.",
-                proceed=pockets_found > 0,
+            parsed = parse_fpocket_artifacts(artifact_refs)
+            pockets_found = int(parsed.findings.get("pockets_found") or 0)
+            return ParsedExecutionResult(
+                result_summary=parsed.summary
+                or "fpocket completed, but no structured pocket summary was parsed.",
+                structured_findings={
+                    "design_signal": "proceed" if pockets_found > 0 else "revise",
+                    "confidence": "medium" if parsed.parser_status == "parsed" else "low",
+                    "parser_status": parsed.parser_status,
+                    "artifacts": artifact_refs,
+                    **parsed.findings,
+                },
             )
         if tool_id == "vina":
-            best_affinity = raw_result.get("best_affinity")
-            try:
-                affinity_value = float(best_affinity)
-            except (TypeError, ValueError):
-                affinity_value = -5.5
+            parsed = parse_vina_artifacts(artifact_refs)
+            affinity_value = parsed.findings.get("best_affinity")
+            has_affinity = isinstance(affinity_value, int | float)
             return ParsedExecutionResult(
-                result_summary=f"vina completed with best affinity {affinity_value:.2f} kcal/mol.",
+                result_summary=parsed.summary
+                or "vina completed, but no structured docking score was parsed.",
                 structured_findings={
-                    "design_signal": "proceed" if affinity_value <= -6.0 else "revise",
-                    "best_affinity": affinity_value,
+                    "design_signal": "proceed"
+                    if has_affinity and float(affinity_value) <= -6.0
+                    else "revise",
+                    "confidence": "medium" if parsed.parser_status == "parsed" else "low",
+                    "parser_status": parsed.parser_status,
                     "artifacts": artifact_refs,
+                    **parsed.findings,
                 },
             )
         return ParsedExecutionResult(
             result_summary=f"{tool_id} execution completed.",
-            structured_findings={"design_signal": "proceed", "artifacts": artifact_refs, "tool_inputs": dict(plan.tool_inputs)},
+            structured_findings={
+                "design_signal": "proceed",
+                "artifacts": artifact_refs,
+                "tool_inputs": dict(plan.tool_inputs),
+            },
         )
 
 

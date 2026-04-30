@@ -1,0 +1,61 @@
+{
+  "declared_contract": {
+    "executor_relevance": "compile_and_parse",
+    "stage": "evaluator",
+    "support_status": "smoke_runnable",
+    "tool_id": "fpocket"
+  },
+  "diagnostics": [],
+  "discovery": {
+    "result": {
+      "run_result_shape": [
+        "artifacts",
+        "error_code",
+        "exit_code",
+        "job_id",
+        "logs",
+        "metadata",
+        "remote_run_dir",
+        "requested_mode",
+        "run_id",
+        "selected_mode",
+        "status",
+        "stderr",
+        "stdout"
+      ]
+    },
+    "status": "completed"
+  },
+  "final_status": "smoke_completed",
+  "recorded_at": "2026-04-29T00:00:00+00:00",
+  "schema_version": 1,
+  "smoke": {
+    "fetch_result": {
+      "parser_candidates": [
+        {
+          "artifact": "target_out",
+          "parser": "fpocket_output_dir"
+        }
+      ],
+      "run_result_shape": [
+        "artifacts",
+        "error_code",
+        "exit_code",
+        "job_id",
+        "logs",
+        "metadata",
+        "remote_run_dir",
+        "requested_mode",
+        "run_id",
+        "selected_mode",
+        "status",
+        "stderr",
+        "stdout"
+      ]
+    },
+    "status": "completed"
+  },
+  "stage": "evaluator",
+  "support_status": "smoke_runnable",
+  "tool_id": "fpocket"
+}
