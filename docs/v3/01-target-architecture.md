@@ -189,6 +189,8 @@ restore context
 - 对外暴露统一 tool / command contract
 - 被 `engine invocation` 统一调度和恢复
 - 不拥有产品顶层真状态
+- `execution` 默认通过 tool contract compiler 生成 runner `RunSpec`，而不是直接拼接 Host 本地 artifact path
+- `execution` 前置 preprocess 是 capability boundary 的一部分，用于把 workspace artifact 转成下游工具要求的格式
 
 ## 4. 数据流
 
@@ -287,6 +289,8 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
+- `execution` 默认以 tool contract 编译 `command / inputs / expected_outputs / checks`，并通过 runner staging 传输 artifact
+- preprocess 默认纳入 execution 基线，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 - research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成
 - reporting 默认由 report teammate 直接在共享 workspace 上完成，不要求单独 reporting engine

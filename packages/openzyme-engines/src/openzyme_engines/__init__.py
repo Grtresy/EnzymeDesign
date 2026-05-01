@@ -24,12 +24,15 @@ from .deep_research_graph import build_deep_research_subgraph
 from .deep_research_graph import run_deep_research
 from .execution import DefaultExecutionRequestCompiler
 from .execution import DefaultExecutionResultParser
+from .execution import DefaultPreprocessAdapter
 from .execution import ExecutionEngine
 from .execution import ExecutionHandoff
 from .execution import ExecutionOutcome
 from .execution import ExecutionParsedResult
 from .execution import ExecutionStartResult
 from .execution import ExecutionStatusSnapshot
+from .execution import PreprocessArtifactDraft
+from .execution import PreprocessResult
 from .execution import register_execution_tools
 
 
@@ -43,6 +46,7 @@ __all__ = [
     "build_engine_registry",
     "DefaultExecutionRequestCompiler",
     "DefaultExecutionResultParser",
+    "DefaultPreprocessAdapter",
     "DeepResearchEngine",
     "DeepResearchRunner",
     "EvidenceSynthesis",
@@ -66,6 +70,8 @@ __all__ = [
     "ResearchTurnRecord",
     "ResearchUnitDraft",
     "ResearchUnitPlan",
+    "PreprocessArtifactDraft",
+    "PreprocessResult",
     "build_deep_research_subgraph",
     "register_deep_research_tools",
     "register_execution_tools",

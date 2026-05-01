@@ -248,6 +248,9 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - 大体积、engine-specific、调试型数据优先存入 artifact store，由 control plane 通过 typed ref 引用，而不是塞入 canonical row
 - session 级 artifact catalog 必须可被 master 与 teammate 共同读取；artifact 不是只给 UI 看的投影附件
 - artifact 默认是 team 共享工作面的一部分，task / lane 决定焦点与归属，而不是决定可见性的唯一边界
+- execution input artifact 必须先由 control plane 校验属于当前 session，才能被编译成 runner input；LLM 或用户提供的任意本地路径不得绕过 artifact catalog
+- execution output artifact 只来自 runner declared output fetch，必须记录来源 run、engine invocation、tool contract、relative path 与 provenance
+- preprocess 生成的中间文件也是 session artifact；它们可以作为后续 execution input，但必须保留来源 artifact 与转换工具 metadata
 
 `report_draft` 建议最小字段：
 

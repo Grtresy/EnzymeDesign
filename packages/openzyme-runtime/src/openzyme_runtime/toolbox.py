@@ -167,12 +167,33 @@ class OpenZymeHostToolbox:
         execution_subject_label: str,
         execution_mode: str = "auto",
         command: list[str] | None = None,
+        runspec: ExecutionRunSpecDraft | dict[str, Any] | None = None,
+        resources: dict[str, Any] | None = None,
+        inputs: list[dict[str, Any]] | None = None,
+        expected_outputs: list[dict[str, Any]] | None = None,
+        success_checks: list[dict[str, Any]] | None = None,
+        failure_signatures: list[dict[str, Any]] | None = None,
         metadata: dict[str, Any] | None = None,
         tool_name: str = "exec.run",
     ) -> ExecutionRequestDraft:
         merged_metadata = dict(metadata or {})
         merged_metadata.setdefault("execution_subject_id", execution_subject_id)
         merged_metadata.setdefault("execution_subject_label", execution_subject_label)
+        if runspec is not None:
+            run_spec_draft = (
+                runspec
+                if isinstance(runspec, ExecutionRunSpecDraft)
+                else ExecutionRunSpecDraft.model_validate(runspec)
+            )
+            run_spec_payload = run_spec_draft.model_dump()
+            run_spec_payload["metadata"] = {
+                **dict(run_spec_payload.get("metadata") or {}),
+                **merged_metadata,
+            }
+            return ExecutionRequestDraft(
+                tool_name=tool_name,
+                runspec=ExecutionRunSpecDraft.model_validate(run_spec_payload),
+            )
         return ExecutionRequestDraft(
             tool_name=tool_name,
             runspec=ExecutionRunSpecDraft(
@@ -180,6 +201,11 @@ class OpenZymeHostToolbox:
                 stage="execution",
                 command=command or ["echo", execution_subject_label],
                 execution_mode=execution_mode,
+                resources={} if resources is None else resources,
+                inputs=[] if inputs is None else inputs,
+                expected_outputs=[] if expected_outputs is None else expected_outputs,
+                success_checks=[] if success_checks is None else success_checks,
+                failure_signatures=[] if failure_signatures is None else failure_signatures,
                 metadata=merged_metadata,
             ),
         )

@@ -26,6 +26,8 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import register_execution_tools
+from openzyme_engines.execution import PreprocessArtifactDraft
+from openzyme_engines.execution import PreprocessResult
 
 
 class ImmediateSuccessRunner:
@@ -33,7 +35,12 @@ class ImmediateSuccessRunner:
         from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
-        del session_id, payload
+        del session_id
+        expected_outputs = list((dict(payload.get("runspec") or {}).get("expected_outputs") or []))
+        relative_path = str((expected_outputs[0] if expected_outputs else {}).get("path") or "stdout.log")
+        kind = ArtifactKind.LOG if relative_path.endswith(".log") else ArtifactKind.RESULT
+        if relative_path.endswith((".pdb", ".pdbqt", ".sdf", ".mol2", ".cif")):
+            kind = ArtifactKind.STRUCTURE
         return ExecutionOutcome(
             run_id="runner_run_001",
             status=RunStatus.SUCCEEDED,
@@ -42,9 +49,9 @@ class ImmediateSuccessRunner:
             raw_result={"pockets_found": 2},
             artifacts=(
                 ExecutionArtifactRef(
-                    storage_uri="/tmp/stdout.log",
-                    relative_path="stdout.log",
-                    kind=ArtifactKind.LOG,
+                    storage_uri=f"/tmp/{relative_path}",
+                    relative_path=relative_path,
+                    kind=kind,
                 ),
             ),
         )
@@ -90,7 +97,9 @@ class BackgroundRunner:
         from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
-        del remote_run_dir, runspec, job_id
+        del remote_run_dir, job_id
+        expected_outputs = list((runspec or {}).get("expected_outputs") or [])
+        relative_path = str((expected_outputs[0] if expected_outputs else {}).get("path") or "result.json")
         return ExecutionOutcome(
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
@@ -99,8 +108,8 @@ class BackgroundRunner:
             raw_result={"pockets_found": 1},
             artifacts=(
                 ExecutionArtifactRef(
-                    storage_uri="/tmp/result.json",
-                    relative_path="result.json",
+                    storage_uri=f"/tmp/{relative_path}",
+                    relative_path=relative_path,
                     kind=ArtifactKind.RESULT,
                 ),
             ),
@@ -110,6 +119,64 @@ class BackgroundRunner:
 
     def cancel_execution(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):  # type: ignore[no-untyped-def]
         raise AssertionError("cancel should not be used in this test")
+
+
+class CapturingSuccessRunner(ImmediateSuccessRunner):
+    def __init__(self) -> None:
+        self.payloads: list[dict[str, object]] = []
+
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        self.payloads.append(payload)
+        return super().submit_execution(session_id, payload)
+
+
+class FakeVinaPreprocessAdapter:
+    def preprocess_for_execution(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+        handoff,
+        required_artifacts: tuple[SessionArtifactRecord, ...],
+    ) -> PreprocessResult:
+        del session_id, handoff
+        return PreprocessResult(
+            required_artifacts=required_artifacts,
+            created_artifacts=(
+                PreprocessArtifactDraft(
+                    source_artifact_id="art_001",
+                    operation="prepare_receptor",
+                    storage_uri="/tmp/preprocess/receptor.pdbqt",
+                    relative_path=f"preprocess/{invocation_id}/receptor.pdbqt",
+                    input_format="pdb",
+                    output_format="pdbqt",
+                    tool="fake-preprocess",
+                    metadata={"fake": True},
+                ),
+            ),
+        )
+
+
+class InjectingCompiler:
+    def compile_request(self, *, handoff, task, resolved_required_artifacts, resolved_context_artifacts):  # type: ignore[no-untyped-def]
+        del handoff, task, resolved_required_artifacts, resolved_context_artifacts
+        return {
+            "tool_name": "exec.run",
+            "runspec": {
+                "name": "bad",
+                "stage": "execution",
+                "command": ["cat", "/work/input.pdb"],
+                "inputs": [
+                    {
+                        "artifact_id": "art_001",
+                        "local_path": "/etc/passwd",
+                        "remote_path": "input.pdb",
+                    }
+                ],
+                "expected_outputs": [],
+                "metadata": {},
+            },
+        }
 
 
 def _build_repositories() -> CoreRepositories:
@@ -190,6 +257,23 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_002",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="seed_invocation",
+            run_id=None,
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/ligand.pdbqt",
+            relative_path="ligand.pdbqt",
+            title="ligand.pdbqt",
+            description=None,
+            metadata={"source": "seed"},
+            created_at="2026-04-20T12:00:03+00:00",
+        )
+    )
     return session
 
 
@@ -258,7 +342,7 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
         resumed.parsed_result.result_summary
         == "fpocket found 2 pocket(s) for the selected artifact set."
     )
-    assert resumed.artifacts[0].artifact_id == "run_inv_exec_001:stdout.log"
+    assert resumed.artifacts[0].artifact_id == "run_inv_exec_001:target_out"
     payload = resumed.to_dict()
     assert payload["run"]["summary"] == payload["parsed_result"]["result_summary"]
     assert payload["artifacts"]
@@ -355,7 +439,100 @@ def test_execution_engine_status_polling_finalizes_background_run() -> None:
 
     assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert status["invocation"]["status"] == "succeeded"
-    assert status["artifacts"][0]["artifact_id"] == "run_inv_exec_bg:result.json"
+    assert status["artifacts"][0]["artifact_id"] == "run_inv_exec_bg:target_out"
+
+
+def test_execution_engine_compiles_staged_inputs_from_session_artifacts() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(repositories, runner)
+
+    engine.start_execution(
+        session_id=session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Run fpocket on the selected structure",
+            "required_artifact_ids": ["art_001"],
+            "catalog_tool_id": "fpocket",
+            "require_approval": False,
+        },
+        invocation_id="inv_exec_staging",
+    )
+
+    runspec = runner.payloads[0]["runspec"]
+    assert runspec["inputs"][0]["artifact_id"] == "art_001"
+    assert runspec["inputs"][0]["local_path"] == "/tmp/input_structure.pdb"
+    assert runspec["inputs"][0]["remote_path"] == "target.pdb"
+    assert runspec["expected_outputs"][0]["path"] == "target_out"
+    assert "/tmp/input_structure.pdb" not in " ".join(runspec["command"])
+
+
+def test_execution_engine_persists_preprocess_artifact_and_stages_it_for_vina() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(
+        repositories,
+        runner,
+        preprocess_adapter=FakeVinaPreprocessAdapter(),
+    )
+
+    result = engine.start_execution(
+        session_id=session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Dock ligand",
+            "required_artifact_ids": ["art_001", "art_002"],
+            "catalog_tool_id": "vina",
+            "require_approval": False,
+        },
+        invocation_id="inv_exec_vina_preprocess",
+    )
+
+    runspec = runner.payloads[0]["runspec"]
+    assert runspec["inputs"][0]["local_path"] == "/tmp/preprocess/receptor.pdbqt"
+    assert runspec["inputs"][1]["local_path"] == "/tmp/ligand.pdbqt"
+    preprocess_records = [
+        artifact
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+        if artifact.metadata and artifact.metadata.get("source") == "preprocess"
+    ]
+    assert [item["artifact_id"] for item in runspec["inputs"]] == [
+        preprocess_records[0].artifact_id,
+        "art_002",
+    ]
+    assert preprocess_records[0].metadata["source_artifact_id"] == "art_001"
+    assert result.artifacts[0].metadata["preprocess_artifact_ids"] == [
+        preprocess_records[0].artifact_id
+    ]
+
+
+def test_execution_engine_rejects_compiled_input_local_path_injection() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        compiler=InjectingCompiler(),
+    )
+
+    try:
+        engine.start_execution(
+            session_id=session.session_id,
+            task_id="task_001",
+            handoff={
+                "execution_goal": "Run an unsafe request",
+                "required_artifact_ids": ["art_001"],
+                "catalog_tool_id": "fpocket",
+                "require_approval": False,
+            },
+            invocation_id="inv_exec_injection",
+        )
+    except ValueError as exc:
+        assert "local_path" in str(exc)
+    else:
+        raise AssertionError("unsafe compiled local_path was accepted")
 
 
 def test_execution_engine_reconcile_closes_background_completion_without_protocol_output_writeback() -> None:
@@ -391,7 +568,7 @@ def test_execution_engine_reconcile_closes_background_completion_without_protoco
 
     assert reconciled.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert reconciled.invocation.output_ref is not None
-    assert reconciled.artifacts[0].artifact_id == "run_inv_exec_bg_reconcile:result.json"
+    assert reconciled.artifacts[0].artifact_id == "run_inv_exec_bg_reconcile:target_out"
 
 
 def test_execution_tools_register_with_tool_registry() -> None:

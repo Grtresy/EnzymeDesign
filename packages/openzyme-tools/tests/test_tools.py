@@ -47,6 +47,11 @@ class FakeHostToolbox:
                 "artifact_id": "art_001",
                 "storage_uri": "/tmp/structure.pdb",
                 "title": "Focused structure",
+            },
+            {
+                "artifact_id": "art_002",
+                "storage_uri": "/tmp/ligand.pdbqt",
+                "title": "Prepared ligand",
             }
         ]
         self.built_requests = []
@@ -63,6 +68,11 @@ class FakeHostToolbox:
         execution_subject_label: str,
         execution_mode: str = "auto",
         command: list[str] | None = None,
+        resources: dict[str, object] | None = None,
+        inputs: list[dict[str, object]] | None = None,
+        expected_outputs: list[dict[str, object]] | None = None,
+        success_checks: list[dict[str, object]] | None = None,
+        failure_signatures: list[dict[str, object]] | None = None,
         metadata: dict[str, object] | None = None,
         tool_name: str = "exec.run",
     ):
@@ -73,6 +83,11 @@ class FakeHostToolbox:
                 "stage": "execution",
                 "command": command or [],
                 "execution_mode": execution_mode,
+                "resources": dict(resources or {}),
+                "inputs": list(inputs or []),
+                "expected_outputs": list(expected_outputs or []),
+                "success_checks": list(success_checks or []),
+                "failure_signatures": list(failure_signatures or []),
                 "metadata": dict(metadata or {}),
             },
         }
@@ -111,8 +126,77 @@ def test_execution_registry_compiles_fpocket_request_from_artifacts() -> None:
     )
 
     assert payload["tool_name"] == "exec.run"
-    assert payload["runspec"]["command"] == ["fpocket", "-f", "/tmp/structure.pdb"]
+    assert "/work/target.pdb" in payload["runspec"]["command"][2]
+    assert payload["runspec"]["inputs"] == [
+        {
+            "artifact_id": "art_001",
+            "local_path": "/tmp/structure.pdb",
+            "remote_path": "target.pdb",
+            "required": True,
+            "stage_to": "work",
+        }
+    ]
+    assert payload["runspec"]["expected_outputs"][0]["path"] == "target_out"
     assert payload["runspec"]["metadata"]["catalog_tool_id"] == "fpocket"
+
+
+def test_execution_registry_compiles_vina_request_from_two_artifacts() -> None:
+    registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
+    toolbox = FakeHostToolbox()
+
+    payload = registry.compile_request(
+        tool_id="vina",
+        plan=ExecutionPlanDraft(
+            catalog_tool_id="vina",
+            rationale="dock ligand",
+            tool_inputs={"center_x": 1, "center_y": 2, "center_z": 3},
+            execution_mode="sbatch",
+            expected_result_summary="Docking score",
+        ),
+        handoff={
+            "episode_id": "ep_001",
+            "execution_goal": "Dock ligand",
+            "required_artifact_ids": ["art_001"],
+            "context_artifact_ids": [],
+        },
+        host_toolbox=toolbox,
+    )
+
+    assert "--receptor /work/receptor.pdbqt" in payload["runspec"]["command"][2]
+    assert "--ligand /work/ligand.pdbqt" in payload["runspec"]["command"][2]
+    assert [item["remote_path"] for item in payload["runspec"]["inputs"]] == [
+        "receptor.pdbqt",
+        "ligand.pdbqt",
+    ]
+    assert [item["path"] for item in payload["runspec"]["expected_outputs"]] == [
+        "vina_out.pdbqt",
+        "vina.log",
+    ]
+
+
+def test_execution_registry_rejects_vina_without_ligand() -> None:
+    registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
+    toolbox = FakeHostToolbox()
+    toolbox.resolved = toolbox.resolved[:1]
+
+    with pytest.raises(ValueError, match="vina ligand"):
+        registry.compile_request(
+            tool_id="vina",
+            plan=ExecutionPlanDraft(
+                catalog_tool_id="vina",
+                rationale="dock ligand",
+                tool_inputs={},
+                execution_mode="sbatch",
+                expected_result_summary="Docking score",
+            ),
+            handoff={
+                "episode_id": "ep_001",
+                "execution_goal": "Dock ligand",
+                "required_artifact_ids": ["art_001"],
+                "context_artifact_ids": [],
+            },
+            host_toolbox=toolbox,
+        )
 
 
 def test_execution_registry_rejects_query_only_tools() -> None:

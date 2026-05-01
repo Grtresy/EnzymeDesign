@@ -25,7 +25,7 @@ class FakeRunnerServer:
                 "status": "completed",
                 "job_id": "123",
                 "artifacts": {
-                    "/remote/run_001/out/result.json": "/tmp/result.json",
+                    "/remote/run_001/out/a/result.json": "/tmp/a/result.json",
                 },
             }
         return {
@@ -122,5 +122,24 @@ def test_hpc_runner_adapter_queries_status_and_fetches_artifacts() -> None:
 
     assert status.status is RunStatus.SUCCEEDED
     assert fetched.job_id == "123"
-    assert fetched.artifacts[0].relative_path == "result.json"
+    assert fetched.artifacts[0].relative_path == "a/result.json"
     assert [name for name, _ in server.calls[-2:]] == ["job.status", "job.fetch_artifacts"]
+
+
+def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+
+    outcome = adapter._normalize_result(
+        {
+            "run_id": "run_001",
+            "selected_mode": "ssh",
+            "remote_run_dir": "/remote/run_001",
+            "status": "completed",
+            "artifacts": {
+                "/remote/run_001/out/vina_out.pdbqt": "/tmp/vina_out.pdbqt",
+            },
+        }
+    )
+
+    assert outcome.artifacts[0].kind.value == "structure"

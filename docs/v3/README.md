@@ -40,3 +40,4 @@ V3 的核心立场：
 - 后续 AI 在开始 V3 工作前，必须先读本目录至少 `README + doctrine + 对应 session 文档`。
 - 若实现选择与这些文档冲突，应优先更新文档并解释偏差，不能静默偏离。
 - 若涉及对现有 `docs/OpenZyme架构设计.md` 的回写，必须单独征求用户确认。
+- 实现 V3 execution 前必须先读 `sessions/09-execution-engine.md`；不得继续依赖“Host 本地 artifact path 直接作为 HPC command path”的旧行为。

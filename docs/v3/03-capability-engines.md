@@ -147,6 +147,8 @@ deep research 对 harness 至少提供：
 
 - 负责将某项 task 或 artifact 集合转化为可执行请求
 - 继续复用 `apps/mcp-hpc-runner` 作为外部执行边界
+- 负责把 session artifact catalog 中的输入资产显式编译成 runner `RunSpec.inputs`
+- 负责把 runner 下载后的 declared outputs 回填为 canonical workspace artifacts
 
 要求：
 
@@ -156,6 +158,33 @@ deep research 对 harness 至少提供：
 - execution engine 不代表用户批准；`execution.resume` 只消费已 resolved 的 approval，pending approval 下必须保持 invocation 为 `waiting_approval`
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
+- command 不得直接引用 Host 本地 `SessionArtifactRecord.storage_uri`；HPC command 只能引用 `/work`、`/out`、`$MCP_WORKDIR`、`$MCP_OUTDIR` 等远端路径
+- 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
+- 远端结果只有在 `expected_outputs` 中声明后才会被下载并登记为 artifact
+- output artifact 必须保留相对路径层级，不能只保留 basename
+
+### 3.1 Execution Tool Contract 与 Preprocess
+
+execution engine 的 request compiler 默认应由 tool contract 驱动，而不是不断增加
+tool-specific command 拼接分支。
+
+tool contract 至少描述：
+
+- required input slots 与目标远端路径
+- optional params 与资源请求
+- expected outputs 与 success checks
+- failure signatures 与 parser hints
+- preprocess requirements，例如 Vina 需要 receptor/ligand PDBQT
+
+preprocess 是 execution 的基线前置能力：
+
+- `convert_format` 负责通用分子格式转换
+- `prepare_receptor` 负责 receptor PDBQT 准备
+- `prepare_ligand` 负责 ligand PDBQT 准备
+- `smiles_to_3d` 负责 SMILES 到三维 ligand 中间结构
+
+preprocess 输出必须先成为可信 session artifact，再被 execution compiler 作为
+`RunSpec.inputs` 消费。
 
 ## 4. Reporting 默认不属于 Capability Engine
 

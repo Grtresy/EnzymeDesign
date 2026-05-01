@@ -45,6 +45,7 @@ class ResourceSpec:
 class StagedInput:
     local_path: str
     remote_path: str
+    artifact_id: str | None = None
     required: bool = True
     stage_to: str = "work"  # "work" or "out"
 
@@ -53,6 +54,7 @@ class StagedInput:
         return cls(
             local_path=str(data["local_path"]),
             remote_path=str(data["remote_path"]),
+            artifact_id=None if data.get("artifact_id") is None else str(data["artifact_id"]),
             required=bool(data.get("required", True)),
             stage_to=str(data.get("stage_to", "work")),
         )
@@ -61,6 +63,7 @@ class StagedInput:
         return {
             "local_path": self.local_path,
             "remote_path": self.remote_path,
+            "artifact_id": self.artifact_id,
             "required": self.required,
             "stage_to": self.stage_to,
         }

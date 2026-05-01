@@ -9,6 +9,8 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - `docs/v3/00-harness-doctrine.md` remains the governing boundary: top-level product truth is the harness control plane, not a workflow graph.
 - `/v3` public API shape is frozen for this cutover window.
 - V3 can create a session, accept a user message, create tasks, delegate to teammates, wake teammate runtime, run research and execution capabilities, create a report draft, publish a final report, and project the workspace.
+- V3 execution can stage session artifacts into HPC `RunSpec.inputs`, fetch declared `expected_outputs`, and register fetched files as session artifacts.
+- V3 execution can run required preprocess steps for format-sensitive tools such as Vina before submitting HPC work.
 - V2 continues to run for rollback only; no new product semantics are added to V2 during the cutover window.
 - `docs/OpenZyme架构设计.md` is not changed as part of this cutover unless separately approved.
 
@@ -25,12 +27,14 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - Deterministic V3 E2E: `run_v3_local_evals()` must pass `v3_design_cutover_path`.
 - Live LLM smoke: `run_v3_live_evals()` must pass `v3_live_design_task_plan` when live LLM tests are enabled.
 - Evidence must include task count, delegated teammate roles, capability keys, report count, and per-check pass/fail values.
+- Execution evidence must include at least one staged-input run, one multi-input run, one declared-output artifact fetch, and one preprocess-to-execution chain when Vina is enabled.
 - Failed evals block cutover unless explicitly accepted as non-release-blocking by the owner.
 
 ## Observability Requirements
 
 - V3 harness evals must be runnable with `--upload-results` to emit LangSmith workflow traces where configured.
 - Session event replay must include conversation, task, tool, delegation, approval, engine, report draft, and report generation events.
+- Session event replay must include execution preprocess completion, runner submission/status, output fetch, and artifact recording events for execution runs.
 - `/debug/llm-calls` must remain available for local diagnosis of V3 harness and teammate LLM calls.
 - Rollback diagnosis needs the session id, latest failing endpoint, event replay, pending approval ids, and LLM debug records.
 

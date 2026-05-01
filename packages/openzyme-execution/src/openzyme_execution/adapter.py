@@ -16,11 +16,22 @@ def _artifact_kind_from_uri(storage_uri: str) -> ArtifactKind:
     path = storage_uri.lower()
     if path.endswith(".log") or "/logs/" in path:
         return ArtifactKind.LOG
-    if path.endswith((".pdb", ".cif", ".mol2", ".sdf")):
+    if path.endswith((".pdb", ".cif", ".mol2", ".sdf", ".pdbqt")):
         return ArtifactKind.STRUCTURE
     if path.endswith((".md", ".pdf", ".html")):
         return ArtifactKind.REPORT
     return ArtifactKind.RESULT
+
+
+def _relative_output_path(remote_path: str) -> str:
+    path = PurePosixPath(remote_path)
+    parts = path.parts
+    if "out" in parts:
+        out_index = len(parts) - 1 - list(reversed(parts)).index("out")
+        remainder = parts[out_index + 1 :]
+        if remainder:
+            return str(PurePosixPath(*remainder))
+    return path.name
 
 
 def map_runner_status_to_run_status(status: str) -> RunStatus:
@@ -89,7 +100,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             metadata["openzyme"]["requested_tool_name"] = requested_tool_name
         runspec["metadata"] = metadata
         result = self.server.call_tool(tool_name, {"runspec": runspec})
-        return self._normalize_result(result)
+        return self._normalize_result(result, declared_paths=_declared_output_paths(runspec))
 
     def get_execution_status(
         self,
@@ -128,7 +139,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
                 "runspec": runspec,
             },
         )
-        return self._normalize_result(result)
+        return self._normalize_result(result, declared_paths=_declared_output_paths(runspec))
 
     def cancel_execution(
         self,
@@ -143,15 +154,21 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         )
         return self._normalize_result(result)
 
-    def _normalize_result(self, result: dict[str, Any]) -> ExecutionOutcome:
+    def _normalize_result(
+        self,
+        result: dict[str, Any],
+        *,
+        declared_paths: set[str] | None = None,
+    ) -> ExecutionOutcome:
         selected_mode = str(result.get("selected_mode", result.get("requested_mode", "unknown")))
         artifacts = tuple(
             ExecutionArtifactRef(
                 storage_uri=str(local_path),
-                relative_path=PurePosixPath(remote_path).name,
+                relative_path=_relative_output_path(str(remote_path)),
                 kind=_artifact_kind_from_uri(str(local_path)),
             )
             for remote_path, local_path in sorted(dict(result.get("artifacts", {})).items())
+            if declared_paths is None or _relative_output_path(str(remote_path)) in declared_paths
         )
         return ExecutionOutcome(
             run_id=str(result["run_id"]),
@@ -163,3 +180,8 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             job_id=None if result.get("job_id") is None else str(result["job_id"]),
             exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
         )
+
+
+def _declared_output_paths(runspec: dict[str, Any]) -> set[str] | None:
+    paths = {str(item.get("path")) for item in list(runspec.get("expected_outputs") or []) if item.get("path")}
+    return paths or None

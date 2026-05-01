@@ -70,6 +70,7 @@
 
 - 挂接 `deep_research`、`execution` capability engines
 - 建立 report teammate + report draft + final report 发布路径
+- 将 execution artifact staging、tool contract compiler、多输入多输出和 preprocess 前置能力纳入 Session 09 baseline
 
 ### 阶段 E：产品表面切换
 
@@ -103,6 +104,8 @@
 - UI / CLI 只消费 control-plane projection
 - `deep_research` 成为 capability engine，而不是顶层 orchestrator
 - `execution` approval 统一走 harness protocol
+- execution 不再把 Host 本地 artifact `storage_uri` 当作 HPC 远端路径；输入必须经 `RunSpec.inputs` staging
+- preprocess 输出和 HPC declared outputs 都能回填为 session artifact
 - 任务、lane、approval、memory 可跨压缩恢复
 - engine invocation、delegation、background completion 可独立恢复
 - V3 能独立跑通从 research 到 execution 到 report drafting 再到 final delivery 的闭环

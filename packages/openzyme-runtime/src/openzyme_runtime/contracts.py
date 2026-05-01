@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 from pydantic import Field
+from pydantic import field_validator
 
 
 class ConstraintItem(BaseModel):
@@ -124,11 +125,78 @@ class DesignToolCallResult(BaseModel):
     canonical_updates: dict[str, Any] = Field(default_factory=dict)
 
 
+def _validate_relative_runner_path(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("runner path must be non-empty")
+    if normalized.startswith("/"):
+        raise ValueError("runner path must be relative")
+    parts = normalized.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("runner path must not contain empty, '.', or '..' segments")
+    if any(char in normalized for char in (";", "&", "|", "`", "$", "\\", "\n", "\r")):
+        raise ValueError("runner path must not contain shell metacharacters")
+    return normalized
+
+
+class ExecutionResourceDraft(BaseModel):
+    cpus: int = 1
+    mem_mb: int = 1024
+    gpus: int = 0
+    time_minutes: int = 10
+    partition: str | None = None
+
+
+class ExecutionStagedInputDraft(BaseModel):
+    artifact_id: str | None = None
+    local_path: str
+    remote_path: str
+    required: bool = True
+    stage_to: Literal["work", "out"] = "work"
+
+    @field_validator("remote_path")
+    @classmethod
+    def _remote_path_is_relative(cls, value: str) -> str:
+        return _validate_relative_runner_path(value)
+
+
+class ExecutionExpectedOutputDraft(BaseModel):
+    path: str
+    kind: Literal["file", "dir"] = "file"
+    required: bool = True
+    non_empty: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_relative(cls, value: str) -> str:
+        return _validate_relative_runner_path(value)
+
+
+class ExecutionSuccessCheckDraft(BaseModel):
+    check_type: Literal["exists", "non_empty", "json"]
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_relative(cls, value: str) -> str:
+        return _validate_relative_runner_path(value)
+
+
+class ExecutionFailureSignatureDraft(BaseModel):
+    pattern: str
+    error_code: str
+
+
 class ExecutionRunSpecDraft(BaseModel):
     name: str
     stage: str
     command: list[str]
     execution_mode: str = "auto"
+    resources: ExecutionResourceDraft = Field(default_factory=ExecutionResourceDraft)
+    inputs: list[ExecutionStagedInputDraft] = Field(default_factory=list)
+    expected_outputs: list[ExecutionExpectedOutputDraft] = Field(default_factory=list)
+    success_checks: list[ExecutionSuccessCheckDraft] = Field(default_factory=list)
+    failure_signatures: list[ExecutionFailureSignatureDraft] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -217,10 +285,15 @@ __all__ = [
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
     "ExecutionHandoff",
+    "ExecutionExpectedOutputDraft",
+    "ExecutionFailureSignatureDraft",
     "ExecutionPlanDraft",
     "ExecutionResultHandoff",
+    "ExecutionResourceDraft",
     "ResearchDossier",
     "ResearchSourceItem",
+    "ExecutionStagedInputDraft",
+    "ExecutionSuccessCheckDraft",
     "HpcCatalogEntrySummary",
     "ResearchTurnRecord",
     "ExecutionRequestDraft",

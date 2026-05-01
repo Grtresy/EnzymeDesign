@@ -26,12 +26,17 @@ from .contracts import DesignBriefDraft
 from .contracts import EvidenceSynthesis
 from .contracts import EvidenceSynthesisItem
 from .contracts import ExecutionHandoff
+from .contracts import ExecutionExpectedOutputDraft
+from .contracts import ExecutionFailureSignatureDraft
 from .contracts import ExecutionPlanDraft
 from .contracts import ExecutionResultHandoff
 from .contracts import ResearchDossier
 from .contracts import ResearchSourceItem
 from .contracts import ExecutionRequestDraft
+from .contracts import ExecutionResourceDraft
 from .contracts import ExecutionRunSpecDraft
+from .contracts import ExecutionStagedInputDraft
+from .contracts import ExecutionSuccessCheckDraft
 from .contracts import HpcCatalogEntrySummary
 from .contracts import IntakeClarification
 from .contracts import IntakePhaseOutput
@@ -135,12 +140,17 @@ __all__ = [
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
     "ExecutionHandoff",
+    "ExecutionExpectedOutputDraft",
+    "ExecutionFailureSignatureDraft",
     "ExecutionPlanDraft",
+    "ExecutionResourceDraft",
     "ExecutionResultHandoff",
     "ResearchDossier",
     "ResearchSourceItem",
     "ExecutionRequestDraft",
     "ExecutionRunSpecDraft",
+    "ExecutionStagedInputDraft",
+    "ExecutionSuccessCheckDraft",
     "ExecutionSettings",
     "GraphAssemblyInputs",
     "GraphRuntimeFacade",

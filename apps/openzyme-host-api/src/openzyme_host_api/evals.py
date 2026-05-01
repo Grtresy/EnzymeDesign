@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_domain import ArtifactKind
+from openzyme_domain import SessionArtifactRecord
 from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
@@ -131,6 +133,7 @@ class V3LocalEvalInvoker:
                             "task_id": task_id,
                             "handoff": {
                                 "execution_goal": "Run deterministic fpocket-style pocket analysis for the selected scaffold.",
+                                "required_artifact_ids": ["art_eval_structure"],
                                 "catalog_tool_id": "fpocket",
                                 "require_approval": True,
                             },
@@ -349,6 +352,26 @@ def build_v3_eval_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
+def seed_v3_eval_execution_artifact(repositories: CoreRepositories, session_id: str) -> None:
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_eval_structure",
+            session_id=session_id,
+            task_id=None,
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/eval_input_structure.pdb",
+            relative_path="eval_input_structure.pdb",
+            title="eval_input_structure.pdb",
+            description=None,
+            metadata={"source": "eval_fixture"},
+            created_at="2026-04-20T12:00:03+00:00",
+        )
+    )
+
+
 def _run_scenario(
     scenario: EvalScenario,
     *,
@@ -478,11 +501,12 @@ def _run_v3_design_cutover_scenario(
         foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
+        v3_repositories = build_v3_eval_repositories()
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
                 graph_builder=build_v2_supervisor_graph,
-                v3_repositories=build_v3_eval_repositories(),
+                v3_repositories=v3_repositories,
             )
         )
         with TestClient(app) as client:
@@ -496,6 +520,7 @@ def _run_v3_design_cutover_scenario(
                 },
             )
             created.raise_for_status()
+            seed_v3_eval_execution_artifact(v3_repositories, "sess_eval_v3_cutover")
 
             prompt = (
                 "Use this literature brief to run the V3 design workflow. "

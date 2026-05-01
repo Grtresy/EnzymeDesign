@@ -128,7 +128,10 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
 - 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage
+- execution 输入 artifact 必须通过 compiler 映射为 runner staging input；workspace projection 中的 `storage_uri` 不表示 HPC 远端可直接读取
+- execution 输出 artifact 必须来自 runner declared `expected_outputs` 的下载结果，并保留 output relative path
 - `capabilities.deep_research[]` 默认承载每个 research invocation 的 `canonical_summary`、`evidence`、`source_refs`、`gaps` 与 output document 投影
+- `capabilities.execution[]` 默认承载每个 execution invocation 的 `run`、`tool_contract`、`input_artifact_ids`、`preprocess_artifact_ids`、`output_artifact_ids`、`remote_run_dir` 与 terminal summary
 - direct provider search 产出的 normalized findings 后续也应能进入同一 canonical research evidence / source ref 读模型；不应只作为一次性 tool message 存在
 - `source_refs` 与 `artifacts` 是并列的 canonical workspace 信息：前者回答“证据来自哪里”，后者回答“哪些文件资产可被后续 agent / UI 读取”
 
@@ -210,6 +213,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
 - `research.evidence.recorded`
 - `artifact.recorded`
+- `execution.preprocess.completed`
+- `execution.artifacts.fetched`
 - `report_draft.updated`
 - `report.generated`
 
@@ -219,6 +224,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 - `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
 - `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
+- `execution.preprocess.completed` 表示 execution 前置格式转换或输入准备已生成新的可信 workspace artifact
+- `execution.artifacts.fetched` 表示 runner 已按 declared `expected_outputs` 下载远端结果，随后应产生对应 `artifact.recorded`
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
 - `agent.woken` 表示 scheduler 已为 resident teammate 开始一次 work turn；wakeup reason 必须能回链到 inbox、task、approval、engine invocation 或 manual resume
 - `agent.idle` 表示 teammate 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留

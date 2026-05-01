@@ -330,6 +330,14 @@ class SessionProjectionBuilder:
                 )
             )
         for artifact in self.repositories.artifacts.list_by_session(session_id):
+            if artifact.metadata and artifact.metadata.get("source") == "preprocess":
+                items.append(
+                    ActivityFeedItem(
+                        event_type="execution.preprocess.completed",
+                        created_at=artifact.created_at,
+                        payload=artifact.to_dict(),
+                    )
+                )
             items.append(
                 ActivityFeedItem(
                     event_type="artifact.recorded",
@@ -337,6 +345,19 @@ class SessionProjectionBuilder:
                     payload=artifact.to_dict(),
                 )
             )
+        for run in self.repositories.runs.list_by_session(session_id):
+            artifacts = self.repositories.artifacts.list_by_run(run.run_id)
+            if artifacts:
+                items.append(
+                    ActivityFeedItem(
+                        event_type="execution.artifacts.fetched",
+                        created_at=run.finished_at or run.updated_at,
+                        payload={
+                            "run": run.to_dict(),
+                            "artifact_ids": [artifact.artifact_id for artifact in artifacts],
+                        },
+                    )
+                )
         for draft in self.repositories.report_drafts.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(
@@ -387,10 +408,27 @@ class SessionProjectionBuilder:
         runs = self.repositories.runs.list_by_invocation(session_id, invocation.invocation_id)
         if runs:
             projected["runs"] = [run.to_dict() for run in runs]
+            run = runs[-1]
+            projected["run"] = run.to_dict()
+            projected["remote_run_dir"] = run.remote_run_dir
+            projected["terminal_summary"] = run.summary
             artifact_payloads: list[dict[str, Any]] = []
             for run in runs:
                 artifact_payloads.extend(item.to_dict() for item in self.repositories.artifacts.list_by_run(run.run_id))
             projected["artifacts"] = artifact_payloads
+            projected["output_artifact_ids"] = [artifact["artifact_id"] for artifact in artifact_payloads]
+        request_document = next(
+            (document for document in documents if document.document_kind == "execution_input"),
+            None,
+        )
+        request_runspec = {}
+        if request_document is not None:
+            request_runspec = dict((request_document.payload.get("request") or {}).get("runspec") or {})
+        if request_runspec:
+            metadata = dict(request_runspec.get("metadata") or {})
+            projected["tool_contract"] = dict(metadata.get("tool_contract") or {})
+            projected["input_artifact_ids"] = list(metadata.get("input_artifact_ids") or [])
+            projected["preprocess_artifact_ids"] = list(metadata.get("preprocess_artifact_ids") or [])
         report = self.repositories.reports.get_by_invocation(session_id, invocation.invocation_id)
         if report is not None:
             projected["report"] = report.to_dict()

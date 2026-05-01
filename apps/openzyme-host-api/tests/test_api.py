@@ -37,6 +37,10 @@ from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_domain import SessionArtifactRecord
+from openzyme_core import CoreRepositories
+from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
+from openzyme_core import connect_sqlite as connect_v3_sqlite
 
 
 class FakeExecutionAdapter:
@@ -320,6 +324,7 @@ class FakeEngineHarnessInvoker:
                                 "task_id": "task_execution_v3",
                                 "handoff": {
                                     "execution_goal": "Run fpocket against the candidate structure.",
+                                    "required_artifact_ids": ["art_v3_structure"],
                                     "catalog_tool_id": "fpocket",
                                     "require_approval": True,
                                 },
@@ -579,8 +584,9 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     )
 
 
-def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, CoreRepositories]:
     client, foundation = _build_client(monkeypatch)
+    v3_repositories = _build_v3_engine_repositories()
     return (
         TestClient(
             create_app(
@@ -589,10 +595,37 @@ def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundat
                         foundation, model_factory=FakeEngineHarnessModelFactory()
                     ),
                     graph_builder=build_v2_supervisor_graph,
+                    v3_repositories=v3_repositories,
                 )
             )
         ),
-        foundation,
+        v3_repositories,
+    )
+
+
+def _build_v3_engine_repositories() -> CoreRepositories:
+    connection = connect_v3_sqlite(":memory:")
+    apply_v3_sqlite_migrations(connection)
+    return CoreRepositories.from_connection(connection)
+
+
+def _seed_v3_execution_artifact(repositories: CoreRepositories, session_id: str) -> None:
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_v3_structure",
+            session_id=session_id,
+            task_id=None,
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/v3_input_structure.pdb",
+            relative_path="v3_input_structure.pdb",
+            title="v3_input_structure.pdb",
+            description=None,
+            metadata={"source": "test_fixture"},
+            created_at="2026-04-20T12:00:03+00:00",
+        )
     )
 
 
@@ -811,7 +844,7 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
 
 
 def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> None:
-    client, _ = _build_v3_engine_llm_client(monkeypatch)
+    client, v3_repositories = _build_v3_engine_llm_client(monkeypatch)
 
     created = client.post(
         "/v3/sessions",
@@ -822,6 +855,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         },
     )
     assert created.status_code == 200
+    _seed_v3_execution_artifact(v3_repositories, "sess_v3_engines")
     lane = client.post(
         "/v3/lanes",
         json={

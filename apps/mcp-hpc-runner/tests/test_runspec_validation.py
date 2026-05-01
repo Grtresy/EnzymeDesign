@@ -21,6 +21,22 @@ def test_runspec_validation_success(tmp_path: Path) -> None:
     assert validate_runspec(spec) == []
 
 
+def test_runspec_round_trip_preserves_staged_input_artifact_id(tmp_path: Path) -> None:
+    infile = tmp_path / "input.txt"
+    infile.write_text("hello", encoding="utf-8")
+
+    spec = RunSpec(
+        name="roundtrip",
+        stage="execution",
+        command=["cat", "input.txt"],
+        inputs=[StagedInput(local_path=str(infile), remote_path="input.txt", artifact_id="art_input")],
+    )
+    restored = RunSpec.from_dict(spec.to_dict())
+
+    assert restored.inputs[0].artifact_id == "art_input"
+    assert restored.to_dict()["inputs"][0]["artifact_id"] == "art_input"
+
+
 def test_runspec_validation_missing_input(tmp_path: Path) -> None:
     spec = RunSpec(
         name="bad",
