@@ -34,6 +34,10 @@ class ExecutionConfig:
     create_remote_dir_for_ssh: bool = True
     artifact_root: str = ".mcp_hpc_runner/artifacts"
     use_rsync: bool = True
+    staging_timeout_seconds: int = 120
+    preflight_timeout_seconds: int = 60
+    remote_execution_timeout_seconds: int = 7200
+    artifact_fetch_timeout_seconds: int = 120
 
 
 @dataclass(slots=True)
@@ -112,6 +116,10 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
                 execution_raw.get("artifact_root", ".mcp_hpc_runner/artifacts")
             ),
             use_rsync=bool(execution_raw.get("use_rsync", True)),
+            staging_timeout_seconds=int(execution_raw.get("staging_timeout_seconds", 120)),
+            preflight_timeout_seconds=int(execution_raw.get("preflight_timeout_seconds", 60)),
+            remote_execution_timeout_seconds=int(execution_raw.get("remote_execution_timeout_seconds", 7200)),
+            artifact_fetch_timeout_seconds=int(execution_raw.get("artifact_fetch_timeout_seconds", 120)),
         ),
         logging=LoggingConfig(
             inline_log_limit=int(logging_raw.get("inline_log_limit", 4096)),

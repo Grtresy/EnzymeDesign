@@ -54,11 +54,21 @@ class StagingManager:
                 "-az",
                 "--partial",
                 "-e",
-                "ssh -o BatchMode=yes",
+                "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=2",
                 str(local_path),
                 f"{self._ssh_target}:{remote_path}",
             ]
-        cmd = ["scp", "-o", "BatchMode=yes"]
+        cmd = [
+            "scp",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=2",
+        ]
         if local_path.is_dir():
             cmd.append("-r")
         cmd.extend([str(local_path), f"{self._ssh_target}:{remote_path}"])
@@ -73,7 +83,7 @@ class StagingManager:
                 "-az",
                 "--partial",
                 "-e",
-                "ssh -o BatchMode=yes",
+                "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=2",
                 f"{self._ssh_target}:{remote_path}",
                 str(local_path),
             ]
@@ -81,6 +91,12 @@ class StagingManager:
             "scp",
             "-o",
             "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=2",
             "-r",
             f"{self._ssh_target}:{remote_path}",
             str(local_path),
@@ -107,16 +123,31 @@ class StagingManager:
 
             if not skipped:
                 mkdir_cmd = wrap_ssh(self._ssh_target, ["mkdir", "-p", remote_parent])
-                self.command_runner.run(mkdir_cmd, check=True)
+                self.command_runner.run(
+                    mkdir_cmd,
+                    check=True,
+                    timeout=self.config.execution.staging_timeout_seconds,
+                    stage="staging",
+                )
                 transfer_cmd = self.build_upload_command(
                     local_path, remote_path, use_rsync=self.config.execution.use_rsync
                 )
-                transfer = self.command_runner.run(transfer_cmd, check=False)
+                transfer = self.command_runner.run(
+                    transfer_cmd,
+                    check=False,
+                    timeout=self.config.execution.staging_timeout_seconds,
+                    stage="staging",
+                )
                 if transfer.returncode != 0 and self.config.execution.use_rsync:
                     fallback = self.build_upload_command(
                         local_path, remote_path, use_rsync=False
                     )
-                    self.command_runner.run(fallback, check=True)
+                    self.command_runner.run(
+                        fallback,
+                        check=True,
+                        timeout=self.config.execution.staging_timeout_seconds,
+                        stage="staging",
+                    )
                 elif transfer.returncode != 0:
                     raise RuntimeError(transfer.stderr.strip())
                 cache[cache_key] = remote_path
@@ -154,12 +185,22 @@ class StagingManager:
                 local_target,
                 use_rsync=self.config.execution.use_rsync,
             )
-            transfer = self.command_runner.run(transfer_cmd, check=False)
+            transfer = self.command_runner.run(
+                transfer_cmd,
+                check=False,
+                timeout=self.config.execution.artifact_fetch_timeout_seconds,
+                stage="artifact_fetch",
+            )
             if transfer.returncode != 0 and self.config.execution.use_rsync:
                 fallback = self.build_download_command(
                     remote_path, local_target, use_rsync=False
                 )
-                transfer = self.command_runner.run(fallback, check=False)
+                transfer = self.command_runner.run(
+                    fallback,
+                    check=False,
+                    timeout=self.config.execution.artifact_fetch_timeout_seconds,
+                    stage="artifact_fetch",
+                )
 
             entries.append(
                 {

@@ -28,7 +28,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `GET /v3/sessions/{session_id}/events`
 - `POST /v3/approvals/{approval_id}/resolve`
 
-`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，runtime signal 唤醒对应 resident teammate 或 harness resume path；在 resolve 前，`execution.resume` 不能被当成批准入口。
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，runtime signal 唤醒对应 resident teammate、harness 或 execution supervisor 内部恢复路径；在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -51,6 +51,15 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `protocol.send`
 
 这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败、`max_steps_exceeded` 或摘要不足时发送 `diagnostic_request`。workspace projection 继续通过 `delegation`、`inbox` 与 `activity_feed` 展示 unread、wakeup、thread 与 responded 状态。
+
+默认内部只读文档工具还应包括：
+
+- `docs.search`
+- `docs.read`
+
+`docs.search(query, tags?, limit?)` 返回受控文档库的匹配条目，条目至少包含 `doc_id`、`title`、`summary`、`tags`、`version` 和 `path`；`docs.read(doc_id | path)` 只读取 registry 中登记的文档，不能读取任意 repo 文件，返回同样 metadata 加 `content`。首批必须索引 `docs/v3/execution-pipeline-docs/`，供 execution teammate 按需学习 pipeline SDK。该工具是通用 V3 内部能力，后续 research/reporting 文档也可接入同一接口。
+
+旧式 `skill.list` / `skill.load` 可以作为迁移期兼容机制存在，但不再是 V3 execution pipeline / HPC SDK 用法说明的主路径。executor 应优先使用 `docs.search` / `docs.read`。
 
 ### Internal Tool Result Envelope
 
@@ -128,10 +137,11 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
 - 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage
-- execution 输入 artifact 必须通过 compiler 映射为 runner staging input；workspace projection 中的 `storage_uri` 不表示 HPC 远端可直接读取
+- execution 输入 artifact 必须通过 compiler 映射为 runner staging input；public workspace/read model 不暴露 Host repo path、sandbox host path、`storage_uri`、runner credentials、SSH/Slurm config
 - execution 输出 artifact 必须来自 runner declared `expected_outputs` 的下载结果，并保留 output relative path
 - `capabilities.deep_research[]` 默认承载每个 research invocation 的 `canonical_summary`、`evidence`、`source_refs`、`gaps` 与 output document 投影
-- `capabilities.execution[]` 默认承载每个 execution invocation 的 `run`、`tool_contract`、`input_artifact_ids`、`preprocess_artifact_ids`、`output_artifact_ids`、`remote_run_dir` 与 terminal summary
+- `capabilities.execution[]` 默认承载每个 execution pipeline invocation 的 `pipeline_invocation_id`、`code_digest`、`sandbox_status`、`hpc_run_ids`、`tool_contract`、`input_artifact_ids`、`preprocess_artifact_ids`、`output_artifact_ids` 与 terminal summary
+- execution pipeline 的 public read model 不暴露 Host repo path、sandbox host path、`storage_uri`、pipeline source code、SSH/Slurm config 或 runner credentials
 - direct provider search 产出的 normalized findings 后续也应能进入同一 canonical research evidence / source ref 读模型；不应只作为一次性 tool message 存在
 - `source_refs` 与 `artifacts` 是并列的 canonical workspace 信息：前者回答“证据来自哪里”，后者回答“哪些文件资产可被后续 agent / UI 读取”
 
@@ -159,7 +169,9 @@ V3 Web UI 默认是 conversation-first。
 - top-level master agent loop 决定如何创建和编排 task
 - 具体 research / execution / reporting task 默认由 resident teammate agent 推进；master 可显式委托，idle teammate 也可按 role 自动认领 ready task
 - `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
-- `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 execution engine、请求 approval，并可通过 protocol 与 peers 沟通
+- `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、提交受控 execution pipeline，并可通过 protocol 与 peers 沟通；具体 HPC / 长耗时 / 高 quota SDK operation 是否需要 approval 由 Host supervisor 的 tool policy 决定，teammate 不需要判断敏感性
+- execution teammate 不直接调用 HPC runner tool；它只能通过 `execution.pipeline.*` 提交或恢复 pipeline，由 sandbox SDK 和 Host supervisor 间接访问 runner
+- execution teammate 默认拥有 `docs.search` / `docs.read`，并应按需检索 `pipeline`、`artifact read/register`、`preprocess`、`hpc.vina`、`hpc.fpocket`、`batch ligand docking`、`sandbox rules` 与 `dry-run` 文档
 - report teammate 默认直接读写 `report_draft` 并在合适时机 `publish` 为 final `report`
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
@@ -213,6 +225,10 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
 - `research.evidence.recorded`
 - `artifact.recorded`
+- `execution.pipeline.started`
+- `execution.pipeline.step.completed`
+- `execution.pipeline.completed`
+- `execution.pipeline.failed`
 - `execution.preprocess.completed`
 - `execution.artifacts.fetched`
 - `report_draft.updated`
@@ -220,11 +236,21 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
 
+`execution.pipeline.start` 语义：
+
+- 默认执行 dry-run / validation 并持久化 `ExecutionPlan`；该阶段不提交 HPC，也不把 Host `storage_uri` 交给 sandbox code
+- `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、HPC operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
+- `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated `hpc.*` operation，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
+- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 `hpc.*` call，则进入 secondary approval gate
+
 事件语义：
 
 - `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
 - `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
-- `execution.preprocess.completed` 表示 execution 前置格式转换或输入准备已生成新的可信 workspace artifact
+- `execution.pipeline.started` 表示受控 pipeline sandbox 已创建并开始运行；plan approval 阶段以 `approval.requested` 和 `engine.invocation.updated(waiting_approval)` 表达，runtime SDK secondary approval gate 也使用同一等待态
+- `execution.pipeline.step.completed` 表示 pipeline 内一个 SDK step 完成；payload 必须能回链到 pipeline invocation 与 step id
+- `execution.pipeline.completed` / `execution.pipeline.failed` 表示 pipeline terminal state，不能替代每个 run / artifact 的 canonical record
+- `execution.preprocess.completed` 表示 pipeline 内格式转换或输入准备已生成新的可信 workspace artifact
 - `execution.artifacts.fetched` 表示 runner 已按 declared `expected_outputs` 下载远端结果，随后应产生对应 `artifact.recorded`
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
 - `agent.woken` 表示 scheduler 已为 resident teammate 开始一次 work turn；wakeup reason 必须能回链到 inbox、task、approval、engine invocation 或 manual resume

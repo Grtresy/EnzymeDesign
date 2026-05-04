@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from dataclasses import replace
 from typing import Any
@@ -241,6 +242,8 @@ class AgentRuntimeService:
             signal_status = AgentRuntimeSignalStatus.COMPLETED
             ok = True
         else:
+            if not is_diagnostic:
+                task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.BLOCKED))
             signal_status = AgentRuntimeSignalStatus.FAILED
             ok = False
 
@@ -306,8 +309,56 @@ class AgentRuntimeService:
             return None
         return self.context.repositories.tasks.get(str(task_id))
 
-    def _instructions_for_signal(self, signal: AgentRuntimeSignal, task: Task, payload: dict[str, Any] | None) -> str:
+    def _instructions_for_signal(
+        self,
+        signal: AgentRuntimeSignal,
+        task: Task,
+        payload: dict[str, Any] | None,
+    ) -> str:
         message = self._message_for_signal(signal)
+        if signal.reason is AgentRuntimeSignalReason.APPROVAL_RESOLVED:
+            invocation_id = self._execution_invocation_id_for_approval(signal.source_ref)
+            failure = self._execution_failure_for_approval(signal.source_ref)
+            status_line = (
+                ""
+                if invocation_id is None
+                else f" Existing execution pipeline invocation: {invocation_id}. Call execution.pipeline.status with this invocation_id before deciding whether to retry."
+            )
+            lines = [
+                f"Approval {signal.source_ref or signal.correlation_id or 'unknown'} was resolved for your assigned task.",
+                "Continue the existing delegated work from the shared workspace state." + status_line,
+                "For execution tasks, inspect the existing pipeline invocation/status and captured artifacts; "
+                "do not start a new pipeline unless the previous tool result explicitly failed and the failure requires a corrected retry.",
+                "If the approved execution pipeline succeeded, call execution.pipeline.status or read the continuation/workspace artifacts, "
+                "then return a concrete user-facing result summary such as fpocket pocket counts and output artifact ids. "
+                "Do not repeat internal wrapper text such as Pipeline sandbox completed.",
+                "For successful execution results, finish the assigned execution task normally after summarizing the tool-level result.",
+                "If the execution status error type is hpc_operation_failed, do not retry the same or equivalent pipeline code; "
+                "decide whether to correct the pipeline/inputs/parameters or mark the task failed with the captured runner/backend evidence.",
+            ]
+            if failure is not None:
+                lines.extend(
+                    [
+                        "The approved pipeline failed with error type hpc_operation_failed. Treat this wakeup as a recovery decision point.",
+                        "Use the sanitized HPC failure details below to decide whether the issue is correctable by changing pipeline code, inputs, artifacts, or parameters.",
+                        "You may call execution.pipeline.start only for a materially changed retry that addresses the observed failure.",
+                        "Do not submit the same or equivalent HPC operation again without a concrete correction.",
+                        "If the details indicate a runner/backend/configuration problem outside pipeline control, call task.update with status='failed', failure_summary, and failure_ref.",
+                        "Call execution.pipeline.status only if you need to inspect the invocation record.",
+                        "Sanitized hpc_failure: "
+                        + json.dumps(
+                            failure.get("hpc_failure") or {},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                    ]
+                )
+                if failure.get("hint"):
+                    lines.append(f"Failure hint: {failure['hint']}")
+                if failure.get("stderr_excerpt"):
+                    lines.append(f"Pipeline stderr excerpt: {failure['stderr_excerpt']}")
+            lines.append(f"Task {task.task_id}: {task.description or task.subject}")
+            return "\n".join(lines)
         if payload is not None:
             instructions = payload.get("instructions")
             if self._is_diagnostic_signal(signal, payload):
@@ -335,9 +386,48 @@ class AgentRuntimeService:
                 return str(instructions)
         return task.description or task.subject
 
+    def _execution_invocation_id_for_approval(self, approval_id: str | None) -> str | None:
+        if not approval_id:
+            return None
+        for invocation in self.context.repositories.invocations.list_by_session(
+            self.context.snapshot.session.session_id
+        ):
+            if invocation.engine_name == "execution" and invocation.approval_id == approval_id:
+                return invocation.invocation_id
+        return None
+
+    def _execution_failure_for_approval(self, approval_id: str | None) -> dict[str, Any] | None:
+        if not approval_id:
+            return None
+        for invocation in self.context.repositories.invocations.list_by_session(
+            self.context.snapshot.session.session_id
+        ):
+            if invocation.engine_name != "execution" or invocation.approval_id != approval_id:
+                continue
+            if not invocation.output_ref:
+                continue
+            document = self.context.repositories.engine_documents.get(invocation.output_ref)
+            if document is None:
+                continue
+            payload = dict(document.payload)
+            pipeline = payload.get("pipeline")
+            if not isinstance(pipeline, dict):
+                continue
+            error = pipeline.get("error")
+            if not isinstance(error, dict):
+                continue
+            if error.get("type") == "hpc_operation_failed":
+                return error
+        return None
+
     def _is_diagnostic_signal(self, signal: AgentRuntimeSignal, payload: dict[str, Any] | None) -> bool:
         message = self._message_for_signal(signal)
         if message is not None and message.message_type == "diagnostic_request":
+            return True
+        if (
+            signal.reason is AgentRuntimeSignalReason.APPROVAL_RESOLVED
+            and self._execution_failure_for_approval(signal.source_ref) is not None
+        ):
             return True
         return payload is not None and any(key in payload for key in ("question", "failed_summary", "expected_response"))
 

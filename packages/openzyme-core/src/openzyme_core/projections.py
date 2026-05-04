@@ -127,7 +127,7 @@ class SessionProjectionBuilder:
         memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
         delegation = self.build_delegation_projection(session_id).to_dict()
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
-        artifacts = tuple(artifact.to_dict() for artifact in self.repositories.artifacts.list_by_session(session_id))
+        artifacts = tuple(self._project_workspace_artifact(artifact) for artifact in self.repositories.artifacts.list_by_session(session_id))
         report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
         reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
@@ -330,19 +330,20 @@ class SessionProjectionBuilder:
                 )
             )
         for artifact in self.repositories.artifacts.list_by_session(session_id):
+            artifact_payload = self._project_workspace_artifact(artifact)
             if artifact.metadata and artifact.metadata.get("source") == "preprocess":
                 items.append(
                     ActivityFeedItem(
                         event_type="execution.preprocess.completed",
                         created_at=artifact.created_at,
-                        payload=artifact.to_dict(),
+                        payload=artifact_payload,
                     )
                 )
             items.append(
                 ActivityFeedItem(
                     event_type="artifact.recorded",
                     created_at=artifact.created_at,
-                    payload=artifact.to_dict(),
+                    payload=artifact_payload,
                 )
             )
         for run in self.repositories.runs.list_by_session(session_id):
@@ -352,10 +353,10 @@ class SessionProjectionBuilder:
                     ActivityFeedItem(
                         event_type="execution.artifacts.fetched",
                         created_at=run.finished_at or run.updated_at,
-                        payload={
+                        payload=self._sanitize_execution_projection({
                             "run": run.to_dict(),
                             "artifact_ids": [artifact.artifact_id for artifact in artifacts],
-                        },
+                        }),
                     )
                 )
         for draft in self.repositories.report_drafts.list_by_session(session_id):
@@ -388,14 +389,28 @@ class SessionProjectionBuilder:
         projected = invocation.to_dict()
         documents = self.repositories.engine_documents.list_by_invocation(session_id, invocation.invocation_id)
         if documents:
-            projected["documents"] = [document.to_dict() for document in documents]
+            projected["documents"] = [
+                self._sanitize_execution_projection(document.to_dict())
+                if invocation.engine_name == "execution"
+                else document.to_dict()
+                for document in documents
+            ]
             output_document = next(
                 (document for document in reversed(documents) if document.document_id == invocation.output_ref),
                 None,
             )
             if output_document is not None:
-                projected["output_document"] = output_document.to_dict()
-                projected["output_payload"] = output_document.payload
+                output_dict = output_document.to_dict()
+                projected["output_document"] = (
+                    self._sanitize_execution_projection(output_dict)
+                    if invocation.engine_name == "execution"
+                    else output_dict
+                )
+                projected["output_payload"] = (
+                    self._sanitize_execution_projection(output_document.payload)
+                    if invocation.engine_name == "execution"
+                    else output_document.payload
+                )
         summary = self.repositories.research_summaries.get_by_invocation(session_id, invocation.invocation_id)
         if summary is not None:
             evidence = self.repositories.research_evidence.list_by_invocation(session_id, invocation.invocation_id)
@@ -410,11 +425,16 @@ class SessionProjectionBuilder:
             projected["runs"] = [run.to_dict() for run in runs]
             run = runs[-1]
             projected["run"] = run.to_dict()
-            projected["remote_run_dir"] = run.remote_run_dir
+            if invocation.engine_name != "execution":
+                projected["remote_run_dir"] = run.remote_run_dir
             projected["terminal_summary"] = run.summary
             artifact_payloads: list[dict[str, Any]] = []
             for run in runs:
-                artifact_payloads.extend(item.to_dict() for item in self.repositories.artifacts.list_by_run(run.run_id))
+                for item in self.repositories.artifacts.list_by_run(run.run_id):
+                    artifact_payload = item.to_dict()
+                    if invocation.engine_name == "execution":
+                        artifact_payload.pop("storage_uri", None)
+                    artifact_payloads.append(artifact_payload)
             projected["artifacts"] = artifact_payloads
             projected["output_artifact_ids"] = [artifact["artifact_id"] for artifact in artifact_payloads]
         request_document = next(
@@ -429,10 +449,53 @@ class SessionProjectionBuilder:
             projected["tool_contract"] = dict(metadata.get("tool_contract") or {})
             projected["input_artifact_ids"] = list(metadata.get("input_artifact_ids") or [])
             projected["preprocess_artifact_ids"] = list(metadata.get("preprocess_artifact_ids") or [])
+            projected["pipeline_invocation_id"] = metadata.get("pipeline_invocation_id") or invocation.invocation_id
+            projected["code_digest"] = metadata.get("code_digest")
+            projected["sandbox_status"] = metadata.get("sandbox_status", "completed" if invocation.status.is_terminal else "running")
+            projected["hpc_run_ids"] = [
+                run["runner_run_id"]
+                for run in projected.get("runs", [])
+                if isinstance(run, dict) and run.get("runner_run_id")
+            ]
+        elif invocation.engine_name == "execution" and request_document is not None:
+            pipeline = dict(request_document.payload.get("pipeline") or {})
+            if pipeline:
+                projected["pipeline_invocation_id"] = invocation.invocation_id
+                projected["code_digest"] = pipeline.get("code_digest")
+                projected["sandbox_status"] = "dry_run" if pipeline.get("dry_run") else "pending"
+                projected["hpc_run_ids"] = []
+                projected["input_artifact_ids"] = list((pipeline.get("inputs") or {}).get("artifact_ids") or [])
+                projected["preprocess_artifact_ids"] = []
         report = self.repositories.reports.get_by_invocation(session_id, invocation.invocation_id)
         if report is not None:
             projected["report"] = report.to_dict()
         return projected
+
+    def _sanitize_execution_projection(self, value: Any) -> Any:
+        private_keys = {
+            "pipeline_code",
+            "storage_uri",
+            "local_path",
+            "source_storage_uri",
+            "intermediate_storage_uri",
+        }
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for key, item in value.items():
+                if key in private_keys:
+                    continue
+                sanitized[key] = self._sanitize_execution_projection(item)
+            return sanitized
+        if isinstance(value, list):
+            return [self._sanitize_execution_projection(item) for item in value]
+        return value
+
+    def _project_workspace_artifact(self, artifact: Any) -> dict[str, Any]:
+        payload = artifact.to_dict()
+        metadata = dict(payload.get("metadata") or {})
+        if metadata.get("source") in {"execution_engine", "preprocess"} or metadata.get("pipeline_invocation_id"):
+            return self._sanitize_execution_projection(payload)
+        return payload
 
     def _capability_key_for_engine(self, engine_name: str) -> str:
         return {

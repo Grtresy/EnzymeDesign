@@ -80,6 +80,7 @@ def test_task_to_dict_serializes_priority_and_blockers() -> None:
 def test_terminal_sets_are_explicit_for_v3_statuses() -> None:
     assert TaskStatus.BLOCKED.is_terminal is False
     assert TaskStatus.COMPLETED.is_terminal is True
+    assert TaskStatus.FAILED.is_terminal is True
     assert InboxStatus.DELIVERED.is_terminal is False
     assert InboxStatus.ACKNOWLEDGED.is_terminal is True
     assert EngineInvocationStatus.RUNNING.is_terminal is False

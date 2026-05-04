@@ -31,6 +31,7 @@ class TaskBoardBucket(StrEnum):
     BLOCKED = "blocked"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    FAILED = "failed"
     CANCELLED = "cancelled"
 
 
@@ -44,6 +45,8 @@ class TaskMutation:
     assigned_ref: str | None | object = _UNSET
     lane_id: str | None | object = _UNSET
     blocked_by: tuple[str, ...] | object = _UNSET
+    failure_summary: str | None | object = _UNSET
+    failure_ref: str | None | object = _UNSET
     updated_at: str | object = _UNSET
 
 
@@ -101,6 +104,8 @@ class TaskBoardService:
         assigned_ref: str | None = None,
         lane_id: str | None = None,
         blocked_by: tuple[str, ...] = (),
+        failure_summary: str | None = None,
+        failure_ref: str | None = None,
     ) -> Task:
         task = Task.create(
             task_id=task_id,
@@ -113,6 +118,8 @@ class TaskBoardService:
             assigned_ref=assigned_ref,
             lane_id=lane_id,
             blocked_by=blocked_by,
+            failure_summary=failure_summary,
+            failure_ref=failure_ref,
         )
         self.repositories.tasks.save(task)
         self._emit("task.created", {"task_id": task.task_id, "session_id": task.session_id})
@@ -141,6 +148,10 @@ class TaskBoardService:
             updated_at=utc_now_iso() if mutation.updated_at is _UNSET else str(mutation.updated_at),
             lane_id=task.lane_id if mutation.lane_id is _UNSET else mutation.lane_id,
             blocked_by=task.blocked_by if mutation.blocked_by is _UNSET else mutation.blocked_by,
+            failure_summary=task.failure_summary
+            if mutation.failure_summary is _UNSET
+            else mutation.failure_summary,
+            failure_ref=task.failure_ref if mutation.failure_ref is _UNSET else mutation.failure_ref,
         )
         self.repositories.tasks.save(updated)
         self._emit(
@@ -253,6 +264,8 @@ class TaskBoardService:
 def _bucket_for_task(task: Task, open_blockers: tuple[str, ...]) -> TaskBoardBucket:
     if task.status is TaskStatus.COMPLETED:
         return TaskBoardBucket.COMPLETED
+    if task.status is TaskStatus.FAILED:
+        return TaskBoardBucket.FAILED
     if task.status is TaskStatus.CANCELLED:
         return TaskBoardBucket.CANCELLED
     if task.status is TaskStatus.IN_PROGRESS:
@@ -278,6 +291,8 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             assigned_ref=arguments.get("assigned_ref"),
             lane_id=invocation.lane_id if "lane_id" not in arguments else arguments.get("lane_id"),
             blocked_by=tuple(str(item) for item in arguments.get("blocked_by", ())),
+            failure_summary=arguments.get("failure_summary"),
+            failure_ref=arguments.get("failure_ref"),
         )
         return ToolResult(
             call_id=invocation.call_id,
@@ -300,6 +315,8 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             assigned_ref=arguments["assigned_ref"] if "assigned_ref" in arguments else _UNSET,
             lane_id=arguments["lane_id"] if "lane_id" in arguments else _UNSET,
             blocked_by=tuple(str(item) for item in arguments["blocked_by"]) if "blocked_by" in arguments else _UNSET,
+            failure_summary=arguments["failure_summary"] if "failure_summary" in arguments else _UNSET,
+            failure_ref=arguments["failure_ref"] if "failure_ref" in arguments else _UNSET,
             updated_at=str(arguments["updated_at"]) if "updated_at" in arguments else _UNSET,
         )
         task = service.update_task(str(arguments["task_id"]), mutation)

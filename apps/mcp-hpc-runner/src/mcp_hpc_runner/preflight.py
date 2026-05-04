@@ -144,7 +144,12 @@ class PreflightChecker:
             self._ssh_target(),
             ["python3", "-c", script],
         )
-        raw = self.command_runner.run(ssh_cmd, check=False)
+        raw = self.command_runner.run(
+            ssh_cmd,
+            check=False,
+            timeout=self.config.execution.preflight_timeout_seconds,
+            stage="preflight",
+        )
 
         if raw.returncode != 0:
             # Could not even run the preflight script — treat as a single error.

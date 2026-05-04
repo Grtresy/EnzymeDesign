@@ -15,6 +15,7 @@ from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import LlmConversationDriver
 from openzyme_core import MemoryEventBus
+from openzyme_core import ProtocolService
 from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
@@ -25,9 +26,15 @@ from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
 from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
+from openzyme_core import persist_conversation_message
 from openzyme_core import run_agent_harness_loop
 from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import InboxMessage
+from openzyme_domain import InboxParticipantKind
+from openzyme_domain import InboxStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
@@ -186,9 +193,18 @@ class V3HostApiService:
         if session is None:
             return
         next_updated_at = utc_now_iso()
-        if next_updated_at <= session.updated_at:
+        latest_project_updated_at = max(
+            (
+                candidate.updated_at
+                for candidate in self.repositories.sessions.list_by_project(
+                    session.project_id
+                )
+            ),
+            default=session.updated_at,
+        )
+        if next_updated_at <= latest_project_updated_at:
             next_updated_at = (
-                datetime.fromisoformat(session.updated_at) + timedelta(seconds=1)
+                datetime.fromisoformat(latest_project_updated_at) + timedelta(seconds=1)
             ).isoformat()
         self.repositories.sessions.save(replace(session, updated_at=next_updated_at))
 
@@ -215,7 +231,7 @@ class V3HostApiService:
 
     def _drain_agent_runtime(
         self, session_id: str, events: list[dict[str, Any]]
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         event_bus = MemoryEventBus()
         context = SessionRuntimeContext(
             repositories=self.repositories,
@@ -230,8 +246,133 @@ class V3HostApiService:
         )
         runtime = AgentRuntimeService(context)
         runtime.auto_enqueue_ready_tasks(session_id)
-        runtime.drain_session(session_id, max_signals=3)
+        outcomes = runtime.drain_session(session_id, max_signals=3)
         events.extend(event.to_dict() for event in event_bus.events)
+        return [outcome.to_dict() for outcome in outcomes]
+
+    def _terminal_teammate_outcomes(
+        self, outcomes: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        terminal: list[dict[str, Any]] = []
+        for outcome in outcomes:
+            if outcome.get("waiting_approval_id"):
+                continue
+            task = outcome.get("task")
+            task_status = (
+                "" if not isinstance(task, dict) else str(task.get("status") or "")
+            )
+            task_id = None if not isinstance(task, dict) else task.get("task_id")
+            current_task = (
+                None if task_id is None else self.repositories.tasks.get(str(task_id))
+            )
+            if current_task is not None:
+                task_status = current_task.status.value
+            teammate_status = str(outcome.get("teammate_status") or "")
+            if task_status in {
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                TaskStatus.CANCELLED.value,
+            } or teammate_status in {
+                HarnessStatus.COMPLETED.value,
+                HarnessStatus.FAILED.value,
+                HarnessStatus.MAX_STEPS_EXCEEDED.value,
+            }:
+                terminal.append(outcome)
+        return terminal
+
+    def _outcomes_include_failure(self, outcomes: list[dict[str, Any]]) -> bool:
+        for outcome in self._terminal_teammate_outcomes(outcomes):
+            task = outcome.get("task")
+            task_status = (
+                "" if not isinstance(task, dict) else str(task.get("status") or "")
+            )
+            if outcome.get("ok") is False or task_status == TaskStatus.FAILED.value:
+                return True
+            task_id = None if not isinstance(task, dict) else task.get("task_id")
+            current_task = (
+                None if task_id is None else self.repositories.tasks.get(str(task_id))
+            )
+            if current_task is not None and current_task.status is TaskStatus.FAILED:
+                return True
+        return False
+
+    def _outcomes_include_waiting_approval(
+        self, outcomes: list[dict[str, Any]]
+    ) -> bool:
+        return any(outcome.get("waiting_approval_id") for outcome in outcomes)
+
+    def _teammate_outcomes_from_tool_results(
+        self, tool_results: tuple[Any, ...]
+    ) -> list[dict[str, Any]]:
+        outcomes: list[dict[str, Any]] = []
+        for tool_result in tool_results:
+            if getattr(tool_result, "tool_name", None) != "task.delegate":
+                continue
+            try:
+                payload = json.loads(str(tool_result.content))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            outcomes.append(
+                {
+                    "task": payload.get("task"),
+                    "agent": payload.get("agent"),
+                    "ok": bool(getattr(tool_result, "ok", False)),
+                    "summary": payload.get("summary"),
+                    "teammate_status": payload.get("teammate_status"),
+                    "outputs": payload.get("teammate_outputs") or (),
+                    "waiting_approval_id": payload.get("waiting_approval_id"),
+                }
+            )
+        return outcomes
+
+    def _run_master_followup_after_teammates(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+        outcomes: list[dict[str, Any]],
+        *,
+        max_steps: int = 4,
+    ):
+        terminal = self._terminal_teammate_outcomes(outcomes)
+        if not terminal:
+            return None
+        focus_task_id = None
+        focus_lane_id = None
+        if len(terminal) == 1 and isinstance(terminal[0].get("task"), dict):
+            task = terminal[0]["task"]
+            focus_task_id = task.get("task_id")
+            focus_lane_id = task.get("lane_id")
+        event_bus = MemoryEventBus()
+        result = run_agent_harness_loop(
+            self.repositories,
+            HarnessInput(
+                session_id=session_id,
+                message=None,
+                max_steps=max_steps,
+                restore_focus=RestoreFocus(
+                    task_id=focus_task_id, lane_id=focus_lane_id
+                ),
+                persist_conversation=True,
+            ),
+            driver=self._require_llm_driver(),
+            engine_registry=self.engine_registry,
+            event_sink=event_bus,
+            model_factory=self.model_factory,
+            bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
+        )
+        events.extend(event.to_dict() for event in event_bus.events)
+        for output in result.outputs:
+            events.append(
+                _event(
+                    "conversation.assistant_message",
+                    session_id,
+                    {"content": output},
+                )
+            )
+        return result
 
     def post_message(
         self,
@@ -279,14 +420,31 @@ class V3HostApiService:
                         {"content": output},
                     )
                 )
-        self._drain_agent_runtime(session_id, events)
+        outcomes = self._teammate_outcomes_from_tool_results(result.tool_results)
+        outcomes.extend(self._drain_agent_runtime(session_id, events))
+        followup = self._run_master_followup_after_teammates(
+            session_id, events, outcomes
+        )
+        if followup is not None:
+            result = followup
+        has_pending_approval = bool(
+            self.repositories.approvals.list_pending_by_session(session_id)
+        )
+        response_status = (
+            HarnessStatus.WAITING_APPROVAL
+            if has_pending_approval or self._outcomes_include_waiting_approval(outcomes)
+            else HarnessStatus.FAILED
+            if self._outcomes_include_failure(outcomes)
+            else result.status
+        )
+        response_outputs = () if has_pending_approval else result.outputs
         self._touch_session(session_id)
         self._extend_with_activity_events(session_id, events)
         self.event_store.append(session_id, events)
         return V3CommandResult(
             session_id=session_id,
-            status=result.status.value,
-            outputs=result.outputs,
+            status=response_status.value,
+            outputs=response_outputs,
             events=events,
             workspace=self.workspace(session_id),
         )
@@ -301,28 +459,16 @@ class V3HostApiService:
             raise ValueError(f"approval {approval_id!r} is not pending")
         if decision not in {"approved", "rejected"}:
             raise ValueError("decision must be 'approved' or 'rejected'")
-        driver = self._require_llm_driver()
-        result = run_agent_harness_loop(
-            self.repositories,
-            HarnessInput(
-                session_id=approval.session_id,
-                resume=ResumeEnvelope(
-                    approval_id=approval_id,
-                    decision=ResumeDecision.APPROVED
-                    if decision == "approved"
-                    else ResumeDecision.REJECTED,
-                    actor_ref=actor_ref,
-                ),
-                restore_focus=RestoreFocus(
-                    task_id=approval.task_id, lane_id=approval.lane_id
-                ),
-            ),
-            driver=driver,
-            engine_registry=self.engine_registry,
-            model_factory=self.model_factory,
-            bio_research_service=self.bio_research_service,
-            research_adapter=self.research_adapter,
+        execution_approval = (
+            approval.kind
+            in {
+                "execution_launch",
+                "execution_pipeline_plan",
+                "execution_pipeline_operation",
+            }
+            or self._execution_waiting_invocation_id(approval) is not None
         )
+        continuation_output: dict[str, Any] | None = None
         events = [
             _event(
                 "approval.resolved",
@@ -334,8 +480,99 @@ class V3HostApiService:
                 },
             )
         ]
-        events.extend(event.to_dict() for event in result.events)
-        for output in result.outputs:
+        runtime_outcomes: list[dict[str, Any]] = []
+        if execution_approval:
+            self._resolve_approval_record(
+                approval, decision=decision, actor_ref=actor_ref
+            )
+            continuation_output = self._continue_execution_after_approval(
+                approval_id, decision
+            )
+            result_status = HarnessStatus.COMPLETED
+            pending_approval_id = None
+            result_outputs: list[str] = []
+            if continuation_output is None:
+                result_status = HarnessStatus.FAILED
+                result_outputs = [
+                    "Execution approval was resolved, but no waiting execution invocation was linked to it."
+                ]
+            else:
+                events.append(
+                    _event(
+                        "execution.pipeline.completed",
+                        approval.session_id,
+                        {
+                            "invocation_id": continuation_output["invocation_id"],
+                            "status": continuation_output["status"],
+                        },
+                    )
+                )
+                if (
+                    continuation_output["status"]
+                    == EngineInvocationStatus.WAITING_APPROVAL.value
+                ):
+                    result_status = HarnessStatus.WAITING_APPROVAL
+                    pending_approval_id = continuation_output.get("approval_id")
+                elif continuation_output["status"] in {
+                    EngineInvocationStatus.FAILED.value,
+                    EngineInvocationStatus.CANCELLED.value,
+                }:
+                    result_status = HarnessStatus.FAILED
+        else:
+            driver = self._require_llm_driver()
+            result = run_agent_harness_loop(
+                self.repositories,
+                HarnessInput(
+                    session_id=approval.session_id,
+                    resume=ResumeEnvelope(
+                        approval_id=approval_id,
+                        decision=ResumeDecision.APPROVED
+                        if decision == "approved"
+                        else ResumeDecision.REJECTED,
+                        actor_ref=actor_ref,
+                    ),
+                    restore_focus=RestoreFocus(
+                        task_id=approval.task_id, lane_id=approval.lane_id
+                    ),
+                    persist_conversation=False,
+                ),
+                driver=driver,
+                engine_registry=self.engine_registry,
+                model_factory=self.model_factory,
+                bio_research_service=self.bio_research_service,
+                research_adapter=self.research_adapter,
+            )
+            events.extend(event.to_dict() for event in result.events)
+            result_outputs = list(result.outputs)
+            result_status = result.status
+            pending_approval_id = result.pending_approval_id
+
+        for output in result_outputs:
+            message_id = _new_id("msg")
+            created_at = utc_now_iso()
+            payload_ref = persist_conversation_message(
+                self.repositories,
+                session_id=approval.session_id,
+                message_id=message_id,
+                role="assistant",
+                content=output,
+                created_at=created_at,
+            )
+            self.repositories.inbox.save(
+                InboxMessage(
+                    message_id=message_id,
+                    session_id=approval.session_id,
+                    sender="harness",
+                    sender_kind=InboxParticipantKind.HARNESS,
+                    recipient="user",
+                    recipient_kind=InboxParticipantKind.USER,
+                    message_type="assistant_message",
+                    correlation_id=None,
+                    payload_ref=payload_ref,
+                    status=InboxStatus.DELIVERED,
+                    created_at=created_at,
+                )
+            )
             events.append(
                 _event(
                     "conversation.assistant_message",
@@ -343,7 +580,39 @@ class V3HostApiService:
                     {"content": output},
                 )
             )
-        if approval.task_id is not None:
+        if execution_approval:
+            self._record_execution_continuation_result(
+                approval, continuation_output=continuation_output
+            )
+            if continuation_output is not None and continuation_output["status"] in {
+                EngineInvocationStatus.SUCCEEDED.value,
+                EngineInvocationStatus.FAILED.value,
+                EngineInvocationStatus.CANCELLED.value,
+            }:
+                wake_outcome = self._wake_execution_agent_after_pipeline_completion(
+                    approval, continuation_output=continuation_output, events=events
+                )
+                if wake_outcome is not None:
+                    runtime_outcomes = [wake_outcome]
+                    pending_approval_id = wake_outcome.get("waiting_approval_id")
+                    teammate_status = str(wake_outcome.get("teammate_status") or "")
+                    if pending_approval_id:
+                        result_status = HarnessStatus.WAITING_APPROVAL
+                    elif continuation_output["status"] in {
+                        EngineInvocationStatus.FAILED.value,
+                        EngineInvocationStatus.CANCELLED.value,
+                    }:
+                        result_status = HarnessStatus.FAILED
+                    elif (
+                        wake_outcome.get("ok") is False
+                        or teammate_status == HarnessStatus.FAILED.value
+                    ):
+                        result_status = HarnessStatus.FAILED
+                    elif teammate_status == HarnessStatus.WAITING_APPROVAL.value:
+                        result_status = HarnessStatus.WAITING_APPROVAL
+                    else:
+                        result_status = HarnessStatus.COMPLETED
+        elif approval.task_id is not None:
             task = self.repositories.tasks.get(approval.task_id)
             if (
                 task is not None
@@ -375,19 +644,239 @@ class V3HostApiService:
                     source_ref=approval.approval_id,
                 )
                 events.extend(event.to_dict() for event in event_bus.events)
-        self._drain_agent_runtime(approval.session_id, events)
+            runtime_outcomes = self._drain_agent_runtime(approval.session_id, events)
+        followup = self._run_master_followup_after_teammates(
+            approval.session_id, events, runtime_outcomes
+        )
+        if followup is not None:
+            result_outputs = list(followup.outputs)
+            pending_approval_id = followup.pending_approval_id
+            if pending_approval_id:
+                result_status = HarnessStatus.WAITING_APPROVAL
+            elif self._outcomes_include_failure(runtime_outcomes):
+                result_status = HarnessStatus.FAILED
+            else:
+                result_status = followup.status
         self._touch_session(approval.session_id)
         self._extend_with_activity_events(approval.session_id, events)
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(
             session_id=approval.session_id,
             status=HarnessStatus.WAITING_APPROVAL.value
-            if result.pending_approval_id
-            else result.status.value,
-            outputs=result.outputs,
+            if pending_approval_id
+            else result_status.value,
+            outputs=tuple(result_outputs),
             events=events,
             workspace=self.workspace(approval.session_id),
         )
+
+    def _wake_execution_agent_after_pipeline_completion(
+        self,
+        approval: ApprovalRequest,
+        *,
+        continuation_output: dict[str, Any],
+        events: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if approval.task_id is None:
+            return None
+        task = self.repositories.tasks.get(approval.task_id)
+        if task is None:
+            return None
+        agent_id = (
+            task.assigned_ref
+            if task.assigned_ref and task.assigned_ref.startswith("agent:")
+            else None
+        )
+        if agent_id is None:
+            agent = next(
+                (
+                    candidate
+                    for candidate in self.repositories.agents.list_by_session(
+                        approval.session_id
+                    )
+                    if candidate.role == "executor"
+                    and (
+                        candidate.task_id == approval.task_id
+                        or candidate.lane_id == approval.lane_id
+                    )
+                ),
+                None,
+            )
+            agent_id = None if agent is None else agent.agent_id
+        if agent_id is None:
+            return None
+        event_bus = MemoryEventBus()
+        context = SessionRuntimeContext(
+            repositories=self.repositories,
+            event_sink=event_bus,
+            snapshot=SessionRuntimeSnapshot.load(
+                self.repositories, approval.session_id
+            ),
+            tool_registry=ToolRegistry(),
+            restore_focus=RestoreFocus(
+                task_id=approval.task_id, lane_id=approval.lane_id
+            ),
+            model_factory=self.model_factory,
+            engine_registry=self.engine_registry,
+            bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
+        )
+        signal = AgentRuntimeService(context).enqueue_signal(
+            agent_id=agent_id,
+            task_id=approval.task_id,
+            lane_id=approval.lane_id,
+            correlation_id=approval.approval_id,
+            reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
+            source_ref=approval.approval_id,
+        )
+        events.extend(event.to_dict() for event in event_bus.events)
+        if signal is not None:
+            outcomes = self._drain_agent_runtime(approval.session_id, events)
+            for outcome in outcomes:
+                if outcome.get("signal", {}).get("signal_id") == signal.signal_id:
+                    return outcome
+            return outcomes[-1] if outcomes else None
+        return None
+
+    def _resolve_approval_record(
+        self, approval: ApprovalRequest, *, decision: str, actor_ref: str
+    ) -> ApprovalRequest:
+        del actor_ref
+        status = (
+            ApprovalRequestStatus.APPROVED
+            if decision == "approved"
+            else ApprovalRequestStatus.REJECTED
+        )
+        resolved = ApprovalRequest(
+            approval_id=approval.approval_id,
+            session_id=approval.session_id,
+            task_id=approval.task_id,
+            lane_id=approval.lane_id,
+            kind=approval.kind,
+            requested_action=approval.requested_action,
+            status=status,
+            request_ref=approval.request_ref,
+            resolution_ref=approval.resolution_ref,
+            created_at=approval.created_at,
+            resolved_at=utc_now_iso(),
+        )
+        self.repositories.approvals.save(resolved)
+        return resolved
+
+    def _execution_waiting_invocation_id(self, approval: ApprovalRequest) -> str | None:
+        for invocation in self.repositories.invocations.list_by_session(
+            approval.session_id
+        ):
+            if (
+                invocation.approval_id == approval.approval_id
+                and invocation.engine_name == "execution"
+                and invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+            ):
+                return invocation.invocation_id
+        return None
+
+    def _record_execution_continuation_result(
+        self,
+        approval: ApprovalRequest,
+        *,
+        continuation_output: dict[str, Any] | None,
+    ) -> None:
+        if approval.task_id is None:
+            return
+        task = self.repositories.tasks.get(approval.task_id)
+        if task is None:
+            return
+        agent = next(
+            (
+                candidate
+                for candidate in self.repositories.agents.list_by_session(
+                    approval.session_id
+                )
+                if candidate.role == "executor"
+                and (
+                    candidate.task_id == approval.task_id
+                    or candidate.lane_id == approval.lane_id
+                )
+            ),
+            None,
+        )
+        correlation_id = (
+            None if agent is None else agent.current_correlation_id
+        ) or approval.approval_id
+        status = None if continuation_output is None else continuation_output["status"]
+        summary = (
+            "Execution approval resolved."
+            if continuation_output is None
+            else f"Execution pipeline {status}."
+        )
+        if continuation_output is not None and continuation_output.get("summary"):
+            summary = str(continuation_output["summary"])
+        protocol = ProtocolService(self.repositories)
+        payload_ref = protocol.persist_payload(
+            session_id=approval.session_id,
+            document_kind="protocol_payload",
+            payload={
+                "task_id": approval.task_id,
+                "status": status,
+                "summary": summary,
+                "tool_result": {
+                    "tool_name": "execution.pipeline.start",
+                    "ok": status == EngineInvocationStatus.SUCCEEDED.value,
+                    "status": status,
+                    "summary": summary,
+                    "payload": continuation_output,
+                },
+            },
+        )
+        protocol.reply(
+            session_id=approval.session_id,
+            sender="agent:executor",
+            sender_kind=InboxParticipantKind.AGENT,
+            recipient="harness",
+            recipient_kind=InboxParticipantKind.HARNESS,
+            message_type="delegation_result",
+            correlation_id=correlation_id,
+            payload_ref=payload_ref,
+        )
+
+    def _continue_execution_after_approval(
+        self, approval_id: str, decision: str
+    ) -> dict[str, Any] | None:
+        approval = self.repositories.approvals.get(approval_id)
+        if approval is None:
+            return None
+        if self.engine_registry is None:
+            return None
+        engine = self.engine_registry.get("execution")
+        if engine is None or not hasattr(engine, "continue_after_approval"):
+            return None
+        waiting = [
+            invocation
+            for invocation in self.repositories.invocations.list_by_session(
+                approval.session_id
+            )
+            if invocation.approval_id == approval_id
+            and invocation.engine_name == "execution"
+            and invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+        ]
+        if not waiting:
+            return None
+        continuation = engine.continue_after_approval(  # type: ignore[attr-defined]
+            invocation_id=waiting[0].invocation_id, resolution=decision
+        )
+        return {
+            "invocation_id": continuation.invocation.invocation_id,
+            "status": continuation.invocation.status.value,
+            "approval_id": None
+            if continuation.approval is None
+            else continuation.approval.approval_id,
+            "summary": None
+            if continuation.parsed_result is None
+            else continuation.parsed_result.result_summary,
+            "details": None
+            if continuation.parsed_result is None
+            else continuation.parsed_result.structured_findings,
+        }
 
     def _require_llm_driver(self) -> LlmConversationDriver:
         if self.model_factory is None:
@@ -412,6 +901,8 @@ class V3HostApiService:
             assigned_ref=payload.get("assigned_ref"),
             lane_id=payload.get("lane_id"),
             blocked_by=tuple(payload.get("blocked_by") or ()),
+            failure_summary=payload.get("failure_summary"),
+            failure_ref=payload.get("failure_ref"),
         )
         events = [_event("task.created", task.session_id, {"task": task.to_dict()})]
         self._drain_agent_runtime(task.session_id, events)
@@ -441,6 +932,10 @@ class V3HostApiService:
             mutation_kwargs["lane_id"] = payload["lane_id"]
         if "blocked_by" in payload:
             mutation_kwargs["blocked_by"] = tuple(payload["blocked_by"])
+        if "failure_summary" in payload:
+            mutation_kwargs["failure_summary"] = payload["failure_summary"]
+        if "failure_ref" in payload:
+            mutation_kwargs["failure_ref"] = payload["failure_ref"]
         mutation = TaskMutation(**mutation_kwargs)
         task = TaskBoardService(self.repositories).update_task(task_id, mutation)
         events = [_event("task.updated", task.session_id, {"task": task.to_dict()})]

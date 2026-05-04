@@ -46,7 +46,7 @@ Agent Runtime / Scheduler
 Agent Harness Kernel
   |
   +--> tool registry
-  +--> skill loader
+  +--> docs retrieval
   +--> teammate loop runtime
   +--> capability dispatch
   +--> background jobs
@@ -119,7 +119,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 维护统一 top-level harness loop
 - 执行工具分发
 - 协调 tasks / lanes / approvals / delegation / background jobs 的持久化与协议推进
-- 注入 skills、memory、tool results
+- 注入 docs snippets、memory、tool results
 - 维护 teammate spawn / resume / shutdown seam
 - 为每个 agent 构建 focused restore context，并暴露 role-scoped tool surface
 - 决定何时调用 capability engines 或等待 agent team protocol 继续推进
@@ -189,8 +189,9 @@ restore context
 - 对外暴露统一 tool / command contract
 - 被 `engine invocation` 统一调度和恢复
 - 不拥有产品顶层真状态
-- `execution` 默认通过 tool contract compiler 生成 runner `RunSpec`，而不是直接拼接 Host 本地 artifact path
-- `execution` 前置 preprocess 是 capability boundary 的一部分，用于把 workspace artifact 转成下游工具要求的格式
+- `execution` 默认通过受控 pipeline sandbox 承载 executor 生成的 Python pipeline，而不是让 executor 直接调用 runner tool
+- pipeline 内的 HPC 调用必须通过 `openzyme_pipeline` SDK 进入 Host supervisor，再由 tool contract compiler 生成 runner `RunSpec`
+- preprocess 是 pipeline 可调用能力，由 executor 在受控代码中判断和编排；preprocess 产物必须先登记为可信 workspace artifact，再被 HPC step 消费
 
 ## 4. 数据流
 
@@ -289,8 +290,12 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
-- `execution` 默认以 tool contract 编译 `command / inputs / expected_outputs / checks`，并通过 runner staging 传输 artifact
-- preprocess 默认纳入 execution 基线，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
+- `execution` 默认入口是 `execution.pipeline.*`，executor 只能提交或恢复受控 pipeline，不能直接 tool call `exec.run` / runner
+- `execution` pipeline 默认运行在 rootless Podman sandbox 中，通过注入的 `openzyme_pipeline` SDK 访问 `artifacts`、`preprocess` 与 `hpc`
+- execution teammate 默认通过 `docs.search` / `docs.read` 按需读取 `docs/v3/execution-pipeline-docs/`，而不是依赖 prompt 内嵌完整 SDK reference
+- `hpc.*` SDK 调用默认由 Host supervisor 执行 approval、quota、artifact 权限校验、tool contract 编译和 runner 调用
+- `execution` 默认仍以 tool contract 编译 `command / inputs / expected_outputs / checks`，并通过 runner staging 传输 artifact
+- preprocess 默认作为 pipeline SDK 能力存在，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 - research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成
 - reporting 默认由 report teammate 直接在共享 workspace 上完成，不要求单独 reporting engine

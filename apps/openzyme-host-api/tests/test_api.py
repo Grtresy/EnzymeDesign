@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
@@ -37,10 +38,26 @@ from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
+from openzyme_domain import ApprovalRequest
+from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import EngineInvocation
+from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import Task
+from openzyme_domain import TaskStatus
+from openzyme_core import EngineDescriptor
+from openzyme_core import EngineDocumentRecord
+from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_engines import ExecutionParsedResult
+from openzyme_engines.execution import ExecutionStartResult
+from openzyme_host_api.v3_service import V3EventStore
+from openzyme_host_api.v3_service import V3HostApiService
 
 
 class FakeExecutionAdapter:
@@ -285,12 +302,14 @@ class FakeEngineHarnessInvoker:
     def __init__(self, purpose: str) -> None:
         self.purpose = purpose
         self.calls = 0
+        self.system_prompts: list[str] = []
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
     ) -> dict[str, object]:
         del tools
         self.calls += 1
+        self.system_prompts.append(system_prompt)
         if self.purpose == "v3_teammate_loop:researcher":
             if self.calls == 1:
                 return {
@@ -309,26 +328,43 @@ class FakeEngineHarnessInvoker:
             return {"content": "Research complete.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
             if any(
-                _tool_message_name(message) == "execution.resume"
+                _tool_message_name(message) == "execution.pipeline.status"
                 for message in messages
             ):
-                return {"content": "", "tool_calls": []}
+                return {
+                    "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
+                    "tool_calls": [],
+                }
             if self.calls == 1:
                 return {
                     "content": "",
                     "tool_calls": [
                         {
                             "id": "call_execution_start",
-                            "name": "execution.start",
+                            "name": "execution.pipeline.start",
                             "args": {
                                 "task_id": "task_execution_v3",
-                                "handoff": {
-                                    "execution_goal": "Run fpocket against the candidate structure.",
-                                    "required_artifact_ids": ["art_v3_structure"],
-                                    "catalog_tool_id": "fpocket",
-                                    "require_approval": True,
+                                "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_v3_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                                "inputs": {
+                                    "artifact_ids": ["art_v3_structure"],
                                 },
                             },
+                        }
+                    ],
+                }
+            if "Existing execution pipeline invocation:" in system_prompt:
+                invocation_id = (
+                    system_prompt.split("Existing execution pipeline invocation:", 1)[1]
+                    .split(".", 1)[0]
+                    .strip()
+                )
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_execution_status",
+                            "name": "execution.pipeline.status",
+                            "args": {"invocation_id": invocation_id},
                         }
                     ],
                 }
@@ -397,14 +433,27 @@ class FakeEngineHarnessInvoker:
             ),
             "",
         )
-        if latest_tool_name == "teammate.resume_execution":
-            tool_payload = json.loads(_message_content(messages[-1]))
-            summary = tool_payload["payload"]["summary"]
+        if (
+            focused_task == "task_research_v3"
+            and "completed task_id=task_research_v3" in system_prompt
+            and latest_tool_name is None
+        ):
+            return {"content": "Research complete.", "tool_calls": []}
+        if (
+            focused_task == "task_execution_v3"
+            and "completed task_id=task_execution_v3" in system_prompt
+            and latest_tool_name is None
+        ):
             return {
-                "content": f"Execution finished: {summary}",
+                "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
                 "tool_calls": [],
             }
-
+        if (
+            focused_task == "task_report_v3"
+            and "completed task_id=task_report_v3" in system_prompt
+            and latest_tool_name is None
+        ):
+            return {"content": "Reporting complete.", "tool_calls": []}
         if focused_task == "task_research_v3":
             if latest_tool_name is None:
                 return {
@@ -507,6 +556,171 @@ class FakeEngineHarnessModelFactory:
         return self.invokers[purpose]
 
 
+class DiagnosticExecutorInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.system_prompts: list[str] = []
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del tools
+        self.calls += 1
+        self.system_prompts.append(system_prompt)
+        assert "hpc_operation_failed" in system_prompt
+        assert "materially changed retry" in system_prompt
+        assert (
+            "Do not submit the same or equivalent HPC operation again" in system_prompt
+        )
+        assert "status='failed'" in system_prompt
+        assert "INPUT_OR_ENTRYPOINT_MISSING" in system_prompt
+        if any(_tool_message_name(message) == "task.update" for message in messages):
+            return {
+                "content": (
+                    "The approved fpocket task failed at the HPC runner boundary; "
+                    "I marked the execution task failed with the runner evidence."
+                ),
+                "tool_calls": [],
+            }
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_mark_failed",
+                    "name": "task.update",
+                    "args": {
+                        "task_id": "task_hpc_diag",
+                        "status": "failed",
+                        "failure_summary": (
+                            "Approved fpocket reached the HPC runner, but the runner failed "
+                            "with INPUT_OR_ENTRYPOINT_MISSING while creating the Apptainer container."
+                        ),
+                        "failure_ref": "engine:inv_hpc_diag",
+                    },
+                }
+            ],
+        }
+
+
+class DiagnosticExecutorModelFactory:
+    def __init__(self) -> None:
+        self.invoker = DiagnosticExecutorInvoker()
+        self.master_calls = 0
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        if purpose == "v3_harness_loop":
+            factory = self
+
+            class _MasterInvoker:
+                def invoke_with_tools(
+                    self,
+                    *,
+                    system_prompt: str,
+                    messages: list[object],
+                    tools: list[object],
+                ) -> dict[str, object]:
+                    del system_prompt, messages, tools
+                    factory.master_calls += 1
+                    return {
+                        "content": (
+                            "The approved fpocket task failed at the HPC runner boundary. "
+                            "The execution task is marked failed with failure_ref engine:inv_hpc_diag."
+                        ),
+                        "tool_calls": [],
+                    }
+
+            return _MasterInvoker()
+        assert purpose == "v3_teammate_loop:executor"
+        return self.invoker
+
+
+class FailedHpcExecutionEngine:
+    def __init__(self, repositories: CoreRepositories) -> None:
+        self.repositories = repositories
+
+    @property
+    def descriptor(self) -> EngineDescriptor:
+        return EngineDescriptor(
+            engine_name="execution",
+            tool_names=("execution.pipeline.start", "execution.pipeline.status"),
+            input_schema={},
+            output_schema={},
+            requires_approval=True,
+            supports_background=False,
+            idempotency_key_shape="test",
+            produces_artifact_types=(),
+            capability_key="execution",
+        )
+
+    def register_tools(self, registry: object) -> None:
+        del registry
+
+    def continue_after_approval(
+        self, *, invocation_id: str, resolution: str
+    ) -> ExecutionStartResult:
+        del resolution
+        invocation = self.repositories.invocations.get(invocation_id)
+        assert invocation is not None
+        output_ref = "eng_out_failed_hpc"
+        error = {
+            "type": "hpc_operation_failed",
+            "message": "Pipeline failed: Traceback (most recent call last):",
+            "hint": "Inspect the HPC run or runner configuration.",
+            "stderr_excerpt": "PipelineSdkError: hpc.fpocket failed with status failed",
+            "hpc_failure": {
+                "run_id": "run_failed_hpc",
+                "runner_run_id": "runner_failed_hpc",
+                "status": "failed",
+                "execution_mode": "ssh",
+                "exit_code": 255,
+                "error_code": "INPUT_OR_ENTRYPOINT_MISSING",
+                "stderr_excerpt": "FATAL: container creation failed: mount source does not exist",
+            },
+        }
+        now = "2026-05-03T16:00:00+00:00"
+        self.repositories.engine_documents.save(
+            EngineDocumentRecord(
+                document_id=output_ref,
+                session_id=invocation.session_id,
+                invocation_id=invocation.invocation_id,
+                document_kind="execution_result",
+                payload={
+                    "pipeline": {
+                        "sandbox_status": "failed",
+                        "terminal_summary": "Pipeline failed.",
+                        "error": error,
+                    }
+                },
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        failed = EngineInvocation(
+            invocation_id=invocation.invocation_id,
+            session_id=invocation.session_id,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            engine_name=invocation.engine_name,
+            status=EngineInvocationStatus.FAILED,
+            input_ref=invocation.input_ref,
+            output_ref=output_ref,
+            approval_id=invocation.approval_id,
+            idempotency_key=invocation.idempotency_key,
+            started_at=invocation.started_at,
+            finished_at=now,
+        )
+        self.repositories.invocations.save(failed)
+        return ExecutionStartResult(
+            invocation=failed,
+            run=None,
+            approval=None,
+            parsed_result=ExecutionParsedResult(
+                result_summary="Pipeline failed.",
+                structured_findings={"error": error},
+            ),
+        )
+
+
 def _resolve_next_approval(
     client: TestClient, episode_id: str, decision: str = "approved"
 ) -> dict[str, object]:
@@ -584,22 +798,24 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     )
 
 
-def _build_v3_engine_llm_client(monkeypatch) -> tuple[TestClient, CoreRepositories]:
+def _build_v3_engine_llm_client(
+    monkeypatch,
+) -> tuple[TestClient, CoreRepositories, FakeEngineHarnessModelFactory]:
     client, foundation = _build_client(monkeypatch)
     v3_repositories = _build_v3_engine_repositories()
+    model_factory = FakeEngineHarnessModelFactory()
     return (
         TestClient(
             create_app(
                 HostApiDependencies(
-                    foundation=replace(
-                        foundation, model_factory=FakeEngineHarnessModelFactory()
-                    ),
+                    foundation=replace(foundation, model_factory=model_factory),
                     graph_builder=build_v2_supervisor_graph,
                     v3_repositories=v3_repositories,
                 )
             )
         ),
         v3_repositories,
+        model_factory,
     )
 
 
@@ -609,7 +825,127 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
-def _seed_v3_execution_artifact(repositories: CoreRepositories, session_id: str) -> None:
+def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic() -> (
+    None
+):
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_hpc_diag",
+            "proj_001",
+            "HPC diagnostic",
+            "Diagnose approved execution failure.",
+        )
+    )
+    repositories.tasks.save(
+        Task.create(
+            "task_hpc_diag",
+            "sess_hpc_diag",
+            "Run fpocket",
+            "Run fpocket and report failures.",
+            kind="execution",
+            status=TaskStatus.BLOCKED,
+            assigned_ref="agent:executor",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:executor",
+            session_id="sess_hpc_diag",
+            lane_id=None,
+            task_id="task_hpc_diag",
+            name="executor",
+            role="executor",
+            status=AgentMemberStatus.BLOCKED,
+            parent_agent_id=None,
+            created_at="2026-05-03T15:59:00+00:00",
+            updated_at="2026-05-03T15:59:00+00:00",
+            runtime_state="blocked",
+            current_correlation_id="corr_hpc_diag",
+        )
+    )
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id="appr_hpc_diag",
+            session_id="sess_hpc_diag",
+            task_id="task_hpc_diag",
+            lane_id=None,
+            kind="execution_pipeline_plan",
+            requested_action="Approve fpocket.",
+            status=ApprovalRequestStatus.PENDING,
+            request_ref="artifact://approvals/appr_hpc_diag.json",
+            resolution_ref=None,
+            created_at="2026-05-03T15:59:10+00:00",
+        )
+    )
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_hpc_diag",
+            session_id="sess_hpc_diag",
+            task_id="task_hpc_diag",
+            lane_id=None,
+            engine_name="execution",
+            status=EngineInvocationStatus.WAITING_APPROVAL,
+            input_ref="eng_in_hpc_diag",
+            output_ref=None,
+            approval_id="appr_hpc_diag",
+            idempotency_key="hpc_diag",
+            started_at="2026-05-03T15:59:10+00:00",
+        )
+    )
+    registry = EngineRegistry()
+    registry.register(FailedHpcExecutionEngine(repositories))
+    model_factory = DiagnosticExecutorModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        engine_registry=registry,
+        model_factory=model_factory,
+        bio_research_service=None,
+        research_adapter=None,
+    )
+
+    result = service.resolve_approval(
+        "appr_hpc_diag", decision="approved", actor_ref="tester"
+    )
+
+    assert result.status == "failed"
+    assert model_factory.invoker.calls == 2
+    assert model_factory.master_calls == 1
+    assert result.outputs == (
+        "The approved fpocket task failed at the HPC runner boundary. "
+        "The execution task is marked failed with failure_ref engine:inv_hpc_diag.",
+    )
+    assert "Execution failed in the approved pipeline" not in " ".join(result.outputs)
+    task = repositories.tasks.get("task_hpc_diag")
+    assert task is not None
+    assert task.status is TaskStatus.FAILED
+    assert task.failure_ref == "engine:inv_hpc_diag"
+    assert task.failure_summary is not None
+    assert "INPUT_OR_ENTRYPOINT_MISSING" in task.failure_summary
+    assistant_messages = [
+        message
+        for message in repositories.inbox.list_by_session("sess_hpc_diag")
+        if message.message_type == "assistant_message" and message.recipient == "user"
+    ]
+    assert len(assistant_messages) == 1
+
+
+def _seed_v3_execution_artifact(
+    repositories: CoreRepositories, session_id: str
+) -> None:
+    lines = []
+    serial = 1
+    for residue_index in range(1, 11):
+        for atom_index, atom_name in enumerate(("N", "CA", "C", "O", "CB")):
+            lines.append(
+                f"ATOM  {serial:5d} {atom_name:<4} ALA A{residue_index:4d}    "
+                f"{float(residue_index):8.3f}{float(atom_index):8.3f}{0.0:8.3f}  1.00 20.00           C"
+            )
+            serial += 1
+    Path("/tmp/v3_input_structure.pdb").write_text(
+        "\n".join(lines) + "\nEND\n", encoding="utf-8"
+    )
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_v3_structure",
@@ -623,7 +959,7 @@ def _seed_v3_execution_artifact(repositories: CoreRepositories, session_id: str)
             relative_path="v3_input_structure.pdb",
             title="v3_input_structure.pdb",
             description=None,
-            metadata={"source": "test_fixture"},
+            metadata={"source": "test_fixture", "format": "pdb"},
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
@@ -844,7 +1180,7 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
 
 
 def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> None:
-    client, v3_repositories = _build_v3_engine_llm_client(monkeypatch)
+    client, v3_repositories, model_factory = _build_v3_engine_llm_client(monkeypatch)
 
     created = client.post(
         "/v3/sessions",
@@ -900,6 +1236,13 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         research_payload["workspace"]["delegation"]["agents"][0]["agent"]["role"]
         == "researcher"
     )
+    research_assistant_messages = [
+        message["content"]
+        for message in research_payload["workspace"]["conversation"]
+        if message["role"] == "assistant"
+    ]
+    assert research_payload["outputs"] == ["Research complete."]
+    assert "Research complete." in research_assistant_messages
 
     execution_task = client.post(
         "/v3/tasks",
@@ -921,7 +1264,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     execution_payload = execution.json()
     assert execution_payload["status"] == "waiting_approval"
     pending = execution_payload["workspace"]["pending_approvals"]
-    assert pending[0]["kind"] == "execution_launch"
+    assert pending[0]["kind"] == "execution_pipeline_plan"
     assert (
         execution_payload["workspace"]["capabilities"]["execution"][0]["status"]
         == "waiting_approval"
@@ -935,6 +1278,10 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         agent["agent"]["role"] == "executor"
         for agent in execution_payload["workspace"]["delegation"]["agents"]
     )
+    master_calls_before_approval = model_factory.invokers["v3_harness_loop"].calls
+    executor_calls_before_approval = model_factory.invokers[
+        "v3_teammate_loop:executor"
+    ].calls
 
     approval_id = pending[0]["approval_id"]
     resolved = client.post(
@@ -943,6 +1290,19 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     )
     assert resolved.status_code == 200
     resolved_payload = resolved.json()
+    assert (
+        model_factory.invokers["v3_harness_loop"].calls
+        == master_calls_before_approval + 1
+    )
+    assert (
+        model_factory.invokers["v3_teammate_loop:executor"].calls
+        == executor_calls_before_approval + 2
+    )
+    assert any(
+        message.message_type == "delegation_result"
+        and message.sender == "agent:executor"
+        for message in v3_repositories.inbox.list_by_session("sess_v3_engines")
+    )
     assert resolved_payload["status"] == "completed"
     assert resolved_payload["workspace"]["pending_approvals"] == []
     assert (
@@ -950,18 +1310,23 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         == "succeeded"
     )
     assert resolved_payload["workspace"]["artifacts"]
-    assert resolved_payload["outputs"] == [
-        "Execution finished: fpocket found 1 pocket(s) for the selected artifact set."
-    ]
+    assert len(resolved_payload["outputs"]) == 1
+    assert "fpocket found" in resolved_payload["outputs"][0]
+    assert "Output artifacts:" in resolved_payload["outputs"][0]
+    assert "Pipeline sandbox completed." not in resolved_payload["outputs"][0]
+    assert (
+        "Protocol threads available via protocol.thread"
+        in model_factory.invokers["v3_harness_loop"].system_prompts[-1]
+    )
     conversation = resolved_payload["workspace"]["conversation"]
     assistant_messages = [
-        message["content"]
-        for message in conversation
-        if message["role"] == "assistant"
+        message["content"] for message in conversation if message["role"] == "assistant"
     ]
-    assert assistant_messages.count(
-        "Execution finished: fpocket found 1 pocket(s) for the selected artifact set."
-    ) == 1
+    assert not any(
+        message == "Execution finished: Pipeline sandbox completed."
+        for message in assistant_messages
+    )
+    assert sum("fpocket found" in message for message in assistant_messages) == 1
     assert not any(
         "Approval resolved. The delegated execution task resumed" in message
         for message in assistant_messages

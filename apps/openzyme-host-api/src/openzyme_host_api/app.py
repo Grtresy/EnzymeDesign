@@ -39,6 +39,7 @@ from openzyme_engines import ExecutionEngine
 from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
 from openzyme_engines import ExecutionStatusSnapshot as V3ExecutionStatusSnapshot
 from openzyme_engines import NativeDeepResearchRunner
+from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
@@ -280,6 +281,7 @@ class HostApiDependencies:
             ExecutionEngine(
                 self.v3_repositories,
                 V3ExecutionRunnerAdapter(self.foundation.execution_adapter),
+                sandbox_runner=PodmanPipelineSandboxRunner(),
             ),
         )
 

@@ -308,13 +308,23 @@ Policy rules:
 
 - Entrypoint: `fpocket`
 - Required inputs:
-  - `/work/target.pdb` or `/work/target.cif`
+  - `/work/target.pdb`
+  - Host-side validation requires a `.pdb` artifact or metadata `format=pdb`, at least 50 `ATOM`/`HETATM` records, and at least 10 residues.
+  - Tiny toy PDB snippets fail as `invalid_fpocket_input` before approval and are not submitted to HPC.
 - Optional inputs:
   - `-m`, `-M`, `-D`, chain filters, interaction grid flags.
 - Command pattern:
   - `apptainer exec --pwd /out ... ~/containers/fpocket.sif fpocket -f /work/target.pdb`
 - Output mapping:
   - produces `/out/target_out/` directory with pocket descriptors and pocket files.
+
+SSH/runner timeout defaults for Host-supervised calls:
+
+- SSH options: `ConnectTimeout=15`, `ServerAliveInterval=30`, `ServerAliveCountMax=2`
+- staging timeout: 120 seconds
+- preflight timeout: 60 seconds
+- remote execution timeout: 7200 seconds
+- artifact fetch timeout: 120 seconds
 
 #### Contract: `hhsuite.sif`
 

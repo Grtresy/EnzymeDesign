@@ -11,7 +11,6 @@ from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext
 from .harness import HarnessStatus
-from .harness import ResumeDecision
 from .harness import ResumeEnvelope
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -287,73 +286,7 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
             lane_id=updated_task.lane_id,
         )
 
-    def resume_execution_teammate_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
-        arguments = invocation.arguments
-        invocation_id = str(arguments["invocation_id"])
-        engine_invocation = context.repositories.invocations.get(invocation_id)
-        if engine_invocation is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=f"invocation {invocation_id!r} does not exist",
-                task_id=None,
-                lane_id=None,
-            )
-        task = context.repositories.tasks.get(engine_invocation.task_id)
-        if task is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=f"task {engine_invocation.task_id!r} does not exist",
-                task_id=engine_invocation.task_id,
-                lane_id=engine_invocation.lane_id,
-            )
-        if context.model_factory is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content="teammate execution resume requires model_factory",
-                task_id=task.task_id,
-                lane_id=task.lane_id,
-            )
-        agent_id = task.assigned_ref if task.assigned_ref and task.assigned_ref.startswith("agent:") else default_agent_id_for_role("executor")
-        correlation_id = str(arguments.get("correlation_id") or engine_invocation.approval_id or _new_id("corr"))
-        decision = str(arguments.get("decision") or ResumeDecision.APPROVED.value)
-        actor_ref = str(arguments.get("actor_ref") or "user")
-        updated_task, updated_agent, payload, ok = _execute_teammate_turn(
-            context,
-            task=task,
-            agent_id=agent_id,
-            agent_role="executor",
-            correlation_id=correlation_id,
-            instructions=task.description or task.subject,
-            resume=ResumeEnvelope(
-                approval_id=str(engine_invocation.approval_id or arguments.get("approval_id") or ""),
-                decision=ResumeDecision(decision),
-                actor_ref=actor_ref,
-            ),
-        )
-        return ToolResult(
-            call_id=invocation.call_id,
-            tool_name=invocation.tool_name,
-            ok=ok,
-            content=json.dumps(
-                {
-                    **payload,
-                    "agent": None if updated_agent is None else updated_agent.to_dict(),
-                    "outputs": payload["teammate_outputs"],
-                },
-                sort_keys=True,
-            ),
-            task_id=updated_task.task_id,
-            lane_id=updated_task.lane_id,
-        )
-
     registry.register("task.delegate", delegate_task_handler)
-    registry.register("teammate.resume_execution", resume_execution_teammate_handler)
 
 
 __all__ = [

@@ -12,6 +12,7 @@ members = [
     "openzyme-graph",
     "openzyme-host-api",
     "openzyme-host-cli",
+    "openzyme-pipeline",
     "openzyme-research",
     "openzyme-runtime",
     "openzyme-storage",
@@ -798,6 +799,11 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "openzyme-pipeline"
+version = "0.1.0"
+source = { editable = "packages/openzyme-pipeline" }
 
 [[package]]
 name = "openzyme-research"

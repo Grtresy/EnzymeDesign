@@ -34,6 +34,9 @@ from .execution import ExecutionStatusSnapshot
 from .execution import PreprocessArtifactDraft
 from .execution import PreprocessResult
 from .execution import register_execution_tools
+from .podman_sandbox import DEFAULT_SANDBOX_IMAGE
+from .podman_sandbox import PodmanPipelineSandboxRunner
+from .podman_sandbox import PodmanSandboxPreflight
 
 
 def build_engine_registry(*engines: object) -> EngineRegistry:
@@ -57,6 +60,7 @@ __all__ = [
     "ExecutionParsedResult",
     "ExecutionStartResult",
     "ExecutionStatusSnapshot",
+    "DEFAULT_SANDBOX_IMAGE",
     "GraphBackedDeepResearchRunner",
     "IntakeClarification",
     "NativeDeepResearchRunner",
@@ -72,6 +76,8 @@ __all__ = [
     "ResearchUnitPlan",
     "PreprocessArtifactDraft",
     "PreprocessResult",
+    "PodmanPipelineSandboxRunner",
+    "PodmanSandboxPreflight",
     "build_deep_research_subgraph",
     "register_deep_research_tools",
     "register_execution_tools",

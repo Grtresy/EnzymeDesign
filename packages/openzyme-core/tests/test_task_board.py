@@ -111,6 +111,31 @@ def test_task_board_update_promotes_newly_unblocked_task() -> None:
     assert projection.blocked_tasks == ()
 
 
+def test_task_board_buckets_failed_task_as_terminal_failure() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+
+    failed = service.create_task(
+        session_id=session.session_id,
+        task_id="task_failed",
+        subject="Failed",
+        description="Execution attempt failed",
+        status=TaskStatus.FAILED,
+        failure_summary="Runner timed out",
+        failure_ref="engine:inv_failed",
+    )
+
+    projection = service.build_projection(session.session_id)
+    item = next(item for item in projection.items if item.task.task_id == failed.task_id)
+
+    assert item.bucket is TaskBoardBucket.FAILED
+    assert projection.ready_tasks == ()
+    assert projection.blocked_tasks == ()
+    assert item.task.failure_summary == "Runner timed out"
+    assert item.task.failure_ref == "engine:inv_failed"
+
+
 def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

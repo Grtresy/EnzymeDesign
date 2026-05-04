@@ -35,6 +35,10 @@ V3 的核心立场：
 11. [sessions/11-v3-api-cli-ui.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/11-v3-api-cli-ui.md)
 12. [sessions/12-cutover-and-evals.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/12-cutover-and-evals.md)
 
+Execution pipeline SDK docs:
+
+- [execution-pipeline-docs/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/execution-pipeline-docs/README.md)
+
 执行约束：
 
 - 后续 AI 在开始 V3 工作前，必须先读本目录至少 `README + doctrine + 对应 session 文档`。

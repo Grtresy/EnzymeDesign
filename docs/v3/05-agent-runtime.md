@@ -76,6 +76,8 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
+teammate 完成或失败时只写 task state 与同一 correlation thread 上的 `delegation_result` / diagnostic response。Host drain 发现 terminal teammate outcome 后，最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责暂停/恢复 execution，不改变这一回流拓扑。
+
 ### Failed Delegation Diagnostic Flow
 
 失败委托的默认恢复路径由 master 主动发起，不由 `task.delegate` 或 protocol tool 自动追问：
@@ -141,6 +143,8 @@ master delegation 仍然存在；auto-claim 是减少 master 微管理的补充�
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
 - 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
 - approval resolved 是唤醒 resident teammate 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
+- approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
+- task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后正常完成 task，失败执行只在明确不可修复时由 executor 写入 `status=failed`、`failure_summary` 与 `failure_ref`。
 - 如果 bounded loop 到达 max steps，但 protocol thread、task state 或 artifact 已显示工作完成，runtime 应优先恢复并交付 completion，而不是只把 delegation 标记为失败。
 - 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。

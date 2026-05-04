@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -46,51 +45,48 @@ def _stringify_content(content: Any) -> str:
 
 
 def _resume_result_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
-    if len(tool_results) != 1:
-        return None
-    result = tool_results[0]
-    if result.tool_name not in {"execution.resume", "teammate.resume_execution"} or not result.ok:
-        return None
-    try:
-        payload = json.loads(result.content)
-    except json.JSONDecodeError:
-        return result.summary or result.content or None
-    if result.tool_name == "teammate.resume_execution":
-        summary = payload.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-        delegation_result = payload.get("delegation_result")
-        if isinstance(delegation_result, dict):
-            summary = delegation_result.get("summary")
-            if isinstance(summary, str) and summary.strip():
-                return summary.strip()
-        outputs = payload.get("outputs") or payload.get("teammate_outputs")
-        if isinstance(outputs, list):
-            for item in reversed(outputs):
-                if isinstance(item, str) and item.strip():
-                    return item.strip()
-    run = payload.get("run")
-    if isinstance(run, dict):
-        summary = run.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    parsed_result = payload.get("parsed_result")
-    if isinstance(parsed_result, dict):
-        summary = parsed_result.get("result_summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    artifacts = payload.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        return f"Execution completed with {len(artifacts)} artifact(s)."
-    return result.summary or result.content or None
+    del tool_results
+    return None
 
 
 def _build_system_prompt(context: SessionRuntimeContext) -> str:
     restore = context.restore_context
     assert restore is not None
+    terminal_tasks = [
+        task
+        for task in restore.tasks
+        if task.status.value in {"completed", "failed", "blocked"}
+        and task.assigned_ref
+        and task.assigned_ref.startswith("agent:")
+    ]
+    terminal_task_bits = [
+        (
+            f"{task.status.value} task_id={task.task_id} kind={task.kind} "
+            f"assigned_agent={task.assigned_ref}"
+        )
+        for task in terminal_tasks[:8]
+    ]
+    protocol_thread_bits: list[str] = []
+    for thread in restore.protocol_threads[:8]:
+        responses = list(thread.get("responses") or [])
+        latest_type = "none"
+        if responses:
+            latest = responses[-1]
+            if isinstance(latest, dict):
+                latest_type = str(latest.get("message_type") or "unknown")
+        protocol_thread_bits.append(
+            "correlation_id={correlation_id} status={status} "
+            "response_count={response_count} latest_response_type={latest_type}".format(
+                correlation_id=thread.get("correlation_id"),
+                status=thread.get("status"),
+                response_count=len(responses),
+                latest_type=latest_type,
+            )
+        )
     sections = [
         "You are the top-level OpenZyme master agent.",
         "You talk to the user, understand goals, create and update tasks, and delegate concrete work to internal teammate agents.",
+        "The conversation is only user <-> master. Teammate agents are internal workers; do not expose raw teammate outputs as chat transcript entries.",
         teammate_roster_prompt_line(),
         f"If the user asks which teammates are available, answer only with {', '.join(TEAMMATE_ROLE_NAMES)} plus their role-level responsibilities.",
         "Do not describe provider tools or capability engines such as fpocket, AutoDock Vina, AlphaFold, PubMed, UniProt, or RCSB PDB as teammates.",
@@ -99,20 +95,37 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
         "If task.delegate reports teammate_status=max_steps_exceeded or failed, or the failure summary is not enough to explain the cause, inspect protocol.thread for that correlation and use protocol.send with message_type=diagnostic_request to ask the same teammate a focused diagnostic question.",
+        "When a delegated task is completed or failed, inspect protocol.thread(correlation_id) for the relevant protocol thread if the restore summary is not enough, then report the task result to the user in your own words.",
         "Diagnostic protocol payloads should include question, instructions, task_id, failed_summary, and expected_response. Set await_response only when you need one bounded teammate turn before deciding next steps.",
         "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
         "When no tool is needed, reply with a concise assistant message for the user.",
         f"Session objective: {context.snapshot.session.objective}",
         f"Focused task: {restore.focused_task_id or 'none'}",
         f"Focused lane: {restore.focused_lane_id or 'none'}",
-        "Ready tasks: " + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
-        "Pending approvals: " + (", ".join(approval.approval_id for approval in restore.pending_approvals) or "none"),
-        "Active invocations: " + (", ".join(inv.invocation_id for inv in restore.active_invocations) or "none"),
+        "Ready tasks: "
+        + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
+        "Completed/failed/blocked delegated tasks: "
+        + ("; ".join(terminal_task_bits) or "none"),
+        "Protocol threads available via protocol.thread: "
+        + ("; ".join(protocol_thread_bits) or "none"),
+        "Pending approvals: "
+        + (
+            ", ".join(approval.approval_id for approval in restore.pending_approvals)
+            or "none"
+        ),
+        "Active invocations: "
+        + (
+            ", ".join(inv.invocation_id for inv in restore.active_invocations) or "none"
+        ),
     ]
     if restore.session_memory.compaction is not None:
-        sections.append(f"Session compaction: {restore.session_memory.compaction.summary}")
+        sections.append(
+            f"Session compaction: {restore.session_memory.compaction.summary}"
+        )
     elif restore.session_memory.continuity is not None:
-        sections.append(f"Session continuity: {restore.session_memory.continuity.summary}")
+        sections.append(
+            f"Session continuity: {restore.session_memory.continuity.summary}"
+        )
     if restore.lane_memory and restore.lane_memory.compaction is not None:
         sections.append(f"Lane compaction: {restore.lane_memory.compaction.summary}")
     elif restore.lane_memory and restore.lane_memory.continuity is not None:
@@ -122,7 +135,9 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
     return "\n".join(sections)
 
 
-def _build_seed_messages(context: SessionRuntimeContext, harness_input: HarnessInput) -> list[Any]:
+def _build_seed_messages(
+    context: SessionRuntimeContext, harness_input: HarnessInput
+) -> list[Any]:
     restore = context.restore_context
     assert restore is not None
     try:
@@ -173,7 +188,11 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
                 }
             )
         else:
-            messages.append(ToolMessage(content=content, tool_call_id=result.call_id, name=result.tool_name))
+            messages.append(
+                ToolMessage(
+                    content=content, tool_call_id=result.call_id, name=result.tool_name
+                )
+            )
     return messages
 
 
@@ -191,7 +210,9 @@ class LlmConversationDriver:
     def _descriptor_by_name(self) -> dict[str, ToolDescriptor]:
         return {descriptor.tool_name: descriptor for descriptor in self._tool_catalog()}
 
-    def _invocation_refs(self, tool_name: str, args: dict[str, Any]) -> tuple[str | None, str | None]:
+    def _invocation_refs(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
         if tool_name in {"task.create", "lane.create"}:
             return None, None
         task_id = None if "task_id" not in args else str(args["task_id"])
@@ -233,12 +254,18 @@ class LlmConversationDriver:
                     arguments["agent_role"] = inferred_role
             tool_call["args"] = arguments
 
-    def _validate_tool_arguments(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
+    def _validate_tool_arguments(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> str | None:
         descriptor = self._descriptor_by_name().get(tool_name)
         if descriptor is None:
             return f"Tool {tool_name} is not available in the current harness."
         required = tuple(descriptor.input_schema.get("required") or ())
-        missing = [field_name for field_name in required if field_name not in arguments or arguments[field_name] in (None, "")]
+        missing = [
+            field_name
+            for field_name in required
+            if field_name not in arguments or arguments[field_name] in (None, "")
+        ]
         if missing:
             if tool_name == "task.delegate" and "task_id" in missing:
                 return (
@@ -263,7 +290,9 @@ class LlmConversationDriver:
                 )
         return None
 
-    def _resume_waiting_invocation(self, context: SessionRuntimeContext, harness_input: HarnessInput) -> HarnessStep | None:
+    def _resume_waiting_invocation(
+        self, context: SessionRuntimeContext, harness_input: HarnessInput
+    ) -> HarnessStep | None:
         if harness_input.resume is None:
             return None
         waiting = [
@@ -276,41 +305,11 @@ class LlmConversationDriver:
         if not waiting:
             return None
         invocation = waiting[0]
-        task = None if invocation.task_id is None else context.repositories.tasks.get(invocation.task_id)
-        agent_id = None if task is None else task.assigned_ref
-        if agent_id is not None and agent_id.startswith("agent:"):
-            return HarnessStep(
-                tool_invocations=(
-                    ToolInvocation(
-                        call_id=f"call_teammate_resume_{invocation.invocation_id}",
-                        tool_name="teammate.resume_execution",
-                        arguments={
-                            "invocation_id": invocation.invocation_id,
-                            "approval_id": harness_input.resume.approval_id,
-                            "decision": harness_input.resume.decision.value,
-                            "actor_ref": harness_input.resume.actor_ref,
-                            "correlation_id": invocation.approval_id or invocation.invocation_id,
-                        },
-                        task_id=invocation.task_id,
-                        lane_id=invocation.lane_id,
-                    ),
-                ),
-                next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
-            )
         return HarnessStep(
-            tool_invocations=(
-                ToolInvocation(
-                    call_id=f"call_resume_{invocation.invocation_id}",
-                    tool_name="execution.resume",
-                    arguments={
-                        "invocation_id": invocation.invocation_id,
-                        "resolution": f"Approval {harness_input.resume.decision.value} by {harness_input.resume.actor_ref}.",
-                    },
-                    task_id=invocation.task_id,
-                    lane_id=invocation.lane_id,
-                ),
+            assistant_message="Approval was resolved. The execution supervisor will continue the pipeline internally.",
+            next_focus=RestoreFocus(
+                task_id=invocation.task_id, lane_id=invocation.lane_id
             ),
-            next_focus=RestoreFocus(task_id=invocation.task_id, lane_id=invocation.lane_id),
         )
 
     def plan(
@@ -329,7 +328,9 @@ class LlmConversationDriver:
         if tool_results:
             self._messages.extend(_tool_messages(tool_results))
 
-        invoker = self.model_factory.create_tool_calling_invoker(purpose="v3_harness_loop")
+        invoker = self.model_factory.create_tool_calling_invoker(
+            purpose="v3_harness_loop"
+        )
         tools = [descriptor.to_openai_tool() for descriptor in self._tool_catalog()]
         response = invoker.invoke_with_tools(
             system_prompt=_build_system_prompt(context),
@@ -359,7 +360,11 @@ class LlmConversationDriver:
                     )
                 )
             return HarnessStep(tool_invocations=tuple(invocations))
-        assistant_message = _stringify_content(getattr(response, "content", None) if not isinstance(response, dict) else response.get("content"))
+        assistant_message = _stringify_content(
+            getattr(response, "content", None)
+            if not isinstance(response, dict)
+            else response.get("content")
+        )
         if not assistant_message:
             assistant_message = (
                 _resume_result_summary(tool_results)

@@ -147,15 +147,23 @@ deep research 对 harness 至少提供：
 
 - 负责将某项 task 或 artifact 集合转化为可执行请求
 - 继续复用 `apps/mcp-hpc-runner` 作为外部执行边界
-- 负责把 session artifact catalog 中的输入资产显式编译成 runner `RunSpec.inputs`
+- 负责运行 executor 提交的受控 execution pipeline code
+- 负责把 pipeline 内的 HPC SDK 调用显式编译成 runner `RunSpec.inputs`
 - 负责把 runner 下载后的 declared outputs 回填为 canonical workspace artifacts
 
 要求：
 
-- 对 harness 至少提供 `start_execution(invocation_id, task_id, handoff)`、`resume_execution(invocation_id, resolution)`、`get_execution_status(invocation_id)`
-- `execution.start(require_approval=true)` 创建 `execution_launch` approval 后，当前 master/teammate loop 必须立即返回 `waiting_approval`，不得继续把 tool result 喂给 LLM 推进下一轮
+- 对 harness 至少提供 `execution.pipeline.start(invocation_id, task_id, code, inputs)`、`execution.pipeline.status(invocation_id)`；恢复等待中的 pipeline 是 harness / supervisor 内部调度语义，不是 executor 或 master 需要显式编排的用户级 tool contract
+- executor 不得直接调用 runner tool、SSH、Slurm 或 runner config；它只能提交 pipeline code，并通过 sandbox 内注入的 SDK 间接请求 HPC
+- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交 HPC job 或高 quota 消耗的 `hpc.*` operation 必须标记为 approval-gated
+- `execution.pipeline.start` 的默认主路径是 dry-run / validation first：Host supervisor 先构建 `ExecutionPlan`，再让用户批准该 plan；批准前不得提交 HPC job，也不得启动会触发 HPC 的正式执行
+- dry run 是校验过程，`ExecutionPlan` 是结果；plan 至少绑定 `plan_digest`、artifact reads、preprocess operations、HPC operation list、expected outputs、resource / quota estimate、doc hints 与 approval requirements
+- approval 绑定 `plan_digest` 和 HPC operation list；用户 approve 后，Host supervisor 才启动正式 sandbox 执行
+- runtime SDK call approval gate 只作为兜底：正式执行时若出现未被 approved plan 覆盖的 `hpc.*` operation、artifact id 或参数 / quota 范围，Host supervisor 必须再次创建 `ApprovalRequest` 并进入 `waiting_approval`，不得提交该 HPC operation
 - approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
-- execution engine 不代表用户批准；`execution.resume` 只消费已 resolved 的 approval，pending approval 下必须保持 invocation 为 `waiting_approval`
+- execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
+- Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 `execution.pipeline.status`、artifacts 和 structured error 后生成用户可见收尾
+- 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或用 `task.update(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
 - command 不得直接引用 Host 本地 `SessionArtifactRecord.storage_uri`；HPC command 只能引用 `/work`、`/out`、`$MCP_WORKDIR`、`$MCP_OUTDIR` 等远端路径
@@ -163,10 +171,72 @@ deep research 对 harness 至少提供：
 - 远端结果只有在 `expected_outputs` 中声明后才会被下载并登记为 artifact
 - output artifact 必须保留相对路径层级，不能只保留 basename
 
-### 3.1 Execution Tool Contract 与 Preprocess
+### 3.1 Execution Pipeline Sandbox
 
-execution engine 的 request compiler 默认应由 tool contract 驱动，而不是不断增加
-tool-specific command 拼接分支。
+execution engine 的目标入口是 pipeline sandbox，而不是固定 tool-specific preprocess
+adapter。executor 可以写 Python pipeline 表达判断、循环、批处理和分支，但 pipeline
+只能在受控运行时内执行。
+
+默认运行边界：
+
+- pipeline code 运行在 rootless Podman sandbox 中，默认无网络、非 root、资源受限
+- sandbox 只挂载当前 invocation 的 `/openzyme/input`、`/openzyme/work`、`/openzyme/output` 和 per-invocation control socket
+- `/openzyme/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
+- `/openzyme/work` 与 `/openzyme/output` 可写；只有 SDK 明确登记的 `/openzyme/output` 文件可进入 artifact catalog
+- Host repo、用户 home、`.ssh`、数据库、runner config 和 HPC credentials 不得挂载进 sandbox
+- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；HPC 请求只能通过 `openzyme_pipeline.hpc` 走 Unix domain socket 到 Host supervisor
+
+`openzyme_pipeline` SDK 至少提供概念能力：
+
+- `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图
+- `execution.pipeline.start.inputs.artifact_ids` / `context_artifact_ids` 必须显式列出 pipeline code 将读取的 artifact；Host dry-run 发现未声明的字面量 `artifacts.get("...")` 时返回可修复 tool failure，让 executor 重新调用
+- `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact
+- `preprocess.convert_format(...)`
+- `preprocess.prepare_receptor(...)`
+- `preprocess.prepare_ligand(...)`
+- `preprocess.smiles_to_3d(...)`
+- `hpc.fpocket(...)`
+- `hpc.vina(...)`
+- `run.wait()` 与 `run.fetch_artifacts()`
+
+Host supervisor 负责：
+
+- 校验 pipeline 是否只能读取当前 session/task/lane 授权 artifact
+- 执行 dry-run / plan，列出预计 artifact 读写、HPC jobs、资源与输出
+- 执行 SDK operation policy、approval gate、quota、timeout、输出大小限制和失败分类
+- 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
+- 把每个 `hpc.*` 调用转换为 tool contract compiler 输入
+- 调用 `apps/mcp-hpc-runner`，并把 fetched outputs 登记为 session artifacts
+- 记录 pipeline code digest、SDK operation log、RunSpec、run id、artifact lineage 与 provenance
+
+### 3.2 Pipeline SDK Docs
+
+SDK 用法是 execution capability contract 的一部分，不是模型常识。executor prompt
+只应给最小框架、关键词和要求，不应把完整 SDK reference 长篇内嵌进系统提示。
+
+V3 默认提供可检索的 pipeline SDK 文档库：
+
+- 文档根目录：`docs/v3/execution-pipeline-docs/`
+- executor 默认可使用只读 `docs.search` / `docs.read`
+- 文档库必须与当前 SDK 版本同步，并优先覆盖 artifact、preprocess、HPC tool、batch pattern、sandbox rule 与示例
+
+execution teammate 的默认 authoring 流程：
+
+```text
+restore task + artifact catalog
+  -> read minimal prompt keywords
+  -> docs.search for needed SDK/API details
+  -> docs.read selected references/examples
+  -> write pipeline code
+  -> run pipeline dry-run / validation
+  -> fix from structured feedback or request approval
+```
+
+dry-run 反馈必须给出可检索关键词或相关 doc id。例如 Vina ligand 不是 PDBQT 时，
+反馈应提示查询 `preprocess.prepare_ligand` 或 `hpc-vina.md`，而不是只返回低层
+Python exception。
+
+### 3.3 Execution Tool Contract 与 HPC SDK
 
 tool contract 至少描述：
 
@@ -176,15 +246,18 @@ tool contract 至少描述：
 - failure signatures 与 parser hints
 - preprocess requirements，例如 Vina 需要 receptor/ligand PDBQT
 
-preprocess 是 execution 的基线前置能力：
+`hpc.*` SDK 函数的实现默认应由 tool contract 驱动，而不是不断增加
+tool-specific command 拼接分支。每次 HPC SDK 调用都必须生成可审计 `RunSpec`。
+
+preprocess 是 pipeline 的受控本地能力：
 
 - `convert_format` 负责通用分子格式转换
 - `prepare_receptor` 负责 receptor PDBQT 准备
 - `prepare_ligand` 负责 ligand PDBQT 准备
 - `smiles_to_3d` 负责 SMILES 到三维 ligand 中间结构
 
-preprocess 输出必须先成为可信 session artifact，再被 execution compiler 作为
-`RunSpec.inputs` 消费。
+executor 在 pipeline code 中判断是否需要 preprocess；preprocess 输出必须先成为可信
+session artifact，再被后续 `hpc.*` 调用作为 `RunSpec.inputs` 消费。
 
 ## 4. Reporting 默认不属于 Capability Engine
 

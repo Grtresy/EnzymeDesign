@@ -15,7 +15,6 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
-from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -551,10 +550,10 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
 def _register_builtin_tools(
     registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None
 ) -> None:
+    from .docs import register_docs_tools
     from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
     from .protocol_tools import register_protocol_tools
-    from .skills import register_skill_tools
     from .subagents import register_subagent_tools
     from .task_board import register_task_board_tools
 
@@ -563,7 +562,7 @@ def _register_builtin_tools(
     register_protocol_tools(registry)
     register_lane_tools(registry)
     register_memory_tools(registry)
-    register_skill_tools(registry)
+    register_docs_tools(registry)
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
@@ -627,51 +626,8 @@ def _format_runtime_error(exc: Exception) -> str:
 
 
 def _fallback_output_from_tool_results(tool_results: list[ToolResult]) -> str | None:
-    if not tool_results:
-        return None
-    result = next(
-        (
-            candidate
-            for candidate in reversed(tool_results)
-            if candidate.tool_name in {"execution.resume", "teammate.resume_execution"}
-            and candidate.ok
-        ),
-        None,
-    )
-    if result is None:
-        return None
-    try:
-        payload = json.loads(result.content)
-    except json.JSONDecodeError:
-        return result.summary or result.content or None
-    if result.tool_name == "teammate.resume_execution":
-        summary = payload.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-        delegation_result = payload.get("delegation_result")
-        if isinstance(delegation_result, dict):
-            summary = delegation_result.get("summary")
-            if isinstance(summary, str) and summary.strip():
-                return summary.strip()
-        outputs = payload.get("outputs") or payload.get("teammate_outputs")
-        if isinstance(outputs, list):
-            for item in reversed(outputs):
-                if isinstance(item, str) and item.strip():
-                    return item.strip()
-    run = payload.get("run")
-    if isinstance(run, dict):
-        summary = run.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    parsed_result = payload.get("parsed_result")
-    if isinstance(parsed_result, dict):
-        summary = parsed_result.get("result_summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
-    artifacts = payload.get("artifacts")
-    if isinstance(artifacts, list) and artifacts:
-        return f"Execution completed with {len(artifacts)} artifact(s)."
-    return result.summary or result.content or None
+    del tool_results
+    return None
 
 
 def run_agent_harness_loop(
@@ -737,49 +693,7 @@ def run_agent_harness_loop(
     if harness_input.resume is not None and not harness_input.skip_resume_resolution:
         resolved_approval = _resolve_resume(context, harness_input.resume)
         activity_happened = True
-        if "execution.resume" in registry._handlers:
-            for engine_invocation in repositories.invocations.list_by_session(
-                harness_input.session_id
-            ):
-                if (
-                    engine_invocation.approval_id == resolved_approval.approval_id
-                    and engine_invocation.engine_name == "execution"
-                    and engine_invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-                ):
-                    task = (
-                        None
-                        if engine_invocation.task_id is None
-                        else repositories.tasks.get(engine_invocation.task_id)
-                    )
-                    if (
-                        task is not None
-                        and task.status is TaskStatus.BLOCKED
-                        and str(task.assigned_ref).startswith("agent:")
-                    ):
-                        continue
-                    resume_result = registry.dispatch(
-                        context,
-                        ToolInvocation(
-                            call_id=_new_id("call"),
-                            tool_name="execution.resume",
-                            arguments={
-                                "invocation_id": engine_invocation.invocation_id,
-                                "resolution": harness_input.resume.decision.value,
-                            },
-                            task_id=engine_invocation.task_id,
-                            lane_id=engine_invocation.lane_id,
-                        ),
-                    )
-                    all_tool_results.append(resume_result)
-                    context.emit(
-                        "tool.completed",
-                        {
-                            "call_id": resume_result.call_id,
-                            "tool_name": resume_result.tool_name,
-                            "ok": resume_result.ok,
-                        },
-                    )
-                    break
+        del resolved_approval
 
     context.refresh()
     tool_results: tuple[ToolResult, ...] = ()

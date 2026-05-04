@@ -606,7 +606,7 @@ def test_harness_infers_lane_from_bound_task_for_tools_and_engines() -> None:
     )
 
 
-class SkillLoadingDriver:
+class DocsReadDriver:
     def plan(
         self,
         context: SessionRuntimeContext,
@@ -618,35 +618,30 @@ class SkillLoadingDriver:
             return HarnessStep(
                 tool_invocations=(
                     ToolInvocation(
-                        call_id="call_skill",
-                        tool_name="skill.load",
-                        arguments={"skill_key": "vina"},
+                        call_id="call_docs",
+                        tool_name="docs.read",
+                        arguments={"doc_id": "hpc-vina"},
                         task_id="task_001",
                     ),
                 ),
-                next_focus=RestoreFocus(task_id="task_001", skill_keys=("vina",)),
+                next_focus=RestoreFocus(task_id="task_001"),
             )
-        assert context.restore_context is not None
-        return HarnessStep(
-            assistant_message="skills:"
-            + ",".join(
-                skill.skill_key for skill in context.restore_context.skill_documents
-            )
-        )
+        payload = json.loads(tool_results[0].content)
+        return HarnessStep(assistant_message=f"docs:{payload['doc_id']}")
 
 
-def test_harness_skill_load_updates_restore_context() -> None:
+def test_harness_docs_read_uses_controlled_registry() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
 
     result = run_agent_harness_loop(
         repositories,
         HarnessInput(session_id=session.session_id),
-        driver=SkillLoadingDriver(),
+        driver=DocsReadDriver(),
     )
 
-    assert result.outputs == ("skills:vina",)
-    assert "receptor_path" in result.tool_results[0].content
+    assert result.outputs == ("docs:hpc-vina",)
+    assert "openzyme_pipeline" in result.tool_results[0].content
 
 
 class ExplicitCompactionDriver:
@@ -1531,10 +1526,10 @@ class ResumeAwareModelFactory:
         return self.invokers[purpose]
 
 
-class FakeExecutionResumeEngine:
+class FakeExecutionPipelineEngine:
     descriptor = EngineDescriptor(
         engine_name="execution",
-        tool_names=("execution.resume",),
+        tool_names=("execution.pipeline.start", "execution.pipeline.status"),
         input_schema={},
         output_schema={},
         requires_approval=True,
@@ -1548,49 +1543,7 @@ class FakeExecutionResumeEngine:
         self.repositories = repositories
 
     def register_tools(self, registry: ToolRegistry) -> None:
-        def resume_execution(
-            _context: SessionRuntimeContext, invocation: ToolInvocation
-        ) -> ToolResult:
-            engine_invocation = self.repositories.invocations.get(
-                str(invocation.arguments["invocation_id"])
-            )
-            assert engine_invocation is not None
-            updated = EngineInvocation(
-                invocation_id=engine_invocation.invocation_id,
-                session_id=engine_invocation.session_id,
-                task_id=engine_invocation.task_id,
-                lane_id=engine_invocation.lane_id,
-                engine_name=engine_invocation.engine_name,
-                status=EngineInvocationStatus.SUCCEEDED,
-                input_ref=engine_invocation.input_ref,
-                output_ref="doc_execution_result",
-                approval_id=engine_invocation.approval_id,
-                idempotency_key=engine_invocation.idempotency_key,
-                started_at=engine_invocation.started_at,
-                finished_at="2026-04-17T09:10:00+00:00",
-            )
-            self.repositories.invocations.save(updated)
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=True,
-                content=json.dumps(
-                    {
-                        "invocation": updated.to_dict(),
-                        "run": {"summary": "fpocket found 2 pocket(s)."},
-                        "approval": None,
-                        "artifacts": [{"artifact_id": "art_stdout"}],
-                        "parsed_result": {
-                            "result_summary": "fpocket found 2 pocket(s)."
-                        },
-                    },
-                    sort_keys=True,
-                ),
-                task_id=updated.task_id,
-                lane_id=updated.lane_id,
-            )
-
-        registry.register("execution.resume", resume_execution)
+        del registry
 
 
 class FakeEngine:
@@ -1631,7 +1584,8 @@ def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
         "lane.create",
         "lane.bind_task",
         "memory.compact",
-        "skill.load",
+        "docs.search",
+        "docs.read",
     } <= tool_names
 
 
@@ -1639,6 +1593,8 @@ def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in top_level_tool_descriptors()}
     assert "deep_research.start" not in tool_names
     assert "execution.start" not in tool_names
+    assert "execution.resume" not in tool_names
+    assert "execution.status" not in tool_names
     assert "reporting.start" not in tool_names
 
 
@@ -1693,6 +1649,9 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "answer only with researcher, executor, reporter" in prompt
     assert "Do not describe provider tools or capability engines" in prompt
     assert "diagnostic_request" in prompt
+    assert "Completed/failed/blocked delegated tasks:" in prompt
+    assert "Protocol threads available via protocol.thread:" in prompt
+    assert "Teammate agents are internal workers" in prompt
     assert "fpocket" in prompt
 
 
@@ -1768,7 +1727,7 @@ def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
     assert envelope["content"] == "failed raw content"
 
 
-def test_approval_resume_feeds_execution_resume_result_through_executor_and_master() -> None:
+def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     task = repositories.tasks.get("task_001")
@@ -1819,7 +1778,7 @@ def test_approval_resume_feeds_execution_resume_result_through_executor_and_mast
         )
     )
     engine_registry = EngineRegistry()
-    engine_registry.register(FakeExecutionResumeEngine(repositories))
+    engine_registry.register(FakeExecutionPipelineEngine(repositories))
     model_factory = ResumeAwareModelFactory()
 
     result = run_agent_harness_loop(
@@ -1838,18 +1797,17 @@ def test_approval_resume_feeds_execution_resume_result_through_executor_and_mast
     )
 
     assert result.status is HarnessStatus.COMPLETED
-    assert result.outputs == ("Execution finished: fpocket found 2 pocket(s).",)
-    assert result.tool_results[0].tool_name == "teammate.resume_execution"
-    payload = json.loads(result.tool_results[0].content)
-    assert payload["outputs"] == ["fpocket found 2 pocket(s)."]
-    assert payload["delegation_result"]["summary"] == "fpocket found 2 pocket(s)."
-    assert "Approval resolved" not in result.outputs[0]
-    master_messages = model_factory.invokers["v3_harness_loop"].calls[0]["messages"]
-    master_tool_payload = json.loads(_message_content(master_messages[-1]))
-    assert master_tool_payload["payload"]["outputs"] == ["fpocket found 2 pocket(s)."]
+    assert result.outputs == (
+        "Approval was resolved. The execution supervisor will continue the pipeline internally.",
+    )
+    assert result.tool_results == ()
+    assert (
+        repositories.approvals.get("appr_execution_resume").status
+        is ApprovalRequestStatus.APPROVED
+    )
 
 
-def test_resume_falls_back_to_executor_summary_when_master_has_no_output() -> None:
+def test_resume_without_executor_tool_reports_internal_continuation() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     repositories.approvals.save(
@@ -1883,7 +1841,7 @@ def test_resume_falls_back_to_executor_summary_when_master_has_no_output() -> No
         )
     )
     engine_registry = EngineRegistry()
-    engine_registry.register(FakeExecutionResumeEngine(repositories))
+    engine_registry.register(FakeExecutionPipelineEngine(repositories))
 
     result = run_agent_harness_loop(
         repositories,
@@ -1902,8 +1860,10 @@ def test_resume_falls_back_to_executor_summary_when_master_has_no_output() -> No
     )
 
     assert result.status is HarnessStatus.COMPLETED
-    assert result.outputs == ("fpocket found 2 pocket(s).",)
-    assert "Approval resolved" not in result.outputs[0]
+    assert result.outputs == (
+        "Approval was resolved. The execution supervisor will continue the pipeline internally.",
+    )
+    assert result.tool_results == ()
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:

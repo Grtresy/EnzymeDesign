@@ -69,15 +69,16 @@ After every tool call, master must first read the tool-result envelope fields `o
 - `task.next`
 - `task.delegate`
 - `memory.compact`
-- `skill.list`
-- `skill.load`
+- `docs.search`
+- `docs.read`
 
 默认使用原则：
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
+- 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
-- `deep_research.start`、`execution.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
-- 任一 capability tool 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning
+- `deep_research.start`、`execution.pipeline.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
+- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning
 - reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
 首批不默认暴露给模型的高风险操作：
@@ -85,13 +86,15 @@ After every tool call, master must first read the tool-result envelope fields `o
 - `lane.remove`
 - `lane.keep`
 - `lane.unbind_task`
-- 直接 engine start tools such as `deep_research.start`, `execution.start`
+- 直接 engine start tools such as `deep_research.start`, `execution.pipeline.start`
 
 ## 6. Conversation 与 Projection
 
 - user / assistant message content 必须被持久化
 - `workspace.conversation` 是 canonical chat read model
+- conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
+- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后唤醒 executor，由 executor 写入 task/protocol result。随后 Host 只继续一次 top-level master loop，由 master 基于 restore context 和 `protocol.thread(correlation_id)` 向用户汇报 fpocket 等工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 

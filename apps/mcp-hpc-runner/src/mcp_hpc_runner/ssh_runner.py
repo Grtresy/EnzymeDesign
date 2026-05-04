@@ -52,7 +52,12 @@ class SSHRunner:
                 str(PurePosixPath(remote_run_dir) / "logs"),
             ],
         )
-        self.command_runner.run(mkdir_cmd, check=True)
+        self.command_runner.run(
+            mkdir_cmd,
+            check=True,
+            timeout=self.config.execution.staging_timeout_seconds,
+            stage="staging",
+        )
 
     def exec_run(self, spec: RunSpec) -> RunResult:
         ensure_valid_runspec(spec)
@@ -94,7 +99,12 @@ class SSHRunner:
             remote_work_dir, spec.command, env
         )
         ssh_cmd = wrap_ssh(self.config.cluster.ssh_target, remote_argv)
-        raw = self.command_runner.run(ssh_cmd, check=False)
+        raw = self.command_runner.run(
+            ssh_cmd,
+            check=False,
+            timeout=self.config.execution.remote_execution_timeout_seconds,
+            stage="remote_execution",
+        )
 
         stdout = redact_text(raw.stdout, self.config.logging.redact_patterns)
         stderr = redact_text(raw.stderr, self.config.logging.redact_patterns)
@@ -126,6 +136,9 @@ class SSHRunner:
             status = "failed"
             if error_code is None:
                 error_code = (
+                    "COMMAND_TIMEOUT"
+                    if raw.returncode == 124
+                    else
                     "OUTPUT_VALIDATION_FAILED"
                     if missing_outputs or empty_outputs
                     else "RUN_FAILED"
@@ -134,8 +147,9 @@ class SSHRunner:
         metadata = {
             "started_at": started_at,
             "finished_at": datetime.now(tz=UTC).isoformat(),
-            "remote_command": remote_argv,
-            "upload_entries": upload_entries,
+                "remote_command": remote_argv,
+                "stage": raw.stage,
+                "upload_entries": upload_entries,
             "validation": {
                 "missing_outputs": missing_outputs,
                 "empty_outputs": empty_outputs,

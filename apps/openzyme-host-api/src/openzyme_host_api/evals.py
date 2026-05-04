@@ -88,6 +88,7 @@ class V3LocalEvalInvoker:
     def __init__(self, purpose: str) -> None:
         self.purpose = purpose
         self.calls = 0
+        self.workflow_calls = 0
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
@@ -100,7 +101,7 @@ class V3LocalEvalInvoker:
             return self._executor_response(system_prompt)
         if self.purpose == "v3_teammate_loop:reporter":
             return self._reporter_response(system_prompt)
-        return self._master_response(messages)
+        return self._master_response(system_prompt, messages)
 
     def _researcher_response(self, system_prompt: str) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_eval_research"
@@ -128,20 +129,21 @@ class V3LocalEvalInvoker:
                 "tool_calls": [
                     {
                         "id": "call_eval_execution_start",
-                        "name": "execution.start",
+                        "name": "execution.pipeline.start",
                         "args": {
                             "task_id": task_id,
-                            "handoff": {
-                                "execution_goal": "Run deterministic fpocket-style pocket analysis for the selected scaffold.",
-                                "required_artifact_ids": ["art_eval_structure"],
-                                "catalog_tool_id": "fpocket",
-                                "require_approval": True,
+                            "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_eval_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                            "inputs": {
+                                "artifact_ids": ["art_eval_structure"],
                             },
                         },
                     }
                 ],
             }
-        return {"content": "Execution approval resolved and artifacts captured.", "tool_calls": []}
+        return {
+            "content": "Execution approval resolved and artifacts captured.",
+            "tool_calls": [],
+        }
 
     def _reporter_response(self, system_prompt: str) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_eval_report"
@@ -183,7 +185,9 @@ class V3LocalEvalInvoker:
             }
         return {"content": "Report published.", "tool_calls": []}
 
-    def _master_response(self, messages: list[object]) -> dict[str, object]:
+    def _master_response(
+        self, system_prompt: str, messages: list[object]
+    ) -> dict[str, object]:
         latest_user_message = next(
             (
                 _message_content(message)
@@ -192,7 +196,30 @@ class V3LocalEvalInvoker:
             ),
             "",
         )
-        if self.calls == 1:
+        focused_task = _focused_task_from_prompt(system_prompt)
+        if (
+            focused_task == "task_eval_research"
+            and "completed task_id=task_eval_research" in system_prompt
+        ):
+            return {"content": "Research evidence collected.", "tool_calls": []}
+        if (
+            focused_task == "task_eval_execution"
+            and "completed task_id=task_eval_execution" in system_prompt
+        ):
+            return {
+                "content": "Execution artifacts were captured and are ready for reporting.",
+                "tool_calls": [],
+            }
+        if (
+            focused_task == "task_eval_report"
+            and "completed task_id=task_eval_report" in system_prompt
+        ):
+            return {
+                "content": "V3 evaluation report has been published.",
+                "tool_calls": [],
+            }
+        self.workflow_calls += 1
+        if self.workflow_calls == 1:
             return {
                 "content": "",
                 "tool_calls": [
@@ -227,7 +254,7 @@ class V3LocalEvalInvoker:
                     },
                 ],
             }
-        if self.calls == 2:
+        if self.workflow_calls == 2:
             return {
                 "content": "",
                 "tool_calls": [
@@ -242,7 +269,7 @@ class V3LocalEvalInvoker:
                     },
                 ],
             }
-        if self.calls == 3:
+        if self.workflow_calls == 3:
             return {
                 "content": "",
                 "tool_calls": [
@@ -277,7 +304,7 @@ class V3LocalEvalInvoker:
                 ],
             }
         if "report" in latest_user_message.lower():
-            if self.calls == 5:
+            if self.workflow_calls == 4:
                 return {
                     "content": "",
                     "tool_calls": [
@@ -352,7 +379,10 @@ def build_v3_eval_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
-def seed_v3_eval_execution_artifact(repositories: CoreRepositories, session_id: str) -> None:
+def seed_v3_eval_execution_artifact(
+    repositories: CoreRepositories, session_id: str
+) -> None:
+    fixture_path = Path(__file__).parent / "fixtures" / "fpocket" / "1ubq.pdb"
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_eval_structure",
@@ -362,11 +392,15 @@ def seed_v3_eval_execution_artifact(repositories: CoreRepositories, session_id: 
             invocation_id=None,
             run_id=None,
             kind=ArtifactKind.STRUCTURE,
-            storage_uri="/tmp/eval_input_structure.pdb",
-            relative_path="eval_input_structure.pdb",
-            title="eval_input_structure.pdb",
+            storage_uri=str(fixture_path),
+            relative_path="fixtures/fpocket/1ubq.pdb",
+            title="1ubq.pdb",
             description=None,
-            metadata={"source": "eval_fixture"},
+            metadata={
+                "source": "eval_fixture",
+                "format": "pdb",
+                "validation_profile": "fpocket_valid",
+            },
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
@@ -430,7 +464,8 @@ def _run_scenario(
         "report_presence": (len(reports) > 0) is scenario.expect_report,
         "report_summary": (not scenario.expect_report)
         or bool(workspace["report"] and workspace["report"]["summary"]),
-        "artifact_workspace": summary["artifact_count"] >= summary["focused_artifact_count"],
+        "artifact_workspace": summary["artifact_count"]
+        >= summary["focused_artifact_count"],
     }
     return {
         "scenario_id": scenario.scenario_id,
@@ -455,7 +490,10 @@ def run_workflow_evals(
             action="local_eval",
             project_id="proj_001",
             phase="evaluation",
-            inputs={"scenario_id": scenario.scenario_id, "objective": scenario.objective},
+            inputs={
+                "scenario_id": scenario.scenario_id,
+                "objective": scenario.objective,
+            },
             enabled=upload_results,
         ) as run:
             result = _run_scenario(scenario, foundation_builder=foundation_builder)
@@ -570,13 +608,10 @@ def _run_v3_design_cutover_scenario(
                 events_response.raise_for_status()
 
                 event_text = events_response.text
-                tasks = [
-                    item["task"] for item in workspace["task_board"]["items"]
-                ]
+                tasks = [item["task"] for item in workspace["task_board"]["items"]]
                 task_kinds = {task["kind"] for task in tasks}
                 agent_roles = {
-                    item["agent"]["role"]
-                    for item in workspace["delegation"]["agents"]
+                    item["agent"]["role"] for item in workspace["delegation"]["agents"]
                 }
                 capability_keys = set(workspace["capabilities"])
                 report_drafts = workspace["report_drafts"]
@@ -584,7 +619,9 @@ def _run_v3_design_cutover_scenario(
                 checks = {
                     "task_create_event": "event: task.created" in event_text,
                     "delegate_tool_event": "task.delegate" in event_text,
-                    "teammate_wakeup": bool(agent_roles & {"researcher", "executor", "reporter"}),
+                    "teammate_wakeup": bool(
+                        agent_roles & {"researcher", "executor", "reporter"}
+                    ),
                     "research_completed": "deep_research" in capability_keys
                     and workspace["capabilities"]["deep_research"][0]["status"]
                     == "succeeded",
@@ -629,9 +666,7 @@ def run_v3_local_evals(*, upload_results: bool = False) -> dict[str, Any]:
     }
 
 
-def _run_v3_live_task_plan_scenario(
-    *, upload_results: bool = False
-) -> dict[str, Any]:
+def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str, Any]:
     objective = (
         "Extract enzyme design goals from a literature abstract and generate an "
         "executable V3 design workflow task plan."
@@ -672,7 +707,10 @@ def _run_v3_live_task_plan_scenario(
                 action="v3_live_eval",
                 project_id="proj_001",
                 phase="evaluation",
-                inputs={"scenario_id": "v3_live_design_task_plan", "objective": objective},
+                inputs={
+                    "scenario_id": "v3_live_design_task_plan",
+                    "objective": objective,
+                },
                 enabled=upload_results,
             ) as run:
                 response = client.post(
@@ -681,9 +719,7 @@ def _run_v3_live_task_plan_scenario(
                 )
                 response.raise_for_status()
                 workspace = response.json()["workspace"]
-                tasks = [
-                    item["task"] for item in workspace["task_board"]["items"]
-                ]
+                tasks = [item["task"] for item in workspace["task_board"]["items"]]
                 subjects = {task["subject"] for task in tasks}
                 task_kinds = {task["kind"] for task in tasks}
                 checks = {
@@ -721,7 +757,9 @@ def run_v3_live_evals(*, upload_results: bool = False) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run local OpenZyme routed workflow evals")
+    parser = argparse.ArgumentParser(
+        description="Run local OpenZyme routed workflow evals"
+    )
     parser.add_argument(
         "--v3",
         action="store_true",

@@ -71,3 +71,15 @@ Useful commands:
 1. `uv run pytest -m "integration and live_llm"`
 2. `uv run pytest -m "integration and live_e2e"`
 3. `uv run pytest -m quality_eval`
+
+## V3 `/ui` fpocket Smoke Test
+
+For a manual Host API plus HPC smoke test:
+
+1. start the Host API with `OPENZYME_EXECUTION_BACKEND=hpc`
+2. open `http://127.0.0.1:8000/ui/`
+3. use session `sess_executor_demo`
+4. send `对 art_eval_structure 运行 fpocket 并返回结果`
+5. approve the fpocket execution request
+
+Expected result: the chat shows the executor's fpocket result summary with output artifact references, and the workspace/Inspector shows the fpocket output artifacts. It should not show `Execution finished: Pipeline sandbox completed.` The seeded `art_eval_structure` points at the bundled `fixtures/fpocket/1ubq.pdb` fixture and carries `format=pdb` metadata for fpocket validation.

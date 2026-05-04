@@ -188,9 +188,9 @@ class TaskRepository:
             """
             INSERT INTO tasks (
                 task_id, session_id, subject, description, status, priority, kind, assigned_ref, created_at, updated_at,
-                lane_id
+                lane_id, failure_summary, failure_ref
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 subject = excluded.subject,
@@ -200,7 +200,9 @@ class TaskRepository:
                 kind = excluded.kind,
                 assigned_ref = excluded.assigned_ref,
                 updated_at = excluded.updated_at,
-                lane_id = excluded.lane_id
+                lane_id = excluded.lane_id,
+                failure_summary = excluded.failure_summary,
+                failure_ref = excluded.failure_ref
             """,
             (
                 task.task_id,
@@ -214,6 +216,8 @@ class TaskRepository:
                 task.created_at,
                 task.updated_at,
                 task.lane_id,
+                task.failure_summary,
+                task.failure_ref,
             ),
         )
         self.connection.execute(
@@ -249,6 +253,8 @@ class TaskRepository:
             updated_at=row["updated_at"],
             lane_id=row["lane_id"],
             blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+            failure_summary=row["failure_summary"],
+            failure_ref=row["failure_ref"],
         )
 
     def list_by_session(self, session_id: str) -> list[Task]:
@@ -270,6 +276,8 @@ class TaskRepository:
                 updated_at=row["updated_at"],
                 lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+                failure_summary=row["failure_summary"],
+                failure_ref=row["failure_ref"],
             )
             for row in rows
         ]
@@ -282,7 +290,7 @@ class TaskRepository:
         else:
             lane_clause = " AND t.lane_id = ?"
             params.append(lane_id)
-        params.extend([TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value])
+        params.extend([TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value])
         rows = self.connection.execute(
             """
             SELECT t.*
@@ -297,7 +305,7 @@ class TaskRepository:
                 FROM task_dependencies AS td
                 JOIN tasks AS blocker ON blocker.task_id = td.blocked_by_task_id
                 WHERE td.task_id = t.task_id
-                  AND blocker.status NOT IN (?, ?)
+                  AND blocker.status NOT IN (?, ?, ?)
               )
             ORDER BY t.created_at, t.task_id
             """,
@@ -317,6 +325,8 @@ class TaskRepository:
                 updated_at=row["updated_at"],
                 lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+                failure_summary=row["failure_summary"],
+                failure_ref=row["failure_ref"],
             )
             for row in rows
         ]
@@ -345,6 +355,8 @@ class TaskRepository:
                 updated_at=row["updated_at"],
                 lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+                failure_summary=row["failure_summary"],
+                failure_ref=row["failure_ref"],
             )
             for row in rows
         ]
@@ -373,6 +385,8 @@ class TaskRepository:
                 updated_at=row["updated_at"],
                 lane_id=row["lane_id"],
                 blocked_by=_load_blocked_by(self.connection, row["task_id"]),
+                failure_summary=row["failure_summary"],
+                failure_ref=row["failure_ref"],
             )
             for row in rows
         ]

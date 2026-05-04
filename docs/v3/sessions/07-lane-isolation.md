@@ -2,7 +2,7 @@
 
 ## Guardrail
 
-`Agent != workflow graph. Prefer tool dispatch, task persistence, lane isolation, skill loading, context compaction, approval protocols, and canonical control-plane projections. LangGraph is allowed inside capability engines, not as product truth.`
+`Agent != workflow graph. Prefer tool dispatch, task persistence, lane isolation, docs retrieval, context compaction, approval protocols, and canonical control-plane projections. Skill loading is frozen in V3 until explicitly reapproved. LangGraph is allowed inside capability engines, not as product truth.`
 
 ## 目标
 
@@ -46,4 +46,4 @@
 
 ## 交接给下一轮
 
-- Session 05 在 lane 规则已固定的前提下引入 memory、compaction、skills；随后 Session 06 再接 protocol / background
+- Session 05 在 lane 规则已固定的前提下引入 memory、compaction、docs retrieval；随后 Session 06 再接 protocol / background

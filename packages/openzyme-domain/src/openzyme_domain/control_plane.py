@@ -54,11 +54,12 @@ class TaskStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
     COMPLETED = "completed"
+    FAILED = "failed"
     CANCELLED = "cancelled"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.COMPLETED, self.CANCELLED}
+        return self in {self.COMPLETED, self.FAILED, self.CANCELLED}
 
 
 class TaskPriority(StrEnum):
@@ -257,6 +258,8 @@ class Task:
     updated_at: str
     lane_id: str | None = None
     blocked_by: tuple[str, ...] = ()
+    failure_summary: str | None = None
+    failure_ref: str | None = None
 
     @classmethod
     def create(
@@ -272,6 +275,8 @@ class Task:
         assigned_ref: str | None = None,
         lane_id: str | None = None,
         blocked_by: tuple[str, ...] = (),
+        failure_summary: str | None = None,
+        failure_ref: str | None = None,
     ) -> "Task":
         now = utc_now_iso()
         return cls(
@@ -287,6 +292,8 @@ class Task:
             updated_at=now,
             lane_id=lane_id,
             blocked_by=blocked_by,
+            failure_summary=failure_summary,
+            failure_ref=failure_ref,
         )
 
     def to_dict(self) -> dict[str, Any]:

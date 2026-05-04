@@ -5,13 +5,13 @@ import json
 from typing import Any
 
 from openzyme_domain import AgentMemberStatus
-from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import ResearchSummaryStatus
 
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .bio_research_tools import register_web_research_tools
+from .docs import register_docs_tools
 from .engines import EngineRegistry
 from .harness import HarnessDriver
 from .harness import HarnessInput
@@ -30,7 +30,6 @@ from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
-from .skills import register_skill_tools
 from .task_board import register_task_board_tools
 from .tool_catalog import ToolDescriptor
 
@@ -403,29 +402,53 @@ def teammate_tool_descriptors(
                     },
                 ),
                 ToolDescriptor(
-                    tool_name="execution.start",
-                    description="Start execution for the assigned task.",
+                    tool_name="docs.search",
+                    description="Search the controlled V3 execution pipeline documentation registry.",
                     input_schema={
                         "type": "object",
                         "properties": {
-                            "task_id": {"type": "string"},
-                            "handoff": {"type": "object"},
+                            "query": {"type": "string"},
+                            "tags": {"type": "array", "items": {"type": "string"}},
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                         },
-                        "required": ["task_id", "handoff"],
+                        "required": ["query"],
                         "additionalProperties": False,
                     },
                 ),
                 ToolDescriptor(
-                    tool_name="execution.resume",
-                    description=(
-                        "Resume an execution invocation only after its approval has already been resolved "
-                        "through the harness/API approval flow. This tool does not approve an execution."
-                    ),
+                    tool_name="docs.read",
+                    description="Read one controlled V3 execution pipeline document by doc_id or registered path.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "doc_id": {"type": "string"},
+                            "path": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="execution.pipeline.start",
+                    description="Submit Python pipeline code for the assigned task to the controlled execution sandbox.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "code": {"type": "string"},
+                            "inputs": {"type": "object"},
+                            "dry_run": {"type": "boolean"},
+                        },
+                        "required": ["task_id", "code"],
+                        "additionalProperties": False,
+                    },
+                ),
+                ToolDescriptor(
+                    tool_name="execution.pipeline.status",
+                    description="Read the current status of an execution pipeline invocation.",
                     input_schema={
                         "type": "object",
                         "properties": {
                             "invocation_id": {"type": "string"},
-                            "resolution": {"type": "string"},
                         },
                         "required": ["invocation_id"],
                         "additionalProperties": False,
@@ -509,7 +532,7 @@ def build_teammate_registry(
     register_task_board_tools(registry)
     register_lane_tools(registry)
     register_memory_tools(registry)
-    register_skill_tools(registry)
+    register_docs_tools(registry)
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
@@ -549,7 +572,7 @@ def _execution_resume_summary(tool_results: tuple[ToolResult, ...]) -> str | Non
     if len(tool_results) != 1:
         return None
     result = tool_results[0]
-    if result.tool_name != "execution.resume" or not result.ok:
+    if result.tool_name != "execution.pipeline.start" or not result.ok:
         return None
     try:
         payload = json.loads(result.content)
@@ -685,35 +708,6 @@ class TeammateConversationDriver(HarnessDriver):
         harness_input: HarnessInput,
         tool_results: tuple[ToolResult, ...],
     ) -> HarnessStep:
-        if (
-            harness_input.resume is not None
-            and not tool_results
-            and self.role == "executor"
-        ):
-            waiting = [
-                invocation
-                for invocation in context.snapshot.active_invocations
-                if invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-                and invocation.engine_name == "execution"
-                and invocation.approval_id == harness_input.resume.approval_id
-                and invocation.task_id == self.task_id
-            ]
-            if waiting:
-                invocation = waiting[0]
-                return HarnessStep(
-                    tool_invocations=(
-                        ToolInvocation(
-                            call_id=f"call_resume_{invocation.invocation_id}",
-                            tool_name="execution.resume",
-                            arguments={
-                                "invocation_id": invocation.invocation_id,
-                                "resolution": f"Approval {harness_input.resume.decision.value} by {harness_input.resume.actor_ref}.",
-                            },
-                            task_id=invocation.task_id,
-                            lane_id=invocation.lane_id,
-                        ),
-                    )
-                )
         if not self._initialized:
             self._messages = self._seed_messages(context, harness_input)
             self._initialized = True
@@ -737,7 +731,7 @@ class TeammateConversationDriver(HarnessDriver):
             ):
                 args = dict(tool_call.get("args") or {})
                 if "task_id" not in args and tool_call["name"].startswith(
-                    ("deep_research.", "execution.", "report_draft.", "report.")
+                    ("deep_research.", "execution.pipeline.", "report_draft.", "report.")
                 ):
                     args["task_id"] = self.task_id
                 invocations.append(

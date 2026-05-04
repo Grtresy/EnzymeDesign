@@ -19,9 +19,16 @@ class FakeRunner:
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
 
-    def run(self, args: list[str], check: bool = False) -> CommandResult:  # noqa: ARG002
+    def run(
+        self,
+        args: list[str],
+        check: bool = False,
+        *,
+        timeout: float | None = None,
+        stage: str | None = None,
+    ) -> CommandResult:  # noqa: ARG002
         self.commands.append(args)
-        return CommandResult(args=args, returncode=0, stdout="", stderr="")
+        return CommandResult(args=args, returncode=0, stdout="", stderr="", stage=stage)
 
 
 def _config(tmp_path: Path, use_rsync: bool = True) -> RunnerConfig:

@@ -2,6 +2,10 @@ from .engines import CapabilityEngine
 from .engines import DeepResearchTaskPlanner
 from .engines import EngineDescriptor
 from .engines import EngineRegistry
+from .docs import DocumentRecord
+from .docs import DocumentRegistry
+from .docs import default_document_registry
+from .docs import register_docs_tools
 from .conversation import ConversationEntry
 from .conversation import build_conversation_projection
 from .conversation import load_recent_conversation
@@ -117,6 +121,8 @@ __all__ = [
     "ConversationEntry",
     "CoreRepositories",
     "DeepResearchTaskPlanner",
+    "DocumentRecord",
+    "DocumentRegistry",
     "DelegationEnvelope",
     "DelegationHandle",
     "DelegationProjection",
@@ -173,6 +179,7 @@ __all__ = [
     "SkillRegistry",
     "default_agent_id_for_role",
     "default_agent_role_for_task",
+    "default_document_registry",
     "TaskRepository",
     "TaskBoardBucket",
     "TaskBoardItem",
@@ -194,6 +201,7 @@ __all__ = [
     "load_recent_conversation",
     "persist_conversation_message",
     "register_memory_tools",
+    "register_docs_tools",
     "register_skill_tools",
     "register_subagent_tools",
     "register_task_board_tools",
