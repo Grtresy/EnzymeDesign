@@ -24,6 +24,7 @@ function buildV3Workspace(sessionId = "sess_001", title = "Plan with V3") {
     reports: [],
     capabilities: {},
     conversation: [],
+    agent_traces: {},
   };
 }
 
@@ -218,6 +219,85 @@ test("sendMessage is ignored while another request is already in flight", async 
   await pending;
 
   assert.equal(postCalls, 1);
+});
+
+test("llm response stream events update traces while sendMessage is in flight", async () => {
+  let streamHandler = null;
+  let releasePost;
+  const postPromise = new Promise((resolve) => {
+    releasePost = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace(),
+        events: [],
+      };
+    },
+    streamV3Session(_sessionId, onEvent) {
+      streamHandler = onEvent;
+      return { close() {} };
+    },
+    async postV3Message() {
+      await postPromise;
+      return {
+        session_id: "sess_001",
+        status: "completed",
+        outputs: [],
+        workspace: buildV3Workspace(),
+        events: [],
+      };
+    },
+  };
+
+  const controller = new WorkspaceController(fakeClient);
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+
+  const pending = controller.sendMessage("hello");
+  await Promise.resolve();
+  assert.equal(controller.state.messageBusy, true);
+
+  streamHandler?.({
+    event_id: "evt_trace_001",
+    event_type: "llm.response.created",
+    created_at: "2026-04-21T00:00:01+00:00",
+    payload: {
+      trace_id: "trace_001",
+      actor_ref: "harness",
+      actor_kind: "master",
+      display_name: "OpenZyme",
+      role: "master",
+      call_index: 1,
+      created_at: "2026-04-21T00:00:01+00:00",
+      response_text: "I will create a task before answering.",
+      tool_calls: [
+        {
+          call_id: "call_task_create",
+          tool_name: "task.create",
+          task_id: "task_001",
+          lane_id: null,
+          args_public: { subject: "Realtime trace task" },
+        },
+      ],
+    },
+  });
+
+  assert.equal(controller.state.messageBusy, true);
+  assert.equal(
+    controller.state.workspace.agent_traces.harness[0].response_text,
+    "I will create a task before answering.",
+  );
+  assert.equal(
+    controller.state.workspace.agent_traces.harness[0].tool_calls[0].tool_name,
+    "task.create",
+  );
+
+  releasePost();
+  await pending;
 });
 
 test("stale sendMessage responses do not overwrite the currently selected session", async () => {

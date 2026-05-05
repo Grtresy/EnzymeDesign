@@ -310,6 +310,35 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             updated_at="2026-04-17T13:00:08+00:00",
         )
     )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="llmtrace_master_001",
+            session_id=session.session_id,
+            invocation_id=None,
+            document_kind="llm_trace_step",
+            payload={
+                "trace_id": "llmtrace_master_001",
+                "actor_ref": "harness",
+                "actor_kind": "master",
+                "display_name": "OpenZyme",
+                "role": "master",
+                "call_index": 1,
+                "created_at": "2026-04-17T13:00:02+00:00",
+                "response_text": "I will inspect the workspace.",
+                "tool_calls": [
+                    {
+                        "call_id": "call_001",
+                        "tool_name": "task.get",
+                        "task_id": "task_001",
+                        "lane_id": "lane_001",
+                        "args_public": {"task_id": "task_001"},
+                    }
+                ],
+            },
+            created_at="2026-04-17T13:00:02+00:00",
+            updated_at="2026-04-17T13:00:02+00:00",
+        )
+    )
     repositories.agents.save(
         AgentMember(
             agent_id="agent:reporter",
@@ -449,6 +478,8 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     }
     assert workspace["report_drafts"][0]["draft_id"] == "draft_001"
     assert workspace["report_drafts"][0]["published_report_id"] == "report_inv_report_001"
+    assert workspace["agent_traces"]["harness"][0]["response_text"] == "I will inspect the workspace."
+    assert workspace["agent_traces"]["harness"][0]["tool_calls"][0]["tool_name"] == "task.get"
     assert "deep_research" in workspace["capabilities"]
     assert "execution" in workspace["capabilities"]
     assert "reporting" not in workspace["capabilities"]

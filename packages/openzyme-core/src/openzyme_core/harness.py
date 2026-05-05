@@ -29,6 +29,7 @@ from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
 from .engines import EngineRegistry
+from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
 from .conversation import persist_conversation_message
 
@@ -159,6 +160,52 @@ class ToolInvocation:
 
 
 @dataclass(frozen=True, slots=True)
+class LlmTraceToolCall:
+    call_id: str
+    tool_name: str
+    args_public: dict[str, Any]
+    task_id: str | None = None
+    lane_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "call_id": self.call_id,
+            "tool_name": self.tool_name,
+            "task_id": self.task_id,
+            "lane_id": self.lane_id,
+            "args_public": self.args_public,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class LlmTraceStep:
+    actor_ref: str
+    actor_kind: str
+    display_name: str
+    role: str
+    call_index: int
+    response_text: str
+    tool_calls: tuple[LlmTraceToolCall, ...] = ()
+    initial_prompt: dict[str, Any] | None = None
+
+    def to_payload(self, *, trace_id: str, created_at: str) -> dict[str, Any]:
+        payload = {
+            "trace_id": trace_id,
+            "actor_ref": self.actor_ref,
+            "actor_kind": self.actor_kind,
+            "display_name": self.display_name,
+            "role": self.role,
+            "call_index": self.call_index,
+            "created_at": created_at,
+            "response_text": self.response_text,
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls],
+        }
+        if self.initial_prompt is not None:
+            payload["initial_prompt"] = self.initial_prompt
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ToolResult:
     call_id: str
     tool_name: str
@@ -216,6 +263,7 @@ class DelegationHandle:
 class HarnessStep:
     assistant_message: str | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
+    llm_trace: LlmTraceStep | None = None
     task_updates: tuple[Task, ...] = ()
     approval_requests: tuple[ApprovalRequest, ...] = ()
     memory_entries: tuple[MemoryEntry, ...] = ()
@@ -630,6 +678,27 @@ def _fallback_output_from_tool_results(tool_results: list[ToolResult]) -> str | 
     return None
 
 
+def _persist_llm_trace_step(
+    context: SessionRuntimeContext, trace: LlmTraceStep
+) -> dict[str, Any]:
+    trace_id = _new_id("llmtrace")
+    created_at = utc_now_iso()
+    payload = trace.to_payload(trace_id=trace_id, created_at=created_at)
+    context.repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id=trace_id,
+            session_id=context.snapshot.session.session_id,
+            invocation_id=None,
+            document_kind="llm_trace_step",
+            payload=payload,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+    context.emit("llm.response.created", payload)
+    return payload
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -750,6 +819,10 @@ def run_agent_harness_loop(
         tool_results = ()
         if step.next_focus is not None:
             context.set_focus(step.next_focus)
+
+        if step.llm_trace is not None:
+            _persist_llm_trace_step(context, step.llm_trace)
+            activity_happened = True
 
         for task in step.task_updates:
             repositories.tasks.save(task)

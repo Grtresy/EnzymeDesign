@@ -9,6 +9,8 @@ from openzyme_domain import EngineInvocationStatus
 from .engines import EngineRegistry
 from .harness import HarnessInput
 from .harness import HarnessStep
+from .harness import LlmTraceStep
+from .harness import LlmTraceToolCall
 from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
@@ -42,6 +44,54 @@ def _stringify_content(content: Any) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+_REDACTED = "[redacted]"
+_SENSITIVE_KEY_FRAGMENTS = (
+    "secret",
+    "token",
+    "password",
+    "credential",
+    "private_key",
+    "api_key",
+)
+_PRIVATE_KEY_FRAGMENTS = (
+    "storage_uri",
+    "source_storage_uri",
+    "intermediate_storage_uri",
+    "local_path",
+    "remote_path",
+    "host_path",
+    "runner_config",
+    "ssh",
+    "config",
+    "pipeline_code",
+    "source_code",
+    "code",
+)
+
+
+def _sanitize_public_args(value: Any, *, key: str = "") -> Any:
+    key_lower = key.lower()
+    if any(fragment in key_lower for fragment in _SENSITIVE_KEY_FRAGMENTS):
+        return _REDACTED
+    if any(fragment in key_lower for fragment in _PRIVATE_KEY_FRAGMENTS):
+        return _REDACTED
+    if isinstance(value, dict):
+        return {
+            str(item_key): _sanitize_public_args(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_public_args(item) for item in value[:20]]
+    if isinstance(value, str):
+        if value.startswith(("artifact://", "storage://", "s3://", "file://")):
+            return _REDACTED
+        if value.startswith(("/home/", "/tmp/", "/var/", "/mnt/", "/data/", "~")):
+            return _REDACTED
+        if len(value) > 1200:
+            return value[:1200] + "... [truncated]"
+    return value
 
 
 def _resume_result_summary(tool_results: tuple[ToolResult, ...]) -> str | None:
@@ -203,6 +253,7 @@ class LlmConversationDriver:
     max_parallel_tool_calls: int = 3
     _messages: list[Any] = field(default_factory=list)
     _initialized: bool = False
+    _call_index: int = 0
 
     def _tool_catalog(self) -> tuple[ToolDescriptor, ...]:
         return top_level_tool_descriptors(self.engine_registry)
@@ -312,6 +363,32 @@ class LlmConversationDriver:
             ),
         )
 
+    def _trace_step(
+        self,
+        *,
+        response_text: str,
+        tool_invocations: tuple[ToolInvocation, ...] = (),
+    ) -> LlmTraceStep:
+        self._call_index += 1
+        return LlmTraceStep(
+            actor_ref="harness",
+            actor_kind="master",
+            display_name="OpenZyme",
+            role="master",
+            call_index=self._call_index,
+            response_text=response_text,
+            tool_calls=tuple(
+                LlmTraceToolCall(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    args_public=_sanitize_public_args(invocation.arguments),
+                )
+                for invocation in tool_invocations
+            ),
+        )
+
     def plan(
         self,
         context: SessionRuntimeContext,
@@ -338,6 +415,11 @@ class LlmConversationDriver:
             tools=tools,
         )
         self._messages.append(response)
+        response_text = _stringify_content(
+            getattr(response, "content", None)
+            if not isinstance(response, dict)
+            else response.get("content")
+        )
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             selected = tool_calls[: self.max_parallel_tool_calls]
@@ -348,7 +430,10 @@ class LlmConversationDriver:
                 arguments = dict(tool_call.get("args") or {})
                 validation_error = self._validate_tool_arguments(tool_name, arguments)
                 if validation_error is not None:
-                    return HarnessStep(assistant_message=validation_error)
+                    return HarnessStep(
+                        assistant_message=validation_error,
+                        llm_trace=self._trace_step(response_text=response_text),
+                    )
                 task_id, lane_id = self._invocation_refs(tool_name, arguments)
                 invocations.append(
                     ToolInvocation(
@@ -359,12 +444,14 @@ class LlmConversationDriver:
                         lane_id=lane_id,
                     )
                 )
-            return HarnessStep(tool_invocations=tuple(invocations))
-        assistant_message = _stringify_content(
-            getattr(response, "content", None)
-            if not isinstance(response, dict)
-            else response.get("content")
-        )
+            tool_invocations = tuple(invocations)
+            return HarnessStep(
+                tool_invocations=tool_invocations,
+                llm_trace=self._trace_step(
+                    response_text=response_text, tool_invocations=tool_invocations
+                ),
+            )
+        assistant_message = response_text
         if not assistant_message:
             assistant_message = (
                 _resume_result_summary(tool_results)
@@ -373,7 +460,10 @@ class LlmConversationDriver:
             )
         if not assistant_message:
             assistant_message = "No user-facing response was generated."
-        return HarnessStep(assistant_message=assistant_message)
+        return HarnessStep(
+            assistant_message=assistant_message,
+            llm_trace=self._trace_step(response_text=assistant_message),
+        )
 
 
 __all__ = ["LlmConversationDriver"]

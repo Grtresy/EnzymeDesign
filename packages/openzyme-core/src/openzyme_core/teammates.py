@@ -18,6 +18,8 @@ from .harness import HarnessInput
 from .harness import HarnessResult
 from .harness import HarnessStatus
 from .harness import HarnessStep
+from .harness import LlmTraceStep
+from .harness import LlmTraceToolCall
 from .harness import RestoreFocus
 from .harness import ResumeEnvelope
 from .harness import SessionRuntimeContext
@@ -26,6 +28,7 @@ from .harness import ToolRegistry
 from .harness import ToolResult
 from .harness import run_agent_harness_loop
 from .lane_manager import register_lane_tools
+from .llm_driver import _sanitize_public_args
 from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
@@ -632,6 +635,7 @@ class TeammateConversationDriver(HarnessDriver):
     research_adapter: Any | None = None
     _messages: list[Any] = field(default_factory=list)
     _initialized: bool = False
+    _call_index: int = 0
 
     def _system_prompt(self, context: SessionRuntimeContext) -> str:
         restore = context.restore_context
@@ -702,14 +706,63 @@ class TeammateConversationDriver(HarnessDriver):
             role=self.role, research_adapter=self.research_adapter
         )
 
+    def _initial_prompt_projection(
+        self, context: SessionRuntimeContext, seed_messages: list[Any]
+    ) -> dict[str, Any]:
+        restore = context.restore_context
+        return {
+            "identity": self.agent_id,
+            "role": self.role,
+            "task_id": self.task_id,
+            "lane_id": None if restore is None else restore.focused_lane_id,
+            "correlation_id": self.correlation_id,
+            "instructions": self.instructions,
+            "seed_message": "\n".join(
+                _stringify_content(
+                    message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+                )
+                for message in seed_messages
+            ).strip(),
+        }
+
+    def _trace_step(
+        self,
+        *,
+        response_text: str,
+        tool_invocations: tuple[ToolInvocation, ...] = (),
+        initial_prompt: dict[str, Any] | None = None,
+    ) -> LlmTraceStep:
+        self._call_index += 1
+        return LlmTraceStep(
+            actor_ref=self.agent_id,
+            actor_kind="teammate",
+            display_name=self.agent_id.removeprefix("agent:") or self.agent_id,
+            role=self.role,
+            call_index=self._call_index,
+            response_text=response_text,
+            tool_calls=tuple(
+                LlmTraceToolCall(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    args_public=_sanitize_public_args(invocation.arguments),
+                )
+                for invocation in tool_invocations
+            ),
+            initial_prompt=initial_prompt,
+        )
+
     def plan(
         self,
         context: SessionRuntimeContext,
         harness_input: HarnessInput,
         tool_results: tuple[ToolResult, ...],
     ) -> HarnessStep:
+        initial_prompt = None
         if not self._initialized:
             self._messages = self._seed_messages(context, harness_input)
+            initial_prompt = self._initial_prompt_projection(context, self._messages)
             self._initialized = True
         if tool_results:
             self._messages.extend(_tool_messages(tool_results))
@@ -723,6 +776,11 @@ class TeammateConversationDriver(HarnessDriver):
             tools=tools,
         )
         self._messages.append(response)
+        response_text = _stringify_content(
+            getattr(response, "content", None)
+            if not isinstance(response, dict)
+            else response.get("content")
+        )
         tool_calls = _extract_tool_calls(response)
         if tool_calls:
             invocations: list[ToolInvocation] = []
@@ -743,13 +801,17 @@ class TeammateConversationDriver(HarnessDriver):
                         lane_id=None if "lane_id" not in args else str(args["lane_id"]),
                     )
                 )
-            return HarnessStep(tool_invocations=tuple(invocations))
-        assistant_message = (
-            _stringify_content(
-                getattr(response, "content", None)
-                if not isinstance(response, dict)
-                else response.get("content")
+            tool_invocations = tuple(invocations)
+            return HarnessStep(
+                tool_invocations=tool_invocations,
+                llm_trace=self._trace_step(
+                    response_text=response_text,
+                    tool_invocations=tool_invocations,
+                    initial_prompt=initial_prompt,
+                ),
             )
+        assistant_message = (
+            response_text
             or (
                 _execution_resume_summary(tool_results)
                 if harness_input.resume is not None
@@ -757,7 +819,13 @@ class TeammateConversationDriver(HarnessDriver):
             )
             or f"{self.agent_id} completed delegated work."
         )
-        return HarnessStep(assistant_message=assistant_message)
+        return HarnessStep(
+            assistant_message=assistant_message,
+            llm_trace=self._trace_step(
+                response_text=assistant_message,
+                initial_prompt=initial_prompt,
+            ),
+        )
 
 
 def run_teammate_loop(

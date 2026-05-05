@@ -7,6 +7,7 @@ const v3EventTypes = [
   "session.created",
   "conversation.user_message",
   "conversation.assistant_message",
+  "llm.response.created",
   "inbox.delivered",
   "agent.message.delivered",
   "background.completed",

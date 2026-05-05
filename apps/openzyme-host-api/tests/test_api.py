@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -243,6 +244,52 @@ class FakeEchoHarnessModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeEchoHarnessInvoker:
         assert purpose.startswith("v3_")
         return FakeEchoHarnessInvoker()
+
+
+class BlockingTraceInvoker:
+    def __init__(
+        self, entered_second_call: threading.Event, release_second_call: threading.Event
+    ) -> None:
+        self.calls = 0
+        self.entered_second_call = entered_second_call
+        self.release_second_call = release_second_call
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "I will create a task before answering.",
+                "tool_calls": [
+                    {
+                        "id": "call_task_create",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_realtime_trace",
+                            "subject": "Realtime trace task",
+                            "description": "Exercise realtime trace streaming.",
+                        },
+                    }
+                ],
+            }
+        self.entered_second_call.set()
+        assert self.release_second_call.wait(timeout=5)
+        return {"content": "Task created.", "tool_calls": []}
+
+
+class BlockingTraceModelFactory:
+    def __init__(self) -> None:
+        self.entered_second_call = threading.Event()
+        self.release_second_call = threading.Event()
+        self.invoker = BlockingTraceInvoker(
+            self.entered_second_call, self.release_second_call
+        )
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> BlockingTraceInvoker:
+        assert purpose == "v3_harness_loop"
+        return self.invoker
 
 
 class DebugRecordingModelFactory:
@@ -1163,20 +1210,87 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     assert payload["outputs"] == ["Planning started."]
     assert {event["event_type"] for event in payload["events"]} >= {
         "conversation.user_message",
+        "llm.response.created",
         "message.received",
         "message.sent",
         "conversation.assistant_message",
     }
     assert payload["workspace"]["inbox"]
+    assert (
+        payload["workspace"]["agent_traces"]["harness"][0]["response_text"]
+        == "Planning started."
+    )
 
     events = client.get("/v3/sessions/sess_v3_001/events?replay=1")
     assert events.status_code == 200
     assert "event: conversation.user_message" in events.text
+    assert "event: llm.response.created" in events.text
     assert "event: conversation.assistant_message" in events.text
 
     updated = client.patch("/v3/tasks/task_v3_001", json={"status": "in_progress"})
     assert updated.status_code == 200
     assert updated.json()["task"]["status"] == "in_progress"
+
+
+def test_v3_llm_response_event_is_available_before_message_command_finishes() -> None:
+    repositories = _build_v3_engine_repositories()
+    event_store = V3EventStore()
+    model_factory = BlockingTraceModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=event_store,
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        session_id="sess_realtime_trace",
+        title="Realtime trace",
+        objective="Exercise realtime trace streaming.",
+    )
+    result_holder: dict[str, object] = {}
+    error_holder: dict[str, BaseException] = {}
+
+    def _post_message() -> None:
+        try:
+            result_holder["result"] = service.post_message(
+                session_id="sess_realtime_trace",
+                message="create a task",
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            error_holder["error"] = exc
+
+    thread = threading.Thread(target=_post_message)
+    thread.start()
+    try:
+        assert model_factory.entered_second_call.wait(timeout=5)
+        realtime_events = event_store.list("sess_realtime_trace")
+        trace_events = [
+            event
+            for event in realtime_events
+            if event["event_type"] == "llm.response.created"
+        ]
+        assert trace_events
+        assert (
+            trace_events[0]["payload"]["response_text"]
+            == "I will create a task before answering."
+        )
+        assert trace_events[0]["payload"]["tool_calls"][0]["tool_name"] == "task.create"
+        assert "result" not in result_holder
+    finally:
+        model_factory.release_second_call.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    if error_holder:
+        raise error_holder["error"]
+    completed_events = event_store.list("sess_realtime_trace")
+    trace_ids = [
+        event["payload"]["trace_id"]
+        for event in completed_events
+        if event["event_type"] == "llm.response.created"
+    ]
+    assert len(trace_ids) == len(set(trace_ids))
+    assert "result" in result_holder
 
 
 def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> None:

@@ -87,6 +87,7 @@ class SessionWorkspaceProjection:
     inbox: tuple[dict[str, Any], ...]
     memory: tuple[dict[str, Any], ...]
     delegation: dict[str, Any]
+    agent_traces: dict[str, list[dict[str, Any]]]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
     report_drafts: tuple[dict[str, Any], ...]
@@ -103,6 +104,7 @@ class SessionWorkspaceProjection:
             "inbox": list(self.inbox),
             "memory": list(self.memory),
             "delegation": self.delegation,
+            "agent_traces": self.agent_traces,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
             "report_drafts": list(self.report_drafts),
@@ -126,6 +128,7 @@ class SessionProjectionBuilder:
         inbox = tuple(message.to_dict() for message in self.repositories.inbox.list_by_session(session_id))
         memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
         delegation = self.build_delegation_projection(session_id).to_dict()
+        agent_traces = self.build_agent_traces_projection(session_id)
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
         artifacts = tuple(self._project_workspace_artifact(artifact) for artifact in self.repositories.artifacts.list_by_session(session_id))
         report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
@@ -140,12 +143,35 @@ class SessionProjectionBuilder:
             inbox=inbox,
             memory=memory,
             delegation=delegation,
+            agent_traces=agent_traces,
             activity_feed=activity_feed,
             artifacts=artifacts,
             report_drafts=report_drafts,
             reports=reports,
             capabilities=capabilities,
         )
+
+    def build_agent_traces_projection(
+        self, session_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for document in self.repositories.engine_documents.list_by_session(session_id):
+            if document.document_kind != "llm_trace_step":
+                continue
+            payload = dict(document.payload)
+            payload.setdefault("trace_id", document.document_id)
+            payload.setdefault("created_at", document.created_at)
+            actor_ref = str(payload.get("actor_ref") or "harness")
+            grouped.setdefault(actor_ref, []).append(payload)
+        for entries in grouped.values():
+            entries.sort(
+                key=lambda item: (
+                    str(item.get("created_at") or ""),
+                    int(item.get("call_index") or 0),
+                    str(item.get("trace_id") or ""),
+                )
+            )
+        return dict(sorted(grouped.items(), key=lambda item: item[0]))
 
     def build_delegation_projection(self, session_id: str) -> DelegationProjection:
         messages = self.repositories.inbox.list_by_session(session_id)

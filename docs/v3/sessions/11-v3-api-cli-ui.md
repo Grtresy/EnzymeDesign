@@ -35,14 +35,19 @@
 - 只读 workspace inspector，包括 task board、lane board、delegation、artifacts、report drafts、reports、capabilities
 - v3 streaming events
 - canonical `workspace.conversation`
+- canonical `workspace.agent_traces`
 - built-in V3 tool schema/catalog for top-level tool-calling
 
 语义补充：
 
 - `workspace.conversation` 展示用户与 master agent 的对话
+- `workspace.agent_traces` 展示 master / teammate 每次 LLM response 的文本输出与工具调用请求，来源于 `engine_documents(document_kind="llm_trace_step")`
 - `task board + delegation + lane board + capabilities` 展示 OpenZyme 内部执行组织
 - `artifacts` / `report drafts` / `reports` / `capabilities` 共同展示 agent team 的共享工作面，而不是只展示最终交付物
 - Web UI 默认表现为“一个对外负责人 + 一个内部执行团队”，而不是多个平级 agent 直接面向用户
+- Web UI 主对话区组合渲染 `workspace.conversation` 的 user message 与 `workspace.agent_traces.harness` 的 master trace；无 trace 的旧 workspace 回退展示 assistant conversation message
+- 带 `tool_calls` 的中间 LLM response content 只通过 `workspace.agent_traces` 展示，不写入 `workspace.conversation`
+- Web UI 左侧 active session 的 `Team` 下嵌套 teammate 名字；点击 teammate 后中间区域显示该 teammate 的只读 trace，包含角色种子提示、LLM 文本与工具调用请求，不显示 tool result，也不允许直接向 teammate 发送消息
 
 ## 验收标准
 
@@ -51,6 +56,8 @@
 - 当 harness 需要人工确认时，UI 在对话流中展示 approval card，并能 approve / reject 后恢复 loop
 - 用户能查看 session、task board、lane board、approvals、delegation、artifacts、report drafts、reports、capabilities，但默认不需要手工创建或编排 task / lane
 - UI 刷新后可以只靠 workspace projection 恢复，包括 conversation timeline
+- SSE replay 包含 `llm.response.created`，浏览器可增量更新 `workspace.agent_traces` 且重复事件不重复渲染
+- SSE follow 在 `POST /v3/sessions/{session_id}/messages` 尚未返回时，也应能收到每次 LLM response 产生的 `llm.response.created`
 - 至少有一条主路径符合 `user -> master agent -> task -> teammate loop -> report draft/capability -> delivery`
 
 ## 建议验证

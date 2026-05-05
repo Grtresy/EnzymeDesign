@@ -20,6 +20,8 @@ from .harness import HarnessInput
 from .harness import HarnessResult
 from .harness import HarnessStatus
 from .harness import HarnessStep
+from .harness import LlmTraceStep
+from .harness import LlmTraceToolCall
 from .harness import MemoryEventBus
 from .harness import RestoreFocus
 from .harness import ResumeDecision
@@ -147,6 +149,8 @@ __all__ = [
     "LaneProjection",
     "LaneProjectionItem",
     "LlmConversationDriver",
+    "LlmTraceStep",
+    "LlmTraceToolCall",
     "MIGRATION_IDS",
     "MemoryEventBus",
     "MemoryService",

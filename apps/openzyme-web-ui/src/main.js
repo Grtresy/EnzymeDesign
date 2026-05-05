@@ -13,6 +13,7 @@ import {
   renderSidebarStatus,
   renderV3Approvals,
   renderV3Conversation,
+  renderTeammateTrace,
 } from "./view.js";
 
 const client = new HostApiClient(window.OPENZYME_HOST_API_BASE ?? "");
@@ -88,8 +89,9 @@ function repaint() {
   }
 
   const hasWorkspace = Boolean(controller.state.workspace?.session);
+  const teammateSelected = Boolean(controller.state.selectedTeammateAgentId);
   const messageForm = document.querySelector("#message-form");
-  if (!hasWorkspace || !(messageForm instanceof HTMLFormElement)) {
+  if (!hasWorkspace || teammateSelected || !(messageForm instanceof HTMLFormElement)) {
     mainRoot.innerHTML = renderMainColumn(controller.state);
   } else {
     const conversationHeader = document.querySelector("#conversation-header-root");
@@ -100,7 +102,9 @@ function repaint() {
       conversationHeader.innerHTML = renderConversationHeader(controller.state);
     }
     if (conversationList) {
-      conversationList.innerHTML = renderV3Conversation(controller.state.workspace);
+      conversationList.innerHTML = controller.state.selectedTeammateAgentId
+        ? renderTeammateTrace(controller.state.workspace, controller.state.selectedTeammateAgentId)
+        : renderV3Conversation(controller.state.workspace);
     }
     if (approvalStack) {
       approvalStack.innerHTML = renderV3Approvals(controller.state.workspace, controller.state);
@@ -198,6 +202,15 @@ async function onClick(event) {
       return;
     }
     controller.selectSection(section);
+    return;
+  }
+  const teammateSelect = target.closest("[data-action='select-teammate']");
+  if (teammateSelect instanceof HTMLElement) {
+    const sessionId = teammateSelect.dataset.sessionId;
+    if (controller.state.currentSessionId !== sessionId) {
+      await controller.selectSession(sessionId, "team");
+    }
+    controller.selectTeammate(teammateSelect.dataset.agentId);
     return;
   }
   const approvalButton = target.closest("[data-v3-approval-decision]");

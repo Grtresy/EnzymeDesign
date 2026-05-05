@@ -119,6 +119,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `inbox`
 - `memory`
 - `delegation`
+- `agent_traces`
 - `activity_feed`
 - `artifacts`
 - `report_drafts`
@@ -128,7 +129,14 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 说明：
 
 - `conversation` 来源于持久化的 user / assistant message content，是用户与 master agent 的 canonical read model
+- `conversation` 只承载产品级对话记录；带 `tool_calls` 的 LLM response content 即使包含自然语言，也不写入 `conversation`
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline，而不是依赖浏览器本地消息历史
+- `agent_traces` 来源于 canonical session storage 的 `engine_documents(document_kind="llm_trace_step")`，不是 `/debug/llm-calls`。它按 `actor_ref` 分组，`harness` 表示 master agent，teammate 使用对应 `agent_id`
+- 每个 trace entry 至少包含 `trace_id`、`actor_ref`、`actor_kind`、`display_name`、`role`、`call_index`、`created_at`、`response_text` 与 `tool_calls`
+- `agent_traces` 是过程级可观测性 read model；每次 master / teammate LLM response 后都应生成 trace entry，供 Web UI 展示中间 response text 与工具调用请求
+- `tool_calls[]` 只展示 LLM 请求调用工具的公开投影：`call_id`、`tool_name`、`task_id`、`lane_id`、`args_public`。本读模型不展示 tool result
+- teammate 首个 trace entry 可包含 `initial_prompt`，只展示角色种子信息：identity、role、task、lane、correlation、instructions 与 seed message；不得暴露完整 system prompt 或 tools schema
+- `args_public` 必须清洗 secret/token/password/credential、Host path、storage URI、SSH/runner config、pipeline/source code 与超长字段；保留工具名、任务/车道关联、公开 instructions 和结构化意图
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
@@ -185,11 +193,12 @@ V3 Web UI 默认是 conversation-first。
 
 默认展示：
 
-- 对话 timeline
+- 对话 timeline：用户消息来自 `workspace.conversation`，master LLM 文本与工具调用请求来自 `workspace.agent_traces.harness`；旧 workspace 没有 trace 时回退展示 `conversation.assistant_message`
 - approval cards
 - tool / engine / report / artifact activity cards
 - task board、lane/workspace 状态、delegation、artifacts / runs / reports 的只读 inspector
 - teammate roster 中的 working / idle / blocked / waiting approval / failed / shutdown 状态
+- 当前 active session 的 `Team` 节点下展示 teammate 名字；点击 teammate 后，中间区域切换为该 teammate 的只读执行轨迹，并隐藏消息 composer。用户输入仍只能进入 master conversation 的 `POST /v3/sessions/{session_id}/messages`
 
 Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_approval` 响应中不得把普通 assistant message 当作最终完成消息写入 conversation。
 
@@ -214,6 +223,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 - `conversation.user_message`
 - `conversation.assistant_message`
+- `llm.response.created`
 - `tool.invoked`
 - `tool.completed`
 - `task.updated`
@@ -235,6 +245,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `report.generated`
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
+
+`llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 被持久化为 `llm_trace_step` 后尽快推送该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。Web UI 用它实时增量更新 `workspace.agent_traces`；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
 
 `execution.pipeline.start` 语义：
 

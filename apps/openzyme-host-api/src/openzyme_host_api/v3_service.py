@@ -5,16 +5,17 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 import json
+import threading
 from typing import Any
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineRegistry
+from openzyme_core import HarnessEvent
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import LlmConversationDriver
-from openzyme_core import MemoryEventBus
 from openzyme_core import ProtocolService
 from openzyme_core import RestoreFocus
 from openzyme_core import ResumeDecision
@@ -68,15 +69,66 @@ def _event_fingerprint(event: dict[str, Any]) -> tuple[str, str, str]:
 @dataclass(slots=True)
 class V3EventStore:
     _events: dict[str, list[dict[str, Any]]]
+    _lock: threading.RLock
 
     def __init__(self) -> None:
         self._events = {}
+        self._lock = threading.RLock()
 
     def append(self, session_id: str, events: list[dict[str, Any]]) -> None:
-        self._events.setdefault(session_id, []).extend(events)
+        with self._lock:
+            session_events = self._events.setdefault(session_id, [])
+            seen_event_ids = {
+                event.get("event_id")
+                for event in session_events
+                if event.get("event_id")
+            }
+            seen_trace_ids = {
+                event.get("payload", {}).get("trace_id")
+                for event in session_events
+                if event.get("event_type") == "llm.response.created"
+                and isinstance(event.get("payload"), dict)
+                and event.get("payload", {}).get("trace_id")
+            }
+            seen_fingerprints = {_event_fingerprint(event) for event in session_events}
+            for event in events:
+                event_id = event.get("event_id")
+                if event_id and event_id in seen_event_ids:
+                    continue
+                trace_id = None
+                if event.get("event_type") == "llm.response.created" and isinstance(
+                    event.get("payload"), dict
+                ):
+                    trace_id = event["payload"].get("trace_id")
+                    if trace_id and trace_id in seen_trace_ids:
+                        continue
+                fingerprint = _event_fingerprint(event)
+                if fingerprint in seen_fingerprints:
+                    continue
+                session_events.append(event)
+                if event_id:
+                    seen_event_ids.add(event_id)
+                if trace_id:
+                    seen_trace_ids.add(trace_id)
+                seen_fingerprints.add(fingerprint)
 
     def list(self, session_id: str) -> list[dict[str, Any]]:
-        return list(self._events.get(session_id, ()))
+        with self._lock:
+            return list(self._events.get(session_id, ()))
+
+
+@dataclass(slots=True)
+class V3EventStoreSink:
+    event_store: V3EventStore
+    events: list[HarnessEvent]
+
+    def __init__(self, event_store: V3EventStore) -> None:
+        self.event_store = event_store
+        self.events = []
+
+    def emit(self, event: HarnessEvent) -> None:
+        self.events.append(event)
+        self.event_store.append(event.session_id, [event.to_dict()])
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +157,15 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+
+    def _event_sink(self) -> V3EventStoreSink:
+        return V3EventStoreSink(self.event_store)
+
+    def _record_events(
+        self, session_id: str, target: list[dict[str, Any]], events: list[dict[str, Any]]
+    ) -> None:
+        target.extend(events)
+        self.event_store.append(session_id, events)
 
     def create_session(
         self,
@@ -229,10 +290,36 @@ class V3HostApiService:
             events.append(event)
             current.add(fingerprint)
 
+    def _extend_with_trace_events(
+        self, session_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        seen_trace_ids = {
+            event.get("payload", {}).get("trace_id")
+            for event in [*self.event_store.list(session_id), *events]
+            if event.get("event_type") == "llm.response.created"
+            and isinstance(event.get("payload"), dict)
+            and event.get("payload", {}).get("trace_id")
+        }
+        traces = self.workspace(session_id).get("agent_traces", {})
+        for entries in traces.values():
+            for payload in entries:
+                trace_id = payload.get("trace_id")
+                if trace_id in seen_trace_ids:
+                    continue
+                event = {
+                    "event_id": _new_id("evt"),
+                    "session_id": session_id,
+                    "event_type": "llm.response.created",
+                    "created_at": payload.get("created_at") or utc_now_iso(),
+                    "payload": payload,
+                }
+                events.append(event)
+                seen_trace_ids.add(trace_id)
+
     def _drain_agent_runtime(
         self, session_id: str, events: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        event_bus = MemoryEventBus()
+        event_bus = self._event_sink()
         context = SessionRuntimeContext(
             repositories=self.repositories,
             event_sink=event_bus,
@@ -344,7 +431,7 @@ class V3HostApiService:
             task = terminal[0]["task"]
             focus_task_id = task.get("task_id")
             focus_lane_id = task.get("lane_id")
-        event_bus = MemoryEventBus()
+        event_bus = self._event_sink()
         result = run_agent_harness_loop(
             self.repositories,
             HarnessInput(
@@ -365,12 +452,16 @@ class V3HostApiService:
         )
         events.extend(event.to_dict() for event in event_bus.events)
         for output in result.outputs:
-            events.append(
-                _event(
-                    "conversation.assistant_message",
-                    session_id,
-                    {"content": output},
-                )
+            self._record_events(
+                session_id,
+                events,
+                [
+                    _event(
+                        "conversation.assistant_message",
+                        session_id,
+                        {"content": output},
+                    )
+                ],
             )
         return result
 
@@ -387,7 +478,14 @@ class V3HostApiService:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
         driver = self._require_llm_driver()
-        event_bus = MemoryEventBus()
+        events: list[dict[str, Any]] = []
+        if message:
+            self._record_events(
+                session_id,
+                events,
+                [_event("conversation.user_message", session_id, {"content": message})],
+            )
+        event_bus = self._event_sink()
         result = run_agent_harness_loop(
             self.repositories,
             HarnessInput(
@@ -405,20 +503,19 @@ class V3HostApiService:
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
         )
-        events: list[dict[str, Any]] = []
-        if message:
-            events.append(
-                _event("conversation.user_message", session_id, {"content": message})
-            )
         events.extend(event.to_dict() for event in result.events)
         if result.status is not HarnessStatus.WAITING_APPROVAL:
             for output in result.outputs:
-                events.append(
-                    _event(
-                        "conversation.assistant_message",
-                        session_id,
-                        {"content": output},
-                    )
+                self._record_events(
+                    session_id,
+                    events,
+                    [
+                        _event(
+                            "conversation.assistant_message",
+                            session_id,
+                            {"content": output},
+                        )
+                    ],
                 )
         outcomes = self._teammate_outcomes_from_tool_results(result.tool_results)
         outcomes.extend(self._drain_agent_runtime(session_id, events))
@@ -439,6 +536,7 @@ class V3HostApiService:
         )
         response_outputs = () if has_pending_approval else result.outputs
         self._touch_session(session_id)
+        self._extend_with_trace_events(session_id, events)
         self._extend_with_activity_events(session_id, events)
         self.event_store.append(session_id, events)
         return V3CommandResult(
@@ -469,17 +567,22 @@ class V3HostApiService:
             or self._execution_waiting_invocation_id(approval) is not None
         )
         continuation_output: dict[str, Any] | None = None
-        events = [
-            _event(
-                "approval.resolved",
-                approval.session_id,
-                {
-                    "approval_id": approval_id,
-                    "decision": decision,
-                    "actor_ref": actor_ref,
-                },
-            )
-        ]
+        events: list[dict[str, Any]] = []
+        self._record_events(
+            approval.session_id,
+            events,
+            [
+                _event(
+                    "approval.resolved",
+                    approval.session_id,
+                    {
+                        "approval_id": approval_id,
+                        "decision": decision,
+                        "actor_ref": actor_ref,
+                    },
+                )
+            ],
+        )
         runtime_outcomes: list[dict[str, Any]] = []
         if execution_approval:
             self._resolve_approval_record(
@@ -520,6 +623,7 @@ class V3HostApiService:
                     result_status = HarnessStatus.FAILED
         else:
             driver = self._require_llm_driver()
+            event_bus = self._event_sink()
             result = run_agent_harness_loop(
                 self.repositories,
                 HarnessInput(
@@ -538,6 +642,7 @@ class V3HostApiService:
                 ),
                 driver=driver,
                 engine_registry=self.engine_registry,
+                event_sink=event_bus,
                 model_factory=self.model_factory,
                 bio_research_service=self.bio_research_service,
                 research_adapter=self.research_adapter,
@@ -573,12 +678,16 @@ class V3HostApiService:
                     created_at=created_at,
                 )
             )
-            events.append(
-                _event(
-                    "conversation.assistant_message",
-                    approval.session_id,
-                    {"content": output},
-                )
+            self._record_events(
+                approval.session_id,
+                events,
+                [
+                    _event(
+                        "conversation.assistant_message",
+                        approval.session_id,
+                        {"content": output},
+                    )
+                ],
             )
         if execution_approval:
             self._record_execution_continuation_result(
@@ -619,7 +728,7 @@ class V3HostApiService:
                 and task.assigned_ref
                 and task.assigned_ref.startswith("agent:")
             ):
-                event_bus = MemoryEventBus()
+                event_bus = self._event_sink()
                 context = SessionRuntimeContext(
                     repositories=self.repositories,
                     event_sink=event_bus,
@@ -658,6 +767,7 @@ class V3HostApiService:
             else:
                 result_status = followup.status
         self._touch_session(approval.session_id)
+        self._extend_with_trace_events(approval.session_id, events)
         self._extend_with_activity_events(approval.session_id, events)
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(
@@ -705,7 +815,7 @@ class V3HostApiService:
             agent_id = None if agent is None else agent.agent_id
         if agent_id is None:
             return None
-        event_bus = MemoryEventBus()
+        event_bus = self._event_sink()
         context = SessionRuntimeContext(
             repositories=self.repositories,
             event_sink=event_bus,

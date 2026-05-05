@@ -46,6 +46,7 @@ from openzyme_core import top_level_tool_descriptors
 from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
 from openzyme_core import teammate_tool_descriptors
+from openzyme_core import TeammateConversationDriver
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
 
@@ -1905,6 +1906,88 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.assistant_message is None
     assert step.tool_invocations[0].tool_name == "task.create"
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
+
+
+def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_002",
+                            "subject": "Plan",
+                            "description": "Plan next step",
+                            "secret_token": "abc123",
+                            "local_path": "/home/user/private/input.pdb",
+                            "pipeline_code": "print('private')",
+                        },
+                    },
+                ],
+            }
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="plan work", max_steps=1),
+        driver=driver,
+    )
+
+    assert result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+    assert any(event.event_type == "llm.response.created" for event in result.events)
+    documents = [
+        document
+        for document in repositories.engine_documents.list_by_session(session.session_id)
+        if document.document_kind == "llm_trace_step"
+    ]
+    assert len(documents) == 1
+    payload = documents[0].payload
+    assert payload["actor_ref"] == "harness"
+    assert payload["actor_kind"] == "master"
+    assert payload["tool_calls"][0]["tool_name"] == "task.create"
+    args_public = payload["tool_calls"][0]["args_public"]
+    assert args_public["task_id"] == "task_002"
+    assert args_public["secret_token"] == "[redacted]"
+    assert args_public["local_path"] == "[redacted]"
+    assert args_public["pipeline_code"] == "[redacted]"
+
+
+def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = TeammateConversationDriver(
+        model_factory=FakeModelFactory({"content": "I inspected the task.", "tool_calls": []}),
+        role="researcher",
+        agent_id="agent:researcher",
+        correlation_id="corr_001",
+        task_id="task_001",
+        instructions="Inspect the literature plan.",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender="agent:researcher",
+            sender_kind=InboxParticipantKind.AGENT,
+            persist_conversation=False,
+        ),
+        driver=driver,
+    )
+
+    assert result.outputs == ("I inspected the task.",)
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    traces = workspace["agent_traces"]["agent:researcher"]
+    assert traces[0]["actor_kind"] == "teammate"
+    assert traces[0]["response_text"] == "I inspected the task."
+    assert traces[0]["initial_prompt"]["identity"] == "agent:researcher"
+    assert traces[0]["initial_prompt"]["instructions"] == "Inspect the literature plan."
 
 
 def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (

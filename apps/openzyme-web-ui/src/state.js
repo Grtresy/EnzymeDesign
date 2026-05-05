@@ -6,6 +6,7 @@ function ensureWorkspace(workspace) {
   workspace.task_board ??= { items: [] };
   workspace.lane_board ??= { lanes: [] };
   workspace.delegation ??= { agents: [] };
+  workspace.agent_traces ??= {};
   workspace.pending_approvals ??= [];
   workspace.activity_feed ??= [];
   workspace.artifacts ??= [];
@@ -36,6 +37,16 @@ function hasActivityEntry(workspace, event) {
     }
     const existing = `${item.event_type}|${item.created_at ?? ""}|${fingerprint(item.payload)}`;
     return existing === candidate;
+  });
+}
+
+function hasTraceEntry(workspace, trace) {
+  const actorRef = trace.actor_ref ?? "harness";
+  return (workspace.agent_traces?.[actorRef] ?? []).some((item) => {
+    if (item.trace_id && trace.trace_id) {
+      return item.trace_id === trace.trace_id;
+    }
+    return item.call_index === trace.call_index && item.created_at === trace.created_at;
   });
 }
 
@@ -107,6 +118,27 @@ export function reduceWorkspaceWithEvent(workspace, event) {
           event_id: event.event_id,
         },
       ];
+      return next;
+    }
+    case "llm.response.created": {
+      const payload = event.payload ?? event;
+      if (hasTraceEntry(workspace, payload)) {
+        return workspace;
+      }
+      const next = structuredClone(workspace);
+      const actorRef = payload.actor_ref ?? "harness";
+      next.agent_traces ??= {};
+      next.agent_traces[actorRef] = [
+        ...(next.agent_traces[actorRef] ?? []),
+        {
+          ...payload,
+          trace_id: payload.trace_id ?? event.event_id,
+          created_at: payload.created_at ?? event.created_at,
+        },
+      ].sort((left, right) => {
+        const byTime = String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""));
+        return byTime || Number(left.call_index ?? 0) - Number(right.call_index ?? 0);
+      });
       return next;
     }
     case "approval.requested": {
@@ -238,6 +270,7 @@ export function buildInitialViewState() {
     currentProjectId: "proj_001",
     currentSessionId: "",
     currentSection: "conversation",
+    selectedTeammateAgentId: "",
     sidebarExpandedSessionIds: [],
     sessionSummaries: [],
     workspace: null,

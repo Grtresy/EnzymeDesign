@@ -73,6 +73,7 @@ function buildV3Workspace() {
     capabilities: {
       execution: [{ invocation_id: "inv_001", status: "succeeded" }],
     },
+    agent_traces: {},
     conversation: [],
   };
 }
@@ -151,6 +152,68 @@ test("v3 conversation events render in the central chat column", () => {
   assert.match(html, /Tasks/);
 });
 
+test("llm response events update agent traces without duplicates", () => {
+  let workspace = buildV3Workspace();
+  const event = {
+    event_id: "evt_trace",
+    event_type: "llm.response.created",
+    created_at: "2026-04-21T00:00:02+00:00",
+    payload: {
+      trace_id: "trace_001",
+      actor_ref: "harness",
+      actor_kind: "master",
+      display_name: "OpenZyme",
+      role: "master",
+      call_index: 1,
+      created_at: "2026-04-21T00:00:02+00:00",
+      response_text: "I will create a task.",
+      tool_calls: [{ call_id: "call_001", tool_name: "task.create", args_public: { subject: "Plan" } }],
+    },
+  };
+
+  workspace = reduceWorkspaceWithEvent(workspace, event);
+  const second = reduceWorkspaceWithEvent(workspace, event);
+
+  assert.equal(workspace.agent_traces.harness.length, 1);
+  assert.equal(workspace.agent_traces.harness[0].tool_calls[0].tool_name, "task.create");
+  assert.equal(second, workspace);
+});
+
+test("master conversation renders trace text and tool-call request cards", () => {
+  const workspace = {
+    ...buildV3Workspace(),
+    conversation: [{ role: "user", content: "Start planning", created_at: "2026-04-21T00:00:01+00:00" }],
+    agent_traces: {
+      harness: [
+        {
+          trace_id: "trace_001",
+          actor_ref: "harness",
+          actor_kind: "master",
+          display_name: "OpenZyme",
+          role: "master",
+          call_index: 1,
+          created_at: "2026-04-21T00:00:02+00:00",
+          response_text: "I will create a task.",
+          tool_calls: [{ call_id: "call_001", tool_name: "task.create", args_public: { subject: "Plan" } }],
+        },
+      ],
+    },
+  };
+
+  const html = renderApp({
+    ...buildInitialViewState(),
+    currentSessionId: "sess_001",
+    sidebarExpandedSessionIds: ["sess_001"],
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+  });
+
+  assert.match(html, /Start planning/);
+  assert.match(html, /I will create a task/);
+  assert.match(html, /task\.create/);
+  assert.doesNotMatch(html, /Received: Start planning/);
+});
+
 test("report draft events are tracked in activity and rendered in outputs", () => {
   let workspace = buildV3Workspace();
   workspace = reduceWorkspaceWithEvent(workspace, {
@@ -194,6 +257,52 @@ test("team inspector renders delegated teammate status", () => {
   assert.match(html, /Team/);
   assert.match(html, /researcher/);
   assert.match(html, /task_001/);
+});
+
+test("session tree nests teammate names and teammate trace is read-only", () => {
+  const workspace = {
+    ...buildV3Workspace(),
+    agent_traces: {
+      "agent:researcher": [
+        {
+          trace_id: "trace_agent_001",
+          actor_ref: "agent:researcher",
+          actor_kind: "teammate",
+          display_name: "researcher",
+          role: "researcher",
+          call_index: 1,
+          created_at: "2026-04-21T00:00:03+00:00",
+          response_text: "I found two papers.",
+          tool_calls: [{ call_id: "call_search", tool_name: "deep_research.start", args_public: { task_id: "task_001" } }],
+          initial_prompt: {
+            identity: "agent:researcher",
+            role: "researcher",
+            task_id: "task_001",
+            lane_id: "lane_001",
+            correlation_id: "corr_001",
+            instructions: "Find papers.",
+            seed_message: "Task task_001: Find papers.",
+          },
+        },
+      ],
+    },
+  };
+
+  const html = renderApp({
+    ...buildInitialViewState(),
+    currentSessionId: "sess_001",
+    currentSection: "team",
+    selectedTeammateAgentId: "agent:researcher",
+    sidebarExpandedSessionIds: ["sess_001"],
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+  });
+
+  assert.match(html, /data-action="select-teammate"/);
+  assert.match(html, /I found two papers/);
+  assert.match(html, /Role seed/);
+  assert.match(html, /trace is read-only/);
+  assert.doesNotMatch(html, /id="message-form"/);
 });
 
 test("approval events update pending approvals and activity", () => {

@@ -138,24 +138,104 @@ export function renderV3Approvals(workspace, viewState) {
   `;
 }
 
+function renderToolCallCard(toolCall) {
+  return `
+    <article class="tool-call-card">
+      <div>
+        <strong>${escapeHtml(toolCall.tool_name ?? "tool")}</strong>
+        <span>${escapeHtml(toolCall.call_id ?? "")}</span>
+      </div>
+      <dl class="facts compact-facts">
+        <div><dt>Task</dt><dd>${escapeHtml(toolCall.task_id ?? "none")}</dd></div>
+        <div><dt>Lane</dt><dd>${escapeHtml(toolCall.lane_id ?? "none")}</dd></div>
+      </dl>
+      <pre>${escapeHtml(JSON.stringify(toolCall.args_public ?? {}, null, 2))}</pre>
+    </article>
+  `;
+}
+
+function renderTraceStep(step, { teammate = false } = {}) {
+  const hasText = Boolean(String(step.response_text ?? "").trim());
+  const toolCalls = step.tool_calls ?? [];
+  return `
+    <li class="trace-step ${teammate ? "from-teammate" : "from-agent"}" data-trace-id="${escapeHtml(step.trace_id ?? "")}">
+      <div class="trace-step-header">
+        <span>${escapeHtml(step.display_name ?? step.actor_ref ?? "agent")}</span>
+        <small>${escapeHtml(step.role ?? "")} · call ${escapeHtml(step.call_index ?? "")}</small>
+      </div>
+      ${
+        step.initial_prompt
+          ? `<article class="trace-seed-card">
+              <strong>Role seed</strong>
+              <dl class="facts compact-facts">
+                <div><dt>Identity</dt><dd>${escapeHtml(step.initial_prompt.identity ?? "")}</dd></div>
+                <div><dt>Role</dt><dd>${escapeHtml(step.initial_prompt.role ?? "")}</dd></div>
+                <div><dt>Task</dt><dd>${escapeHtml(step.initial_prompt.task_id ?? "")}</dd></div>
+                <div><dt>Lane</dt><dd>${escapeHtml(step.initial_prompt.lane_id ?? "none")}</dd></div>
+                <div><dt>Correlation</dt><dd>${escapeHtml(step.initial_prompt.correlation_id ?? "")}</dd></div>
+              </dl>
+              <p>${escapeHtml(step.initial_prompt.instructions ?? "")}</p>
+              <pre>${escapeHtml(step.initial_prompt.seed_message ?? "")}</pre>
+            </article>`
+          : ""
+      }
+      ${hasText ? `<p>${escapeHtml(step.response_text)}</p>` : ""}
+      ${toolCalls.length ? `<div class="tool-call-stack">${toolCalls.map(renderToolCallCard).join("")}</div>` : ""}
+    </li>
+  `;
+}
+
+function buildMasterConversationTimeline(workspace) {
+  const harnessTrace = workspace.agent_traces?.harness ?? [];
+  if (!harnessTrace.length) {
+    return (workspace.conversation ?? []).map((item) => ({ type: "conversation", item }));
+  }
+  return [
+    ...(workspace.conversation ?? [])
+      .filter((item) => item.role === "user" || item.error)
+      .map((item) => ({ type: "conversation", item, created_at: item.created_at ?? "" })),
+    ...harnessTrace.map((item) => ({ type: "trace", item, created_at: item.created_at ?? "" })),
+  ].sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")));
+}
+
 export function renderV3Conversation(workspace) {
-  const conversation = workspace.conversation ?? [];
-  if (!conversation.length) {
+  const timeline = buildMasterConversationTimeline(workspace);
+  if (!timeline.length) {
     return `<p class="empty-copy">Send a message to start the session.</p>`;
   }
   return `
     <ol class="chat-list">
-      ${conversation
-        .map(
-          (item) => `
+      ${timeline
+        .map((entry) => {
+          if (entry.type === "trace") {
+            return renderTraceStep(entry.item);
+          }
+          const item = entry.item;
+          return `
             <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}${item.error ? " is-error" : ""}" data-message-id="${escapeHtml(item.message_id ?? item.event_id ?? "")}">
               <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}</span>
               <p>${escapeHtml(item.content)}</p>
             </li>
-          `,
-        )
+          `;
+        })
         .join("")}
     </ol>
+  `;
+}
+
+export function renderTeammateTrace(workspace, agentId) {
+  const agent = (workspace.delegation?.agents ?? []).find((item) => item.agent?.agent_id === agentId)?.agent ?? {};
+  const traces = workspace.agent_traces?.[agentId] ?? [];
+  return `
+    <div class="readonly-banner">
+      <strong>${escapeHtml(agent.name ?? agentId)}</strong>
+      <span>${escapeHtml(agent.role ?? "teammate")} trace is read-only.</span>
+    </div>
+    ${
+      traces.length
+        ? `<ol class="chat-list trace-list">${traces.map((step) => renderTraceStep(step, { teammate: true })).join("")}</ol>`
+        : `<p class="empty-copy">No teammate trace has been recorded yet.</p>`
+    }
   `;
 }
 
@@ -326,6 +406,7 @@ export function renderSessionTree(viewState) {
         .map((session) => {
           const isExpanded = viewState.sidebarExpandedSessionIds.includes(session.session_id);
           const isActive = viewState.currentSessionId === session.session_id;
+          const teammates = isActive ? viewState.workspace?.delegation?.agents ?? [] : [];
           return `
             <li class="tree-node session-node" role="treeitem" aria-expanded="${isExpanded}">
               <div class="session-row ${isActive ? "is-active" : ""}">
@@ -363,6 +444,29 @@ export function renderSessionTree(viewState) {
                                 data-section="${escapeHtml(sectionKey)}"
                                 ${viewState.sidebarBusy ? "disabled" : ""}
                               >${escapeHtml(label)}</button>
+                              ${
+                                sectionKey === "team" && teammates.length
+                                  ? `<ul class="teammate-tree" role="group">
+                                      ${teammates
+                                        .map((item) => {
+                                          const agent = item.agent ?? {};
+                                          return `
+                                            <li>
+                                              <button
+                                                type="button"
+                                                class="teammate-select ${viewState.selectedTeammateAgentId === agent.agent_id ? "is-current" : ""}"
+                                                data-action="select-teammate"
+                                                data-session-id="${escapeHtml(session.session_id)}"
+                                                data-agent-id="${escapeHtml(agent.agent_id ?? "")}"
+                                                ${viewState.sidebarBusy ? "disabled" : ""}
+                                              >${escapeHtml(agent.name ?? agent.agent_id ?? "teammate")}</button>
+                                            </li>
+                                          `;
+                                        })
+                                        .join("")}
+                                    </ul>`
+                                  : ""
+                              }
                             </li>
                           `,
                         )
@@ -385,8 +489,8 @@ export function renderConversationHeader(viewState) {
   }
   return `
     <div>
-      <p class="eyebrow">Conversation</p>
-      <h2>${escapeHtml(workspace.session.title ?? workspace.session.objective)}</h2>
+      <p class="eyebrow">${escapeHtml(viewState.selectedTeammateAgentId ? "Teammate Trace" : "Conversation")}</p>
+      <h2>${escapeHtml(viewState.selectedTeammateAgentId || workspace.session.title || workspace.session.objective)}</h2>
       <p class="status-line">${escapeHtml(workspace.session.objective)}</p>
     </div>
     <div class="header-status-stack">
@@ -468,6 +572,16 @@ export function renderMainColumn(viewState) {
   const workspace = viewState.workspace;
   if (!workspace?.session) {
     return renderEmptyConversation(viewState);
+  }
+  if (viewState.selectedTeammateAgentId) {
+    return `
+      <section class="main-column-shell">
+        <header class="panel conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
+        <section class="panel conversation-panel">
+          <div id="conversation-list-root">${renderTeammateTrace(workspace, viewState.selectedTeammateAgentId)}</div>
+        </section>
+      </section>
+    `;
   }
   return `
     <section class="main-column-shell">
