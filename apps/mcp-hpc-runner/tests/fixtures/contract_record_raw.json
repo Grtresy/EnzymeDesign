@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "tool_id": "fpocket",
+  "final_status": "completed",
+  "discovery": {
+    "command": ["ssh", "user@example.org", "--", "test -r /home/user/containers/fpocket.sif"],
+    "stdout": "token=abc123\n/home/user/private/path\n"
+  },
+  "smoke": {
+    "run_result": {
+      "remote_run_dir": "/home/user/mcp_runs/abc123",
+      "artifacts": {
+        "/home/user/mcp_runs/abc123/out/target_out": "/home/user/repo/.mcp_hpc_runner/artifacts/abc123/outputs/target_out"
+      },
+      "metadata": {
+        "api_key": "should-not-survive"
+      }
+    }
+  }
+}

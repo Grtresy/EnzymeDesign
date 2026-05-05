@@ -1,0 +1,627 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+from typing import Any
+from typing import Callable
+
+from openzyme_domain import EpisodeStatus
+from openzyme_domain import SourceRef
+from openzyme_graph import GraphPhase
+from openzyme_graph import ProgressStatus
+from openzyme_runtime import GraphRuntimeFacade
+from openzyme_runtime import ProjectionLoader
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+
+
+def _default_progress(updated_at: str) -> dict[str, Any]:
+    return {
+        "phase": GraphPhase.INTAKE.value,
+        "active_node": "host",
+        "status": ProgressStatus.IDLE.value,
+        "updated_at": updated_at,
+        "message": "Episode created; graph execution has not produced progress yet.",
+    }
+
+
+def _derive_episode_status(workflow: dict[str, Any]) -> EpisodeStatus:
+    status = workflow.get("status")
+    if status == "completed":
+        return EpisodeStatus.COMPLETED
+    if status == "failed":
+        return EpisodeStatus.FAILED
+    if status == "interrupted":
+        return EpisodeStatus.INTERRUPTED
+    return EpisodeStatus.ACTIVE
+
+
+def _extract_nested_workflow_state(snapshot: Any) -> dict[str, Any] | None:
+    for task in getattr(snapshot, "tasks", ()):
+        nested = getattr(task, "state", None)
+        if nested is None:
+            continue
+        nested_values = getattr(nested, "values", None)
+        if nested_values:
+            return dict(nested_values)
+    return None
+
+
+def _build_workflow_summary(
+    workflow: dict[str, Any],
+    research: dict[str, Any],
+    design: dict[str, Any],
+    execution: dict[str, Any],
+    report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    latest_result = execution.get("latest_result") or {}
+    artifact_workspace_summary = design.get("artifact_workspace_summary") or {}
+    return {
+        "current_phase": workflow["current_phase"],
+        "workflow_status": workflow["status"],
+        "active_node": workflow["progress"]["active_node"],
+        "message": workflow["progress"]["message"],
+        "wait_state": None if workflow["pending_interrupt"] is None else workflow["pending_interrupt"]["type"],
+        "evidence_count": len(research.get("evidence", [])),
+        "artifact_count": artifact_workspace_summary.get("artifact_count", len(design.get("artifacts", []))),
+        "execution_ready_artifact_count": len(artifact_workspace_summary.get("execution_ready_artifact_ids", [])),
+        "focused_artifact_count": len(design.get("focused_artifact_ids", [])),
+        "last_execution_tool_id": latest_result.get("catalog_tool_id"),
+        "last_execution_status": latest_result.get("status"),
+        "execution_iteration_count": len(execution.get("turns", [])),
+        "report_id": None if report is None else report["report_id"],
+        "report_status": None if report is None else report["status"],
+    }
+
+
+GraphBuilder = Callable[[Any], Any]
+
+
+def _group_source_refs_by_evidence(source_refs: list[SourceRef]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for source_ref in source_refs:
+        grouped.setdefault(source_ref.evidence_id, []).append(source_ref.to_dict())
+    return grouped
+
+
+@dataclass(slots=True)
+class HostProjectionLoader(ProjectionLoader):
+    runtime: GraphRuntimeFacade
+    graph_builder: GraphBuilder
+
+    def load_workflow_projection(self, episode_id: str) -> dict[str, Any]:
+        episode = self.runtime.repositories.episodes.get(episode_id)
+        if episode is None:
+            msg = f"episode {episode_id!r} does not exist"
+            raise KeyError(msg)
+
+        pending = self.runtime.repositories.approvals.list_pending_by_episode(episode_id)
+        with self.runtime.compile_graph(self.graph_builder) as graph:
+            snapshot = graph.get_state(
+                self.runtime.build_episode_graph_config(episode_id),
+                subgraphs=True,
+            )
+
+        values = dict(snapshot.values)
+        nested_values = _extract_nested_workflow_state(snapshot)
+        if nested_values is not None:
+            for key in ("current_phase", "status", "progress", "pending_interrupt"):
+                if nested_values.get(key) is not None:
+                    values[key] = nested_values[key]
+        progress = values.get("progress") or _default_progress(episode.updated_at)
+        workflow = {
+            "episode_id": episode.episode_id,
+            "project_id": episode.project_id,
+            "objective": episode.objective,
+            "episode_status": episode.status.value,
+            "current_phase": values.get("current_phase", GraphPhase.INTAKE.value),
+            "status": values.get("status", episode.status.value),
+            "progress": progress,
+            "pending_interrupt": values.get("pending_interrupt"),
+            "pending_approval": None if not pending else pending[0].to_dict(),
+            "updated_at": progress["updated_at"],
+        }
+        return workflow
+
+    def load_run_projection(self, episode_id: str) -> list[dict[str, Any]]:
+        return [run.to_dict() for run in self.runtime.repositories.runs.list_by_episode(episode_id)]
+
+    def load_artifact_projection(self, episode_id: str) -> list[dict[str, Any]]:
+        return [
+            artifact.to_dict()
+            for artifact in self.runtime.repositories.artifact_records.list_by_episode(episode_id)
+        ]
+
+    def load_report_projection(self, episode_id: str) -> dict[str, Any] | None:
+        reports = self.runtime.repositories.reports.list_by_episode(episode_id)
+        if not reports:
+            return None
+        report = reports[-1].to_dict()
+        artifact_id = report.get("artifact_id")
+        artifact = None if artifact_id is None else self.runtime.repositories.artifact_records.get(artifact_id)
+        report["artifact_storage_uri"] = None if artifact is None else artifact.storage_uri
+        return report
+
+    def load_pending_actions(self, episode_id: str) -> list[dict[str, Any]]:
+        return [
+            approval.to_dict()
+            for approval in self.runtime.repositories.approvals.list_pending_by_episode(episode_id)
+        ]
+
+    def load_research_projection(self, episode_id: str) -> dict[str, Any]:
+        evidence_records = self.runtime.repositories.evidence_records.list_by_episode(episode_id)
+        source_refs = self.runtime.repositories.source_refs.list_by_episode(episode_id)
+        grouped_source_refs = _group_source_refs_by_evidence(source_refs)
+        research_turns = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == "research"
+        ]
+        latest_research_collect = None
+        for decision in reversed(self.runtime.repositories.decisions.list_by_episode(episode_id)):
+            if decision.phase == GraphPhase.DESIGN.value and decision.action_kind == "collect_research":
+                latest_research_collect = decision.to_dict()
+                break
+        evidence: list[dict[str, Any]] = []
+        for record in evidence_records:
+            item = record.to_dict()
+            item["source_refs"] = grouped_source_refs.get(record.evidence_id, [])
+            evidence.append(item)
+
+        summary = self.runtime.repositories.research_summaries.get_by_episode(episode_id)
+        unresolved_gaps = self.runtime.repositories.unresolved_gaps.list_by_episode(episode_id)
+        latest_observation = (
+            {}
+            if latest_research_collect is None or latest_research_collect.get("observation_payload") is None
+            else latest_research_collect["observation_payload"]
+        )
+        return {
+            "status": latest_observation.get("status") or ("completed" if evidence or summary is not None else "idle"),
+            "completion_reason": latest_observation.get("completion_reason"),
+            "clarification_question": latest_observation.get("clarification_question") or latest_observation.get("question"),
+            "summary": None if summary is None else summary.to_dict(),
+            "evidence": evidence,
+            "source_refs": [source_ref.to_dict() for source_ref in source_refs],
+            "unresolved_gaps": [gap.to_dict() for gap in unresolved_gaps],
+            "turns": [
+                {
+                    "turn_index": turn["turn_index"],
+                    "action_kind": turn["action_kind"],
+                    "status": turn["status"],
+                    "summary": turn["summary"],
+                    "rationale": turn["rationale"],
+                    "tool_names": []
+                    if turn.get("action_payload") is None
+                    else list(turn["action_payload"].get("tool_names") or []),
+                    "observation_summary": None
+                    if turn.get("observation_payload") is None
+                    else (
+                        turn["observation_payload"].get("summary")
+                        or turn["observation_payload"].get("message")
+                    ),
+                    "created_at": turn["created_at"],
+                }
+                for turn in research_turns
+            ],
+        }
+
+    def load_design_projection(self, episode_id: str) -> dict[str, Any]:
+        decisions = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == GraphPhase.DESIGN.value
+        ]
+        artifact_workspace_summary = {}
+        if decisions:
+            latest_observation = decisions[-1].get("observation_payload") or {}
+            artifact_workspace_summary = dict(latest_observation.get("artifact_workspace_summary") or {})
+        return {
+            "artifacts": self.load_artifact_projection(episode_id),
+            "artifact_workspace_summary": artifact_workspace_summary,
+            "focused_artifact_ids": []
+            if not decisions
+            else list((decisions[-1].get("action_payload") or {}).get("focused_artifact_ids") or []),
+            "turns": [
+                {
+                    "turn_index": decision["turn_index"],
+                    "action_kind": decision["action_kind"],
+                    "status": decision["status"],
+                    "summary": decision["summary"],
+                    "rationale": decision["rationale"],
+                    "required_artifact_ids": []
+                    if decision.get("action_payload") is None
+                    else list(decision["action_payload"].get("required_artifact_ids") or []),
+                    "focused_artifact_ids": []
+                    if decision.get("action_payload") is None
+                    else list(decision["action_payload"].get("focused_artifact_ids") or []),
+                    "observation_summary": None
+                    if decision.get("observation_payload") is None
+                    else (
+                        decision["observation_payload"].get("summary")
+                        or decision["observation_payload"].get("message")
+                    ),
+                    "created_at": decision["created_at"],
+                }
+                for decision in decisions
+            ],
+        }
+
+    def load_execution_projection(self, episode_id: str) -> dict[str, Any]:
+        decisions = [
+            decision.to_dict()
+            for decision in self.runtime.repositories.decisions.list_by_episode(episode_id)
+            if decision.phase == GraphPhase.EXECUTION.value
+        ]
+        latest_result = None
+        if decisions:
+            latest_decision = decisions[-1]
+            latest_result = {
+                "catalog_tool_id": None if latest_decision.get("action_payload") is None else latest_decision["action_payload"].get("catalog_tool_id"),
+                "status": latest_decision["status"],
+                "summary": None
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("summary"),
+                "structured_findings": {}
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("structured_findings") or {},
+                "output_artifact_ids": []
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("output_artifact_ids") or [],
+                "input_artifact_ids": []
+                if latest_decision.get("action_payload") is None
+                else latest_decision["action_payload"].get("required_artifact_ids") or [],
+                "planner_trace": {}
+                if latest_decision.get("observation_payload") is None
+                else latest_decision["observation_payload"].get("planner_trace") or {},
+            }
+        return {
+            "latest_result": latest_result,
+            "latest_input_artifact_ids": []
+            if latest_result is None
+            else list(latest_result.get("input_artifact_ids") or []),
+            "latest_output_artifact_ids": []
+            if latest_result is None
+            else list(latest_result.get("output_artifact_ids") or []),
+            "turns": [
+                {
+                    "turn_index": decision["turn_index"],
+                    "action_kind": decision["action_kind"],
+                    "status": decision["status"],
+                    "summary": decision["summary"],
+                    "rationale": decision["rationale"],
+                    "catalog_tool_id": None
+                    if decision.get("action_payload") is None
+                    else decision["action_payload"].get("catalog_tool_id"),
+                    "planner_trace": {}
+                    if decision.get("observation_payload") is None
+                    else decision["observation_payload"].get("planner_trace") or {},
+                    "observation_summary": None
+                    if decision.get("observation_payload") is None
+                    else (
+                        decision["observation_payload"].get("summary")
+                        or decision["observation_payload"].get("message")
+                    ),
+                    "created_at": decision["created_at"],
+                }
+                for decision in decisions
+            ],
+        }
+
+    def load_episode_workspace(self, episode_id: str) -> dict[str, Any]:
+        workflow = self.load_workflow_projection(episode_id)
+        workflow["episode_status"] = _derive_episode_status(workflow).value
+        research = self.load_research_projection(episode_id)
+        design = self.load_design_projection(episode_id)
+        execution = self.load_execution_projection(episode_id)
+        report = self.load_report_projection(episode_id)
+        workflow["summary"] = _build_workflow_summary(workflow, research, design, execution, report)
+        return {
+            "episode_id": episode_id,
+            "workflow": workflow,
+            "pending_actions": self.load_pending_actions(episode_id),
+            "runs": self.load_run_projection(episode_id),
+            "artifacts": self.load_artifact_projection(episode_id),
+            "research": research,
+            "design": design,
+            "execution": execution,
+            "report": report,
+        }
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        rows = self.runtime.repositories.projects.connection.execute(
+            "SELECT * FROM projects ORDER BY created_at, project_id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_project_episodes(self, project_id: str) -> list[dict[str, Any]]:
+        episodes = self.runtime.repositories.episodes.list_by_project(project_id)
+        return [episode.to_dict() for episode in episodes]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowEventProjector:
+    def project_snapshot_events(self, workspace: dict[str, Any]) -> list[dict[str, Any]]:
+        workflow = workspace["workflow"]
+        events: list[dict[str, Any]] = [
+            {
+                "event_type": "workflow.phase_changed",
+                "episode_id": workspace["episode_id"],
+                "phase": workflow["current_phase"],
+                "updated_at": workflow["updated_at"],
+            },
+            {
+                "event_type": "workflow.progress_updated",
+                "episode_id": workspace["episode_id"],
+                "progress": workflow["progress"],
+                "updated_at": workflow["progress"]["updated_at"],
+            },
+            {
+                "event_type": "workflow.summary_updated",
+                "episode_id": workspace["episode_id"],
+                "summary": workflow["summary"],
+                "updated_at": workflow["updated_at"],
+            },
+        ]
+        if workflow["pending_interrupt"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.interrupt_pending",
+                    "episode_id": workspace["episode_id"],
+                    "interrupt": workflow["pending_interrupt"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        if workflow["pending_approval"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.approval_pending",
+                    "episode_id": workspace["episode_id"],
+                    "approval": workflow["pending_approval"],
+                    "updated_at": workflow["pending_approval"]["created_at"],
+                }
+            )
+        for run in workspace["runs"]:
+            events.append(
+                {
+                    "event_type": "workflow.run_status_changed",
+                    "episode_id": workspace["episode_id"],
+                    "run": run,
+                    "updated_at": run["completed_at"] or run["created_at"],
+                }
+            )
+        for artifact in workspace["artifacts"]:
+            events.append(
+                {
+                    "event_type": "workflow.artifact_available",
+                    "episode_id": workspace["episode_id"],
+                    "artifact": artifact,
+                    "updated_at": artifact["created_at"],
+                }
+            )
+        if workspace["report"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.report_available",
+                    "episode_id": workspace["episode_id"],
+                    "report": workspace["report"],
+                    "updated_at": workspace["report"]["updated_at"],
+                }
+            )
+        if workspace["research"]["evidence"] or workspace["research"]["summary"] is not None:
+            events.append(
+                {
+                    "event_type": "workflow.evidence_updated",
+                    "episode_id": workspace["episode_id"],
+                    "research": workspace["research"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        for turn in workspace["research"].get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.research_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
+        if workspace["design"].get("artifacts") or workspace["design"].get("artifact_workspace_summary"):
+            events.append(
+                {
+                    "event_type": "workflow.design_workspace_updated",
+                    "episode_id": workspace["episode_id"],
+                    "design": workspace["design"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        for turn in workspace["design"].get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.design_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
+        if workspace.get("execution", {}).get("latest_result") is not None:
+            events.append(
+                {
+                    "event_type": "workflow.execution_result_updated",
+                    "episode_id": workspace["episode_id"],
+                    "execution": workspace["execution"]["latest_result"],
+                    "updated_at": workflow["updated_at"],
+                }
+            )
+        for turn in workspace.get("execution", {}).get("turns", []):
+            events.append(
+                {
+                    "event_type": "workflow.execution_turn_recorded",
+                    "episode_id": workspace["episode_id"],
+                    "turn": turn,
+                    "updated_at": turn["created_at"],
+                }
+            )
+        return events
+
+    def project_delta_events(
+        self,
+        before: dict[str, Any] | None,
+        after: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if before is None:
+            return self.project_snapshot_events(after)
+
+        events: list[dict[str, Any]] = []
+        before_workflow = before["workflow"]
+        after_workflow = after["workflow"]
+
+        if before_workflow["current_phase"] != after_workflow["current_phase"]:
+            events.append(
+                {
+                    "event_type": "workflow.phase_changed",
+                    "episode_id": after["episode_id"],
+                    "phase": after_workflow["current_phase"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        if before_workflow["progress"] != after_workflow["progress"]:
+            events.append(
+                {
+                    "event_type": "workflow.progress_updated",
+                    "episode_id": after["episode_id"],
+                    "progress": after_workflow["progress"],
+                    "updated_at": after_workflow["progress"]["updated_at"],
+                }
+            )
+        if before_workflow.get("summary") != after_workflow.get("summary"):
+            events.append(
+                {
+                    "event_type": "workflow.summary_updated",
+                    "episode_id": after["episode_id"],
+                    "summary": after_workflow["summary"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        if before_workflow["pending_interrupt"] != after_workflow["pending_interrupt"]:
+            if after_workflow["pending_interrupt"] is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.interrupt_pending",
+                        "episode_id": after["episode_id"],
+                        "interrupt": after_workflow["pending_interrupt"],
+                        "updated_at": after_workflow["updated_at"],
+                    }
+                )
+        if before_workflow["pending_approval"] != after_workflow["pending_approval"]:
+            if after_workflow["pending_approval"] is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.approval_pending",
+                        "episode_id": after["episode_id"],
+                        "approval": after_workflow["pending_approval"],
+                        "updated_at": after_workflow["pending_approval"]["created_at"],
+                    }
+                )
+
+        before_run_ids = {run["run_id"] for run in before["runs"]}
+        for run in after["runs"]:
+            if run["run_id"] not in before_run_ids:
+                events.append(
+                    {
+                        "event_type": "workflow.run_status_changed",
+                        "episode_id": after["episode_id"],
+                        "run": run,
+                        "updated_at": run["completed_at"] or run["created_at"],
+                    }
+                )
+
+        before_artifact_ids = {artifact["artifact_id"] for artifact in before["artifacts"]}
+        for artifact in after["artifacts"]:
+            if artifact["artifact_id"] not in before_artifact_ids:
+                events.append(
+                    {
+                        "event_type": "workflow.artifact_available",
+                        "episode_id": after["episode_id"],
+                        "artifact": artifact,
+                        "updated_at": artifact["created_at"],
+                    }
+                )
+        if before["research"] != after["research"]:
+            events.append(
+                {
+                    "event_type": "workflow.evidence_updated",
+                    "episode_id": after["episode_id"],
+                    "research": after["research"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        before_research_turn_ids = {
+            (turn["turn_index"], turn["action_kind"], turn["created_at"])
+            for turn in before["research"].get("turns", [])
+        }
+        for turn in after["research"].get("turns", []):
+            key = (turn["turn_index"], turn["action_kind"], turn["created_at"])
+            if key not in before_research_turn_ids:
+                events.append(
+                    {
+                        "event_type": "workflow.research_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
+                    }
+                )
+        if before["design"] != after["design"]:
+            events.append(
+                {
+                    "event_type": "workflow.design_workspace_updated",
+                    "episode_id": after["episode_id"],
+                    "design": after["design"],
+                    "updated_at": after_workflow["updated_at"],
+                }
+            )
+        if before["design"].get("turns") != after["design"].get("turns"):
+            before_count = len(before["design"].get("turns", []))
+            for turn in after["design"].get("turns", [])[before_count:]:
+                events.append(
+                    {
+                        "event_type": "workflow.design_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
+                    }
+                )
+        if before.get("execution") != after.get("execution"):
+            latest_result = after.get("execution", {}).get("latest_result")
+            if latest_result is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.execution_result_updated",
+                        "episode_id": after["episode_id"],
+                        "execution": latest_result,
+                        "updated_at": after_workflow["updated_at"],
+                    }
+                )
+            before_count = len(before.get("execution", {}).get("turns", []))
+            for turn in after.get("execution", {}).get("turns", [])[before_count:]:
+                events.append(
+                    {
+                        "event_type": "workflow.execution_turn_recorded",
+                        "episode_id": after["episode_id"],
+                        "turn": turn,
+                        "updated_at": turn["created_at"],
+                    }
+                )
+        if before.get("report") != after.get("report"):
+            if after.get("report") is not None:
+                events.append(
+                    {
+                        "event_type": "workflow.report_available",
+                        "episode_id": after["episode_id"],
+                        "report": after["report"],
+                        "updated_at": after["report"]["updated_at"],
+                    }
+                )
+        return events

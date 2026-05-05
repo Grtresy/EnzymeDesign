@@ -1,0 +1,4 @@
+projects_root = "./tmp/project-memory"
+
+[projects]
+# demo = "/absolute/path/to/demo-project"

@@ -1,0 +1,33 @@
+[project]
+name = "mcp-hpc-tool-contracts"
+version = "0.1.0"
+description = "Tool-contract compiler and MCP server for HPC adapter runs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+mcp-hpc-tool-contracts = "mcp_hpc_tool_contracts.cli:main"
+mcp-hpc-tool-contracts-server = "mcp_hpc_tool_contracts.server:main"
+mcp-hpc-tool-contracts-integration = "mcp_hpc_tool_contracts.integration:main"
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_hpc_tool_contracts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+  "integration: opt-in tests requiring reachable HPC resources",
+  "slow: GPU adapter tests that take 5-25 min to complete",
+]

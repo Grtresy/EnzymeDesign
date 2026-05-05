@@ -1,0 +1,11 @@
+{
+  "name": "openzyme-web-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "serve:host": "uv --project ../../apps/openzyme-host-api run python -m openzyme_host_api.dev_web_ui",
+    "test": "node --test tests/*.test.js"
+  }
+}

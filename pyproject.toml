@@ -1,0 +1,39 @@
+[tool.uv.workspace]
+members = [
+  "apps/mcp-hpc-runner",
+  "apps/openzyme-host-api",
+  "apps/openzyme-host-cli",
+  "packages/openzyme-core",
+  "packages/openzyme-domain",
+  "packages/openzyme-engines",
+  "packages/openzyme-execution",
+  "packages/openzyme-pipeline",
+  "packages/openzyme-graph",
+  "packages/preprocess-backend",
+  "packages/openzyme-research",
+  "packages/openzyme-runtime",
+  "packages/openzyme-storage",
+  "packages/openzyme-tools",
+]
+
+[tool.uv.sources]
+mcp-hpc-runner = { workspace = true }
+openzyme-host-api = { workspace = true }
+openzyme-host-cli = { workspace = true }
+openzyme-core = { workspace = true }
+openzyme-domain = { workspace = true }
+openzyme-engines = { workspace = true }
+openzyme-execution = { workspace = true }
+openzyme-pipeline = { workspace = true }
+openzyme-graph = { workspace = true }
+preprocess-backend = { workspace = true }
+openzyme-research = { workspace = true }
+openzyme-runtime = { workspace = true }
+openzyme-storage = { workspace = true }
+openzyme-tools = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0.0",
+  "ruff>=0.11.0",
+]

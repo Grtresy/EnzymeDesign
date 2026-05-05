@@ -1,0 +1,112 @@
+# OpenZyme V3 Top-Level LLM Loop
+
+## 1. 目标
+
+本文定义 V3 顶层真实 LLM master-agent harness loop 的实现边界。
+
+它只描述 master agent 如何在顶层会话回合中与模型、tools、memory、workspace projection 协作，不描述 capability engine 或 teammate agent 内部 loop 的细节。
+
+## 2. 基本原则
+
+- 顶层 loop 由 OpenZyme 自己维护
+- 顶层只复用 LangChain / LangGraph 的模型接入与 tool-calling 能力
+- 顶层不引入新的 graph / agent orchestration
+- capability engine 内部可以继续使用 LangGraph
+- conversation、task、lane、approval、memory、engine invocation 仍以 control plane 为真状态
+- 顶层 loop 的职责是支撑 master agent 与用户对话、编排 task、发起 delegation，而不是直接承担所有具体工作执行
+- 顶层 loop 默认不直接扮演 teammate worker；delegation 后的具体推进应由 teammate loop 在共享 workspace 上继续完成
+
+一句话约束：
+
+`Top-level harness loop stays custom. Reuse LangChain for model binding and tool-calling only.`
+
+## 3. 顶层回合流程
+
+```text
+user message
+  -> persist message content + inbox envelope
+  -> build restore context
+  -> call top-level master-agent model with V3 tool catalog
+  -> tool calls?
+       yes -> dispatch tools -> persist side effects -> feed tool results back into model
+       no  -> persist assistant output and end turn
+  -> waiting state?
+       approval / delegation -> persist wait state and return
+  -> auto compact
+  -> project workspace
+```
+
+After every tool call, master must first read the tool-result envelope fields `ok`, `status`, `summary`, `error_code`, `hint`, and `details`.
+
+- if `ok=false`, master must not assume the requested action completed
+- if `status` is `recipient_not_found`, master should choose an existing agent id or a valid role alias
+- if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
+- if `status` is `no_response_within_bound`, master should inspect the thread or continue asynchronously instead of inventing a teammate response
+- if `status` is `runtime_failed` or `max_steps_exceeded`, master should inspect `runtime_outcomes` and may ask a focused diagnostic question
+
+## 4. 顶层模型接入
+
+顶层模型接入直接复用现有 OpenAI-compatible / LangChain 封装：
+
+- chat model 初始化
+- `bind_tools(...)`
+- tool-calling response 解析
+
+顶层不使用：
+
+- 顶层 `StateGraph`
+- 顶层 graph node / edge orchestration
+- graph checkpoint 作为产品顶层状态真源
+
+## 5. 顶层允许暴露给模型的工具
+
+首批默认暴露工具集：
+
+- `task.create`
+- `task.update`
+- `task.get`
+- `task.list`
+- `task.next`
+- `task.delegate`
+- `memory.compact`
+- `docs.search`
+- `docs.read`
+
+默认使用原则：
+
+- 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
+- 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
+- 顶层模型不应把用户请求直接裸翻译成 capability invocation
+- `deep_research.start`、`execution.pipeline.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
+- 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning
+- reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
+
+首批不默认暴露给模型的高风险操作：
+
+- `lane.remove`
+- `lane.keep`
+- `lane.unbind_task`
+- 直接 engine start tools such as `deep_research.start`, `execution.pipeline.start`
+
+## 6. Conversation 与 Projection
+
+- user / assistant message content 必须被持久化
+- `workspace.conversation` 是 canonical chat read model
+- conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
+- waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
+- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后唤醒 executor，由 executor 写入 task/protocol result。随后 Host 只继续一次 top-level master loop，由 master 基于 restore context 和 `protocol.thread(correlation_id)` 向用户汇报 fpocket 等工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
+- streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
+- UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
+
+## 7. Compaction 规则
+
+- auto compaction 默认写入 `session` scope
+- 有 focused lane 时同时写入 `lane` scope
+- `task` scope compaction 仍保留显式 tool 或高价值触发
+- compaction 不得替代 canonical conversation / task / approval / lane state
+
+## 8. 测试
+
+- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认走真实顶层 LLM driver
+- live LLM smoke 至少覆盖一次真实 tool call
+- 顶层单回合 tool call 并发上限固定为 `3`

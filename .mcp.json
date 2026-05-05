@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "mcp-preprocess": {
+      "type": "stdio",
+      "command": "/home/grtresy/VSCodeRepo/EnzymeDesign/.venv/bin/mcp-preprocess-server",
+      "args": [],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,33 @@
+[project]
+name = "mcp-preprocess"
+version = "0.1.0"
+description = "MCP stdio server for local molecular preprocessing"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "preprocess-backend",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+mcp-preprocess = "mcp_preprocess.cli:main"
+mcp-preprocess-server = "mcp_preprocess.server:main"
+
+[tool.uv.sources]
+preprocess-backend = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_preprocess"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,92 @@
+{
+  "workflow_projection": {
+    "required_fields": [
+      "episode_id",
+      "project_id",
+      "objective",
+      "current_phase",
+      "progress",
+      "summary",
+      "pending_interrupt",
+      "pending_approval"
+    ]
+  },
+  "research_projection": {
+    "required_fields": [
+      "summary",
+      "evidence",
+      "source_refs",
+      "unresolved_gaps"
+    ]
+  },
+  "design_projection": {
+    "required_fields": [
+      "artifacts",
+      "artifact_workspace_summary",
+      "focused_artifact_ids"
+    ]
+  },
+  "run_projection": {
+    "required_fields": [
+      "run_id",
+      "episode_id",
+      "status",
+      "execution_mode",
+      "created_at",
+      "completed_at"
+    ]
+  },
+  "artifact_projection": {
+    "required_fields": [
+      "artifact_id",
+      "episode_id",
+      "run_id",
+      "kind",
+      "storage_uri",
+      "created_at"
+    ]
+  },
+  "report_projection": {
+    "required_fields": [
+      "report_id",
+      "episode_id",
+      "status",
+      "artifact_id",
+      "summary",
+      "stage_summary",
+      "updated_at"
+    ]
+  },
+  "phase_b_closed_loop": {
+    "required_fields": [
+      "episode_id",
+      "current_phase",
+      "progress",
+      "pending_interrupt",
+      "pending_approval",
+      "runs",
+      "artifacts",
+      "report"
+    ]
+  },
+  "phase_c_workspace": {
+    "required_fields": [
+      "episode_id",
+      "workflow",
+      "pending_actions",
+      "runs",
+      "artifacts",
+      "research",
+      "design",
+      "report"
+    ]
+  },
+  "phase_d_workspace": {
+    "required_fields": [
+      "projects",
+      "episodes",
+      "workspace",
+      "report"
+    ]
+  }
+}

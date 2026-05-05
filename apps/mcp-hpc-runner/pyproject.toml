@@ -1,0 +1,35 @@
+[project]
+name = "mcp-hpc-runner"
+version = "0.1.0"
+description = "Local MCP server for SSH and Slurm-backed HPC execution"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+mcp-hpc-runner = "mcp_hpc_runner.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_hpc_runner"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/mcp_hpc_runner/contracts" = "mcp_hpc_runner/contracts"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+  "integration: opt-in tests requiring real external integrations",
+  "live_hpc: opt-in tests that call a reachable HPC runner or cluster",
+  "slow: longer-running tests that are not part of fast default feedback loops",
+]
