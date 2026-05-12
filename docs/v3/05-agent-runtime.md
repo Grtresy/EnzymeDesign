@@ -76,23 +76,23 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成或失败时只写 task state 与同一 correlation thread 上的 `delegation_result` / diagnostic response。Host drain 发现 terminal teammate outcome 后，最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责暂停/恢复 execution，不改变这一回流拓扑。
+teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` / diagnostic response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。显式 Host runtime drain 发现 terminal teammate outcome 后，当前实现最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master follow-up。
 
 ### Failed Delegation Diagnostic Flow
 
 失败委托的默认恢复路径由 master 主动发起，不由 `task.delegate` 或 protocol tool 自动追问：
 
 ```text
-task.delegate returns failed / max_steps_exceeded / unclear summary
+explicit runtime drain or protocol.thread shows failed / max_steps_exceeded / unclear summary
   -> master inspects protocol.thread(correlation_id)
   -> master sends protocol.send(message_type="diagnostic_request", recipient=failed teammate)
   -> protocol persists unread inbox + inbox_unread wakeup signal
-  -> runtime wakes the same resident teammate with task/lane/correlation focus
-  -> restore context renders the diagnostic question, failed summary, expected response, sender, message type and correlation id
+  -> an explicit scheduler/runtime drain wakes the same resident teammate with task/lane/correlation focus
+  -> restore context / seed message includes the protocol thread payload; runtime does not generate message-type-specific diagnostic instructions
   -> teammate replies on the same thread with diagnostic_response or delegation_result
 ```
 
-`protocol.send` may set bounded `await_response=true` when master wants one immediate diagnostic turn. This is a best-effort drain of the wakeup signal and must return the message, signal updates, runtime outcomes, and refreshed thread. The default is `await_response=false`, so ordinary teammate-to-teammate messages only enqueue work.
+`protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; if a bounded teammate turn is required, it must be performed through an explicit scheduler/runtime drain action.
 
 `protocol.send` recipient resolution:
 
@@ -104,12 +104,11 @@ task.delegate returns failed / max_steps_exceeded / unclear summary
 Delivery success semantics:
 
 - non-agent recipient: persisted message is `ok=true/status=delivered`
-- agent recipient with `await_response=false`: an `inbox_unread` wakeup signal must exist for `ok=true/status=wakeup_queued`
-- agent recipient with `await_response=true`: the bounded drain must either produce a response thread (`status=responded`) or return `status=no_response_within_bound` with a hint
+- agent recipient: an `inbox_unread` wakeup signal must exist for `ok=true/status=wakeup_queued`
 - persisted message without a wakeup signal is `ok=false/status=wakeup_not_created/error_code=wakeup_signal_missing`
-- failed or exhausted runtime outcomes return `ok=false/status=runtime_failed` or `ok=false/status=max_steps_exceeded` and include `runtime_outcomes`
+- attempts to pass synchronous execution parameters return `ok=false/status=sync_execution_not_supported`
 
-Diagnostic payloads must at least support `question`, `instructions`, `task_id`, `failed_summary`, and `expected_response`; `lane_id` should be included when the failed task is lane-bound. A diagnostic wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly completes work or the runtime can recover a successful result from workspace state.
+Diagnostic payloads must at least support `question`, `instructions`, `task_id`, `failed_summary`, and `expected_response`; `lane_id` should be included when the failed task is lane-bound. A diagnostic wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly updates it through `task.update`; protocol messages are diagnostic context, not task terminal state.
 
 ## 5. Task Auto-Claim
 
@@ -121,7 +120,7 @@ idle teammate 可以自动扫描 task board 并认领工作，但必须受 contr
 - task 未被其他 active teammate claim，或满足显式抢占规则
 - priority、dependency 与 lane availability 允许执行
 
-auto-claim 成功后，runtime 将 teammate 状态改为 `working`，把 claim 作为 wakeup reason 写入 restore context，并在 workspace projection 中反映 task owner 与 teammate focus。
+auto-claim 成功后，runtime 将 task owner 设为该 teammate，并可机械地把 `todo` / `blocked` task 推进到 `in_progress`。runtime 将 teammate 状态改为 `working`，把 claim 作为 wakeup reason 写入 restore context，并在 workspace projection 中反映 task owner 与 teammate focus。除 task claim 和 pending approval 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.update` 写入。
 
 master delegation 仍然存在；auto-claim 是减少 master 微管理的补充机制，不是取消 master 的 team leader 职责。
 
@@ -144,8 +143,8 @@ master delegation 仍然存在；auto-claim 是减少 master 微管理的补充�
 - 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
 - approval resolved 是唤醒 resident teammate 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
-- task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后正常完成 task，失败执行只在明确不可修复时由 executor 写入 `status=failed`、`failure_summary` 与 `failure_ref`。
-- 如果 bounded loop 到达 max steps，但 protocol thread、task state 或 artifact 已显示工作完成，runtime 应优先恢复并交付 completion，而不是只把 delegation 标记为失败。
+- task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.update(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 写入 `status="failed"`、`failure_summary` 与 `failure_ref`。
+- 如果 bounded loop 到达 max steps，runtime 可以标记 runtime signal / agent 状态为 failed，但不能据此推断 task 业务终态；master 或 teammate 应通过 protocol thread、task state 与 artifacts 决定下一步。
 - 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
 - failed teammate 的 task 应回到可诊断状态，由 master 或其他 teammate 接管，workspace projection 必须显示失败原因与关联 thread。
@@ -156,8 +155,7 @@ Workspace projection 中的 `delegation` 不应只表达最近一次 `task.deleg
 
 - agent identity、role、status、task/lane focus
 - current correlation id 与最新 message type
-- unread inbox count 或 blocked reason
-- last active time、idle since、wakeup reason
+- last active time、idle since
 - shutdown / failed 状态与可诊断摘要
 
-UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。等待 approval 时，approval card 与 `workspace.pending_approvals` 是 canonical UI 信号；后端不得把 waiting approval 表述成最终完成消息。
+UI 可以保持 conversation-first，不需要把 agent runtime 暴露成运维控制台；但用户和开发者必须能看出 teammate 是 working、idle、blocked、failed 还是 waiting approval。默认用户 workspace 不展示 raw pending signal count、unread inbox count 或 wakeup reason；这些低层字段只属于 event/debug/diagnostic 视图。等待 approval 时，approval card 与 `workspace.pending_approvals` 是 canonical UI 信号；后端不得把 waiting approval 表述成最终完成消息。

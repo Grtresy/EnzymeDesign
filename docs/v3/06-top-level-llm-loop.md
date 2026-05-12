@@ -41,8 +41,9 @@ After every tool call, master must first read the tool-result envelope fields `o
 - if `ok=false`, master must not assume the requested action completed
 - if `status` is `recipient_not_found`, master should choose an existing agent id or a valid role alias
 - if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
-- if `status` is `no_response_within_bound`, master should inspect the thread or continue asynchronously instead of inventing a teammate response
-- if `status` is `runtime_failed` or `max_steps_exceeded`, master should inspect `runtime_outcomes` and may ask a focused diagnostic question
+- if `status` is `sync_execution_not_supported`, master should remove synchronous protocol execution arguments and rely on the scheduler/runtime drain path
+- if `task.delegate` returns `wakeup_queued`, master should treat delegation as queued, not completed; teammate execution requires an explicit scheduler/runtime drain command
+- if a later explicit drain or protocol thread shows `max_steps_exceeded` / failure or an unclear summary, master should inspect `protocol.thread(correlation_id)` and may send a focused `diagnostic_request`
 
 ## 4. 顶层模型接入
 
@@ -94,7 +95,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - `workspace.conversation` 是 canonical chat read model
 - conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
-- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后唤醒 executor，由 executor 写入 task/protocol result。随后 Host 只继续一次 top-level master loop，由 master 基于 restore context 和 `protocol.thread(correlation_id)` 向用户汇报 fpocket 等工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
+- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。显式 scheduler/runtime drain 恢复 executor；executor 读取 workspace evidence，并通过 `task.update` 与 protocol result 显式写入业务结果。随后当前实现只在该显式 drain command 内继续一次 top-level master loop，由 master 基于 restore context 和 `protocol.thread(correlation_id)` 向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 

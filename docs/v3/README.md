@@ -20,6 +20,10 @@ V3 的核心立场：
 5. [04-public-interfaces.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/04-public-interfaces.md)
 6. [05-migration-roadmap.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/05-migration-roadmap.md)
 
+架构审计与后续修正追踪：
+
+- [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
+
 按对话执行的任务包：
 
 1. [sessions/01-doc-pack.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/01-doc-pack.md)
@@ -42,6 +46,7 @@ Execution pipeline SDK docs:
 执行约束：
 
 - 后续 AI 在开始 V3 工作前，必须先读本目录至少 `README + doctrine + 对应 session 文档`。
+- 涉及 V3 harness、agent runtime、protocol、scheduler 或 Host API 编排边界的修改，必须先读 `harness-complexity-audit.md`，并在修正对应问题后更新其中的复选框。
 - 若实现选择与这些文档冲突，应优先更新文档并解释偏差，不能静默偏离。
 - 若涉及对现有 `docs/OpenZyme架构设计.md` 的回写，必须单独征求用户确认。
 - 实现 V3 execution 前必须先读 `sessions/09-execution-engine.md`；不得继续依赖“Host 本地 artifact path 直接作为 HPC command path”的旧行为。

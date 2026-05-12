@@ -1,0 +1,151 @@
+# OpenZyme V3 Harness 复杂度审计
+
+## 1. 文档目的
+
+本文记录架构探索过程中发现的 V3 harness 复杂度风险。
+
+本文是追踪文档，不是实现变更。每个发现项前面都带复选框。后续 change 修正一个或多个问题后，应回到本文勾选对应项，并补充简短说明或 change / PR 引用。
+
+默认校准目标：
+
+**OpenZyme V3 应采用严格 harness 边界。**
+
+Harness 负责 tools、state、permissions、recovery、projection 和 execution boundaries。Master agent 与 teammate agents 负责用户意图理解、任务拆解、完成判断、诊断策略和下一步决策。
+
+## 2. 评审规则
+
+评审或修改 V3 时，使用以下规则：
+
+- Harness 应提供世界，而不是编码业务判断。
+- Control-plane 对象应保持稳定名词：`session`、`task`、`lane`、`approval`、`artifact`、`run`、`report`、`inbox`、`memory` 和 `workspace_projection`。
+- Tool 应保持原子、可组合；避免把多步策略隐藏在 tool handler 里。
+- Scheduler / runtime 可以唤醒 agent 并执行边界约束，但不应决定业务完成状态或修复策略。
+- Protocol 是通用通信机制，不应拥有领域特定的 diagnostic 或 HPC retry policy。
+- 即使替换 LangGraph 或模型适配层，V3 产品级真状态也应继续成立。
+
+## 3. 发现项
+
+- [x] `AgentRuntimeService` 直接把 teammate loop 结果映射为 task 终态或阻塞态。
+
+  证据：`packages/openzyme-core/src/openzyme_core/agent_runtime.py` 基于 `run_teammate_loop` / `finalize_teammate_result` 的结果，将 task 状态更新为 `COMPLETED`、`BLOCKED`，或进入失败处理路径。
+
+  Doctrine 风险：task 是否完成变成 runtime 推断，而不是 agent 通过 `task.update` 做出的显式决策。
+
+  目标边界：runtime 可以标记 runtime signal completed / failed，也可以标记 agent working / idle / blocked。业务 task 状态原则上应只通过显式 task tool 改变，或通过极少数已文档化的机械状态迁移改变。
+
+  后续修正方向：要求 teammate loop 显式调用 `task.update` 写入 task 终态；或者定义一份最小、明确、已文档化的 runtime 机械状态迁移例外清单。
+
+  修正记录：已收窄 runtime 状态写入。`AgentRuntimeService.wake_agent()` 不再根据 teammate `final_status` 自动写 `COMPLETED` / failure-derived `BLOCKED`；teammate 需通过 `task.update` 显式写业务终态。保留的机械迁移为 task claim 时进入 `IN_PROGRESS`，以及 pending approval 时进入 `BLOCKED`。
+
+- [x] Host API 在用户消息和 task 更新后隐式 drain agent runtime。
+
+  证据：`apps/openzyme-host-api/src/openzyme_host_api/v3_service.py` 曾在 `post_message()`、`create_task()` 和 `update_task()` 中调用 runtime drain。
+
+  Doctrine 风险：Host API 开始像 orchestration engine 一样，把用户消息处理、teammate wakeup 和后续工作串在一次 service call 里。
+
+  目标边界：Host API 应暴露清晰命令，例如 post message、resolve approval、drain pending signals、read projection。隐式 drain 应被视为策略，而不是隐藏副作用。
+
+  后续修正方向：在 API / service 命名中显式表达 runtime drain 行为，或将其移动到一个文档化的 scheduler command 后面。
+
+  修正记录：已移除 `create_task()` / `update_task()` / `post_message()` 的隐式 drain。`task.delegate` 现在只创建 protocol delegation、resident teammate 与 wakeup signal；bounded teammate turn 只能通过 `POST /v3/sessions/{session_id}/runtime/drain` 显式执行。
+
+- [x] Host API 在 teammate 终态结果后触发 master follow-up。
+
+  证据：`V3HostApiService._run_master_followup_after_teammates()` 会在 teammate outcomes 后启动另一次 top-level master loop。
+
+  Doctrine 风险：service 代码决定“teammate 终态结果应触发 master response turn”。这是产品 workflow policy，被嵌入 Host service 逻辑。
+
+  目标边界：master follow-up 应是 master agent 消费的显式 scheduler event，或是一条范围很小、已文档化的 harness rule。
+
+  后续修正方向：将 teammate result 表达为 inbox / protocol state 加 master wakeup signal，让 master loop 自己决定是否回复以及如何回复。
+
+  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master follow-up。当前实现保留一次 master follow-up，但只在显式 `runtime/drain` scheduler command 内、且 drain 产生 terminal teammate outcome 时运行。
+
+- [x] `protocol.send(await_response=true)` 同时承担消息投递和同步 teammate 执行。
+
+  证据：`packages/openzyme-core/src/openzyme_core/protocol_tools.py` 在 `await_response=true` 时，会在 `protocol.send` 内部调用 `AgentRuntimeService.drain_session()`。
+
+  Doctrine 风险：通信 tool 变成同步 workflow runner。protocol 语义更难推理，inbox delivery 也和 runtime execution 耦合。
+
+  目标边界：`protocol.send` 应持久化消息并排队 wakeup。运行 recipient 应是单独的 runtime / scheduler action，除非明确文档化为测试或受限便利路径。
+
+  后续修正方向：从正常 protocol 语义中移除 `await_response`，或拆成单独的 `runtime.drain` / `agent.resume` tool 或 API。
+
+  修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，需要显式 runtime drain 才会运行 agent。
+
+- [ ] Delegation 存在多条重叠路径。
+
+  证据：V3 同时存在 `task.delegate`、`HarnessStep.delegation_requests` 和 `ProtocolService.delegate()`，它们都能创建 delegation 相关状态。
+
+  Doctrine 风险：多条 delegation seam 会增加不同路径写出不同 task、inbox、protocol 和 signal 行为的概率。
+
+  目标边界：delegation 应只有一条 canonical control-plane write path。其他接口应调用这条路径，或被移除。
+
+  后续修正方向：选择 `ProtocolService.delegate()` 或一个单一 delegation service 作为 canonical path，然后让 `task.delegate` 和任何 harness step abstraction 都路由到它。
+
+- [x] Runtime 包含领域特定 diagnostic 和 HPC retry 指令。
+
+  证据：`AgentRuntimeService._instructions_for_signal()` 包含 execution approval recovery、HPC failure handling、retry advice 和 diagnostic-request prompting 等指导。
+
+  Doctrine 风险：scheduler / runtime 正在编码 executor reasoning policy。领域策略应属于 teammate prompt、docs、tool result 或 agent 决策，而不是 runtime。
+
+  目标边界：runtime 应注入 wakeup reason 和相关结构化证据，但不应规定领域修复策略，安全边界除外。
+
+  后续修正方向：将 execution / HPC diagnostic policy 移到 executor system prompt、execution docs 或结构化 tool result hints 中。
+
+  修正记录：已移除 runtime 中关于 HPC retry、等价重试禁止、具体失败处置和 fpocket 输出摘要的策略性指令。runtime 只注入 approval、task、invocation/status、artifact 与 sanitized failure evidence 等恢复事实。
+
+- [x] Diagnostic request 语义在 protocol 和 runtime 中被特殊处理。
+
+  证据：`protocol.send` 会为 diagnostic messages 校验 focused task；`AgentRuntimeService._is_diagnostic_signal()` 会改变 diagnostic signals 的 task completion 行为。
+
+  Doctrine 风险：通用 team protocol 积累了 failed delegation repair 的 workflow-specific behavior。
+
+  目标边界：diagnostic messages 应只是普通 protocol payload。特殊含义应由接收 agent 解释，而不是由 protocol / runtime infrastructure 解释。
+
+  后续修正方向：保留 `message_type=diagnostic_request` 作为数据；移除 runtime 状态例外，除非这些例外被明确文档化为机械安全规则。
+
+  修正记录：已移除 `AgentRuntimeService._is_diagnostic_signal()` 及其对 task completion / blocked 迁移的例外影响；同时移除了 `_instructions_for_signal()` 中按 `message_type=diagnostic_request` 生成专门 prompt 文案的分支。`diagnostic_request` 仅作为普通 protocol payload 出现在 thread / restore context 中，由接收 teammate 解释。
+
+- [ ] Auto-claim 行为有演变成业务优先级策略的风险。
+
+  证据：`AgentRuntimeService.auto_enqueue_ready_tasks()` 会扫描 ready tasks，将 task kind 映射到 teammate role，并为 idle agents 排队 wakeup signals。
+
+  Doctrine 风险：auto-claim 是有用的 harness 机制，但如果继续增长策略，就可能替代 master / teammate 的优先级判断。
+
+  目标边界：auto-claim 只应做窄范围机械匹配：ready task、无 owner、role match、idle agent、无 blockers。
+
+  后续修正方向：保持 auto-claim policy 最小化并写入文档。任何更复杂的优先级判断都应交给 master 或 teammate。
+
+- [ ] Top-level 与 teammate prompts 依赖嵌在代码里的恢复策略。
+
+  证据：`packages/openzyme-core/src/openzyme_core/llm_driver.py` 和 `packages/openzyme-core/src/openzyme_core/teammates.py` 构建较长 operational prompts，其中包含 delegation failure、protocol inspection 和 execution behavior 等具体规则。
+
+  Doctrine 风险：prompt construction 是合理的 harness 职责，但散落在代码里的 policy 比 docs / tool descriptions 更难审计和演进。
+
+  目标边界：代码应负责组装 restore context 和稳定 role instructions；可变 operational doctrine 应放在 V3 文档或类似 skill 的受控文档中。
+
+  后续修正方向：将高层 operational rules 抽取到版本化 V3 docs 中，让代码里的 prompt assembly 保持轻量。
+
+- [x] Workspace projection 暴露的 runtime internals 可能变成产品界面语义。
+
+  证据：UI 和 projection 暴露 delegation agent status、pending signal counts、wakeup reasons、unread inbox counts 和 protocol thread summaries。
+
+  Doctrine 风险：projection 应让工作状态可理解，但不应把内部 scheduler queues 变成用户可见产品语义，除非这是有意设计。
+
+  目标边界：UI 可以展示 teammate working / idle / blocked / failed 和 pending approval state。低层 runtime counters 默认应保留为 developer / debug detail，除非用户需要它们来采取行动。
+
+  后续修正方向：拆分用户侧 projection 与 debug projection，或明确把 runtime internals 标注为 diagnostic-only。
+
+  修正记录：默认 delegation projection / Web UI 不再暴露 `pending_signal_count`、raw `wakeup_reason`、`latest_signal_reason` 和 unread inbox count 作为用户界面语义；低层 runtime signal 仍保留在 event/debug 路径中用于诊断。
+
+## 4. 后续工作流
+
+每次后续简化时：
+
+1. 选择一个 checklist item，或一小组强相关 item。
+2. 创建 focused implementation task。
+3. 为目标 harness 边界补充或更新测试。
+4. 实现完成后，回到本文勾选对应项，并补充简短说明或 change / PR 引用。
+
+不要静默删除发现项。如果某个发现项被有意接受为产品策略，应保留该项并勾选，同时说明接受原因。

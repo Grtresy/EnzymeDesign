@@ -24,11 +24,21 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `POST /v3/sessions`
 - `GET /v3/sessions/{session_id}`
 - `POST /v3/sessions/{session_id}/messages`
+- `POST /v3/sessions/{session_id}/runtime/drain`
 - `GET /v3/sessions/{session_id}/workspace`
 - `GET /v3/sessions/{session_id}/events`
 - `POST /v3/approvals/{approval_id}/resolve`
 
-`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，runtime signal 唤醒对应 resident teammate、harness 或 execution supervisor 内部恢复路径；在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution 和必要的 execution continuation 状态；若需要 resident teammate 继续工作，则排队 runtime signal，由显式 runtime drain 执行恢复。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
+
+`POST /v3/sessions/{session_id}/runtime/drain` 是显式 scheduler/runtime command，用于 bounded teammate runtime turn。请求字段：
+
+- `max_signals: int = 3`
+- `max_steps_per_agent: int = 8`
+- `auto_enqueue_ready_tasks: bool = true`
+- `run_master_followup: bool = true`
+
+该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -50,7 +60,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `protocol.thread`
 - `protocol.send`
 
-这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败、`max_steps_exceeded` 或摘要不足时发送 `diagnostic_request`。workspace projection 继续通过 `delegation`、`inbox` 与 `activity_feed` 展示 unread、wakeup、thread 与 responded 状态。
+这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败、`max_steps_exceeded` 或摘要不足时发送 `diagnostic_request`。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；如果需要 bounded teammate turn，必须由显式 scheduler/runtime drain action 执行。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 teammate 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
 
 默认内部只读文档工具还应包括：
 
@@ -66,7 +76,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.content` field remains available for compatibility, but tool messages fed back into master/teammate models are serialized as JSON with at least:
 
 - `ok`: whether the tool's core semantic action completed
-- `status`: machine-readable outcome such as `delivered`, `wakeup_queued`, `responded`, `recipient_not_found`, `runtime_failed`
+- `status`: machine-readable outcome such as `delivered`, `wakeup_queued`, `recipient_not_found`, `wakeup_not_created`, `sync_execution_not_supported`
 - `summary`: short human-readable outcome
 - `error_code`: stable failure code, or `null`
 - `hint`: actionable next step, or `null`
@@ -98,11 +108,11 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 说明：
 
-- `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation、engine 调用与 report draft 推进
+- `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation request 排队、report draft 推进等顶层 master loop 行为；它不隐式执行 bounded teammate runtime drain
 - 当 `model_factory` 可用时，该入口默认走真实 top-level LLM harness driver
 - Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 master agent 在 loop 中创建和编排，再通过 workspace projection 展示
-- task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台
-- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol / wakeup 状态
+- task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台；task create/update endpoint 是 control-plane mutation，不应隐式 drain agent runtime
+- V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol 的用户可理解状态；低层 wakeup queues 和 signal counters 默认留在 debug/event 面
 - 默认主路径是 `conversation -> master planning -> task -> resident teammate wakeup -> teammate work surface -> user feedback`，而不是用户消息直接裸触发 capability
 
 ## 3. Workspace Contract
@@ -140,7 +150,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
-- `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread、unread inbox count、wakeup reason 与 last active time
+- `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread 与 last active time。默认用户 projection 不暴露 unread inbox count、pending signal count 或 raw wakeup reason；这些属于 diagnostic-only 信息
 - `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
