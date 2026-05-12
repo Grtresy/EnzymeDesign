@@ -12,8 +12,6 @@ from .conversation import load_recent_conversation
 from .conversation import persist_conversation_message
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
-from .harness import DelegationHandle
-from .harness import DelegationRequest
 from .harness import HarnessDriver
 from .harness import HarnessEvent
 from .harness import HarnessInput
@@ -126,10 +124,8 @@ __all__ = [
     "DocumentRecord",
     "DocumentRegistry",
     "DelegationEnvelope",
-    "DelegationHandle",
     "DelegationProjection",
     "DelegationProjectionItem",
-    "DelegationRequest",
     "EngineDescriptor",
     "EngineDocumentRecord",
     "EngineDocumentRepository",

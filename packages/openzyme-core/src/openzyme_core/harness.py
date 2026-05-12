@@ -10,8 +10,6 @@ from typing import Callable
 from typing import Protocol
 from uuid import uuid4
 
-from openzyme_domain import AgentMember
-from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
@@ -62,7 +60,6 @@ class HarnessStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     WAITING_APPROVAL = "waiting_approval"
-    WAITING_DELEGATION = "waiting_delegation"
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
 
 
@@ -241,25 +238,6 @@ class ToolResult:
 
 
 @dataclass(frozen=True, slots=True)
-class DelegationRequest:
-    request_id: str
-    session_id: str
-    recipient: str
-    payload_ref: str | None
-    task_id: str | None = None
-    lane_id: str | None = None
-    correlation_id: str | None = None
-    recipient_kind: InboxParticipantKind = InboxParticipantKind.AGENT
-
-
-@dataclass(frozen=True, slots=True)
-class DelegationHandle:
-    request_id: str
-    message_id: str
-    correlation_id: str | None
-
-
-@dataclass(frozen=True, slots=True)
 class HarnessStep:
     assistant_message: str | None = None
     tool_invocations: tuple[ToolInvocation, ...] = ()
@@ -268,7 +246,6 @@ class HarnessStep:
     approval_requests: tuple[ApprovalRequest, ...] = ()
     memory_entries: tuple[MemoryEntry, ...] = ()
     engine_invocations: tuple[EngineInvocation, ...] = ()
-    delegation_requests: tuple[DelegationRequest, ...] = ()
     session_status: SessionStatus | None = None
     next_focus: RestoreFocus | None = None
 
@@ -428,7 +405,6 @@ class HarnessResult:
     outputs: tuple[str, ...]
     tool_results: tuple[ToolResult, ...]
     pending_approval_id: str | None = None
-    delegations: tuple[DelegationHandle, ...] = ()
 
 
 def _persist_message(
@@ -537,49 +513,6 @@ def _resolve_resume(
         },
     )
     return resolved
-
-
-def _ensure_agent_member_for_delegation(
-    repositories: CoreRepositories,
-    delegation: DelegationRequest,
-) -> AgentMember | None:
-    if delegation.recipient_kind is not InboxParticipantKind.AGENT:
-        return None
-    existing = repositories.agents.get(delegation.recipient)
-    now = utc_now_iso()
-    if existing is None:
-        agent = AgentMember(
-            agent_id=delegation.recipient,
-            session_id=delegation.session_id,
-            lane_id=delegation.lane_id,
-            task_id=delegation.task_id,
-            name=delegation.recipient.removeprefix("agent:") or delegation.recipient,
-            role="delegate",
-            status=AgentMemberStatus.ACTIVE,
-            parent_agent_id=None,
-            created_at=now,
-            updated_at=now,
-        )
-        repositories.agents.save(agent)
-        return agent
-    updated = AgentMember(
-        agent_id=existing.agent_id,
-        session_id=existing.session_id,
-        lane_id=delegation.lane_id
-        if delegation.lane_id is not None
-        else existing.lane_id,
-        task_id=delegation.task_id
-        if delegation.task_id is not None
-        else existing.task_id,
-        name=existing.name,
-        role=existing.role,
-        status=AgentMemberStatus.ACTIVE,
-        parent_agent_id=existing.parent_agent_id,
-        created_at=existing.created_at,
-        updated_at=now,
-    )
-    repositories.agents.save(updated)
-    return updated
 
 
 def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
@@ -733,7 +666,6 @@ def run_agent_harness_loop(
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
-    delegation_handles: list[DelegationHandle] = []
     activity_happened = False
 
     if harness_input.message is not None:
@@ -814,7 +746,6 @@ def run_agent_harness_loop(
                 outputs=tuple(outputs),
                 tool_results=tuple(all_tool_results),
                 pending_approval_id=pending_approval_id,
-                delegations=tuple(delegation_handles),
             )
         tool_results = ()
         if step.next_focus is not None:
@@ -944,45 +875,6 @@ def run_agent_harness_loop(
             )
             activity_happened = True
 
-        for delegation in step.delegation_requests:
-            delegation = replace(
-                delegation,
-                lane_id=_resolve_effective_lane_id(
-                    repositories,
-                    session_id=harness_input.session_id,
-                    task_id=delegation.task_id,
-                    lane_id=delegation.lane_id,
-                ),
-            )
-            from .protocols import ProtocolService
-
-            protocol = ProtocolService(
-                repositories,
-                event_emitter=lambda event_type, payload: context.emit(
-                    event_type, payload
-                ),
-            )
-            envelope = protocol.delegate(
-                session_id=delegation.session_id,
-                agent_id=delegation.recipient,
-                name=delegation.recipient.removeprefix("agent:")
-                or delegation.recipient,
-                role="delegate",
-                payload_ref=delegation.payload_ref,
-                task_id=delegation.task_id,
-                lane_id=delegation.lane_id,
-                parent_agent_id=None,
-                correlation_id=delegation.correlation_id or _new_id("corr"),
-            )
-            delegation_handles.append(
-                DelegationHandle(
-                    request_id=delegation.request_id,
-                    message_id=envelope.request_message.message_id,
-                    correlation_id=envelope.correlation_id,
-                )
-            )
-            activity_happened = True
-
         if step.approval_requests:
             last_status = HarnessStatus.WAITING_APPROVAL
             _auto_compact_if_needed(
@@ -1000,27 +892,6 @@ def run_agent_harness_loop(
                 outputs=tuple(outputs),
                 tool_results=tuple(all_tool_results),
                 pending_approval_id=pending_approval_id,
-                delegations=tuple(delegation_handles),
-            )
-
-        if step.delegation_requests and not step.tool_invocations:
-            last_status = HarnessStatus.WAITING_DELEGATION
-            _auto_compact_if_needed(
-                context,
-                activity_happened=activity_happened,
-                outputs=outputs,
-                all_tool_results=all_tool_results,
-            )
-            context.refresh()
-            return HarnessResult(
-                session_id=harness_input.session_id,
-                status=last_status,
-                snapshot=context.snapshot,
-                events=tuple(sink.events),
-                outputs=tuple(outputs),
-                tool_results=tuple(all_tool_results),
-                pending_approval_id=pending_approval_id,
-                delegations=tuple(delegation_handles),
             )
 
         if step.tool_invocations:
@@ -1084,7 +955,6 @@ def run_agent_harness_loop(
                         outputs=tuple(outputs),
                         tool_results=tuple(all_tool_results),
                         pending_approval_id=pending_approval_id,
-                        delegations=tuple(delegation_handles),
                     )
             tool_results = tuple(current_results)
             context.refresh()
@@ -1107,7 +977,6 @@ def run_agent_harness_loop(
                 outputs=tuple(outputs),
                 tool_results=tuple(all_tool_results),
                 pending_approval_id=pending_approval_id,
-                delegations=tuple(delegation_handles),
             )
         if (
             harness_input.resume is not None
@@ -1151,7 +1020,6 @@ def run_agent_harness_loop(
             outputs=tuple(outputs),
             tool_results=tuple(all_tool_results),
             pending_approval_id=pending_approval_id,
-            delegations=tuple(delegation_handles),
         )
 
     context.emit(
@@ -1173,5 +1041,4 @@ def run_agent_harness_loop(
         outputs=tuple(outputs),
         tool_results=tuple(all_tool_results),
         pending_approval_id=pending_approval_id,
-        delegations=tuple(delegation_handles),
     )

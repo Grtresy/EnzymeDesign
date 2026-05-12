@@ -4,6 +4,7 @@ import json
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
@@ -20,7 +21,6 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
 from openzyme_core import DeepResearchTaskPlanner
-from openzyme_core import DelegationRequest
 from openzyme_core import HarnessInput
 from openzyme_core import LlmConversationDriver
 from openzyme_core import HarnessStep
@@ -500,50 +500,6 @@ def test_harness_loop_waits_for_approval_and_resumes_cleanly() -> None:
         repositories.approvals.get("appr_001").status is ApprovalRequestStatus.APPROVED
     )
     assert "approval.resolved" in {event.event_type for event in second.events}
-
-
-class DelegationDriver:
-    def plan(
-        self,
-        context: SessionRuntimeContext,
-        harness_input: HarnessInput,
-        tool_results: tuple[object, ...],
-    ) -> HarnessStep:
-        del context, harness_input, tool_results
-        return HarnessStep(
-            delegation_requests=(
-                DelegationRequest(
-                    request_id="deleg_001",
-                    session_id="sess_001",
-                    recipient="agent:researcher",
-                    payload_ref="artifact://delegations/deleg_001.json",
-                    task_id="task_001",
-                    correlation_id="corr_001",
-                    recipient_kind=InboxParticipantKind.AGENT,
-                ),
-            ),
-        )
-
-
-def test_harness_loop_exposes_delegation_seam_via_inbox_and_handles() -> None:
-    repositories = _build_repositories()
-    session = _seed_session(repositories)
-
-    result = run_agent_harness_loop(
-        repositories,
-        HarnessInput(session_id=session.session_id, message="delegate"),
-        driver=DelegationDriver(),
-    )
-
-    assert result.status is HarnessStatus.WAITING_DELEGATION
-    assert result.delegations[0].request_id == "deleg_001"
-    inbox_types = [
-        message.message_type
-        for message in repositories.inbox.list_by_session(session.session_id)
-    ]
-    assert "delegation_request" in inbox_types
-    assert repositories.agents.get("agent:researcher") is not None
-    assert "agent.delegated" in {event.event_type for event in result.events}
 
 
 class LaneAwareDriver:
@@ -1110,14 +1066,26 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     assert result.outputs == ("delegated",)
     assert delegated_task.assigned_ref == "agent:primary"
     assert delegated_task.status is TaskStatus.TODO
-    assert repositories.agents.get("agent:researcher") is not None
-    inbox_types = [
-        message.message_type
-        for message in repositories.inbox.list_by_session(session.session_id)
-    ]
+    agent = repositories.agents.get("agent:researcher")
+    assert agent is not None
+    assert agent.task_id == "task_001"
+    assert agent.role == "researcher"
+    assert agent.wakeup_reason == AgentRuntimeSignalReason.DELEGATION_ASSIGNED.value
+    inbox = repositories.inbox.list_by_session(session.session_id)
+    inbox_types = [message.message_type for message in inbox]
     assert "delegation_request" in inbox_types
     assert "delegation_result" not in inbox_types
-    assert repositories.runtime_signals.list_pending_by_session(session.session_id)
+    delegation_message = next(
+        message for message in inbox if message.message_type == "delegation_request"
+    )
+    assert delegation_message.recipient == "agent:researcher"
+    signals = repositories.runtime_signals.list_pending_by_session(session.session_id)
+    assert len(signals) == 1
+    assert signals[0].agent_id == "agent:researcher"
+    assert signals[0].task_id == "task_001"
+    assert signals[0].reason is AgentRuntimeSignalReason.INBOX_UNREAD
+    assert signals[0].source_ref == delegation_message.message_id
+    assert "agent.delegated" in {event.event_type for event in result.events}
 
 
 def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None:
@@ -1441,7 +1409,7 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
 
     assert delegation["agent"]["agent_id"] == "agent:researcher"
     assert delegation["latest_correlation_id"] is not None
-    assert delegation["thread_summaries"][0]["status"] == "responded"
+    assert delegation["thread_summaries"][0]["status"] == "waiting"
 
 
 class FakeToolCallingInvoker:

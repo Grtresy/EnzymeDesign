@@ -73,15 +73,17 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，需要显式 runtime drain 才会运行 agent。
 
-- [ ] Delegation 存在多条重叠路径。
+- [x] Delegation 存在多条重叠路径。
 
-  证据：V3 同时存在 `task.delegate`、`HarnessStep.delegation_requests` 和 `ProtocolService.delegate()`，它们都能创建 delegation 相关状态。
+  证据：V3 曾同时存在 `task.delegate`、`HarnessStep.delegation_requests` 和 `ProtocolService.delegate()`，它们都能创建 delegation 相关状态。
 
   Doctrine 风险：多条 delegation seam 会增加不同路径写出不同 task、inbox、protocol 和 signal 行为的概率。
 
   目标边界：delegation 应只有一条 canonical control-plane write path。其他接口应调用这条路径，或被移除。
 
   后续修正方向：选择 `ProtocolService.delegate()` 或一个单一 delegation service 作为 canonical path，然后让 `task.delegate` 和任何 harness step abstraction 都路由到它。
+
+  修正记录：已删除 `HarnessStep.delegation_requests` harness-level seam 和对应 `HarnessResult.delegations` handle。`task.delegate` 是唯一正常产品入口，继续负责参数校验、role / agent 推导与 payload 持久化；`ProtocolService.delegate()` 是唯一真实 control-plane 写路径，负责 agent member、inbox delegation message、runtime wakeup signal 与 delegation events。
 
 - [x] Runtime 包含领域特定 diagnostic 和 HPC retry 指令。
 
