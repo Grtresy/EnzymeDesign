@@ -1104,39 +1104,20 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
         HarnessInput(session_id=session.session_id, message="delegate research"),
         driver=BuiltinDelegationDriver(),
         tool_registry=registry,
-        model_factory=FakeModelFactory(
-            {
-                "v3_teammate_loop:researcher": [
-                    {
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "call_research",
-                                "name": "deep_research.start",
-                                "args": {
-                                    "task_id": "task_001",
-                                    "brief": "Run the first harness step.",
-                                },
-                            }
-                        ],
-                    },
-                    {"content": "Research task completed.", "tool_calls": []},
-                ]
-            }
-        ),
     )
 
     delegated_task = repositories.tasks.get("task_001")
     assert result.outputs == ("delegated",)
-    assert delegated_task.assigned_ref == "agent:researcher"
-    assert delegated_task.status is TaskStatus.COMPLETED
+    assert delegated_task.assigned_ref == "agent:primary"
+    assert delegated_task.status is TaskStatus.TODO
     assert repositories.agents.get("agent:researcher") is not None
     inbox_types = [
         message.message_type
         for message in repositories.inbox.list_by_session(session.session_id)
     ]
     assert "delegation_request" in inbox_types
-    assert "delegation_result" in inbox_types
+    assert "delegation_result" not in inbox_types
+    assert repositories.runtime_signals.list_pending_by_session(session.session_id)
 
 
 def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None:

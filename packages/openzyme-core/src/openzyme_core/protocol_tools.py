@@ -165,8 +165,19 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
         payload = invocation.arguments.get("payload")
         task_id = invocation.arguments.get("task_id") or invocation.task_id
         lane_id = invocation.arguments.get("lane_id") or invocation.lane_id
-        await_response = bool(invocation.arguments.get("await_response") or False)
-        max_steps = int(invocation.arguments.get("max_steps") or 4)
+        if "await_response" in invocation.arguments or "max_steps" in invocation.arguments:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content="protocol.send only delivers messages and queues wakeup signals; use an explicit runtime drain command to run agents.",
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                status="sync_execution_not_supported",
+                summary="protocol.send does not support synchronous teammate execution.",
+                error_code="sync_execution_not_supported",
+                hint="Send the protocol message first, then use an explicit scheduler/runtime drain action if a bounded teammate turn is required.",
+            )
         protocol = ProtocolService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
         resolved_recipient = recipient
         recipient_resolution = "literal"
@@ -233,24 +244,7 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             task_id=None if task_id is None else str(task_id),
             lane_id=None if lane_id is None else str(lane_id),
         )
-        signal_ids = {
-            signal.signal_id
-            for signal in context.repositories.runtime_signals.list_pending_by_session(session_id)
-            if signal.source_ref == message.message_id
-        }
         runtime_outcomes = []
-        if await_response and recipient_kind is InboxParticipantKind.AGENT and signal_ids:
-            from .agent_runtime import AgentRuntimeService
-
-            runtime_outcomes = [
-                outcome.to_dict()
-                for outcome in AgentRuntimeService(context).drain_session(
-                    session_id,
-                    max_signals=len(signal_ids),
-                    max_steps_per_agent=max_steps,
-                    signal_ids=signal_ids,
-                )
-            ]
         signals = [
             signal.to_dict()
             for signal in context.repositories.runtime_signals.list_by_session(session_id)
@@ -277,30 +271,6 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                 status = "wakeup_not_created"
                 error_code = "wakeup_signal_missing"
                 hint = "The inbox message was persisted, but no inbox_unread wakeup signal exists for the agent."
-            elif await_response:
-                if any(not outcome.get("ok", False) for outcome in runtime_outcomes):
-                    ok = False
-                    failed = next((outcome for outcome in runtime_outcomes if not outcome.get("ok", False)), {})
-                    teammate_status = failed.get("teammate_status")
-                    if teammate_status == "focused_task_missing":
-                        status = "focused_task_missing"
-                    elif teammate_status == "max_steps_exceeded":
-                        status = "max_steps_exceeded"
-                    else:
-                        status = "runtime_failed"
-                    error_code = status
-                    if status == "focused_task_missing":
-                        hint = (
-                            "Agent protocol messages require a focused task. "
-                            "Create or delegate a task first, or pass task_id in protocol.send or payload.task_id."
-                        )
-                    else:
-                        hint = "Inspect runtime_outcomes and protocol.thread before deciding whether to retry or ask a focused diagnostic question."
-                elif thread.get("status") == "responded":
-                    status = "responded"
-                else:
-                    status = "no_response_within_bound"
-                    hint = "The wakeup ran or was queued, but no response was present on the correlation thread within this bounded call."
             else:
                 status = "wakeup_queued"
         summary = (

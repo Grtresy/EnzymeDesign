@@ -56,12 +56,8 @@ class DelegationProjectionItem:
             "latest_message_at": self.latest_message_at,
             "pending_correlation_ids": list(self.pending_correlation_ids),
             "thread_summaries": list(self.thread_summaries),
-            "unread_inbox_count": self.unread_inbox_count,
-            "pending_signal_count": self.pending_signal_count,
-            "latest_signal_reason": self.latest_signal_reason,
             "last_active_at": self.last_active_at,
             "idle_since": self.idle_since,
-            "wakeup_reason": self.wakeup_reason,
         }
 
 

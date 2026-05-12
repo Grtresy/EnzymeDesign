@@ -1985,7 +1985,7 @@ class ExecutionEngine:
         )
         self.repositories.runs.save(sandbox_run)
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
-        artifacts = self._persist_artifacts(
+        self._persist_artifacts(
             session_id=invocation.session_id,
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,

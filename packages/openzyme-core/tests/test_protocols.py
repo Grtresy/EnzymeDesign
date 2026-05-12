@@ -141,10 +141,10 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
     assert [message.message_type for message in thread.responses] == ["delegation_result"]
     assert thread.status is CorrelationStatus.RESPONDED
     assert envelope.request_message.status is InboxStatus.UNREAD
-    assert any(
-        signal.reason.value == "delegation_assigned"
-        for signal in repositories.runtime_signals.list_by_session(session.session_id)
-    )
+    signals = repositories.runtime_signals.list_by_session(session.session_id)
+    assert len(signals) == 1
+    assert signals[0].reason.value == "inbox_unread"
+    assert signals[0].source_ref == envelope.request_message.message_id
 
 
 def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
@@ -380,7 +380,7 @@ def test_protocol_thread_expands_small_payloads() -> None:
     assert thread["request"]["payload"]["task_id"] == "task_001"
 
 
-def test_protocol_send_await_response_drains_signal_and_returns_runtime_outcome() -> None:
+def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = ProtocolService(repositories)
@@ -444,14 +444,12 @@ def test_protocol_send_await_response_drains_signal_and_returns_runtime_outcome(
                 "correlation_id": "corr_diag_await",
                 "task_id": "task_001",
                 "lane_id": "lane_001",
-                "await_response": True,
-                "max_steps": 4,
                 "payload": {
                     "task_id": "task_001",
                     "lane_id": "lane_001",
                     "question": "Why did you fail?",
                     "instructions": "Answer with a concise root cause.",
-                    "failed_summary": "max_steps_exceeded",
+                    "failed_summary": "prior bounded turn stopped",
                     "expected_response": "diagnostic_response",
                 },
             },
@@ -462,20 +460,86 @@ def test_protocol_send_await_response_drains_signal_and_returns_runtime_outcome(
 
     content = json.loads(result.content)
     message = repositories.inbox.get(content["message"]["message_id"])
-    thread = content["thread"]
+    signal_ids = {signal["signal_id"] for signal in content["signals"]}
+    assert result.ok is True
+    assert result.status == "wakeup_queued"
+    assert message.status is InboxStatus.UNREAD
+    assert content["runtime_outcomes"] == []
+    assert model_factory.invokers == {}
+
+    outcomes = AgentRuntimeService(context).drain_session(
+        session.session_id,
+        max_signals=1,
+        signal_ids=signal_ids,
+    )
+    thread = ProtocolService(repositories).build_thread(session.session_id, "corr_diag_await").to_dict()
     prompt = model_factory.invokers["v3_teammate_loop:researcher"].calls[0]["system_prompt"]
     seed_message = model_factory.invokers["v3_teammate_loop:researcher"].calls[0]["messages"][0]
     seed = seed_message.get("content") if isinstance(seed_message, dict) else seed_message.content
     task = repositories.tasks.get("task_001")
-    assert result.ok is True
+    message = repositories.inbox.get(content["message"]["message_id"])
     assert message.status is InboxStatus.ACKNOWLEDGED
-    assert content["runtime_outcomes"][0]["ok"] is True
+    assert outcomes[0].ok is True
     assert thread["status"] == CorrelationStatus.RESPONDED.value
     assert [response["message_type"] for response in thread["responses"]] == ["diagnostic_response", "delegation_result"]
-    assert "Diagnostic question: Why did you fail?" in prompt
-    assert "max_steps_exceeded" in prompt
+    assert "Diagnostic question:" not in prompt
+    assert "Handle this diagnostic request" not in prompt
+    assert "Answer with a concise root cause." in prompt
     assert "corr_diag_await" in seed
+    assert "Why did you fail?" in seed
+    assert "prior bounded turn stopped" in seed
     assert task.status is TaskStatus.IN_PROGRESS
+
+
+def test_protocol_send_rejects_synchronous_execution_arguments() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    service.delegate(
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        name="Researcher",
+        role="researcher",
+        payload_ref=None,
+        task_id="task_001",
+        lane_id="lane_001",
+        correlation_id="corr_original",
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+        model_factory=FakeModelFactory({"content": "should not run", "tool_calls": []}),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_diag",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "agent:researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_diag_sync",
+                "task_id": "task_001",
+                "await_response": True,
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "sync_execution_not_supported"
+    assert result.error_code == "sync_execution_not_supported"
+    assert not any(
+        message.correlation_id == "corr_diag_sync"
+        for message in repositories.inbox.list_by_session(session.session_id)
+    )
 
 
 def test_runtime_missing_focused_task_fails_signal_without_consuming_unread_message() -> None:

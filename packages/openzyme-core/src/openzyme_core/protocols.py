@@ -151,6 +151,8 @@ class ProtocolService:
             message_type="delegation_request",
             payload_ref=payload_ref,
             correlation_id=correlation_id,
+            task_id=agent.task_id,
+            lane_id=agent.lane_id,
         )
         self._emit(
             "agent.delegated",
@@ -161,15 +163,6 @@ class ProtocolService:
                 "correlation_id": correlation_id,
                 "message_id": message.message_id,
             },
-        )
-        self._enqueue_signal(
-            session_id=session_id,
-            agent_id=agent.agent_id,
-            task_id=agent.task_id,
-            lane_id=agent.lane_id,
-            correlation_id=correlation_id,
-            reason=AgentRuntimeSignalReason.DELEGATION_ASSIGNED,
-            source_ref=message.message_id,
         )
         return DelegationEnvelope(agent=agent, request_message=message, correlation_id=correlation_id)
 

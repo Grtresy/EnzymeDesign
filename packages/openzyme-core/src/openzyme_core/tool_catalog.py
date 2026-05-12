@@ -99,7 +99,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="task.delegate",
             description=(
-                "Delegate a concrete task to one internal teammate agent. "
+                "Delegate a concrete task to one internal teammate agent by queuing a runtime wakeup. "
                 f"Valid teammate roles are {', '.join(TEAMMATE_ROLE_NAMES)}."
             ),
             input_schema={
@@ -129,7 +129,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="protocol.send",
             description=(
                 "Send a structured internal team protocol message to a teammate or the harness. "
-                "Use diagnostic_request to ask a failed teammate for a focused explanation."
+                "This only persists the message and queues a wakeup signal; it does not run the recipient."
             ),
             input_schema={
                 "type": "object",
@@ -143,8 +143,6 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "task_id": {"type": "string"},
                     "lane_id": {"type": "string"},
                     "payload": {"type": "object"},
-                    "await_response": {"type": "boolean"},
-                    "max_steps": {"type": "integer", "minimum": 1, "maximum": 16},
                 },
                 "required": ["recipient", "correlation_id"],
                 "additionalProperties": False,
