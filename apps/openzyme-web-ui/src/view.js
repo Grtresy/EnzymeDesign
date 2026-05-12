@@ -64,14 +64,11 @@ export function renderV3Delegation(workspace) {
           const agent = item.agent ?? {};
           const latestCorrelation = item.latest_correlation_id ?? item.correlation_ids?.[0] ?? "none";
           const pendingCount = (item.pending_correlation_ids ?? []).length;
-          const unreadCount = item.unread_inbox_count ?? 0;
-          const signalCount = item.pending_signal_count ?? 0;
-          const wakeup = item.wakeup_reason ?? item.latest_signal_reason ?? "";
           return `
             <li>
               <strong>${escapeHtml(agent.name ?? agent.agent_id ?? "agent")}</strong>
               <span>${escapeHtml(agent.role ?? "worker")} · ${escapeHtml(agent.status ?? "unknown")} · ${escapeHtml(agent.task_id ?? "no-task")}</span>
-              <small>${escapeHtml(latestCorrelation)}${pendingCount ? ` · ${pendingCount} pending` : ""}${unreadCount ? ` · ${unreadCount} unread` : ""}${signalCount ? ` · ${signalCount} wakeups` : ""}${wakeup ? ` · ${escapeHtml(wakeup)}` : ""}</small>
+              <small>${escapeHtml(latestCorrelation)}${pendingCount ? ` · ${pendingCount} pending` : ""}</small>
             </li>
           `;
         })
