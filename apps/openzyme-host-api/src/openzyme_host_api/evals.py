@@ -119,6 +119,17 @@ class V3LocalEvalInvoker:
                     }
                 ],
             }
+        if self.calls == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_eval_research_task_complete",
+                        "name": "task.update",
+                        "args": {"task_id": task_id, "status": "completed"},
+                    }
+                ],
+            }
         return {"content": "Research evidence collected.", "tool_calls": []}
 
     def _executor_response(self, system_prompt: str) -> dict[str, object]:
@@ -137,6 +148,17 @@ class V3LocalEvalInvoker:
                                 "artifact_ids": ["art_eval_structure"],
                             },
                         },
+                    }
+                ],
+            }
+        if self.calls == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_eval_execution_task_complete",
+                        "name": "task.update",
+                        "args": {"task_id": task_id, "status": "completed"},
                     }
                 ],
             }
@@ -180,6 +202,17 @@ class V3LocalEvalInvoker:
                             "summary": "Research, execution, and reporting completed through the V3 harness path.",
                             "stage_summary": "Deterministic cutover eval passed the V3 workspace path.",
                         },
+                    }
+                ],
+            }
+        if self.calls == 3:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_eval_report_task_complete",
+                        "name": "task.update",
+                        "args": {"task_id": task_id, "status": "completed"},
                     }
                 ],
             }

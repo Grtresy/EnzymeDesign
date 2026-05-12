@@ -372,15 +372,43 @@ class FakeEngineHarnessInvoker:
                         }
                     ],
                 }
+            if self.calls == 2:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_research_task_complete",
+                            "name": "task.update",
+                            "args": {
+                                "task_id": "task_research_v3",
+                                "status": "completed",
+                            },
+                        }
+                    ],
+                }
             return {"content": "Research complete.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
+            if any(_tool_message_name(message) == "task.update" for message in messages):
+                return {
+                    "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
+                    "tool_calls": [],
+                }
             if any(
                 _tool_message_name(message) == "execution.pipeline.status"
                 for message in messages
             ):
                 return {
-                    "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
-                    "tool_calls": [],
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_execution_task_complete",
+                            "name": "task.update",
+                            "args": {
+                                "task_id": "task_execution_v3",
+                                "status": "completed",
+                            },
+                        }
+                    ],
                 }
             if self.calls == 1:
                 return {
@@ -449,6 +477,20 @@ class FakeEngineHarnessInvoker:
                                 "title": "Workspace report",
                                 "summary": "Integrated workspace report",
                                 "stage_summary": "Research and execution summarized.",
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 3:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_report_task_complete",
+                            "name": "task.update",
+                            "args": {
+                                "task_id": "task_report_v3",
+                                "status": "completed",
                             },
                         }
                     ],
@@ -614,12 +656,7 @@ class DiagnosticExecutorInvoker:
         del tools
         self.calls += 1
         self.system_prompts.append(system_prompt)
-        assert "hpc_operation_failed" in system_prompt
-        assert "materially changed retry" in system_prompt
-        assert (
-            "Do not submit the same or equivalent HPC operation again" in system_prompt
-        )
-        assert "status='failed'" in system_prompt
+        assert "sanitized failure evidence" in system_prompt
         assert "INPUT_OR_ENTRYPOINT_MISSING" in system_prompt
         if any(_tool_message_name(message) == "task.update" for message in messages):
             return {
@@ -872,6 +909,59 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
+def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_task_crud_no_drain",
+            "proj_001",
+            "Task CRUD",
+            "Keep task mutation separate from runtime scheduling.",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id="sess_task_crud_no_drain",
+            lane_id=None,
+            task_id=None,
+            name="researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-05-03T15:59:00+00:00",
+            updated_at="2026-05-03T15:59:00+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+        )
+    )
+    model_factory = FakeEngineHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+
+    created = service.create_task(
+        {
+            "session_id": "sess_task_crud_no_drain",
+            "task_id": "task_no_drain",
+            "subject": "Collect evidence",
+            "description": "Ready research task.",
+            "kind": "research",
+        }
+    )
+    updated = service.update_task(
+        "task_no_drain",
+        {"description": "Still only a task mutation."},
+    )
+
+    assert created["task"]["status"] == "todo"
+    assert updated["task"]["status"] == "todo"
+    assert model_factory.invokers == {}
+    assert repositories.runtime_signals.list_by_session("sess_task_crud_no_drain") == []
+
+
 def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic() -> (
     None
 ):
@@ -957,13 +1047,24 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     )
 
     assert result.status == "failed"
+    assert result.outputs == ()
+    assert model_factory.invoker.calls == 0
+    assert model_factory.master_calls == 0
+    assert repositories.runtime_signals.list_pending_by_session("sess_hpc_diag")
+    task = repositories.tasks.get("task_hpc_diag")
+    assert task is not None
+    assert task.status is TaskStatus.BLOCKED
+
+    drained = service.drain_runtime(session_id="sess_hpc_diag")
+
+    assert drained.status == "failed"
     assert model_factory.invoker.calls == 2
     assert model_factory.master_calls == 1
-    assert result.outputs == (
+    assert drained.outputs == (
         "The approved fpocket task failed at the HPC runner boundary. "
         "The execution task is marked failed with failure_ref engine:inv_hpc_diag.",
     )
-    assert "Execution failed in the approved pipeline" not in " ".join(result.outputs)
+    assert "Execution failed in the approved pipeline" not in " ".join(drained.outputs)
     task = repositories.tasks.get("task_hpc_diag")
     assert task is not None
     assert task.status is TaskStatus.FAILED
@@ -1336,6 +1437,20 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert research.status_code == 200
     research_payload = research.json()
     assert research_payload["status"] == "completed"
+    assert research_payload["outputs"] == ["Delegated research task task_research_v3."]
+    assert (
+        research_payload["workspace"]["task_board"]["items"][0]["task"]["status"]
+        == "todo"
+    )
+    assert "v3_teammate_loop:researcher" not in model_factory.invokers
+
+    research_drain = client.post(
+        "/v3/sessions/sess_v3_engines/runtime/drain",
+        json={},
+    )
+    assert research_drain.status_code == 200
+    research_payload = research_drain.json()
+    assert research_payload["status"] == "completed"
     assert (
         research_payload["workspace"]["task_board"]["items"][0]["task"]["status"]
         == "completed"
@@ -1376,6 +1491,21 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     )
     assert execution.status_code == 200
     execution_payload = execution.json()
+    assert execution_payload["status"] == "completed"
+    assert execution_payload["outputs"] == ["Delegated execution task task_execution_v3."]
+    execution_item = next(
+        item
+        for item in execution_payload["workspace"]["task_board"]["items"]
+        if item["task"]["task_id"] == "task_execution_v3"
+    )
+    assert execution_item["task"]["status"] == "todo"
+
+    execution_drain = client.post(
+        "/v3/sessions/sess_v3_engines/runtime/drain",
+        json={},
+    )
+    assert execution_drain.status_code == 200
+    execution_payload = execution_drain.json()
     assert execution_payload["status"] == "waiting_approval"
     pending = execution_payload["workspace"]["pending_approvals"]
     assert pending[0]["kind"] == "execution_pipeline_plan"
@@ -1406,11 +1536,29 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     resolved_payload = resolved.json()
     assert (
         model_factory.invokers["v3_harness_loop"].calls
+        == master_calls_before_approval
+    )
+    assert (
+        model_factory.invokers["v3_teammate_loop:executor"].calls
+        == executor_calls_before_approval
+    )
+    assert resolved_payload["status"] == "completed"
+    assert resolved_payload["workspace"]["pending_approvals"] == []
+    assert resolved_payload["outputs"] == []
+
+    execution_resume = client.post(
+        "/v3/sessions/sess_v3_engines/runtime/drain",
+        json={},
+    )
+    assert execution_resume.status_code == 200
+    resolved_payload = execution_resume.json()
+    assert (
+        model_factory.invokers["v3_harness_loop"].calls
         == master_calls_before_approval + 1
     )
     assert (
         model_factory.invokers["v3_teammate_loop:executor"].calls
-        == executor_calls_before_approval + 2
+        == executor_calls_before_approval + 3
     )
     assert any(
         message.message_type == "delegation_result"
@@ -1468,6 +1616,15 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     )
     assert report.status_code == 200
     report_payload = report.json()
+    assert report_payload["status"] == "completed"
+    assert report_payload["outputs"] == ["Delegated reporting task task_report_v3."]
+
+    report_drain = client.post(
+        "/v3/sessions/sess_v3_engines/runtime/drain",
+        json={},
+    )
+    assert report_drain.status_code == 200
+    report_payload = report_drain.json()
     assert report_payload["status"] == "completed"
     assert (
         report_payload["workspace"]["report_drafts"][0]["task_id"] == "task_report_v3"

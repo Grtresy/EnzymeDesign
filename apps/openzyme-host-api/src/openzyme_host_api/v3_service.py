@@ -316,8 +316,14 @@ class V3HostApiService:
                 events.append(event)
                 seen_trace_ids.add(trace_id)
 
-    def _drain_agent_runtime(
-        self, session_id: str, events: list[dict[str, Any]]
+    def _drain_pending_agent_signals(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+        *,
+        max_signals: int = 3,
+        max_steps_per_agent: int = 8,
+        auto_enqueue_ready_tasks: bool = True,
     ) -> list[dict[str, Any]]:
         event_bus = self._event_sink()
         context = SessionRuntimeContext(
@@ -332,10 +338,67 @@ class V3HostApiService:
             research_adapter=self.research_adapter,
         )
         runtime = AgentRuntimeService(context)
-        runtime.auto_enqueue_ready_tasks(session_id)
-        outcomes = runtime.drain_session(session_id, max_signals=3)
+        if auto_enqueue_ready_tasks:
+            runtime.auto_enqueue_ready_tasks(session_id)
+        outcomes = runtime.drain_session(
+            session_id,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+        )
         events.extend(event.to_dict() for event in event_bus.events)
         return [outcome.to_dict() for outcome in outcomes]
+
+    def drain_runtime(
+        self,
+        *,
+        session_id: str,
+        max_signals: int = 3,
+        max_steps_per_agent: int = 8,
+        auto_enqueue_ready_tasks: bool = True,
+        run_master_followup: bool = True,
+    ) -> V3CommandResult:
+        if self.repositories.sessions.get(session_id) is None:
+            raise KeyError(f"session {session_id!r} does not exist")
+        events: list[dict[str, Any]] = []
+        outcomes = self._drain_pending_agent_signals(
+            session_id,
+            events,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+            auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+        )
+        followup = None
+        if run_master_followup:
+            followup = self._run_master_followup_after_teammates(
+                session_id, events, outcomes
+            )
+        has_pending_approval = bool(
+            self.repositories.approvals.list_pending_by_session(session_id)
+        )
+        if has_pending_approval or self._outcomes_include_waiting_approval(outcomes):
+            response_status = HarnessStatus.WAITING_APPROVAL
+        elif self._outcomes_include_failure(outcomes):
+            response_status = HarnessStatus.FAILED
+        elif followup is not None:
+            response_status = followup.status
+        else:
+            response_status = HarnessStatus.COMPLETED
+        response_outputs = (
+            ()
+            if has_pending_approval
+            else tuple(() if followup is None else followup.outputs)
+        )
+        self._touch_session(session_id)
+        self._extend_with_trace_events(session_id, events)
+        self._extend_with_activity_events(session_id, events)
+        self.event_store.append(session_id, events)
+        return V3CommandResult(
+            session_id=session_id,
+            status=response_status.value,
+            outputs=response_outputs,
+            events=events,
+            workspace=self.workspace(session_id),
+        )
 
     def _terminal_teammate_outcomes(
         self, outcomes: list[dict[str, Any]]
@@ -387,32 +450,6 @@ class V3HostApiService:
         self, outcomes: list[dict[str, Any]]
     ) -> bool:
         return any(outcome.get("waiting_approval_id") for outcome in outcomes)
-
-    def _teammate_outcomes_from_tool_results(
-        self, tool_results: tuple[Any, ...]
-    ) -> list[dict[str, Any]]:
-        outcomes: list[dict[str, Any]] = []
-        for tool_result in tool_results:
-            if getattr(tool_result, "tool_name", None) != "task.delegate":
-                continue
-            try:
-                payload = json.loads(str(tool_result.content))
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            outcomes.append(
-                {
-                    "task": payload.get("task"),
-                    "agent": payload.get("agent"),
-                    "ok": bool(getattr(tool_result, "ok", False)),
-                    "summary": payload.get("summary"),
-                    "teammate_status": payload.get("teammate_status"),
-                    "outputs": payload.get("teammate_outputs") or (),
-                    "waiting_approval_id": payload.get("waiting_approval_id"),
-                }
-            )
-        return outcomes
 
     def _run_master_followup_after_teammates(
         self,
@@ -517,21 +554,12 @@ class V3HostApiService:
                         )
                     ],
                 )
-        outcomes = self._teammate_outcomes_from_tool_results(result.tool_results)
-        outcomes.extend(self._drain_agent_runtime(session_id, events))
-        followup = self._run_master_followup_after_teammates(
-            session_id, events, outcomes
-        )
-        if followup is not None:
-            result = followup
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
         response_status = (
             HarnessStatus.WAITING_APPROVAL
-            if has_pending_approval or self._outcomes_include_waiting_approval(outcomes)
-            else HarnessStatus.FAILED
-            if self._outcomes_include_failure(outcomes)
+            if has_pending_approval
             else result.status
         )
         response_outputs = () if has_pending_approval else result.outputs
@@ -583,7 +611,7 @@ class V3HostApiService:
                 )
             ],
         )
-        runtime_outcomes: list[dict[str, Any]] = []
+        assigned_agent_id = self._approval_assigned_agent_id(approval)
         if execution_approval:
             self._resolve_approval_record(
                 approval, decision=decision, actor_ref=actor_ref
@@ -621,6 +649,13 @@ class V3HostApiService:
                     EngineInvocationStatus.CANCELLED.value,
                 }:
                     result_status = HarnessStatus.FAILED
+        elif assigned_agent_id is not None:
+            self._resolve_approval_record(
+                approval, decision=decision, actor_ref=actor_ref
+            )
+            result_outputs = []
+            result_status = HarnessStatus.COMPLETED
+            pending_approval_id = None
         else:
             driver = self._require_llm_driver()
             event_bus = self._event_sink()
@@ -698,74 +733,13 @@ class V3HostApiService:
                 EngineInvocationStatus.FAILED.value,
                 EngineInvocationStatus.CANCELLED.value,
             }:
-                wake_outcome = self._wake_execution_agent_after_pipeline_completion(
+                self._enqueue_execution_agent_after_pipeline_completion(
                     approval, continuation_output=continuation_output, events=events
                 )
-                if wake_outcome is not None:
-                    runtime_outcomes = [wake_outcome]
-                    pending_approval_id = wake_outcome.get("waiting_approval_id")
-                    teammate_status = str(wake_outcome.get("teammate_status") or "")
-                    if pending_approval_id:
-                        result_status = HarnessStatus.WAITING_APPROVAL
-                    elif continuation_output["status"] in {
-                        EngineInvocationStatus.FAILED.value,
-                        EngineInvocationStatus.CANCELLED.value,
-                    }:
-                        result_status = HarnessStatus.FAILED
-                    elif (
-                        wake_outcome.get("ok") is False
-                        or teammate_status == HarnessStatus.FAILED.value
-                    ):
-                        result_status = HarnessStatus.FAILED
-                    elif teammate_status == HarnessStatus.WAITING_APPROVAL.value:
-                        result_status = HarnessStatus.WAITING_APPROVAL
-                    else:
-                        result_status = HarnessStatus.COMPLETED
-        elif approval.task_id is not None:
-            task = self.repositories.tasks.get(approval.task_id)
-            if (
-                task is not None
-                and task.assigned_ref
-                and task.assigned_ref.startswith("agent:")
-            ):
-                event_bus = self._event_sink()
-                context = SessionRuntimeContext(
-                    repositories=self.repositories,
-                    event_sink=event_bus,
-                    snapshot=SessionRuntimeSnapshot.load(
-                        self.repositories, approval.session_id
-                    ),
-                    tool_registry=ToolRegistry(),
-                    restore_focus=RestoreFocus(
-                        task_id=approval.task_id, lane_id=approval.lane_id
-                    ),
-                    model_factory=self.model_factory,
-                    engine_registry=self.engine_registry,
-                    bio_research_service=self.bio_research_service,
-                    research_adapter=self.research_adapter,
-                )
-                AgentRuntimeService(context).enqueue_signal(
-                    agent_id=task.assigned_ref,
-                    task_id=approval.task_id,
-                    lane_id=approval.lane_id,
-                    correlation_id=approval.approval_id,
-                    reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
-                    source_ref=approval.approval_id,
-                )
-                events.extend(event.to_dict() for event in event_bus.events)
-            runtime_outcomes = self._drain_agent_runtime(approval.session_id, events)
-        followup = self._run_master_followup_after_teammates(
-            approval.session_id, events, runtime_outcomes
-        )
-        if followup is not None:
-            result_outputs = list(followup.outputs)
-            pending_approval_id = followup.pending_approval_id
-            if pending_approval_id:
-                result_status = HarnessStatus.WAITING_APPROVAL
-            elif self._outcomes_include_failure(runtime_outcomes):
-                result_status = HarnessStatus.FAILED
-            else:
-                result_status = followup.status
+        elif assigned_agent_id is not None:
+            self._enqueue_approval_resolved_signal(
+                approval, agent_id=assigned_agent_id, events=events
+            )
         self._touch_session(approval.session_id)
         self._extend_with_trace_events(approval.session_id, events)
         self._extend_with_activity_events(approval.session_id, events)
@@ -780,41 +754,28 @@ class V3HostApiService:
             workspace=self.workspace(approval.session_id),
         )
 
-    def _wake_execution_agent_after_pipeline_completion(
+    def _enqueue_execution_agent_after_pipeline_completion(
         self,
         approval: ApprovalRequest,
         *,
         continuation_output: dict[str, Any],
         events: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        if approval.task_id is None:
-            return None
-        task = self.repositories.tasks.get(approval.task_id)
-        if task is None:
-            return None
-        agent_id = (
-            task.assigned_ref
-            if task.assigned_ref and task.assigned_ref.startswith("agent:")
-            else None
-        )
+    ) -> None:
+        del continuation_output
+        agent_id = self._approval_assigned_agent_id(approval)
         if agent_id is None:
-            agent = next(
-                (
-                    candidate
-                    for candidate in self.repositories.agents.list_by_session(
-                        approval.session_id
-                    )
-                    if candidate.role == "executor"
-                    and (
-                        candidate.task_id == approval.task_id
-                        or candidate.lane_id == approval.lane_id
-                    )
-                ),
-                None,
-            )
-            agent_id = None if agent is None else agent.agent_id
-        if agent_id is None:
-            return None
+            return
+        self._enqueue_approval_resolved_signal(approval, agent_id=agent_id, events=events)
+
+    def _enqueue_approval_resolved_signal(
+        self,
+        approval: ApprovalRequest,
+        *,
+        agent_id: str | None,
+        events: list[dict[str, Any]],
+    ) -> None:
+        if agent_id is None or approval.task_id is None:
+            return
         event_bus = self._event_sink()
         context = SessionRuntimeContext(
             repositories=self.repositories,
@@ -831,7 +792,7 @@ class V3HostApiService:
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
         )
-        signal = AgentRuntimeService(context).enqueue_signal(
+        AgentRuntimeService(context).enqueue_signal(
             agent_id=agent_id,
             task_id=approval.task_id,
             lane_id=approval.lane_id,
@@ -840,13 +801,34 @@ class V3HostApiService:
             source_ref=approval.approval_id,
         )
         events.extend(event.to_dict() for event in event_bus.events)
-        if signal is not None:
-            outcomes = self._drain_agent_runtime(approval.session_id, events)
-            for outcome in outcomes:
-                if outcome.get("signal", {}).get("signal_id") == signal.signal_id:
-                    return outcome
-            return outcomes[-1] if outcomes else None
-        return None
+
+    def _approval_assigned_agent_id(self, approval: ApprovalRequest) -> str | None:
+        if approval.task_id is None:
+            return None
+        task = self.repositories.tasks.get(approval.task_id)
+        if (
+            task is not None
+            and task.assigned_ref
+            and task.assigned_ref.startswith("agent:")
+        ):
+            return task.assigned_ref
+        agent = next(
+            (
+                candidate
+                for candidate in self.repositories.agents.list_by_session(
+                    approval.session_id
+                )
+                if (
+                    candidate.task_id == approval.task_id
+                    or (
+                        approval.lane_id is not None
+                        and candidate.lane_id == approval.lane_id
+                    )
+                )
+            ),
+            None,
+        )
+        return None if agent is None else agent.agent_id
 
     def _resolve_approval_record(
         self, approval: ApprovalRequest, *, decision: str, actor_ref: str
@@ -1015,7 +997,6 @@ class V3HostApiService:
             failure_ref=payload.get("failure_ref"),
         )
         events = [_event("task.created", task.session_id, {"task": task.to_dict()})]
-        self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {
@@ -1049,7 +1030,6 @@ class V3HostApiService:
         mutation = TaskMutation(**mutation_kwargs)
         task = TaskBoardService(self.repositories).update_task(task_id, mutation)
         events = [_event("task.updated", task.session_id, {"task": task.to_dict()})]
-        self._drain_agent_runtime(task.session_id, events)
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)
         return {

@@ -79,6 +79,13 @@ class PostV3MessageRequest(BaseModel):
     max_steps: int = 8
 
 
+class DrainV3RuntimeRequest(BaseModel):
+    max_signals: int = 3
+    max_steps_per_agent: int = 8
+    auto_enqueue_ready_tasks: bool = True
+    run_master_followup: bool = True
+
+
 class ResolveV3ApprovalRequest(BaseModel):
     decision: str
     actor_ref: str = "user"
@@ -500,6 +507,27 @@ def create_app(
                     lane_id=request.lane_id,
                     skill_keys=tuple(request.skill_keys),
                     max_steps=request.max_steps,
+                ).to_dict()
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.post("/v3/sessions/{session_id}/runtime/drain")
+    def drain_v3_runtime(
+        session_id: str, request: DrainV3RuntimeRequest
+    ) -> dict[str, Any]:
+        service = dependencies.build_v3_service()
+        try:
+            with llm_debug_context(
+                request_path=f"/v3/sessions/{session_id}/runtime/drain",
+                session_id=session_id,
+                actor="scheduler",
+            ):
+                return service.drain_runtime(
+                    session_id=session_id,
+                    max_signals=request.max_signals,
+                    max_steps_per_agent=request.max_steps_per_agent,
+                    auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
+                    run_master_followup=request.run_master_followup,
                 ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
