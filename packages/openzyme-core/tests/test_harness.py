@@ -33,6 +33,8 @@ from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SkillRegistry
+from openzyme_core import TaskBoardService
+from openzyme_core import TaskMutation
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import ToolResult
@@ -45,6 +47,7 @@ from openzyme_core import builtin_tool_descriptors
 from openzyme_core import top_level_tool_descriptors
 from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
+from openzyme_core import register_subagent_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
 from openzyme_research import DeterministicBioResearchService
@@ -705,7 +708,7 @@ def test_harness_can_dispatch_research_task_via_deep_research_planner() -> None:
             status=task.status,
             priority=task.priority,
             kind="research",
-            assigned_ref=task.assigned_ref,
+            assigned_ref=None,
             created_at=task.created_at,
             updated_at=task.updated_at,
             lane_id=task.lane_id,
@@ -1039,7 +1042,7 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
             status=task.status,
             priority=task.priority,
             kind="research",
-            assigned_ref=task.assigned_ref,
+            assigned_ref=None,
             created_at=task.created_at,
             updated_at=task.updated_at,
             lane_id=task.lane_id,
@@ -1064,7 +1067,7 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
 
     delegated_task = repositories.tasks.get("task_001")
     assert result.outputs == ("delegated",)
-    assert delegated_task.assigned_ref == "agent:primary"
+    assert delegated_task.assigned_ref is None
     assert delegated_task.status is TaskStatus.TODO
     agent = repositories.agents.get("agent:researcher")
     assert agent is not None
@@ -1086,6 +1089,112 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     assert signals[0].reason is AgentRuntimeSignalReason.INBOX_UNREAD
     assert signals[0].source_ref == delegation_message.message_id
     assert "agent.delegated" in {event.event_type for event in result.events}
+
+
+def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_when_ready() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task_service = TaskBoardService(repositories)
+    task_service.create_task(
+        session_id=session.session_id,
+        task_id="task_upstream",
+        subject="Upstream",
+        description="Produce inputs.",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    task_service.create_task(
+        session_id=session.session_id,
+        task_id="task_downstream",
+        subject="Downstream",
+        description="Use upstream outputs.",
+        kind="research",
+        blocked_by=("task_upstream",),
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    blocked = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_blocked_delegate",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_downstream",
+                "agent_role": "researcher",
+                "correlation_id": "corr_blocked_delegate",
+            },
+        ),
+    )
+
+    assert blocked.ok is False
+    assert blocked.status == "task_not_ready"
+    assert blocked.error_code == "task_blocked"
+    assert blocked.details["blocked_by_open_task_ids"] == ["task_upstream"]
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+    task_service.update_task("task_upstream", TaskMutation(status=TaskStatus.COMPLETED))
+    ready = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_ready_delegate",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_downstream",
+                "agent_role": "researcher",
+                "correlation_id": "corr_ready_delegate",
+            },
+        ),
+    )
+
+    assert ready.ok is True
+    assert ready.status == "wakeup_queued"
+    assert any(
+        message.message_type == "delegation_request"
+        and message.correlation_id == "corr_ready_delegate"
+        for message in repositories.inbox.list_by_session(session.session_id)
+    )
+    assert len(repositories.runtime_signals.list_by_session(session.session_id)) == 1
+
+
+def test_delegate_tool_rejects_already_assigned_task_without_side_effects() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_assigned_delegate",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_001",
+                "agent_role": "researcher",
+                "correlation_id": "corr_assigned_delegate",
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "task_not_ready"
+    assert result.error_code == "task_already_assigned"
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
 
 
 def test_researcher_tool_descriptors_include_direct_bio_research_tools() -> None:
@@ -1358,7 +1467,7 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
             status=task.status,
             priority=task.priority,
             kind="research",
-            assigned_ref=task.assigned_ref,
+            assigned_ref=None,
             created_at=task.created_at,
             updated_at=task.updated_at,
             lane_id=task.lane_id,

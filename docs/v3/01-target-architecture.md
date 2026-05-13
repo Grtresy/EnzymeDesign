@@ -38,7 +38,7 @@ Agent Runtime / Scheduler
   |
   +--> resident teammate roster
   +--> inbox wakeups
-  +--> task auto-claim
+  +--> explicit scheduler auto-claim for recovery/debug
   +--> approval / engine completion wakeups
   +--> idle / shutdown policy
   |
@@ -88,7 +88,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 - teammate 的身份、role、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在
 - 常驻不表示持续占用 LLM 推理；idle teammate 不运行模型，只等待 scheduler 的 wakeup signal
-- teammate 可以被 master delegation 唤醒，也可以被 inbox message、task auto-claim、approval resolution、engine completion 或 manual resume 唤醒
+- teammate 默认由 master delegation 唤醒，也可以被 inbox message、approval resolution、engine completion 或 manual resume 唤醒；task auto-claim 仅用于显式 recovery/debug/operator 场景
 - `protocol.send` 不只是写入消息记录，还应产生 recipient 可消费的 wakeup signal
 
 ## 3. 顶层组件边界
@@ -144,7 +144,7 @@ Agent runtime / scheduler 负责让 teammate 以“持久 agent 成员”存在�
 - 维护 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`
 - 根据 inbox unread、pending task、approval resolved、engine completed、manual resume 等信号唤醒对应 teammate
 - 在 teammate idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
-- 将 `protocol.send`、task assignment、task auto-claim、background completion 转化为可审计的 wakeup event
+- 将 `protocol.send`、explicit delegation、显式 task auto-claim、background completion 转化为可审计的 wakeup event
 - 为被唤醒 teammate 构建 focused restore context，包括 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
 - 执行 idle timeout、shutdown handshake、failure recovery 与重试策略
 
@@ -270,7 +270,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - master agent 创建和编排 task
 - master agent 将具体 task 分配给 teammate agents
 - teammate agents 在共享 session workspace 上围绕 task 推进工作，并按需绑定 lane、调用 capability、读写 artifacts / report drafts / reports
-- idle teammate 可以根据 role、priority、blocked_by 与 assignment policy 自动认领可做 task
+- 显式 recovery/debug/operator auto-claim 可以根据 role、`blocked_by` 与 assignment policy 认领 ready unassigned task，但默认产品路径仍是 master 显式委派
 - teammate 之间通过 team protocol 协作，master 负责对外汇报和最终交付
 
 ## 5. 关键设计默认值

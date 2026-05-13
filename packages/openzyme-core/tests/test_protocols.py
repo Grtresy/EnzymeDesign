@@ -4,6 +4,8 @@ import json
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import AgentRuntimeSignalStatus
@@ -667,6 +669,211 @@ def test_runtime_missing_focused_task_fails_signal_without_consuming_unread_mess
     assert updated_signal.error_message == "Focused task required for wakeup."
     assert updated_message.status is InboxStatus.UNREAD
     assert model_factory.invokers == {}
+
+
+def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.tasks.save(
+        Task.create(
+            "task_blocker",
+            session.session_id,
+            "Blocker",
+            "Produce upstream output.",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    repositories.tasks.save(
+        Task.create(
+            "task_blocked",
+            session.session_id,
+            "Blocked",
+            "Use upstream output.",
+            kind="research",
+            blocked_by=("task_blocker",),
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id="task_blocked",
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:03+00:00",
+            updated_at="2026-04-17T12:00:03+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+            wakeup_reason=None,
+            last_active_at=None,
+            idle_since="2026-04-17T12:00:03+00:00",
+            shutdown_requested_at=None,
+        )
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="sig_blocked",
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        task_id="task_blocked",
+        lane_id=None,
+        correlation_id="corr_blocked",
+        reason=AgentRuntimeSignalReason.INBOX_UNREAD,
+        source_ref=None,
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-04-17T12:00:04+00:00",
+    )
+    repositories.runtime_signals.save(signal)
+    model_factory = FakeModelFactory({"content": "should not be invoked", "tool_calls": []})
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=model_factory,
+    )
+
+    outcome = AgentRuntimeService(context).wake_agent(signal)
+
+    updated_task = repositories.tasks.get("task_blocked")
+    updated_signal = repositories.runtime_signals.get("sig_blocked")
+    updated_agent = repositories.agents.get("agent:researcher")
+    assert outcome.ok is False
+    assert outcome.teammate_status == "task_blocked"
+    assert "task_blocker" in outcome.summary
+    assert updated_signal.status is AgentRuntimeSignalStatus.FAILED
+    assert updated_task.status is TaskStatus.TODO
+    assert updated_task.assigned_ref is None
+    assert updated_agent.status is AgentMemberStatus.IDLE
+    assert model_factory.invokers == {}
+
+
+def test_runtime_task_available_rejects_assigned_task_without_claiming() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:03+00:00",
+            updated_at="2026-04-17T12:00:03+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+            wakeup_reason=None,
+            last_active_at=None,
+            idle_since="2026-04-17T12:00:03+00:00",
+            shutdown_requested_at=None,
+        )
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="sig_task_available_assigned",
+        session_id=session.session_id,
+        agent_id="agent:researcher",
+        task_id="task_001",
+        lane_id=None,
+        correlation_id=None,
+        reason=AgentRuntimeSignalReason.TASK_AVAILABLE,
+        source_ref="task_001",
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-04-17T12:00:04+00:00",
+    )
+    repositories.runtime_signals.save(signal)
+    model_factory = FakeModelFactory({"content": "should not be invoked", "tool_calls": []})
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=model_factory,
+    )
+
+    outcome = AgentRuntimeService(context).wake_agent(signal)
+
+    updated_task = repositories.tasks.get("task_001")
+    updated_signal = repositories.runtime_signals.get("sig_task_available_assigned")
+    assert outcome.ok is False
+    assert outcome.teammate_status == "task_already_assigned"
+    assert updated_signal.status is AgentRuntimeSignalStatus.FAILED
+    assert updated_task.status is TaskStatus.TODO
+    assert updated_task.assigned_ref == "agent:planner"
+    assert model_factory.invokers == {}
+
+
+def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.tasks.save(
+        Task.create(
+            "task_approval",
+            session.session_id,
+            "Approval task",
+            "Continue after approval.",
+            kind="execution",
+            status=TaskStatus.BLOCKED,
+            assigned_ref="agent:executor",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:executor",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id="task_approval",
+            name="Executor",
+            role="executor",
+            status=AgentMemberStatus.BLOCKED,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:03+00:00",
+            updated_at="2026-04-17T12:00:03+00:00",
+            runtime_state="blocked",
+            current_correlation_id="corr_approval",
+            wakeup_reason=None,
+            last_active_at=None,
+            idle_since=None,
+            shutdown_requested_at=None,
+        )
+    )
+    signal = AgentRuntimeSignal(
+        signal_id="sig_approval",
+        session_id=session.session_id,
+        agent_id="agent:executor",
+        task_id="task_approval",
+        lane_id=None,
+        correlation_id="corr_approval",
+        reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
+        source_ref="appr_001",
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-04-17T12:00:04+00:00",
+    )
+    repositories.runtime_signals.save(signal)
+    model_factory = FakeModelFactory({"content": "Approval resumed.", "tool_calls": []})
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=model_factory,
+    )
+
+    outcome = AgentRuntimeService(context).wake_agent(signal)
+
+    updated_task = repositories.tasks.get("task_approval")
+    updated_signal = repositories.runtime_signals.get("sig_approval")
+    assert outcome.ok is True
+    assert updated_signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert updated_task.status is TaskStatus.IN_PROGRESS
+    assert "v3_teammate_loop:executor" in model_factory.invokers
 
 
 def test_background_completion_updates_agent_and_invocation_state() -> None:

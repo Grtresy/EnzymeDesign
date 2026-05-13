@@ -44,6 +44,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `task` 默认由 master agent 基于用户对话创建和编排
 - `task` 是 delegated teammate、lane、approval、engine invocation、artifact、report draft、report、protocol thread 的默认关联锚点
 - `task` 的存在意义是让内部执行和外部对话解耦：用户与 master agent 对话，内部团队围绕 task 推进工作
+- `blocked_by` 是执行闸门：下游 task 可提前创建，但在 blocker terminal 前不能被 `task.delegate`、auto-claim 或普通 wakeup 推进执行
 
 建议字段：
 
@@ -177,7 +178,7 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - master 是 team leader 与 user-facing agent；teammate 是 internal worker / specialist
 - teammate 应拥有自己的 restore context、tool surface、protocol thread 与状态投影
 - teammate 的身份与 inbox 默认常驻；idle 状态不持续调用 LLM，但必须可被 scheduler 恢复
-- master delegation 与 teammate auto-claim 并存；前者表达显式指派，后者用于 role 匹配的自组织推进
+- master 显式 delegation 是默认产品路径；teammate auto-claim 仅用于显式 recovery/debug/operator 场景中的 role 匹配认领
 
 ### 2.7.1 AgentRuntimeSignal
 

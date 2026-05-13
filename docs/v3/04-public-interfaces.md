@@ -35,10 +35,10 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 - `max_signals: int = 3`
 - `max_steps_per_agent: int = 8`
-- `auto_enqueue_ready_tasks: bool = true`
+- `auto_enqueue_ready_tasks: bool = false`
 - `run_master_followup: bool = true`
 
-该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。
+该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -185,7 +185,7 @@ V3 Web UI 默认是 conversation-first。
 
 - 用户发送自然语言消息
 - top-level master agent loop 决定如何创建和编排 task
-- 具体 research / execution / reporting task 默认由 resident teammate agent 推进；master 可显式委托，idle teammate 也可按 role 自动认领 ready task
+- 具体 research / execution / reporting task 默认由 master 显式委托给 resident teammate agent 推进；auto-claim 仅用于显式 operator/debug/recovery 场景
 - `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
 - `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、提交受控 execution pipeline，并可通过 protocol 与 peers 沟通；具体 HPC / 长耗时 / 高 quota SDK operation 是否需要 approval 由 Host supervisor 的 tool policy 决定，teammate 不需要判断敏感性
 - execution teammate 不直接调用 HPC runner tool；它只能通过 `execution.pipeline.*` 提交或恢复 pipeline，由 sandbox SDK 和 Host supervisor 间接访问 runner

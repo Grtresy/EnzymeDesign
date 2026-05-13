@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
@@ -77,6 +78,84 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 ),
                 task_id=task.task_id,
                 lane_id=task.lane_id,
+            )
+        open_blockers = service.open_blocker_ids(task)
+        if open_blockers:
+            summary = (
+                f"Task {task.task_id} is blocked by unfinished task(s): "
+                f"{', '.join(open_blockers)}."
+            )
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=json.dumps(
+                    {
+                        "task": task.to_dict(),
+                        "status": "task_not_ready",
+                        "error_code": "task_blocked",
+                        "blocked_by_open_task_ids": list(open_blockers),
+                    },
+                    sort_keys=True,
+                ),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="task_not_ready",
+                summary=summary,
+                error_code="task_blocked",
+                hint=(
+                    "Complete the blocker task(s), update this task with the "
+                    "upstream outputs, then delegate it."
+                ),
+                details={"blocked_by_open_task_ids": list(open_blockers)},
+            )
+        if task.assigned_ref is not None:
+            summary = f"Task {task.task_id} is already assigned to {task.assigned_ref}."
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=json.dumps(
+                    {
+                        "task": task.to_dict(),
+                        "status": "task_not_ready",
+                        "error_code": "task_already_assigned",
+                        "assigned_ref": task.assigned_ref,
+                    },
+                    sort_keys=True,
+                ),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="task_not_ready",
+                summary=summary,
+                error_code="task_already_assigned",
+                hint=(
+                    "Use protocol.send or task.update for an already assigned "
+                    "task instead of delegating it again."
+                ),
+                details={"assigned_ref": task.assigned_ref},
+            )
+        if task.status is not TaskStatus.TODO:
+            summary = f"Task {task.task_id} is not ready for delegation because its status is {task.status.value}."
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=json.dumps(
+                    {
+                        "task": task.to_dict(),
+                        "status": "task_not_ready",
+                        "error_code": "task_status_not_ready",
+                    },
+                    sort_keys=True,
+                ),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="task_not_ready",
+                summary=summary,
+                error_code="task_status_not_ready",
+                hint="Only TODO, unassigned, unblocked tasks can be delegated.",
+                details={"task_status": task.status.value},
             )
         agent_id = str(arguments.get("agent_id") or default_agent_id_for_role(agent_role))
         correlation_id = str(arguments.get("correlation_id") or _new_id("corr"))

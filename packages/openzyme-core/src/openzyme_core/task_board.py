@@ -182,6 +182,14 @@ class TaskBoardService:
     def list_ready_tasks(self, session_id: str, *, lane_id: str | None = None) -> list[Task]:
         return self.repositories.tasks.list_ready_by_session(session_id, lane_id=lane_id)
 
+    def open_blocker_ids(self, task: Task) -> tuple[str, ...]:
+        blockers: list[str] = []
+        for blocker_id in task.blocked_by:
+            blocker = self.repositories.tasks.get(blocker_id)
+            if blocker is None or not blocker.status.is_terminal:
+                blockers.append(blocker_id)
+        return tuple(blockers)
+
     def select_next_task(self, session_id: str, *, lane_id: str | None = None) -> Task | None:
         ready_tasks = self.list_ready_tasks(session_id, lane_id=lane_id)
         if not ready_tasks:
@@ -211,14 +219,9 @@ class TaskBoardService:
         )
 
     def _build_items(self, tasks: list[Task]) -> list[TaskBoardItem]:
-        task_map = {task.task_id: task for task in tasks}
         items: list[TaskBoardItem] = []
         for task in tasks:
-            open_blockers = tuple(
-                blocker_id
-                for blocker_id in task.blocked_by
-                if blocker_id in task_map and not task_map[blocker_id].status.is_terminal
-            )
+            open_blockers = self.open_blocker_ids(task)
             bucket = _bucket_for_task(task, open_blockers)
             items.append(
                 TaskBoardItem(

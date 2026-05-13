@@ -184,6 +184,9 @@ class AgentRuntimeService:
                 summary=summary,
                 teammate_status="focused_task_missing",
             )
+        not_ready = self._task_not_ready_outcome(claimed, agent, task)
+        if not_ready is not None:
+            return not_ready
         lane_id = signal.lane_id or (None if payload is None else payload.get("lane_id"))
         agent = self._update_agent(
             agent,
@@ -287,6 +290,120 @@ class AgentRuntimeService:
             teammate_status=result.status.value,
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
+        )
+
+    def _task_not_ready_outcome(
+        self,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+        task: Task,
+    ) -> AgentRuntimeOutcome | None:
+        service = TaskBoardService(self.context.repositories, event_emitter=self.context.emit)
+        open_blockers = service.open_blocker_ids(task)
+        if open_blockers:
+            summary = (
+                f"Task {task.task_id} is blocked by unfinished task(s): "
+                f"{', '.join(open_blockers)}."
+            )
+            return self._fail_ready_gate(
+                claimed,
+                agent,
+                task,
+                summary=summary,
+                teammate_status="task_blocked",
+            )
+        if claimed.reason is AgentRuntimeSignalReason.TASK_AVAILABLE:
+            if task.status is not TaskStatus.TODO:
+                return self._fail_ready_gate(
+                    claimed,
+                    agent,
+                    task,
+                    summary=(
+                        "TASK_AVAILABLE wakeup requires a TODO task; "
+                        f"task {task.task_id} is {task.status.value}."
+                    ),
+                    teammate_status="task_not_ready",
+                )
+            if task.assigned_ref is not None:
+                return self._fail_ready_gate(
+                    claimed,
+                    agent,
+                    task,
+                    summary=(
+                        "TASK_AVAILABLE wakeup requires an unassigned task; "
+                        f"task {task.task_id} is assigned to {task.assigned_ref}."
+                    ),
+                    teammate_status="task_already_assigned",
+                )
+            return None
+        if claimed.reason is AgentRuntimeSignalReason.APPROVAL_RESOLVED:
+            if task.assigned_ref != agent.agent_id:
+                return self._fail_ready_gate(
+                    claimed,
+                    agent,
+                    task,
+                    summary=(
+                        "Approval resume requires the focused task to be assigned "
+                        f"to {agent.agent_id}."
+                    ),
+                    teammate_status="task_not_assigned_to_agent",
+                )
+            return None
+        if task.status is TaskStatus.BLOCKED:
+            return self._fail_ready_gate(
+                claimed,
+                agent,
+                task,
+                summary=(
+                    f"Task {task.task_id} is BLOCKED; only an approval resume "
+                    "can restart an assigned approval-blocked task."
+                ),
+                teammate_status="task_blocked",
+            )
+        if task.status not in {TaskStatus.TODO, TaskStatus.IN_PROGRESS}:
+            return self._fail_ready_gate(
+                claimed,
+                agent,
+                task,
+                summary=(
+                    f"Task {task.task_id} is not executable from status "
+                    f"{task.status.value}."
+                ),
+                teammate_status="task_not_ready",
+            )
+        return None
+
+    def _fail_ready_gate(
+        self,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+        task: Task,
+        *,
+        summary: str,
+        teammate_status: str,
+    ) -> AgentRuntimeOutcome:
+        failed = replace(
+            claimed,
+            status=AgentRuntimeSignalStatus.FAILED,
+            completed_at=utc_now_iso(),
+            error_message=summary,
+        )
+        self.context.repositories.runtime_signals.save(failed)
+        updated_agent = self._update_agent(
+            agent,
+            status=AgentMemberStatus.IDLE,
+            correlation_id=claimed.correlation_id,
+            wakeup_reason=claimed.reason.value,
+            runtime_state="idle",
+            idle_since=utc_now_iso(),
+        )
+        return AgentRuntimeOutcome(
+            signal=failed,
+            task=task,
+            agent=updated_agent,
+            ok=False,
+            summary=summary,
+            teammate_status=teammate_status,
         )
 
     def _payload_for_signal(self, signal: AgentRuntimeSignal) -> dict[str, Any] | None:

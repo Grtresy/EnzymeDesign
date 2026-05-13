@@ -109,7 +109,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   修正记录：已移除 `AgentRuntimeService._is_diagnostic_signal()` 及其对 task completion / blocked 迁移的例外影响；同时移除了 `_instructions_for_signal()` 中按 `message_type=diagnostic_request` 生成专门 prompt 文案的分支。`diagnostic_request` 仅作为普通 protocol payload 出现在 thread / restore context 中，由接收 teammate 解释。
 
-- [ ] Auto-claim 行为有演变成业务优先级策略的风险。
+- [x] Auto-claim 行为有演变成业务优先级策略的风险。
 
   证据：`AgentRuntimeService.auto_enqueue_ready_tasks()` 会扫描 ready tasks，将 task kind 映射到 teammate role，并为 idle agents 排队 wakeup signals。
 
@@ -118,6 +118,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   目标边界：auto-claim 只应做窄范围机械匹配：ready task、无 owner、role match、idle agent、无 blockers。
 
   后续修正方向：保持 auto-claim policy 最小化并写入文档。任何更复杂的优先级判断都应交给 master 或 teammate。
+
+  修正记录：已将 `auto_enqueue_ready_tasks` 默认值改为 `false`，默认产品路径改为 master 显式 `task.delegate`。auto-claim 保留为显式 operator/debug/recovery option，且 runtime 只允许 `TASK_AVAILABLE` 认领 `todo + unassigned + no blockers` 的 task。`task.delegate` 和 runtime wakeup 均已加入 `blocked_by` ready gate；blocked task 不再能被提前委派或被普通 wakeup 推进到 `in_progress`。
 
 - [x] Top-level 与 teammate prompts 依赖嵌在代码里的恢复策略。
 

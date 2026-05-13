@@ -116,17 +116,21 @@ Protocol payloads may carry follow-up questions, instructions, task ids, summari
 
 ## 5. Task Auto-Claim
 
-idle teammate 可以自动扫描 task board 并认领工作，但必须受 control-plane policy 约束：
+默认产品路径是 master 显式调用 `task.delegate`。auto-claim 默认关闭，只作为 operator/debug/recovery 的显式 scheduler option 使用。
 
-- task status 为 pending / ready
-- task 没有未解决 `blocked_by`
-- task kind / role requirement 与 teammate role 匹配
-- task 未被其他 active teammate claim，或满足显式抢占规则
-- priority、dependency 与 lane availability 允许执行
+auto-claim 启用时也只能做窄范围机械匹配：
 
-auto-claim 成功后，runtime 将 task owner 设为该 teammate，并可机械地把 `todo` / `blocked` task 推进到 `in_progress`。runtime 将 teammate 状态改为 `working`，把 claim 作为 wakeup reason 写入 restore context，并在 workspace projection 中反映 task owner 与 teammate focus。除 task claim 和 pending approval 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.update` 写入。
+- task status 必须为 `todo`
+- task 必须没有未完成 `blocked_by`
+- task 必须没有 `assigned_ref`
+- task kind / role requirement 必须与 teammate role 匹配
+- 目标 teammate 必须处于可接收工作的 idle / active resident 状态
 
-master delegation 仍然存在；auto-claim 是减少 master 微管理的补充机制，不是取消 master 的 team leader 职责。
+`blocked_by` 表示下游输入尚未形成，不是只用于展示的 UI 状态。blocked task 不能被 auto-claim，也不能被 `task.delegate` 提前委派；master 应在上游完成后读取 protocol thread、artifacts 或 task result，更新下游 task 的 description / instructions，再显式委派。
+
+runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。
+
+除 task claim 和 pending approval 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.update` 写入。
 
 ## 6. Restore Context
 

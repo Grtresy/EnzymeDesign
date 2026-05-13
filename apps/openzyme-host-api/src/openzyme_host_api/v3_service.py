@@ -323,7 +323,7 @@ class V3HostApiService:
         *,
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
-        auto_enqueue_ready_tasks: bool = True,
+        auto_enqueue_ready_tasks: bool = False,
     ) -> list[dict[str, Any]]:
         event_bus = self._event_sink()
         context = SessionRuntimeContext(
@@ -354,7 +354,7 @@ class V3HostApiService:
         session_id: str,
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
-        auto_enqueue_ready_tasks: bool = True,
+        auto_enqueue_ready_tasks: bool = False,
         run_master_followup: bool = True,
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:

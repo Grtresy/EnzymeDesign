@@ -22,6 +22,7 @@ from openzyme_graph.design import build_phase_c_design_graph
 from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
+from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import LangChainToolCallingInvoker
 from openzyme_runtime import PhaseBRepositories
@@ -960,6 +961,101 @@ def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     assert updated["task"]["status"] == "todo"
     assert model_factory.invokers == {}
     assert repositories.runtime_signals.list_by_session("sess_task_crud_no_drain") == []
+
+
+def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_drain_no_auto_claim",
+            "proj_001",
+            "Drain",
+            "Do not auto-claim ready tasks by default.",
+        )
+    )
+    repositories.tasks.save(
+        Task.create(
+            "task_ready_no_auto_claim",
+            "sess_drain_no_auto_claim",
+            "Collect evidence",
+            "Ready research task.",
+            kind="research",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id="sess_drain_no_auto_claim",
+            lane_id=None,
+            task_id=None,
+            name="researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-05-03T15:59:00+00:00",
+            updated_at="2026-05-03T15:59:00+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+        )
+    )
+    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+
+    service.drain_runtime(session_id="sess_drain_no_auto_claim", run_master_followup=False)
+
+    assert repositories.runtime_signals.list_by_session("sess_drain_no_auto_claim") == []
+
+
+def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_drain_auto_claim",
+            "proj_001",
+            "Drain",
+            "Explicitly auto-claim ready tasks.",
+        )
+    )
+    repositories.tasks.save(
+        Task.create(
+            "task_ready_auto_claim",
+            "sess_drain_auto_claim",
+            "Collect evidence",
+            "Ready research task.",
+            kind="research",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id="sess_drain_auto_claim",
+            lane_id=None,
+            task_id=None,
+            name="researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-05-03T15:59:00+00:00",
+            updated_at="2026-05-03T15:59:00+00:00",
+            runtime_state="idle",
+            current_correlation_id=None,
+        )
+    )
+    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+
+    service.drain_runtime(
+        session_id="sess_drain_auto_claim",
+        auto_enqueue_ready_tasks=True,
+        run_master_followup=False,
+    )
+
+    signals = repositories.runtime_signals.list_by_session("sess_drain_auto_claim")
+    assert len(signals) == 1
+    assert signals[0].task_id == "task_ready_auto_claim"
+    assert signals[0].reason.value == "task_available"
+
+
+def test_v3_drain_runtime_request_defaults_disable_auto_claim() -> None:
+    assert DrainV3RuntimeRequest().auto_enqueue_ready_tasks is False
 
 
 def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic() -> (
