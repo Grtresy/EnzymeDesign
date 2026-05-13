@@ -119,7 +119,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   后续修正方向：保持 auto-claim policy 最小化并写入文档。任何更复杂的优先级判断都应交给 master 或 teammate。
 
-- [ ] Top-level 与 teammate prompts 依赖嵌在代码里的恢复策略。
+- [x] Top-level 与 teammate prompts 依赖嵌在代码里的恢复策略。
 
   证据：`packages/openzyme-core/src/openzyme_core/llm_driver.py` 和 `packages/openzyme-core/src/openzyme_core/teammates.py` 构建较长 operational prompts，其中包含 delegation failure、protocol inspection 和 execution behavior 等具体规则。
 
@@ -128,6 +128,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   目标边界：代码应负责组装 restore context 和稳定 role instructions；可变 operational doctrine 应放在 V3 文档或类似 skill 的受控文档中。
 
   后续修正方向：将高层 operational rules 抽取到版本化 V3 docs 中，让代码里的 prompt assembly 保持轻量。
+
+  修正记录：已移除 master prompt 中按 `diagnostic_request` 固定处理 teammate failure / unclear summary 的恢复流程。master prompt 现在只保留通用处理原则：读取 task state 与 `protocol.thread(correlation_id)`，再用现有 `protocol.send`、`task.update`、用户澄清或用户汇报路径做判断。`protocol.thread` tool result 增加 latest status / summary / task / failure observation fields，V3 runtime 与 top-level loop 文档已同步为 follow-up flow。
 
 - [x] Workspace projection 暴露的 runtime internals 可能变成产品界面语义。
 

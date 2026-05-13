@@ -76,20 +76,24 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` / diagnostic response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。显式 Host runtime drain 发现 terminal teammate outcome 后，当前实现最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master follow-up。
+teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。显式 Host runtime drain 发现 terminal teammate outcome 后，当前实现最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master follow-up。
 
-### Failed Delegation Diagnostic Flow
+### Failed Delegation Follow-up Flow
 
-失败委托的默认恢复路径由 master 主动发起，不由 `task.delegate` 或 protocol tool 自动追问：
+失败委托的后续处理由 master 主动判断，不由 `task.delegate`、protocol tool 或 runtime 自动追问：
 
 ```text
-explicit runtime drain or protocol.thread shows failed / max_steps_exceeded / unclear summary
-  -> master inspects protocol.thread(correlation_id)
-  -> master sends protocol.send(message_type="diagnostic_request", recipient=failed teammate)
+explicit runtime drain or protocol.thread shows failed / unclear summary
+  -> master inspects task state and protocol.thread(correlation_id)
+  -> master chooses an existing action:
+       protocol.send follow-up to the same teammate
+       task.update to mark blocked / failed / completed with evidence
+       ask the user for clarification
+       report the result in user-facing language
   -> protocol persists unread inbox + inbox_unread wakeup signal
   -> an explicit scheduler/runtime drain wakes the same resident teammate with task/lane/correlation focus
-  -> restore context / seed message includes the protocol thread payload; runtime does not generate message-type-specific diagnostic instructions
-  -> teammate replies on the same thread with diagnostic_response or delegation_result
+  -> restore context / seed message includes the protocol thread payload; runtime does not generate message-type-specific instructions
+  -> teammate replies on the same thread with a normal protocol message
 ```
 
 `protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; if a bounded teammate turn is required, it must be performed through an explicit scheduler/runtime drain action.
@@ -108,7 +112,7 @@ Delivery success semantics:
 - persisted message without a wakeup signal is `ok=false/status=wakeup_not_created/error_code=wakeup_signal_missing`
 - attempts to pass synchronous execution parameters return `ok=false/status=sync_execution_not_supported`
 
-Diagnostic payloads must at least support `question`, `instructions`, `task_id`, `failed_summary`, and `expected_response`; `lane_id` should be included when the failed task is lane-bound. A diagnostic wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly updates it through `task.update`; protocol messages are diagnostic context, not task terminal state.
+Protocol payloads may carry follow-up questions, instructions, task ids, summaries, or expected response hints, but message type names such as `diagnostic_request` are ordinary protocol data. A follow-up wakeup must not automatically mark the original task completed. The task changes only when the teammate explicitly updates it through `task.update`; protocol messages are coordination context, not task terminal state.
 
 ## 5. Task Auto-Claim
 

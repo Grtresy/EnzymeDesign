@@ -380,6 +380,76 @@ def test_protocol_thread_expands_small_payloads() -> None:
     assert thread["request"]["payload"]["task_id"] == "task_001"
 
 
+def test_protocol_thread_tool_reports_failure_observation_details() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = ProtocolService(repositories)
+    request_ref = service.persist_payload(
+        session_id=session.session_id,
+        document_kind="protocol_payload",
+        payload={"task_id": "task_001", "instructions": "Investigate this task."},
+    )
+    response_ref = service.persist_payload(
+        session_id=session.session_id,
+        document_kind="protocol_payload",
+        payload={
+            "task_id": "task_001",
+            "status": "max_steps_exceeded",
+            "summary": "The delegated turn ran out of steps.",
+        },
+    )
+    service.send_message(
+        session_id=session.session_id,
+        sender="harness",
+        sender_kind=InboxParticipantKind.HARNESS,
+        recipient="agent:researcher",
+        recipient_kind=InboxParticipantKind.AGENT,
+        message_type="delegation_request",
+        correlation_id="corr_failed",
+        payload_ref=request_ref,
+        task_id="task_001",
+        lane_id="lane_001",
+    )
+    service.reply(
+        session_id=session.session_id,
+        sender="agent:researcher",
+        sender_kind=InboxParticipantKind.AGENT,
+        recipient="harness",
+        recipient_kind=InboxParticipantKind.HARNESS,
+        message_type="delegation_result",
+        correlation_id="corr_failed",
+        payload_ref=response_ref,
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_thread",
+            tool_name="protocol.thread",
+            arguments={"correlation_id": "corr_failed"},
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    assert result.ok is True
+    assert result.details["latest_message_type"] == "delegation_result"
+    assert result.details["latest_payload_status"] == "max_steps_exceeded"
+    assert result.details["latest_summary"] == "The delegated turn ran out of steps."
+    assert result.details["task_id"] == "task_001"
+    assert result.details["has_failure"] is True
+    assert result.details["needs_attention"] is True
+
+
 def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

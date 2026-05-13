@@ -1598,7 +1598,9 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "reporter for report drafting and publishing" in prompt
     assert "answer only with researcher, executor, reporter" in prompt
     assert "Do not describe provider tools or capability engines" in prompt
-    assert "diagnostic_request" in prompt
+    assert "diagnostic_request" not in prompt
+    assert "delegated work fails or returns an unclear result" in prompt
+    assert "protocol.thread(correlation_id)" in prompt
     assert "Completed/failed/blocked delegated tasks:" in prompt
     assert "Protocol threads available via protocol.thread:" in prompt
     assert "Teammate agents are internal workers" in prompt

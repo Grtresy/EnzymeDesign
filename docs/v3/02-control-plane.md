@@ -205,8 +205,8 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 补充约束：
 
 - `reason` 至少覆盖 `delegation_assigned`、`inbox_unread`、`task_available`、`approval_resolved`、`engine_completed`、`manual_resume`
-- `inbox_unread` 不只来自 teammate-to-teammate 消息，也包括 master-to-teammate 的 `diagnostic_request`
-- signal 的 `task_id`、`lane_id`、`correlation_id` 与 `source_ref` 应足够让 runtime 恢复 focused teammate turn，并从 source inbox payload 渲染诊断指令
+- `inbox_unread` 不只来自 teammate-to-teammate 消息，也包括 master-to-teammate 的 follow-up message
+- signal 的 `task_id`、`lane_id`、`correlation_id` 与 `source_ref` 应足够让 runtime 恢复 focused teammate turn，并从 source inbox payload 渲染 wakeup context
 - scheduler 只能 claim 未完成 signal；claim 后必须要么完成，要么释放/标记失败
 - signal 是调度语义，不替代 canonical task、inbox、approval 或 engine invocation
 

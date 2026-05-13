@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -14,6 +15,9 @@ from .harness import ToolRegistry
 from .harness import ToolResult
 from .protocols import ProtocolService
 from .teammate_roster import TEAMMATE_ROLE_NAMES
+
+
+_FAILURE_STATUSES = {"failed", "error", "cancelled", "canceled", "max_steps_exceeded"}
 
 
 def _default_agent_id_for_role(role: str) -> str:
@@ -136,11 +140,58 @@ def _focused_task_failure(
     )
 
 
+def _thread_observation_details(thread) -> dict[str, Any]:
+    candidate = thread.responses[-1] if thread.responses else thread.request
+    payload = None if candidate is None else thread.payloads.get(candidate.message_id)
+    request_payload = (
+        None
+        if thread.request is None
+        else thread.payloads.get(thread.request.message_id)
+    )
+    payload_status = None
+    latest_summary = None
+    task_id = None
+    has_failure = thread.status.value == "failed"
+    for item in (payload, request_payload):
+        if not isinstance(item, dict):
+            continue
+        if payload_status is None and item.get("status") is not None:
+            payload_status = str(item.get("status"))
+        if latest_summary is None:
+            for key in ("summary", "canonical_summary", "failed_summary", "failure_summary"):
+                if item.get(key) is not None:
+                    latest_summary = str(item.get(key))
+                    break
+        if task_id is None and item.get("task_id") is not None:
+            task_id = str(item.get("task_id"))
+        status_value = str(item.get("status") or "").lower()
+        if (
+            status_value in _FAILURE_STATUSES
+            or item.get("error_code") is not None
+            or item.get("failed_summary") is not None
+            or item.get("failure_summary") is not None
+        ):
+            has_failure = True
+    return {
+        "has_response": bool(thread.responses),
+        "response_count": len(thread.responses),
+        "latest_message_type": None if candidate is None else candidate.message_type,
+        "latest_payload_status": payload_status,
+        "latest_summary": latest_summary,
+        "task_id": task_id,
+        "has_failure": has_failure,
+        "needs_attention": thread.status.value == "waiting"
+        or has_failure
+        or (bool(thread.responses) and latest_summary is None),
+    }
+
+
 def register_protocol_tools(registry: ToolRegistry) -> None:
     def thread_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         correlation_id = str(invocation.arguments["correlation_id"])
         protocol = ProtocolService(context.repositories)
         thread = protocol.build_thread(context.snapshot.session.session_id, correlation_id)
+        details = _thread_observation_details(thread)
         summary = f"Protocol thread {correlation_id} is {thread.status.value} with {len(thread.responses)} response(s)."
         return ToolResult(
             call_id=invocation.call_id,
@@ -151,7 +202,7 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             lane_id=invocation.lane_id,
             status=thread.status.value,
             summary=summary,
-            details={"has_response": bool(thread.responses), "response_count": len(thread.responses)},
+            details=details,
         )
 
     def send_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:

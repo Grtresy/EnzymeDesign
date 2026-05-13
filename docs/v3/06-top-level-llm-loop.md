@@ -43,7 +43,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
 - if `status` is `sync_execution_not_supported`, master should remove synchronous protocol execution arguments and rely on the scheduler/runtime drain path
 - if `task.delegate` returns `wakeup_queued`, master should treat delegation as queued, not completed; teammate execution requires an explicit scheduler/runtime drain command
-- if a later explicit drain or protocol thread shows `max_steps_exceeded` / failure or an unclear summary, master should inspect `protocol.thread(correlation_id)` and may send a focused `diagnostic_request`
+- if a later explicit drain or protocol thread shows failure or an unclear summary, master should inspect task state and `protocol.thread(correlation_id)`, then choose an existing action: send a follow-up with `protocol.send`, update task state with `task.update`, ask the user for clarification, or report the result
 
 ## 4. 顶层模型接入
 

@@ -117,7 +117,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="protocol.thread",
-            description="Inspect one internal team protocol thread by correlation id, including small structured payloads.",
+            description=(
+                "Inspect one internal team protocol thread by correlation id, including small structured payloads "
+                "and latest status, summary, task, and failure observation fields."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {"correlation_id": {"type": "string"}},
