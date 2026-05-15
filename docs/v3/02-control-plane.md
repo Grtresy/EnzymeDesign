@@ -267,6 +267,18 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `created_at`
 - `updated_at`
 
+### 2.10 Canonical Relationship Defaults
+
+V3 control plane 的 canonical 关系默认如下：
+
+- `session` 是 task、lane、approval、inbox、memory、agent member、runtime signal、engine invocation、artifact、run、report draft 与 report 的顶层锚点
+- `task` 是 teammate delegation、lane focus、approval、engine invocation、artifact lineage、report draft、report 与 protocol thread 的默认业务锚点
+- `lane` 只表达隔离执行上下文；它不能替代 task 业务语义，也不能成为 artifact 可见性的唯一边界
+- `approval` 绑定具体 requested action、task/lane/invocation/step 与 plan digest；approval resolve 是唯一用户级 approval 状态入口
+- `inbox` 和 `agent_runtime_signal` 共同表达 teammate 协作与唤醒；message 负责协议内容，signal 负责调度语义
+- `engine_invocation` 只标识 capability engine 局部运行；其结果必须回写 artifact、run、report draft、task 或 activity 等 control-plane object
+- `artifact` / `run` / `report_draft` / `report` 是共享 workspace 工作面，不是某个 engine 的私有输出缓存
+
 ## 3. Workspace Projection
 
 V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 projection。
@@ -294,6 +306,8 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `lane_board` / `capabilities` 看 task 在什么执行上下文里运行
 - `report_drafts` 看 report teammate 正在如何组织、修订、准备发布交付物
 - `artifacts` 看 agent team 当前共享工作面中已产出的证据、结果与中间产物
+
+workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或恢复 CLI 后，调用方应能从 projection 重建 conversation timeline、task board、resident teammate roster、pending approvals、lane/artifact/report 状态与 capability invocation 摘要，而不依赖浏览器本地缓存、raw graph state 或临时 prompt 内容。
 
 ## 4. Event Model
 

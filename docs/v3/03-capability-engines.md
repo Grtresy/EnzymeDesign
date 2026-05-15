@@ -168,6 +168,7 @@ deep research 对 harness 至少提供：
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
 - command 不得直接引用 Host 本地 `SessionArtifactRecord.storage_uri`；HPC command 只能引用 `/work`、`/out`、`$MCP_WORKDIR`、`$MCP_OUTDIR` 等远端路径
+- runner/HPC 不得直接使用 Host 本地 artifact path；所有输入必须先经 artifact catalog 授权，再通过 runner staging 映射为远端工作目录路径
 - 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
 - 远端结果只有在 `expected_outputs` 中声明后才会被下载并登记为 artifact
 - output artifact 必须保留相对路径层级，不能只保留 basename
