@@ -11,6 +11,8 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - V3 can create a session, accept a user message, create tasks, delegate to teammates, wake teammate runtime, run research and execution capabilities, create a report draft, publish a final report, and project the workspace.
 - V3 execution can stage session artifacts into HPC `RunSpec.inputs`, fetch declared `expected_outputs`, and register fetched files as session artifacts.
 - V3 execution can run an approved pipeline sandbox whose SDK performs required preprocess steps and supervised HPC calls for format-sensitive tools such as Vina.
+- Runtime signal queue has durable claim leases, stale claim recovery, duplicate wakeup dedupe, and bounded scheduler drain coverage.
+- Provider/tool limits cover agent/session/global concurrency, LLM provider calls, research provider calls, and execution/HPC submission calls.
 - V2 continues to run for rollback only; no new product semantics are added to V2 during the cutover window.
 - `docs/OpenZyme架构设计.md` is not changed as part of this cutover unless separately approved.
 
@@ -34,6 +36,7 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 
 - V3 harness evals must be runnable with `--upload-results` to emit LangSmith workflow traces where configured.
 - Session event replay must include conversation, task, tool, delegation, approval, engine, report draft, and report generation events.
+- Session event replay/debug view must include diagnostic signal lifecycle events such as `signal.queued`, `signal.claimed`, `signal.completed`, and `signal.failed`.
 - Session event replay must include execution pipeline lifecycle, preprocess completion, runner submission/status, output fetch, and artifact recording events for execution runs.
 - `/debug/llm-calls` must remain available for local diagnosis of V3 harness and teammate LLM calls.
 - Rollback diagnosis needs the session id, latest failing endpoint, event replay, pending approval ids, and LLM debug records.

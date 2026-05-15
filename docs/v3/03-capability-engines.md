@@ -11,6 +11,8 @@ Capability engine 是 V3 harness 可调用的专业子系统。
 - 可以有自己的局部执行图、局部 prompt、局部 tool loop
 - 结果必须回写到 control plane canonical objects
 - 启动、恢复、重试与并发由 `engine invocation` 统一标识
+- provider/tool 调用必须经过 limiter：agent/session/global concurrency、LLM provider、research provider、execution/HPC submission 分别表达
+- 同步 SDK 只能通过受控 `to_thread` 或等价 adapter 包装在 limiter 内运行；线程池大小不是 quota 或 agent 并发策略
 
 ## 2. Deep Research Engine
 

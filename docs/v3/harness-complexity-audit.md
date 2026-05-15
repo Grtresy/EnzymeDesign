@@ -49,6 +49,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   修正记录：已移除 `create_task()` / `update_task()` / `post_message()` 的隐式 drain。`task.delegate` 现在只创建 protocol delegation、resident teammate 与 wakeup signal；bounded teammate turn 只能通过 `POST /v3/sessions/{session_id}/runtime/drain` 显式执行。
 
+  追加修正记录：`runtime/drain` 现在通过 scheduler claim lease 语义认领 signal；repository 层记录 `claimed_by`、`claim_expires_at`、`attempt_count` 与 `last_error`，支持 stale claim recovery 与失败重试边界。
+
 - [x] Host API 在 teammate 终态结果后触发 master follow-up。
 
   证据：`V3HostApiService._run_master_followup_after_teammates()` 会在 teammate outcomes 后启动另一次 top-level master loop。

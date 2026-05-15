@@ -139,6 +139,8 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 Agent runtime / scheduler 负责让 teammate 以“持久 agent 成员”存在，而不是只在 `task.delegate` 调用栈中短暂运行。
 
+第一阶段目标是单进程 async scheduler：Host 进程内 worker 从持久化 signal queue claim lease 并运行 bounded turn。多进程 worker、Redis/外部队列、跨进程共享 limiter 是后续扩展，不作为第一版阻塞项；但 claim API、worker id、lease expiry 与 limiter 抽象必须从第一版开始保留。
+
 职责：
 
 - 维护 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`

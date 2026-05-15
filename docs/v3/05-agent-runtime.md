@@ -56,6 +56,31 @@ runtime / scheduler 应把以下 control-plane 变化转化为 wakeup signal：
 
 wakeup signal 至少需要记录 recipient agent、reason、session、task/lane/correlation 关联与创建时间。scheduler 恢复 teammate 时，应把 reason 注入 restore context，而不是只让模型从全局状态中猜测发生了什么。
 
+## 3.1 Scheduler / Worker Boundary
+
+第一版采用单进程 async scheduler：同一 Host 进程内的 scheduler/worker pool 从持久化 `AgentRuntimeSignal` 队列 claim work，并运行 bounded teammate turn。agent 本身不是常驻进程；常驻的是 `AgentMember` identity、inbox、task focus、memory 和 protocol state。
+
+claim 语义：
+
+- worker 只 claim `pending` signal 或 lease 已过期的 `claimed` signal
+- claim 写入 `claimed_by`、`claim_expires_at`，递增 `attempt_count`
+- worker 完成 turn 后把 signal 写为 `completed` 或 `failed`
+- retryable failure 在 attempt 上限内可释放回 `pending`，否则保持 `failed`
+- stale claim recovery 只基于 lease，不依赖进程内内存
+
+第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：claim API 是 repository 层能力，scheduler 通过 worker id 和 lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
+
+## 3.2 Concurrency And Provider Limits
+
+runtime 并发限制分层表达：
+
+- agent/session/global：限制同时运行的 teammate turn 数
+- LLM provider：限制 chat/structured/tool-calling model 调用
+- research provider：限制 Tavily、PubMed、Semantic Scholar、UniProt、RCSB PDB 等外部检索调用
+- execution provider：限制 sandbox/HPC submission 和 runner-side expensive operation
+
+异步调用应直接 await limiter。同步阻塞 SDK 只能通过受控 adapter 在 limiter 内 `to_thread`，不能把线程池大小当成 quota 策略。
+
 ## 4. Inbox And Protocol Flow
 
 `protocol.send` 的默认流程：

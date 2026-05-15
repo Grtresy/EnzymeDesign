@@ -201,15 +201,33 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - `status`
 - `created_at`
 - `claimed_at`
+- `claimed_by`
+- `claim_expires_at`
+- `attempt_count`
 - `completed_at`
+- `error_message`
+- `last_error`
 
 补充约束：
 
 - `reason` 至少覆盖 `delegation_assigned`、`inbox_unread`、`task_available`、`approval_resolved`、`engine_completed`、`manual_resume`
 - `inbox_unread` 不只来自 teammate-to-teammate 消息，也包括 master-to-teammate 的 follow-up message
 - signal 的 `task_id`、`lane_id`、`correlation_id` 与 `source_ref` 应足够让 runtime 恢复 focused teammate turn，并从 source inbox payload 渲染 wakeup context
-- scheduler 只能 claim 未完成 signal；claim 后必须要么完成，要么释放/标记失败
+- scheduler 只能 claim `pending` signal 或 lease 已过期的 `claimed` signal；claim 时必须写入 `claimed_by`、`claim_expires_at` 并递增 `attempt_count`
+- claim 后必须要么 `completed`，要么释放回 `pending`，要么写入 `failed`；失败重试只允许在明确 retryable 且未超过 attempt 上限时回到 `pending`
+- duplicate wakeup 去重按 `session_id + agent_id + reason + source_ref` 作用于未完成 signal，避免同一 inbox message 或 engine completion 被重复排队
+- `last_error` 保存最近一次失败原因；`error_message` 表达当前 terminal failure 或待重试错误摘要
 - signal 是调度语义，不替代 canonical task、inbox、approval 或 engine invocation
+
+状态转换：
+
+```text
+pending --claim lease--> claimed --success--> completed
+pending --claim lease--> claimed --retryable failure under limit--> pending
+pending --claim lease--> claimed --non-retryable / exhausted--> failed
+claimed --lease expired--> claimed --reclaim by worker--> claimed
+claimed --operator release--> pending
+```
 
 ### 2.8 EngineInvocation
 

@@ -38,7 +38,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `auto_enqueue_ready_tasks: bool = false`
 - `run_master_followup: bool = true`
 
-该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
+该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；内部必须通过 scheduler claim lease 语义认领 signal，而不是直接顺序调用 `wake_agent()`。第一版仍可同步等待 bounded drain 结果；语义上它是显式 scheduler command。当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -240,6 +240,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `approval.requested` / `approval.resolved`
 - `lane.created` / `lane.bound` / `lane.removed`
 - `agent.spawned` / `agent.delegated` / `agent.woken` / `agent.idle` / `agent.task_claimed`
+- `signal.queued` / `signal.claimed` / `signal.completed` / `signal.failed`
 - `agent.message.delivered` / `agent.inbox_unread`
 - `agent.shutdown_requested` / `agent.shutdown_completed`
 - `engine.invocation.started` / `engine.invocation.updated` / `engine.invocation.completed`
@@ -277,6 +278,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
 - `agent.woken` 表示 scheduler 已为 resident teammate 开始一次 work turn；wakeup reason 必须能回链到 inbox、task、approval、engine invocation 或 manual resume
 - `agent.idle` 表示 teammate 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
+- `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
 
 ## 7. 弃用策略
 
