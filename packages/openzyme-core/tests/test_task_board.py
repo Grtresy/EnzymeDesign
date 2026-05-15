@@ -111,6 +111,39 @@ def test_task_board_update_promotes_newly_unblocked_task() -> None:
     assert projection.blocked_tasks == ()
 
 
+def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+
+    for index, value in enumerate(("null", "None", "")):
+        created = service.create_task(
+            session_id=session.session_id,
+            task_id=f"task_create_{index}",
+            subject="Create",
+            description="Pseudo-empty assigned_ref",
+            assigned_ref=value,
+        )
+        assert created.assigned_ref is None
+
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_update",
+        subject="Update",
+        description="Clear assigned_ref through task.update",
+        assigned_ref="agent:executor",
+    )
+    assert task.assigned_ref == "agent:executor"
+
+    for value in ("null", "None", ""):
+        updated = service.update_task(
+            "task_update",
+            TaskMutation(assigned_ref=value),
+        )
+        assert updated.assigned_ref is None
+        service.update_task("task_update", TaskMutation(assigned_ref="agent:executor"))
+
+
 def test_task_board_buckets_failed_task_as_terminal_failure() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

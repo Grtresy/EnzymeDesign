@@ -24,6 +24,18 @@ _PRIORITY_ORDER = {
     TaskPriority.NORMAL: 2,
     TaskPriority.LOW: 3,
 }
+_PSEUDO_EMPTY_ASSIGNED_REFS = {"", "none", "null"}
+
+
+def _normalize_assigned_ref(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.lower() in _PSEUDO_EMPTY_ASSIGNED_REFS:
+            return None
+        return normalized
+    return str(value)
 
 
 class TaskBoardBucket(StrEnum):
@@ -115,7 +127,7 @@ class TaskBoardService:
             priority=priority,
             kind=kind,
             status=status,
-            assigned_ref=assigned_ref,
+            assigned_ref=_normalize_assigned_ref(assigned_ref),
             lane_id=lane_id,
             blocked_by=blocked_by,
             failure_summary=failure_summary,
@@ -143,7 +155,9 @@ class TaskBoardService:
             status=task.status if mutation.status is _UNSET else mutation.status,
             priority=task.priority if mutation.priority is _UNSET else mutation.priority,
             kind=task.kind if mutation.kind is _UNSET else str(mutation.kind),
-            assigned_ref=task.assigned_ref if mutation.assigned_ref is _UNSET else mutation.assigned_ref,
+            assigned_ref=task.assigned_ref
+            if mutation.assigned_ref is _UNSET
+            else _normalize_assigned_ref(mutation.assigned_ref),
             created_at=task.created_at,
             updated_at=utc_now_iso() if mutation.updated_at is _UNSET else str(mutation.updated_at),
             lane_id=task.lane_id if mutation.lane_id is _UNSET else mutation.lane_id,
