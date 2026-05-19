@@ -1,6 +1,13 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+import time
+
 from openzyme_domain import RunStatus
 from openzyme_execution import HpcRunnerExecutionAdapter
 from openzyme_execution import map_runner_status_to_run_status
+from openzyme_runtime import LimiterRegistry
 
 
 class FakeRunnerServer:
@@ -143,3 +150,54 @@ def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
     )
 
     assert outcome.artifacts[0].kind.value == "structure"
+
+
+def test_hpc_runner_adapter_limits_runner_boundary_calls() -> None:
+    class SlowRunnerServer(FakeRunnerServer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.observed_max = 0
+            self.lock = threading.Lock()
+
+        def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+            with self.lock:
+                self.active += 1
+                self.observed_max = max(self.observed_max, self.active)
+            try:
+                time.sleep(0.01)
+                return super().call_tool(name, arguments)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    server = SlowRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(
+        server=server,
+        limiter_registry=LimiterRegistry({"execution_provider": 1}),
+    )
+
+    async def run_calls() -> None:
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    adapter.submit_execution,
+                    "ep_001",
+                    {
+                        "tool_name": "exec.run",
+                        "runspec": {
+                            "name": f"run-{index}",
+                            "stage": "execution",
+                            "command": ["echo", "ok"],
+                            "execution_mode": "auto",
+                            "metadata": {},
+                        },
+                    },
+                )
+                for index in range(6)
+            )
+        )
+
+    asyncio.run(run_calls())
+
+    assert server.observed_max == 1

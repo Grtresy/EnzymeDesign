@@ -9,7 +9,7 @@ import pytest
 from mcp_hpc_runner.config import load_config
 from mcp_hpc_runner.config import RunnerConfig
 from mcp_hpc_runner.errors import FailureMapper
-from mcp_hpc_runner.models import ExpectedOutput, ResourceSpec, RunSpec
+from mcp_hpc_runner.models import ExpectedOutput, ResourceSpec, RunResult, RunSpec
 from mcp_hpc_runner.remote import CommandRunner
 from mcp_hpc_runner.slurm import SlurmRunner
 from mcp_hpc_runner.ssh_runner import SSHRunner
@@ -68,6 +68,34 @@ def _runners(tmp_path: Path) -> tuple[SSHRunner, SlurmRunner]:
     return ssh, slurm
 
 
+def _ssh_attempts() -> int:
+    configured = os.getenv("HPC_LIVE_SSH_ATTEMPTS")
+    if configured is None:
+        return 3
+    return max(1, int(configured))
+
+
+def _is_transient_ssh_failure(result: RunResult) -> bool:
+    stderr = (result.stderr or "").lower()
+    return result.status != "completed" and (
+        "connection timed out" in stderr
+        or "operation timed out" in stderr
+        or "connection reset" in stderr
+    )
+
+
+def _exec_ssh_with_transient_retry(ssh: SSHRunner, spec: RunSpec) -> RunResult:
+    attempts = _ssh_attempts()
+    result = None
+    for attempt in range(1, attempts + 1):
+        result = ssh.exec_run(spec)
+        if not _is_transient_ssh_failure(result) or attempt == attempts:
+            return result
+        time.sleep(min(5 * attempt, 15))
+    assert result is not None
+    return result
+
+
 def test_ssh_smoke_python_version(tmp_path: Path) -> None:
     ssh, _ = _runners(tmp_path)
     spec = RunSpec(
@@ -77,10 +105,10 @@ def test_ssh_smoke_python_version(tmp_path: Path) -> None:
         execution_mode="ssh",
         resources=ResourceSpec(cpus=1, mem_mb=256, gpus=0, time_minutes=5),
     )
-    result = ssh.exec_run(spec)
-    assert result.status == "completed"
-    assert result.exit_code == 0
-    assert "Python" in (result.stdout or "")
+    result = _exec_ssh_with_transient_retry(ssh, spec)
+    assert result.status == "completed", result.to_dict()
+    assert result.exit_code == 0, result.to_dict()
+    assert "Python" in (result.stdout or ""), result.to_dict()
 
 
 def test_sbatch_sentinel_and_fetch(tmp_path: Path) -> None:

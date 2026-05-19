@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import GraphRuntimeFacade
+from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
@@ -100,13 +101,16 @@ def _build_default_v3_repositories() -> CoreRepositories:
 @dataclass(slots=True)
 class V3ExecutionRunnerAdapter:
     execution_adapter: Any
+    limiter_registry: LimiterRegistry | None = None
     _outcomes_by_run_id: dict[str, V3ExecutionOutcome] = field(default_factory=dict)
 
     def submit_execution(
         self, session_id: str, payload: dict[str, Any]
     ) -> V3ExecutionOutcome:
         outcome = self._convert_outcome(
-            self.execution_adapter.submit_execution(session_id, payload)
+            self._run_limited(
+                lambda: self.execution_adapter.submit_execution(session_id, payload)
+            )
         )
         self._outcomes_by_run_id[outcome.run_id] = outcome
         return outcome
@@ -119,10 +123,12 @@ class V3ExecutionRunnerAdapter:
         job_id: str | None = None,
     ) -> V3ExecutionStatusSnapshot:
         if hasattr(self.execution_adapter, "get_execution_status"):
-            snapshot = self.execution_adapter.get_execution_status(
-                run_id=run_id,
-                remote_run_dir=remote_run_dir,
-                job_id=job_id,
+            snapshot = self._run_limited(
+                lambda: self.execution_adapter.get_execution_status(
+                    run_id=run_id,
+                    remote_run_dir=remote_run_dir,
+                    job_id=job_id,
+                )
             )
             return V3ExecutionStatusSnapshot(
                 run_id=str(snapshot.run_id),
@@ -162,11 +168,13 @@ class V3ExecutionRunnerAdapter:
     ) -> V3ExecutionOutcome:
         if hasattr(self.execution_adapter, "fetch_execution_artifacts"):
             outcome = self._convert_outcome(
-                self.execution_adapter.fetch_execution_artifacts(
-                    run_id=run_id,
-                    remote_run_dir=remote_run_dir,
-                    runspec=runspec,
-                    job_id=job_id,
+                self._run_limited(
+                    lambda: self.execution_adapter.fetch_execution_artifacts(
+                        run_id=run_id,
+                        remote_run_dir=remote_run_dir,
+                        runspec=runspec,
+                        job_id=job_id,
+                    )
                 )
             )
             self._outcomes_by_run_id[outcome.run_id] = outcome
@@ -195,10 +203,12 @@ class V3ExecutionRunnerAdapter:
     ) -> V3ExecutionOutcome:
         if hasattr(self.execution_adapter, "cancel_execution"):
             return self._convert_outcome(
-                self.execution_adapter.cancel_execution(
-                    run_id=run_id,
-                    remote_run_dir=remote_run_dir,
-                    job_id=job_id,
+                self._run_limited(
+                    lambda: self.execution_adapter.cancel_execution(
+                        run_id=run_id,
+                        remote_run_dir=remote_run_dir,
+                        job_id=job_id,
+                    )
                 )
             )
         return V3ExecutionOutcome(
@@ -232,6 +242,11 @@ class V3ExecutionRunnerAdapter:
             else str(outcome.job_id),
             exit_code=getattr(outcome, "exit_code", None),
         )
+
+    def _run_limited(self, operation: Callable[[], Any]) -> Any:
+        if self.limiter_registry is None:
+            return operation()
+        return self.limiter_registry.sync_limiter("execution_provider").run(operation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +286,9 @@ class HostApiDependencies:
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
+            scheduler_limits={}
+            if self.foundation.settings is None
+            else dict(self.foundation.settings.limits.provider_limits),
         )
 
     def build_v3_engine_registry(self) -> EngineRegistry:
@@ -282,12 +300,16 @@ class HostApiDependencies:
                     research_adapter=self.foundation.research_adapter,
                     research_tool_provider=self.foundation.research_tool_provider,
                     model_factory=self.foundation.model_factory,
+                    limiter_registry=self.foundation.limiter_registry,
                     settings=self.foundation.settings,
                 ),
             ),
             ExecutionEngine(
                 self.v3_repositories,
-                V3ExecutionRunnerAdapter(self.foundation.execution_adapter),
+                V3ExecutionRunnerAdapter(
+                    self.foundation.execution_adapter,
+                    self.foundation.limiter_registry,
+                ),
                 sandbox_runner=PodmanPipelineSandboxRunner(),
             ),
         )

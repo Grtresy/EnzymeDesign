@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+import time
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -110,6 +111,8 @@ class TavilyResearchAdapter:
     max_results: int = 3
     topic: str = "general"
     include_raw_content: bool = True
+    timeout_seconds: float = 30.0
+    diagnostic_label: str | None = None
     search_callable: SearchCallable | None = None
     extract_callable: ExtractCallable | None = None
 
@@ -132,14 +135,22 @@ class TavilyResearchAdapter:
         include_raw_content: bool | None = None,
     ) -> dict[str, Any]:
         search = self.search_callable or self._load_search_callable()
-        return search(
-            query=query,
-            max_results=self.max_results if max_results is None else max_results,
-            include_raw_content=self.include_raw_content
-            if include_raw_content is None
-            else include_raw_content,
-            topic=self.topic if topic is None else topic,
-        )
+        self._log_stage(f"Tavily web.search start query={query!r}")
+        started = time.monotonic()
+        try:
+            return search(
+                query=query,
+                max_results=self.max_results if max_results is None else max_results,
+                include_raw_content=self.include_raw_content
+                if include_raw_content is None
+                else include_raw_content,
+                topic=self.topic if topic is None else topic,
+                timeout=self.timeout_seconds,
+            )
+        finally:
+            self._log_stage(
+                f"Tavily web.search finished elapsed={time.monotonic() - started:.2f}s"
+            )
 
     def normalize_response(
         self, *, unit: ResearchUnit, response: dict[str, Any]
@@ -208,12 +219,20 @@ class TavilyResearchAdapter:
         include_images: bool = False,
     ) -> dict[str, Any]:
         extract = self.extract_callable or self._load_extract_callable()
-        return extract(
-            urls=[url],
-            extract_depth=extract_depth,
-            format=format,
-            include_images=include_images,
-        )
+        self._log_stage(f"Tavily web.fetch start url={url!r}")
+        started = time.monotonic()
+        try:
+            return extract(
+                urls=[url],
+                extract_depth=extract_depth,
+                format=format,
+                include_images=include_images,
+                timeout=self.timeout_seconds,
+            )
+        finally:
+            self._log_stage(
+                f"Tavily web.fetch finished elapsed={time.monotonic() - started:.2f}s"
+            )
 
     def normalize_fetch_response(
         self,
@@ -298,3 +317,8 @@ class TavilyResearchAdapter:
 
         client = TavilyClient(api_key=api_key)
         return client.extract
+
+    def _log_stage(self, message: str) -> None:
+        if self.diagnostic_label is None:
+            return
+        print(f"[{self.diagnostic_label}] {message}", flush=True)

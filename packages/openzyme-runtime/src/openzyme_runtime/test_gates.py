@@ -51,13 +51,17 @@ def live_e2e_skip_reason(settings: OpenZymeSettings | None = None) -> str | None
     effective = settings or load_current_settings()
     if not effective.test.enable_live_e2e:
         return "Live E2E tests are disabled. Set OPENZYME_TEST_ENABLE_LIVE_E2E=true."
-    for reason in (
-        live_llm_skip_reason(effective),
-        live_tavily_skip_reason(effective),
-        live_hpc_skip_reason(effective),
-    ):
-        if reason is not None:
-            return reason
+    missing = [
+        reason
+        for reason in (
+            live_llm_skip_reason(effective),
+            live_tavily_skip_reason(effective),
+            live_hpc_skip_reason(effective),
+        )
+        if reason is not None
+    ]
+    if missing:
+        return "Live E2E gate prerequisites are missing: " + " | ".join(missing)
     return None
 
 

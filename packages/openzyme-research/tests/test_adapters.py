@@ -3,7 +3,10 @@ from openzyme_research import TavilyResearchAdapter
 
 
 def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> None:
+    observed: dict[str, object] = {}
+
     def fake_search(**_: object) -> dict[str, object]:
+        observed.update(_)
         return {
             "results": [
                 {
@@ -15,7 +18,7 @@ def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> 
             ]
         }
 
-    adapter = TavilyResearchAdapter(search_callable=fake_search)
+    adapter = TavilyResearchAdapter(search_callable=fake_search, timeout_seconds=12.5)
 
     result = adapter.conduct(
         episode_id="ep_001",
@@ -31,11 +34,13 @@ def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> 
     assert result.summary.startswith("thermostable catalase homologs:")
     assert result.findings[0].query == "thermostable catalase homolog activity 60C"
     assert result.findings[0].sources[0].locator == "https://example.org/paper"
+    assert observed["timeout"] == 12.5
 
 
 def test_tavily_adapter_normalizes_fetch_results() -> None:
     def fake_extract(**kwargs: object) -> dict[str, object]:
         assert kwargs["urls"] == ["https://example.org/article"]
+        assert kwargs["timeout"] == 9.0
         return {
             "results": [
                 {
@@ -46,7 +51,7 @@ def test_tavily_adapter_normalizes_fetch_results() -> None:
             ]
         }
 
-    adapter = TavilyResearchAdapter(extract_callable=fake_extract)
+    adapter = TavilyResearchAdapter(extract_callable=fake_extract, timeout_seconds=9.0)
     raw_response = adapter.fetch_url(url="https://example.org/article")
     result = adapter.normalize_fetch_response(
         url="https://example.org/article",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass
 from dataclasses import field
@@ -10,9 +11,11 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from .limits import LimiterRegistry
 from .llm_debug import current_llm_debug_context
 from .llm_debug import get_llm_debug_recorder
 from .llm_debug import serialize_llm_payload
+from .live_testing import LiveStageTimeout
 
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -57,14 +60,60 @@ class ChatModelFactory(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class LimitedStructuredOutputInvoker:
+    invoker: StructuredOutputInvoker
+    limiter_registry: LimiterRegistry
+    limiter_name: str = "llm_provider"
+
+    def invoke_structured(
+        self,
+        *,
+        schema: type[SchemaT],
+        system_prompt: str,
+        user_payload: dict[str, Any],
+    ) -> SchemaT:
+        return self.limiter_registry.sync_limiter(self.limiter_name).run(
+            lambda: self.invoker.invoke_structured(
+                schema=schema,
+                system_prompt=system_prompt,
+                user_payload=user_payload,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LimitedToolCallingInvoker:
+    invoker: ToolCallingInvoker
+    limiter_registry: LimiterRegistry
+    limiter_name: str = "llm_provider"
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[Any],
+    ) -> Any:
+        return self.limiter_registry.sync_limiter(self.limiter_name).run(
+            lambda: self.invoker.invoke_with_tools(
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class LangChainStructuredInvoker:
     model: Any
     purpose: str = "structured_output"
     model_name: str | None = None
     base_url: str | None = None
+    diagnostic_label: str | None = None
     structured_output_method: str = "json_schema"
     max_attempts: int = 1
     retry_backoff_seconds: float = 1.0
+    invocation_timeout_seconds: float | None = None
 
     def invoke_structured(
         self,
@@ -98,6 +147,8 @@ class LangChainStructuredInvoker:
         ]
         response: Any | None = None
         last_error: Exception | None = None
+        self._log_stage(f"LLM structured start purpose={self.purpose!r}")
+        started = time.monotonic()
         for attempt in range(1, self.max_attempts + 1):
             span = get_llm_debug_recorder().begin(
                 purpose=self.purpose,
@@ -116,7 +167,14 @@ class LangChainStructuredInvoker:
                 },
             )
             try:
-                response = structured_model.invoke(messages)
+                phase = (
+                    f"invoking LLM structured purpose={self.purpose!r} "
+                    f"attempt={attempt}"
+                )
+                response = self._invoke_provider(
+                    phase,
+                    lambda: structured_model.invoke(messages),
+                )
                 parsed_response = (
                     response
                     if isinstance(response, schema)
@@ -140,8 +198,35 @@ class LangChainStructuredInvoker:
         if response is None and last_error is not None:
             raise last_error
         if isinstance(response, schema):
+            self._log_stage(
+                f"LLM structured finished elapsed={time.monotonic() - started:.2f}s"
+            )
             return response
-        return schema.model_validate(response)
+        parsed = schema.model_validate(response)
+        self._log_stage(
+            f"LLM structured finished elapsed={time.monotonic() - started:.2f}s"
+        )
+        return parsed
+
+    def _log_stage(self, message: str) -> None:
+        if self.diagnostic_label is None:
+            return
+        print(f"[{self.diagnostic_label}] {message}", flush=True)
+
+    def _invoke_provider(self, phase: str, invoke: Any) -> Any:
+        if self.diagnostic_label is None or self.invocation_timeout_seconds is None:
+            return invoke()
+        if threading.current_thread() is not threading.main_thread():
+            self._log_stage(
+                f"LLM provider timeout not armed outside main thread phase={phase!r}"
+            )
+            return invoke()
+        with LiveStageTimeout(
+            phase,
+            self.invocation_timeout_seconds,
+            hard_exit=False,
+        ):
+            return invoke()
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +235,8 @@ class LangChainToolCallingInvoker:
     purpose: str = "tool_calling"
     model_name: str | None = None
     base_url: str | None = None
+    diagnostic_label: str | None = None
+    invocation_timeout_seconds: float | None = None
 
     def invoke_with_tools(
         self,
@@ -179,13 +266,41 @@ class LangChainToolCallingInvoker:
                 "request_messages": serialize_llm_payload(request_messages),
             },
         )
+        self._log_stage(f"LLM tool-calling start purpose={self.purpose!r}")
+        started = time.monotonic()
         try:
-            response = runnable.invoke(request_messages)
+            response = self._invoke_provider(
+                f"invoking LLM tool-calling purpose={self.purpose!r} attempt=1",
+                lambda: runnable.invoke(request_messages),
+            )
         except Exception as exc:
             span.finish(error=exc)
             raise
         span.finish(response=response)
+        self._log_stage(
+            f"LLM tool-calling finished elapsed={time.monotonic() - started:.2f}s"
+        )
         return response
+
+    def _log_stage(self, message: str) -> None:
+        if self.diagnostic_label is None:
+            return
+        print(f"[{self.diagnostic_label}] {message}", flush=True)
+
+    def _invoke_provider(self, phase: str, invoke: Any) -> Any:
+        if self.diagnostic_label is None or self.invocation_timeout_seconds is None:
+            return invoke()
+        if threading.current_thread() is not threading.main_thread():
+            self._log_stage(
+                f"LLM provider timeout not armed outside main thread phase={phase!r}"
+            )
+            return invoke()
+        with LiveStageTimeout(
+            phase,
+            self.invocation_timeout_seconds,
+            hard_exit=False,
+        ):
+            return invoke()
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +310,9 @@ class LangChainModelFactory:
     structured_output_method: str = "json_schema"
     structured_output_max_attempts: int = 1
     structured_output_retry_backoff_seconds: float = 1.0
+    limiter_registry: LimiterRegistry | None = None
+    diagnostic_label: str | None = None
+    invocation_timeout_seconds: float | None = None
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
         if not self.model:
@@ -212,14 +330,19 @@ class LangChainModelFactory:
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
             ) from exc
-        return LangChainStructuredInvoker(
+        invoker = LangChainStructuredInvoker(
             model=chat_model,
             purpose=purpose,
             model_name=self.model,
+            diagnostic_label=self.diagnostic_label,
             structured_output_method=self.structured_output_method,
             max_attempts=self.structured_output_max_attempts,
             retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
+            invocation_timeout_seconds=self.invocation_timeout_seconds,
         )
+        if self.limiter_registry is None:
+            return invoker
+        return LimitedStructuredOutputInvoker(invoker, self.limiter_registry)
 
     def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker:
         if not self.model:
@@ -236,7 +359,16 @@ class LangChainModelFactory:
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
             ) from exc
-        return LangChainToolCallingInvoker(model=chat_model, purpose=purpose, model_name=self.model)
+        invoker = LangChainToolCallingInvoker(
+            model=chat_model,
+            purpose=purpose,
+            model_name=self.model,
+            diagnostic_label=self.diagnostic_label,
+            invocation_timeout_seconds=self.invocation_timeout_seconds,
+        )
+        if self.limiter_registry is None:
+            return invoker
+        return LimitedToolCallingInvoker(invoker, self.limiter_registry)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +386,8 @@ class OpenAICompatibleChatModelFactory:
     structured_output_max_attempts: int = 3
     structured_output_retry_backoff_seconds: float = 1.0
     purpose_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    limiter_registry: LimiterRegistry | None = None
+    diagnostic_label: str | None = None
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
         try:
@@ -276,15 +410,20 @@ class OpenAICompatibleChatModelFactory:
             max_retries=policy["max_retries"],
             **(self.model_kwargs or {}),
         )
-        return LangChainStructuredInvoker(
+        invoker = LangChainStructuredInvoker(
             model=chat_model,
             purpose=purpose,
             model_name=self.model,
             base_url=self.base_url,
+            diagnostic_label=self.diagnostic_label,
             structured_output_method=policy["structured_output_method"],
             max_attempts=policy["structured_output_max_attempts"],
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
+            invocation_timeout_seconds=policy["timeout"],
         )
+        if self.limiter_registry is None:
+            return invoker
+        return LimitedStructuredOutputInvoker(invoker, self.limiter_registry)
 
     def create_tool_calling_invoker(self, *, purpose: str) -> ToolCallingInvoker:
         try:
@@ -307,12 +446,17 @@ class OpenAICompatibleChatModelFactory:
             max_retries=policy["max_retries"],
             **(self.model_kwargs or {}),
         )
-        return LangChainToolCallingInvoker(
+        invoker = LangChainToolCallingInvoker(
             model=chat_model,
             purpose=purpose,
             model_name=self.model,
             base_url=self.base_url,
+            diagnostic_label=self.diagnostic_label,
+            invocation_timeout_seconds=policy["timeout"],
         )
+        if self.limiter_registry is None:
+            return invoker
+        return LimitedToolCallingInvoker(invoker, self.limiter_registry)
 
     def _resolve_policy(self, purpose: str) -> dict[str, Any]:
         override = self.purpose_policies.get(purpose, {})
@@ -356,6 +500,8 @@ __all__ = [
     "OpenAICompatibleChatModelFactory",
     "LangChainStructuredInvoker",
     "LangChainToolCallingInvoker",
+    "LimitedStructuredOutputInvoker",
+    "LimitedToolCallingInvoker",
     "MissingLangChainDependencyError",
     "MissingLangChainProviderDependencyError",
     "MissingLlmConfigurationError",

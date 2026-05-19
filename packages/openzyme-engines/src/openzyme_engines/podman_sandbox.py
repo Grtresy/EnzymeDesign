@@ -87,9 +87,10 @@ class PodmanPipelineSandboxRunner:
         logs_dir = root / "logs"
         for directory in (input_dir, work_dir, output_dir, logs_dir):
             directory.mkdir(parents=True, exist_ok=True)
-        for directory in (work_dir, output_dir, logs_dir):
+        for directory in (input_dir, work_dir, output_dir, logs_dir):
             directory.chmod(0o777)
         (work_dir / "pipeline.py").write_text(code, encoding="utf-8")
+        (work_dir / "pipeline.py").chmod(0o666)
         sandbox_inputs = self._stage_inputs(input_dir, inputs)
         socket_path = root / "control.sock"
         server = _ControlSocketServer(
@@ -174,6 +175,7 @@ class PodmanPipelineSandboxRunner:
             filename = _safe_host_segment(Path(artifact.relative_path).name or artifact.artifact_id, label="relative_path")
             target = _ensure_within(input_dir / f"{artifact_segment}_{filename}", resolved_input_dir, label="staged input")
             shutil.copyfile(source, target)
+            target.chmod(0o644)
             staged[artifact.artifact_id] = {
                 "artifact_id": artifact.artifact_id,
                 "path": f"/openzyme/input/{target.name}",

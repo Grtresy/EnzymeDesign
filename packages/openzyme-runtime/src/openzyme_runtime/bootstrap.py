@@ -12,6 +12,7 @@ from openzyme_storage import RELATIONAL_RECORDS
 
 from .ai import ChatModelFactory
 from .checkpointer import PostgresCheckpointerFactory
+from .limits import LimiterRegistry
 from .repositories import PhaseBRepositories
 from .seams import ExecutionAdapter
 from .seams import HpcCatalogProvider
@@ -40,6 +41,7 @@ class RuntimeFoundation:
     bio_research_service: Any | None = None
     projection_loader: ProjectionLoader | None = None
     model_factory: ChatModelFactory | None = None
+    limiter_registry: LimiterRegistry | None = None
     settings: OpenZymeSettings | None = None
 
 
@@ -56,6 +58,7 @@ class GraphAssemblyInputs:
     model_factory: ChatModelFactory | None
     host_toolbox: OpenZymeHostToolbox
     settings: OpenZymeSettings
+    limiter_registry: LimiterRegistry | None = None
 
 
 class GraphRuntimeFacade:
@@ -84,6 +87,7 @@ class GraphRuntimeFacade:
                     research_tool_provider=self._foundation.research_tool_provider,
                     projection_loader=self._foundation.projection_loader,
                     model_factory=self._foundation.model_factory,
+                    limiter_registry=self._foundation.limiter_registry,
                     host_toolbox=OpenZymeHostToolbox(self._foundation.repositories),
                     settings=settings,
                 )

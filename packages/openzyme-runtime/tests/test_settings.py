@@ -7,6 +7,7 @@ from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
+from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import get_settings
 from openzyme_runtime import reset_settings_cache
 
@@ -30,6 +31,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS",
         "OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD",
         "OPENZYME_RESEARCH_MAX_UNITS",
+        "OPENZYME_TAVILY_TIMEOUT_SECONDS",
         "OPENZYME_HOST_BASE_URL",
         "OPENZYME_LANGSMITH_TRACING",
         "LANGSMITH_TRACING",
@@ -45,6 +47,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+        "OPENZYME_LIMIT_GLOBAL_CONCURRENCY",
+        "OPENZYME_LIMIT_SESSION_CONCURRENCY",
+        "OPENZYME_LIMIT_AGENT_CONCURRENCY",
+        "OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY",
+        "OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY",
+        "OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY",
     ):
         monkeypatch.delenv(key, raising=False)
     for key in (
@@ -85,7 +93,9 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     )
     assert settings.llm.purpose_policies == {}
     assert settings.research.max_units == 3
+    assert settings.research.tavily_timeout_seconds == 30.0
     assert settings.host_cli.base_url == DEFAULT_HOST_BASE_URL
+    assert settings.limits.provider_limits == DEFAULT_PROVIDER_LIMITS
     assert settings.host_api.bind_host == DEFAULT_HOST_API_BIND_HOST
     assert settings.host_api.bind_port == DEFAULT_HOST_API_BIND_PORT
     assert settings.tracing.enabled is False
@@ -119,6 +129,7 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
     monkeypatch.setenv("OPENZYME_TAVILY_MAX_RESULTS", "9")
     monkeypatch.setenv("OPENZYME_TAVILY_TOPIC", "news")
+    monkeypatch.setenv("OPENZYME_TAVILY_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("OPENZYME_HOST_BASE_URL", "http://localhost:9999")
     monkeypatch.setenv("OPENZYME_PROJECT_ID", "proj_test")
     monkeypatch.setenv("OPENZYME_EPISODE_ID", "ep_test")
@@ -129,6 +140,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LANGSMITH_PROJECT", "openzyme-test")
     monkeypatch.setenv("OPENZYME_EXECUTION_BACKEND", "hpc")
     monkeypatch.setenv("OPENZYME_HPC_RUNNER_CONFIG", "/tmp/hpc.toml")
+    monkeypatch.setenv("OPENZYME_LIMIT_GLOBAL_CONCURRENCY", "11")
+    monkeypatch.setenv("OPENZYME_LIMIT_SESSION_CONCURRENCY", "12")
+    monkeypatch.setenv("OPENZYME_LIMIT_AGENT_CONCURRENCY", "13")
+    monkeypatch.setenv("OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY", "14")
+    monkeypatch.setenv("OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY", "15")
+    monkeypatch.setenv("OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY", "16")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_LLM", "true")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_TAVILY", "true")
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_HPC", "true")
@@ -164,6 +181,7 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.research.tavily_api_key == "tavily-key"
     assert settings.research.tavily_max_results == 9
     assert settings.research.tavily_topic == "news"
+    assert settings.research.tavily_timeout_seconds == 12.5
     assert settings.host_cli.base_url == "http://localhost:9999"
     assert settings.host_cli.project_id == "proj_test"
     assert settings.host_cli.episode_id == "ep_test"
@@ -174,6 +192,14 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.tracing.project_name == "openzyme-test"
     assert settings.execution.backend == "hpc"
     assert settings.execution.hpc_runner_config == "/tmp/hpc.toml"
+    assert settings.limits.provider_limits == {
+        "global": 11,
+        "session": 12,
+        "agent": 13,
+        "llm_provider": 14,
+        "research_provider": 15,
+        "execution_provider": 16,
+    }
     assert settings.test.enable_live_llm is True
     assert settings.test.enable_live_tavily is True
     assert settings.test.enable_live_hpc is True
@@ -198,6 +224,18 @@ def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> 
     settings = get_settings()
 
     assert settings.llm.extra_body == {"provider": "custom", "mode": "strict"}
+
+
+def test_settings_reject_non_positive_limiter_values(monkeypatch) -> None:
+    monkeypatch.setenv("OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY", "0")
+
+    reset_settings_cache()
+    try:
+        get_settings()
+    except ValueError as exc:
+        assert "OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY must be positive" == str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError")
 
 
 def test_settings_cache_can_be_reset(monkeypatch) -> None:

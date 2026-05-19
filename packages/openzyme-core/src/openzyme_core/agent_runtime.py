@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -90,6 +89,18 @@ class AgentRuntimeService:
             created_at=utc_now_iso(),
         )
         self.context.repositories.runtime_signals.save(signal)
+        self.context.emit(
+            "signal.queued",
+            {
+                "signal_id": signal.signal_id,
+                "agent_id": signal.agent_id,
+                "reason": signal.reason.value,
+                "task_id": signal.task_id,
+                "lane_id": signal.lane_id,
+                "correlation_id": signal.correlation_id,
+                "source_ref": signal.source_ref,
+            },
+        )
         return signal
 
     def auto_enqueue_ready_tasks(self, session_id: str) -> tuple[AgentRuntimeSignal, ...]:
@@ -139,35 +150,60 @@ class AgentRuntimeService:
     ) -> tuple[AgentRuntimeOutcome, ...]:
         if self.context.model_factory is None:
             return ()
-        pending = self.context.repositories.runtime_signals.list_pending_by_session(session_id)
-        if signal_ids is not None:
-            pending = [signal for signal in pending if signal.signal_id in signal_ids]
         outcomes: list[AgentRuntimeOutcome] = []
-        for signal in pending[:max_signals]:
+        for _ in range(max_signals):
+            signal = self.context.repositories.runtime_signals.claim_next(
+                session_id=session_id,
+                claimed_by="runtime:drain",
+                lease_seconds=300,
+                signal_ids=signal_ids,
+            )
+            if signal is None:
+                break
             outcomes.append(self.wake_agent(signal, max_steps=max_steps_per_agent))
         return tuple(outcomes)
 
     def wake_agent(self, signal: AgentRuntimeSignal, *, max_steps: int = 8) -> AgentRuntimeOutcome:
         now = utc_now_iso()
-        claimed = replace(signal, status=AgentRuntimeSignalStatus.CLAIMED, claimed_at=now)
-        self.context.repositories.runtime_signals.save(claimed)
+        if signal.status is AgentRuntimeSignalStatus.CLAIMED:
+            claimed = signal
+        else:
+            claimed = self.context.repositories.runtime_signals.claim_next(
+                session_id=signal.session_id,
+                claimed_by="runtime:wake_agent",
+                lease_seconds=300,
+                signal_ids={signal.signal_id},
+            )
+            if claimed is None:
+                current = self.context.repositories.runtime_signals.get(signal.signal_id) or signal
+                return AgentRuntimeOutcome(
+                    signal=current,
+                    task=None,
+                    agent=None,
+                    ok=False,
+                    summary="signal is not claimable",
+                    teammate_status="signal_not_claimable",
+                )
+        self.context.emit(
+            "signal.claimed",
+            {
+                "signal_id": claimed.signal_id,
+                "agent_id": claimed.agent_id,
+                "claimed_by": claimed.claimed_by,
+                "claim_expires_at": claimed.claim_expires_at,
+                "attempt_count": claimed.attempt_count,
+            },
+        )
         agent = self.context.repositories.agents.get(signal.agent_id)
         if agent is None:
-            failed = replace(claimed, status=AgentRuntimeSignalStatus.FAILED, completed_at=utc_now_iso(), error_message="agent not found")
-            self.context.repositories.runtime_signals.save(failed)
+            failed = self._fail_signal(claimed, error_message="agent not found")
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
 
         payload = self._payload_for_signal(signal)
         task = self._resolve_task(signal, agent, payload)
         if task is None:
             summary = "Focused task required for wakeup."
-            failed = replace(
-                claimed,
-                status=AgentRuntimeSignalStatus.FAILED,
-                completed_at=utc_now_iso(),
-                error_message=summary,
-            )
-            self.context.repositories.runtime_signals.save(failed)
+            failed = self._fail_signal(claimed, error_message=summary)
             agent = self._update_agent(
                 agent,
                 status=AgentMemberStatus.IDLE,
@@ -245,33 +281,31 @@ class AgentRuntimeService:
         )
         if result.pending_approval_id is not None:
             task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.BLOCKED))
-            signal_status = AgentRuntimeSignalStatus.COMPLETED
             ok = True
         elif final_status is AgentMemberStatus.IDLE:
-            signal_status = AgentRuntimeSignalStatus.COMPLETED
             ok = True
         else:
-            signal_status = AgentRuntimeSignalStatus.FAILED
             ok = False
 
-        completed = replace(
-            claimed,
-            status=signal_status,
-            completed_at=utc_now_iso(),
-            error_message=None if ok else summary,
+        completed = (
+            self._complete_signal(claimed)
+            if ok
+            else self._fail_signal(claimed, error_message=summary, emit=False)
         )
-        self.context.repositories.runtime_signals.save(completed)
+        self.context.emit(
+            "signal.completed" if ok else "signal.failed",
+            {
+                "signal_id": completed.signal_id,
+                "agent_id": completed.agent_id,
+                "status": completed.status.value,
+                "error_message": completed.error_message,
+            },
+        )
         for message_id in consumed_message_ids:
             self.context.repositories.inbox.set_status(message_id, InboxStatus.ACKNOWLEDGED)
         for pending_signal in self.context.repositories.runtime_signals.list_pending_by_session(agent.session_id):
             if pending_signal.source_ref in set(consumed_message_ids):
-                self.context.repositories.runtime_signals.save(
-                    replace(
-                        pending_signal,
-                        status=AgentRuntimeSignalStatus.COMPLETED,
-                        completed_at=utc_now_iso(),
-                    )
-                )
+                self.context.repositories.runtime_signals.complete(pending_signal.signal_id)
         agent = self._update_agent(
             self.context.repositories.agents.get(agent.agent_id) or agent,
             status=final_status,
@@ -373,6 +407,36 @@ class AgentRuntimeService:
             )
         return None
 
+    def _complete_signal(self, claimed: AgentRuntimeSignal) -> AgentRuntimeSignal:
+        return (
+            self.context.repositories.runtime_signals.complete(claimed.signal_id)
+            or self.context.repositories.runtime_signals.get(claimed.signal_id)
+            or claimed
+        )
+
+    def _fail_signal(
+        self,
+        claimed: AgentRuntimeSignal,
+        *,
+        error_message: str,
+        emit: bool = True,
+    ) -> AgentRuntimeSignal:
+        failed = (
+            self.context.repositories.runtime_signals.fail(
+                claimed.signal_id,
+                error_message=error_message,
+                retryable=False,
+            )
+            or self.context.repositories.runtime_signals.get(claimed.signal_id)
+            or claimed
+        )
+        if emit:
+            self.context.emit(
+                "signal.failed",
+                {"signal_id": failed.signal_id, "error_message": failed.error_message},
+            )
+        return failed
+
     def _fail_ready_gate(
         self,
         claimed: AgentRuntimeSignal,
@@ -382,13 +446,7 @@ class AgentRuntimeService:
         summary: str,
         teammate_status: str,
     ) -> AgentRuntimeOutcome:
-        failed = replace(
-            claimed,
-            status=AgentRuntimeSignalStatus.FAILED,
-            completed_at=utc_now_iso(),
-            error_message=summary,
-        )
-        self.context.repositories.runtime_signals.save(failed)
+        failed = self._fail_signal(claimed, error_message=summary)
         updated_agent = self._update_agent(
             agent,
             status=AgentMemberStatus.IDLE,

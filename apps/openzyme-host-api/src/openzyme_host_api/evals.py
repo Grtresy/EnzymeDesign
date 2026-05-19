@@ -89,6 +89,7 @@ class V3LocalEvalInvoker:
         self.purpose = purpose
         self.calls = 0
         self.workflow_calls = 0
+        self.report_delegated = False
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
@@ -337,7 +338,8 @@ class V3LocalEvalInvoker:
                 ],
             }
         if "report" in latest_user_message.lower():
-            if self.workflow_calls == 4:
+            if not self.report_delegated:
+                self.report_delegated = True
                 return {
                     "content": "",
                     "tool_calls": [
@@ -613,7 +615,16 @@ def _run_v3_design_cutover_scenario(
                     json={"message": prompt, "max_steps": 8},
                 )
                 first_turn.raise_for_status()
-                first_payload = first_turn.json()
+                first_drain = client.post(
+                    "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
+                    json={
+                        "max_signals": 10,
+                        "max_steps_per_agent": 8,
+                        "run_master_followup": False,
+                    },
+                )
+                first_drain.raise_for_status()
+                first_payload = first_drain.json()
                 approvals = first_payload["workspace"]["pending_approvals"]
                 if approvals:
                     resolved = client.post(
@@ -621,6 +632,15 @@ def _run_v3_design_cutover_scenario(
                         json={"decision": "approved", "actor_ref": "eval"},
                     )
                     resolved.raise_for_status()
+                    approval_drain = client.post(
+                        "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
+                        json={
+                            "max_signals": 10,
+                            "max_steps_per_agent": 8,
+                            "run_master_followup": False,
+                        },
+                    )
+                    approval_drain.raise_for_status()
 
                 report_turn = client.post(
                     "/v3/sessions/sess_eval_v3_cutover/messages",
@@ -630,6 +650,15 @@ def _run_v3_design_cutover_scenario(
                     },
                 )
                 report_turn.raise_for_status()
+                report_drain = client.post(
+                    "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
+                    json={
+                        "max_signals": 10,
+                        "max_steps_per_agent": 8,
+                        "run_master_followup": False,
+                    },
+                )
+                report_drain.raise_for_status()
                 workspace_response = client.get(
                     "/v3/sessions/sess_eval_v3_cutover/workspace"
                 )

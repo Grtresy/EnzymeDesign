@@ -421,8 +421,12 @@ class AgentRuntimeSignal:
     correlation_id: str | None = None
     source_ref: str | None = None
     claimed_at: str | None = None
+    claimed_by: str | None = None
+    claim_expires_at: str | None = None
+    attempt_count: int = 0
     completed_at: str | None = None
     error_message: str | None = None
+    last_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

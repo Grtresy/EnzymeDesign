@@ -141,6 +141,7 @@ class GraphBackedDeepResearchRunner:
     research_adapter: Any
     research_tool_provider: Any | None = None
     model_factory: Any | None = None
+    limiter_registry: Any | None = None
     settings: Any | None = None
 
     def run(
@@ -168,6 +169,7 @@ class GraphBackedDeepResearchRunner:
             self.research_adapter,
             mcp_enabled=settings.research.mcp_enabled,
             mcp_tool_allowlist=settings.research.mcp_tool_allowlist,
+            limiter_registry=self.limiter_registry,
         )
         project = Project.create(project_id=f"proj_{invocation_id}", name="V3 deep research")
         episode = Episode.create(
@@ -185,6 +187,7 @@ class GraphBackedDeepResearchRunner:
             research_tool_provider=tool_provider,
             projection_loader=None,
             model_factory=self.model_factory,
+            limiter_registry=self.limiter_registry,
             host_toolbox=OpenZymeHostToolbox(self.repositories),
             settings=settings,
         )

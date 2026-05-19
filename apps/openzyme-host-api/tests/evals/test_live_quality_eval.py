@@ -9,7 +9,8 @@ from openzyme_runtime import get_settings
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.quality_eval,
-    pytest.mark.live_e2e,
+    pytest.mark.live_llm,
+    pytest.mark.live_tavily,
     pytest.mark.slow,
 ]
 

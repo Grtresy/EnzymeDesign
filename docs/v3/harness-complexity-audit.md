@@ -147,6 +147,16 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   修正记录：默认 delegation projection / Web UI 不再暴露 `pending_signal_count`、raw `wakeup_reason`、`latest_signal_reason` 和 unread inbox count 作为用户界面语义；低层 runtime signal 仍保留在 event/debug 路径中用于诊断。
 
+- [x] Design / deep-research planner fallback 会掩盖真实 provider 或 contract 失败。
+
+  证据：`packages/openzyme-graph/src/openzyme_graph/design.py` 曾在 LLM planner 异常或非法 action 时调用 heuristic next action，并把 blocked action 重新加入 `allowed_actions`。`packages/openzyme-engines/src/openzyme_engines/deep_research_graph.py` 曾在缺少 model 或 researcher 未调用 search 时编造 supervisor plan、tool call 和硬编码 enzyme search query。
+
+  Doctrine 风险：生产路径看似推进成功，但实际的 LLM/tool/provider contract 已失败；测试可能验证的是 fallback 行为，而不是产品真实语义。
+
+  目标边界：planner/provider 失败应产出明确 failed decision / failed dossier；tool argument validation 可以作为 tool error observation 返回给 LLM；unexpected exception 应直接暴露给测试和 live gate。
+
+  修正记录：design graph 保留 state-machine recommendation 作为 prompt guidance，但不再作为恢复 action 执行；missing model、planner exception 和 illegal action 均持久化 failed decision。deep research 删除 fallback supervisor / researcher / query，缺 model 或缺 unit plan 返回 failed dossier，tool 参数 validation 返回 failed observation，unexpected tool/provider exception 继续抛出。
+
 ## 4. 后续工作流
 
 每次后续简化时：

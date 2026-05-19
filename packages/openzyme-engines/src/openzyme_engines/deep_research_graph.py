@@ -18,6 +18,7 @@ from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import GraphAssemblyInputs
 from openzyme_runtime import ResearchTool
 from openzyme_runtime import ResearchToolContext
+from pydantic import ValidationError
 
 from .deep_research_contracts import EvidenceSynthesis
 from .deep_research_contracts import EvidenceSynthesisItem
@@ -27,8 +28,6 @@ from .deep_research_contracts import ResearchDossier
 from .deep_research_contracts import ResearchSourceItem
 from .deep_research_contracts import ResearchSupervisorAction
 from .deep_research_contracts import ResearchTurnRecord
-from .deep_research_contracts import ResearchUnitDraft
-from .deep_research_contracts import ResearchUnitPlan
 
 
 def _utc_now_iso() -> str:
@@ -80,37 +79,28 @@ def _record_research_turn(
     )
 
 
-def _fallback_unit_plan(state: dict[str, Any]) -> ResearchUnitPlan:
-    objective = _default_research_brief(state)
-    return ResearchUnitPlan(
-        units=[
-            ResearchUnitDraft(
-                unit_id="overview",
-                topic="problem framing",
-                query=objective,
-                rationale="Start with a broad pass over the current objective.",
-            ),
-            ResearchUnitDraft(
-                unit_id="evidence",
-                topic="supporting evidence",
-                query=f"{objective} supporting evidence",
-                rationale="Gather concrete evidence and references for the core claims.",
-            ),
-        ],
-        synthesis_goal="Collect enough evidence to support downstream design decisions.",
-    )
+def _has_research_findings(state: dict[str, Any]) -> bool:
+    return any(result.get("findings") for result in state.get("unit_results") or [])
 
 
-def _fallback_supervisor_action(state: dict[str, Any]) -> ResearchSupervisorAction:
-    if state.get("unit_results"):
-        return ResearchSupervisorAction(
-            action_kind="complete",
-            rationale="At least one research unit has completed, so synthesize the dossier.",
-        )
-    return ResearchSupervisorAction(
-        action_kind="conduct_research",
-        rationale="No research results exist yet, so run an initial evidence-gathering batch.",
-        unit_plan=_fallback_unit_plan(state),
+def _failed_dossier(
+    state: dict[str, Any],
+    *,
+    completion_reason: str,
+    summary: str,
+    unresolved_gap: str,
+) -> ResearchDossier:
+    return ResearchDossier(
+        status="failed",
+        completion_reason=completion_reason,
+        clarification_question=None,
+        research_brief=_default_research_brief(state),
+        summary=summary,
+        evidence_items=[],
+        unresolved_gaps=[unresolved_gap],
+        artifacts=[],
+        raw_notes=list(state.get("raw_notes") or []),
+        recent_turns=_research_turns(state),
     )
 
 
@@ -156,6 +146,7 @@ def _resolve_research_tools(
         inputs.research_adapter,
         mcp_enabled=inputs.settings.research.mcp_enabled,
         mcp_tool_allowlist=inputs.settings.research.mcp_tool_allowlist,
+        limiter_registry=inputs.limiter_registry,
     )
     return list(
         provider.list_tools(
@@ -184,67 +175,6 @@ def _build_langchain_tool(tool_def: ResearchTool, context: ResearchToolContext) 
         name=tool_def.name,
         description=tool_def.description,
         args_schema=tool_def.args_schema,
-    )
-
-
-def _fallback_researcher_message(
-    state: DeepResearchState,
-    unit: dict[str, Any],
-    available_tools: list[ResearchTool],
-    *,
-    tool_call_iterations: int,
-) -> dict[str, Any]:
-    if not available_tools:
-        return {"tool_calls": []}
-    search_tool = next(
-        (tool for tool in available_tools if tool.name == "web.search"), None
-    )
-    think_tool = next(
-        (tool for tool in available_tools if tool.name == "think_tool"), None
-    )
-    if tool_call_iterations == 0 and search_tool is not None:
-        return {
-            "tool_calls": [
-                {
-                    "name": search_tool.name,
-                    "id": f"{unit.get('unit_id', 'unit')}-search-{tool_call_iterations + 1}",
-                    "args": {
-                        "query": str(
-                            unit.get("query") or _default_research_brief(state)
-                        ),
-                        "topic": str(unit.get("topic") or "supporting evidence"),
-                    },
-                }
-            ]
-        }
-    if tool_call_iterations == 1 and think_tool is not None:
-        return {
-            "tool_calls": [
-                {
-                    "name": think_tool.name,
-                    "id": f"{unit.get('unit_id', 'unit')}-think-{tool_call_iterations + 1}",
-                    "args": {
-                        "reflection": (
-                            f"Assess whether the findings for {unit.get('query') or _default_research_brief(state)} "
-                            "are sufficient to move forward."
-                        )
-                    },
-                }
-            ]
-        }
-    return {"tool_calls": []}
-
-
-def _fallback_clarification(state: DeepResearchState) -> IntakeClarification:
-    objective = str(state.get("objective") or "").strip()
-    if objective and len(objective) >= 24:
-        return IntakeClarification(
-            needs_clarification=False, rationale="Objective is specific enough."
-        )
-    return IntakeClarification(
-        needs_clarification=True,
-        question="研究目标还不够具体。你最希望优先回答哪个子问题？",
-        rationale="The objective is too short or underspecified for focused deep research.",
     )
 
 
@@ -277,8 +207,27 @@ def _run_research_unit(
         HumanMessage = None  # type: ignore[assignment]
         ToolMessage = None  # type: ignore[assignment]
 
+    unit_id = str(unit.get("unit_id") or "unit")
+    unit_topic = str(unit.get("topic") or "supporting evidence")
+    unit_query = str(unit.get("query") or "").strip()
+    if not unit_query:
+        return {
+            "unit_id": unit_id,
+            "topic": unit_topic,
+            "query": "",
+            "summary": "Research unit is missing a query.",
+            "findings": [],
+            "unresolved_gaps": [
+                "Research planning returned a unit without a query."
+            ],
+            "artifacts": [],
+            "status": "failed",
+            "raw_notes": [],
+            "turns": [],
+        }
+
     research_prompt = (
-        f"Research topic: {unit['query']}\n"
+        f"Research topic: {unit_query}\n"
         f"Topic label: {unit.get('topic') or 'supporting evidence'}\n"
         f"Research brief: {_default_research_brief(state)}"
     )
@@ -292,9 +241,9 @@ def _run_research_unit(
     raw_notes: list[str] = []
     turns: list[dict[str, Any]] = []
 
-    for tool_call_iterations in range(
-        max(1, inputs.settings.research.max_react_tool_calls)
-    ):
+    max_tool_calls = max(1, inputs.settings.research.max_react_tool_calls)
+    executed_tool_call_count = 0
+    for tool_call_iterations in range(max_tool_calls):
         available_tools = _resolve_research_tools(
             inputs,
             state,
@@ -314,61 +263,88 @@ def _run_research_unit(
                 "raw_notes": [],
                 "turns": [],
             }
-        if inputs.model_factory is not None:
-            try:
-                invoker = inputs.model_factory.create_tool_calling_invoker(
-                    purpose="deep_research_researcher"
-                )
-                response = invoker.invoke_with_tools(
-                    system_prompt=(
-                        "You are a reusable deep research agent. "
-                        "Use the provided tools to gather evidence, reflect briefly when useful, "
-                        "and stop calling tools when you have enough evidence."
-                    ),
-                    messages=list(messages),
-                    tools=[
-                        _build_langchain_tool(
-                            tool,
-                            _build_tool_context(
-                                state, tool_call_iterations=tool_call_iterations
-                            ),
-                        )
-                        for tool in available_tools
-                    ],
-                )
-            except Exception:
-                response = _fallback_researcher_message(
-                    state,
-                    unit,
-                    available_tools,
-                    tool_call_iterations=tool_call_iterations,
-                )
-        else:
-            response = _fallback_researcher_message(
-                state,
-                unit,
-                available_tools,
-                tool_call_iterations=tool_call_iterations,
+        if inputs.model_factory is None:
+            return {
+                "unit_id": unit_id,
+                "topic": unit_topic,
+                "query": unit_query,
+                "summary": "Deep research requires a configured model factory.",
+                "findings": [],
+                "unresolved_gaps": [
+                    "No model factory configured for deep-research tool selection."
+                ],
+                "artifacts": [],
+                "status": "failed",
+                "raw_notes": [],
+                "turns": [],
+            }
+        try:
+            invoker = inputs.model_factory.create_tool_calling_invoker(
+                purpose="deep_research_researcher"
             )
-        messages.append(response)
+            response = invoker.invoke_with_tools(
+                system_prompt=(
+                    "You are a reusable deep research agent. "
+                    "Use the provided tools to gather evidence for downstream enzyme design. "
+                    "On the first turn for a research unit, call a search tool such as web.search when one is available. "
+                    "After a search returns enough credible sources to support synthesis, stop calling tools and let synthesis run. "
+                    "Do not continue searching only to improve completeness or polish."
+                ),
+                messages=list(messages),
+                tools=[
+                    _build_langchain_tool(
+                        tool,
+                        _build_tool_context(
+                            state, tool_call_iterations=tool_call_iterations
+                        ),
+                    )
+                    for tool in available_tools
+                ],
+            )
+        except Exception as exc:
+            return {
+                "unit_id": unit_id,
+                "topic": unit_topic,
+                "query": unit_query,
+                "summary": "Deep research model failed while selecting tool calls.",
+                "findings": [],
+                "unresolved_gaps": [
+                    f"Model tool-call selection failed: {type(exc).__name__}: {exc}"
+                ],
+                "artifacts": [],
+                "status": "failed",
+                "raw_notes": [],
+                "turns": [],
+            }
         tool_calls = _extract_tool_calls(response)
+        messages.append(response)
+        if not tool_calls:
+            break
+        remaining_tool_call_budget = max_tool_calls - executed_tool_call_count
+        if len(tool_calls) > remaining_tool_call_budget:
+            raw_notes.append(
+                "Research tool-call budget truncated "
+                f"{len(tool_calls) - remaining_tool_call_budget} excess call(s)."
+            )
+            tool_calls = tool_calls[:remaining_tool_call_budget]
         if not tool_calls:
             break
 
         tools_by_name = {tool.name: tool for tool in available_tools}
         for tool_call in tool_calls:
+            executed_tool_call_count += 1
             tool_name = str(tool_call["name"])
             observation_status = DecisionStatus.COMPLETED
-            try:
-                tool = tools_by_name.get(tool_name)
-                if tool is None:
-                    observation = {
-                        "tool_name": tool_name,
-                        "summary": f"Tool {tool_name} is unavailable.",
-                        "payload": {"message": "tool unavailable"},
-                    }
-                    observation_status = DecisionStatus.FAILED
-                else:
+            tool = tools_by_name.get(tool_name)
+            if tool is None:
+                observation = {
+                    "tool_name": tool_name,
+                    "summary": f"Tool {tool_name} is unavailable.",
+                    "payload": {"message": "tool unavailable"},
+                }
+                observation_status = DecisionStatus.FAILED
+            else:
+                try:
                     result = tool.invoke(
                         args=dict(tool_call.get("args") or {}),
                         context=_build_tool_context(
@@ -385,13 +361,21 @@ def _run_research_unit(
                         "error",
                     }:
                         observation_status = DecisionStatus.FAILED
-            except Exception as exc:
-                observation = {
-                    "tool_name": tool_name,
-                    "summary": f"Tool {tool_name} failed during research execution.",
-                    "payload": {"message": str(exc)},
-                }
-                observation_status = DecisionStatus.FAILED
+                except ValidationError as exc:
+                    observation = {
+                        "tool_name": tool_name,
+                        "summary": f"Tool {tool_name} rejected invalid arguments.",
+                        "payload": {
+                            "status": "failed",
+                            "error_type": "tool_argument_validation",
+                            "message": str(exc),
+                            "unresolved_gaps": [
+                                f"Tool {tool_name} received invalid arguments."
+                            ],
+                            "retryable": True,
+                        },
+                    }
+                    observation_status = DecisionStatus.FAILED
 
             observations.append(observation)
             raw_notes.append(str(observation["summary"]))
@@ -433,16 +417,16 @@ def _run_research_unit(
     had_failure = any(turn["status"] == DecisionStatus.FAILED.value for turn in turns)
     if findings and not had_failure:
         status = "completed"
-    elif findings or observations:
+    elif findings or any(turn["status"] != DecisionStatus.FAILED.value for turn in turns):
         status = "partial"
     else:
         status = "failed"
     return {
-        "unit_id": str(unit.get("unit_id") or "unit"),
-        "topic": str(unit.get("topic") or "supporting evidence"),
-        "query": str(unit.get("query") or _default_research_brief(state)),
+        "unit_id": unit_id,
+        "topic": unit_topic,
+        "query": unit_query,
         "summary": summary
-        or f"Completed research for {unit.get('query') or _default_research_brief(state)}",
+        or f"Completed research for {unit_query}",
         "findings": findings,
         "unresolved_gaps": unresolved_gaps,
         "artifacts": artifacts,
@@ -458,28 +442,45 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
     ) -> Command[Literal["write_research_brief", "synthesize_research_dossier"]]:
         if not inputs.settings.research.allow_clarification:
             return Command(goto="write_research_brief")
-        if inputs.model_factory is not None:
-            try:
-                invoker = inputs.model_factory.create_structured_invoker(
-                    purpose="deep_research_brief"
-                )
-                clarification = invoker.invoke_structured(
-                    schema=IntakeClarification,
-                    system_prompt=(
-                        "You are checking whether a deep-research request is specific enough to execute. "
-                        "If the objective is underspecified, ask exactly one concise clarification question."
-                    ),
-                    user_payload={
-                        "episode_id": state.get("episode_id"),
-                        "objective": state.get("objective"),
-                        "design_brief": state.get("design_brief"),
-                        "research_brief": state.get("research_brief"),
-                    },
-                )
-            except Exception:
-                clarification = _fallback_clarification(state)
-        else:
-            clarification = _fallback_clarification(state)
+        if inputs.model_factory is None:
+            dossier = _failed_dossier(
+                state,
+                completion_reason="missing_model_factory",
+                summary="Deep research requires a configured model factory.",
+                unresolved_gap="No model factory configured for deep-research clarification.",
+            )
+            return Command(
+                update={"research_dossier": dossier.model_dump()},
+                goto="synthesize_research_dossier",
+            )
+        try:
+            invoker = inputs.model_factory.create_structured_invoker(
+                purpose="deep_research_brief"
+            )
+            clarification = invoker.invoke_structured(
+                schema=IntakeClarification,
+                system_prompt=(
+                    "You are checking whether a deep-research request is specific enough to execute. "
+                    "If the objective is underspecified, ask exactly one concise clarification question."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "objective": state.get("objective"),
+                    "design_brief": state.get("design_brief"),
+                    "research_brief": state.get("research_brief"),
+                },
+            )
+        except Exception as exc:
+            dossier = _failed_dossier(
+                state,
+                completion_reason="clarification_model_failed",
+                summary="Deep research clarification failed.",
+                unresolved_gap=f"Clarification model failed: {type(exc).__name__}: {exc}",
+            )
+            return Command(
+                update={"research_dossier": dossier.model_dump()},
+                goto="synthesize_research_dossier",
+            )
 
         if clarification.needs_clarification:
             return Command(
@@ -493,35 +494,50 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         return Command(goto="write_research_brief")
 
     def write_research_brief(state: DeepResearchState) -> dict[str, Any]:
-        if inputs.model_factory is not None:
-            try:
-                invoker = inputs.model_factory.create_structured_invoker(
-                    purpose="deep_research_brief"
-                )
-                brief = invoker.invoke_structured(
-                    schema=ResearchBriefDraft,
-                    system_prompt=(
-                        "You are preparing a concise research brief for a reusable deep research workflow. "
-                        "Rewrite the current objective into a focused brief with no extra commentary."
-                    ),
-                    user_payload={
-                        "episode_id": state.get("episode_id"),
-                        "objective": state.get("objective"),
-                        "design_brief": state.get("design_brief"),
-                        "research_brief": state.get("research_brief"),
-                    },
-                )
-                research_brief = brief.research_brief
-            except Exception:
-                research_brief = _default_research_brief(state)
-        else:
-            research_brief = _default_research_brief(state)
-        return {"research_brief": research_brief}
+        if inputs.model_factory is None:
+            return {
+                "research_dossier": _failed_dossier(
+                    state,
+                    completion_reason="missing_model_factory",
+                    summary="Deep research requires a configured model factory.",
+                    unresolved_gap="No model factory configured for research brief drafting.",
+                ).model_dump()
+            }
+        try:
+            invoker = inputs.model_factory.create_structured_invoker(
+                purpose="deep_research_brief"
+            )
+            brief = invoker.invoke_structured(
+                schema=ResearchBriefDraft,
+                system_prompt=(
+                    "You are preparing a concise research brief for a reusable deep research workflow. "
+                    "Rewrite the current objective into a focused brief with no extra commentary."
+                ),
+                user_payload={
+                    "episode_id": state.get("episode_id"),
+                    "objective": state.get("objective"),
+                    "design_brief": state.get("design_brief"),
+                    "research_brief": state.get("research_brief"),
+                },
+            )
+            return {"research_brief": brief.research_brief}
+        except Exception as exc:
+            return {
+                "research_dossier": _failed_dossier(
+                    state,
+                    completion_reason="brief_model_failed",
+                    summary="Deep research brief drafting failed.",
+                    unresolved_gap=f"Brief model failed: {type(exc).__name__}: {exc}",
+                ).model_dump()
+            }
 
     def supervisor_plan_research(
         state: DeepResearchState,
     ) -> Command[Literal["dispatch_research_units", "synthesize_research_dossier"]]:
+        if state.get("research_dossier") is not None:
+            return Command(goto="synthesize_research_dossier")
         iterations = int(state.get("research_iterations", 0))
+        findings_available = _has_research_findings(state)
         if iterations >= max(1, inputs.settings.research.max_research_iterations):
             action = ResearchSupervisorAction(
                 action_kind="complete",
@@ -538,6 +554,9 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                     system_prompt=(
                         "You supervise a reusable deep research workflow. "
                         "Choose whether to conduct another batch of research or complete the research dossier. "
+                        "If any usable unit result or finding already exists, prefer complete immediately; "
+                        "do not continue research for perfection, breadth, or polish. "
+                        "Only choose conduct_research when there are no usable findings yet. "
                         "If you choose conduct_research, return a small standalone unit plan."
                     ),
                     user_payload={
@@ -547,16 +566,44 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                         "research_brief": state.get("research_brief"),
                         "unit_results": state.get("unit_results") or [],
                         "recent_turns": state.get("recent_turns") or [],
+                        "completion_guidance": {
+                            "findings_available": findings_available,
+                            "recommended_action": "complete"
+                            if findings_available
+                            else "conduct_research",
+                            "reason": (
+                                "At least one usable finding exists; synthesize now."
+                                if findings_available
+                                else "No usable findings exist yet; one concise research batch is allowed."
+                            ),
+                        },
                         "max_research_iterations": inputs.settings.research.max_research_iterations,
                         "max_concurrent_research_units": inputs.settings.research.max_concurrent_research_units,
                     },
                 )
-            except Exception:
-                action = _fallback_supervisor_action(state)
+            except Exception as exc:
+                dossier = _failed_dossier(
+                    state,
+                    completion_reason="supervisor_model_failed",
+                    summary="Deep research supervisor failed.",
+                    unresolved_gap=f"Supervisor model failed: {type(exc).__name__}: {exc}",
+                )
+                return Command(
+                    update={"research_dossier": dossier.model_dump()},
+                    goto="synthesize_research_dossier",
+                )
             completion_reason = "supervisor_complete"
         else:
-            action = _fallback_supervisor_action(state)
-            completion_reason = "supervisor_complete"
+            dossier = _failed_dossier(
+                state,
+                completion_reason="missing_model_factory",
+                summary="Deep research requires a configured model factory.",
+                unresolved_gap="No model factory configured for deep-research supervision.",
+            )
+            return Command(
+                update={"research_dossier": dossier.model_dump()},
+                goto="synthesize_research_dossier",
+            )
 
         research_turn = _record_research_turn(
             state,
@@ -580,13 +627,20 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         }
         if action.action_kind == "complete":
             return Command(update=update, goto="synthesize_research_dossier")
-        planned_units = (
-            _fallback_unit_plan(state).units
-            if action.unit_plan is None
-            else action.unit_plan.units[
-                : max(1, inputs.settings.research.max_concurrent_research_units)
-            ]
-        )
+        if action.unit_plan is None or not action.unit_plan.units:
+            dossier = _failed_dossier(
+                state,
+                completion_reason="missing_research_unit_plan",
+                summary="Deep research supervisor did not provide a unit plan.",
+                unresolved_gap="Supervisor selected conduct_research without research units.",
+            )
+            return Command(
+                update={"research_dossier": dossier.model_dump()},
+                goto="synthesize_research_dossier",
+            )
+        planned_units = action.unit_plan.units[
+            : max(1, inputs.settings.research.max_concurrent_research_units)
+        ]
         return Command(
             update={
                 **update,
@@ -653,6 +707,8 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         )
 
     def synthesize_research_dossier(state: DeepResearchState) -> dict[str, Any]:
+        if state.get("research_dossier") is not None:
+            return {"research_dossier": state["research_dossier"]}
         if state.get("clarification_question"):
             dossier = ResearchDossier(
                 status="needs_clarification",
@@ -692,8 +748,30 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                         "unit_results": unit_results,
                     },
                 )
-            except Exception:
-                synthesis = None
+            except Exception as exc:
+                error_type = type(exc).__name__
+                error_message = str(exc)
+                dossier = _failed_dossier(
+                    state,
+                    completion_reason="synthesis_model_failed",
+                    summary="Deep research synthesis model failed.",
+                    unresolved_gap=(
+                        "Synthesis model failed: "
+                        f"{error_type}: {error_message}"
+                    ),
+                )
+                raw_notes = [
+                    *dossier.raw_notes,
+                    (
+                        "synthesis_model_failed "
+                        f"error_type={error_type} error_message={error_message}"
+                    ),
+                ]
+                return {
+                    "research_dossier": dossier.model_copy(
+                        update={"raw_notes": raw_notes}
+                    ).model_dump()
+                }
 
         if synthesis is None:
             evidence_items: list[EvidenceSynthesisItem] = []
@@ -730,11 +808,10 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         else:
             artifacts = []
 
-        if synthesis.evidence_items and all(
-            result.get("status") == "completed" for result in unit_results
-        ):
+        unit_statuses = {str(result.get("status") or "") for result in unit_results}
+        if synthesis.evidence_items and unit_statuses <= {"completed"}:
             status = "completed"
-        elif synthesis.evidence_items or unit_results:
+        elif synthesis.evidence_items or (unit_results and unit_statuses - {"failed"}):
             status = "partial"
         else:
             status = "failed"

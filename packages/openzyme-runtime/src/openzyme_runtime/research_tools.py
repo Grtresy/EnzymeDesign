@@ -17,6 +17,7 @@ from openzyme_research import asset_manifest
 from openzyme_research import literature_hits_to_findings
 from openzyme_research import structure_hits_to_findings
 
+from .limits import LimiterRegistry
 from .seams import ResearchTool
 from .seams import ResearchToolContext
 from .seams import ResearchToolProvider
@@ -98,6 +99,7 @@ def _web_tool_enabled(adapter: object) -> bool:
 @dataclass(frozen=True, slots=True)
 class WebSearchTool:
     adapter: ResearchAdapter
+    limiter_registry: LimiterRegistry | None = None
     name: str = "web.search"
     description: str = (
         "Search the web for a query and return normalized evidence sources."
@@ -110,39 +112,47 @@ class WebSearchTool:
         payload = WebSearchArgs.model_validate(args)
         search = getattr(self.adapter, "web_search")
         normalize = getattr(self.adapter, "normalize_search_response")
-        result = normalize(
-            unit=ResearchUnit(
-                unit_id=f"web-search-{context.tool_call_iterations + 1}",
-                topic=payload.topic,
-                query=payload.query,
-            ),
-            response=search(
-                query=payload.query,
-                max_results=payload.max_results,
-                topic=payload.topic,
-                include_raw_content=payload.include_raw_content,
-            ),
+        unit = ResearchUnit(
+            unit_id=f"web-search-{context.tool_call_iterations + 1}",
+            topic=payload.topic,
+            query=payload.query,
         )
-        return _tool_result(
-            self.name,
-            ResearchObservation(
-                status=result.status,
-                summary=result.summary,
-                findings=result.findings,
-                unresolved_gaps=result.unresolved_gaps,
-                provider="web",
-                raw_ref={
-                    "unit_id": result.unit_id,
-                    "error_message": result.error_message,
-                    "escalation_reason": result.escalation_reason,
-                },
-            ),
-        )
+
+        def _call() -> ResearchToolResult:
+            result = normalize(
+                unit=unit,
+                response=search(
+                    query=payload.query,
+                    max_results=payload.max_results,
+                    topic=payload.topic,
+                    include_raw_content=payload.include_raw_content,
+                ),
+            )
+            return _tool_result(
+                self.name,
+                ResearchObservation(
+                    status=result.status,
+                    summary=result.summary,
+                    findings=result.findings,
+                    unresolved_gaps=result.unresolved_gaps,
+                    provider="web",
+                    raw_ref={
+                        "unit_id": result.unit_id,
+                        "error_message": result.error_message,
+                        "escalation_reason": result.escalation_reason,
+                    },
+                ),
+            )
+
+        if self.limiter_registry is None:
+            return _call()
+        return self.limiter_registry.sync_limiter("research_provider").run(_call)
 
 
 @dataclass(frozen=True, slots=True)
 class WebFetchTool:
     adapter: ResearchAdapter
+    limiter_registry: LimiterRegistry | None = None
     name: str = "web.fetch"
     description: str = "Fetch and extract readable content from one web page URL."
     args_schema: type[BaseModel] = WebFetchArgs
@@ -153,32 +163,38 @@ class WebFetchTool:
         payload = WebFetchArgs.model_validate(args)
         fetch = getattr(self.adapter, "fetch_url")
         normalize = getattr(self.adapter, "normalize_fetch_response")
-        result = normalize(
-            url=payload.url,
-            query=payload.query,
-            response=fetch(
+
+        def _call() -> ResearchToolResult:
+            result = normalize(
                 url=payload.url,
                 query=payload.query,
-                extract_depth=payload.extract_depth,
-                format=payload.format,
-                include_images=payload.include_images,
-            ),
-        )
-        return _tool_result(
-            self.name,
-            ResearchObservation(
-                status=result.status,
-                summary=result.summary,
-                findings=result.findings,
-                unresolved_gaps=result.unresolved_gaps,
-                provider="web",
-                raw_ref={
-                    "unit_id": result.unit_id,
-                    "error_message": result.error_message,
-                    "escalation_reason": result.escalation_reason,
-                },
-            ),
-        )
+                response=fetch(
+                    url=payload.url,
+                    query=payload.query,
+                    extract_depth=payload.extract_depth,
+                    format=payload.format,
+                    include_images=payload.include_images,
+                ),
+            )
+            return _tool_result(
+                self.name,
+                ResearchObservation(
+                    status=result.status,
+                    summary=result.summary,
+                    findings=result.findings,
+                    unresolved_gaps=result.unresolved_gaps,
+                    provider="web",
+                    raw_ref={
+                        "unit_id": result.unit_id,
+                        "error_message": result.error_message,
+                        "escalation_reason": result.escalation_reason,
+                    },
+                ),
+            )
+
+        if self.limiter_registry is None:
+            return _call()
+        return self.limiter_registry.sync_limiter("research_provider").run(_call)
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +411,32 @@ class InterProQueryTool:
 
 
 @dataclass(frozen=True, slots=True)
+class LimitedResearchTool:
+    tool: ResearchTool
+    limiter_registry: LimiterRegistry
+    limiter_name: str = "research_provider"
+
+    @property
+    def name(self) -> str:
+        return self.tool.name
+
+    @property
+    def description(self) -> str:
+        return self.tool.description
+
+    @property
+    def args_schema(self) -> type[BaseModel]:
+        return self.tool.args_schema
+
+    def invoke(
+        self, *, args: dict[str, object], context: ResearchToolContext
+    ) -> ResearchToolResult:
+        return self.limiter_registry.sync_limiter(self.limiter_name).run(
+            lambda: self.tool.invoke(args=args, context=context)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class StaticResearchToolProvider:
     tools: Sequence[ResearchTool]
 
@@ -429,6 +471,7 @@ class DefaultResearchToolProvider:
     mcp_tools: Sequence[ResearchTool] = ()
     mcp_enabled: bool = False
     mcp_tool_allowlist: tuple[str, ...] = ()
+    limiter_registry: LimiterRegistry | None = None
 
     def list_tools(self, context: ResearchToolContext) -> Sequence[ResearchTool]:
         providers: list[ResearchToolProvider] = [
@@ -440,15 +483,22 @@ class DefaultResearchToolProvider:
             providers.append(
                 StaticResearchToolProvider(
                     [
-                        WebSearchTool(self.research_adapter),
-                        WebFetchTool(self.research_adapter),
+                        WebSearchTool(self.research_adapter, self.limiter_registry),
+                        WebFetchTool(self.research_adapter, self.limiter_registry),
                     ]
                 )
             )
         if self.mcp_enabled and self.mcp_tools:
             providers.append(
                 StaticResearchToolProvider(
-                    list(_filtered_mcp_tools(self.mcp_tools, self.mcp_tool_allowlist))
+                    list(
+                        _limited_tools(
+                            _filtered_mcp_tools(
+                                self.mcp_tools, self.mcp_tool_allowlist
+                            ),
+                            self.limiter_registry,
+                        )
+                    )
                 )
             )
         return CompositeResearchToolProvider(providers).list_tools(context)
@@ -479,10 +529,25 @@ def _filtered_mcp_tools(
             yield tool
 
 
+def _limited_tools(
+    tools: Iterable[ResearchTool],
+    limiter_registry: LimiterRegistry | None,
+) -> Iterable[ResearchTool]:
+    if limiter_registry is None:
+        yield from tools
+        return
+    for tool in tools:
+        if isinstance(tool, LimitedResearchTool):
+            yield tool
+        else:
+            yield LimitedResearchTool(tool, limiter_registry)
+
+
 __all__ = [
     "CompositeResearchToolProvider",
     "DefaultResearchToolProvider",
     "build_bio_research_tools",
+    "LimitedResearchTool",
     "StaticResearchToolProvider",
     "ThinkResearchTool",
     "ThinkToolArgs",

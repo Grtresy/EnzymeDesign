@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from dataclasses import replace
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -10,6 +11,7 @@ from openzyme_domain import RunStatus
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_graph.execution import build_execution_subgraph
+from openzyme_runtime import ExecutionPlanDraft
 from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
@@ -41,6 +43,61 @@ class FakeExecutionAdapter:
             ),
             raw_result={"status": "completed", "pockets_found": 2},
         )
+
+
+class InvalidArtifactExecutionPlanInvoker:
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+        assert schema is ExecutionPlanDraft
+        assert "available_artifacts" in user_payload
+        assert "research source URLs" in user_payload["artifact_id_contract"]
+        assert "research source URLs" in system_prompt
+        return ExecutionPlanDraft(
+            catalog_tool_id="fpocket",
+            rationale="Incorrectly copied a research URL into the artifact field.",
+            tool_inputs={
+                "structure_artifact_id": "https://example.org/paper-not-artifact",
+            },
+            expected_result_summary="Run fpocket.",
+        )
+
+
+class ValidExecutionPlanInvoker:
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+        del system_prompt, user_payload
+        assert schema is ExecutionPlanDraft
+        return ExecutionPlanDraft(
+            catalog_tool_id="fpocket",
+            rationale="Run fpocket against the provided structure artifact.",
+            tool_inputs={"structure_artifact_id": "art_input_structure"},
+            expected_result_summary="Run fpocket.",
+        )
+
+
+class NoToolCallsInvoker:
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        del messages, tools
+        assert "Never use research source URLs" in system_prompt
+        return {"tool_calls": []}
+
+
+class InvalidArtifactExecutionModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> NoToolCallsInvoker:
+        assert purpose == "execution_planner"
+        return NoToolCallsInvoker()
+
+    def create_structured_invoker(self, *, purpose: str) -> InvalidArtifactExecutionPlanInvoker:
+        assert purpose == "execution_plan"
+        return InvalidArtifactExecutionPlanInvoker()
+
+
+class ValidExecutionModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> NoToolCallsInvoker:
+        assert purpose == "execution_planner"
+        return NoToolCallsInvoker()
+
+    def create_structured_invoker(self, *, purpose: str) -> ValidExecutionPlanInvoker:
+        assert purpose == "execution_plan"
+        return ValidExecutionPlanInvoker()
 
 
 @contextmanager
@@ -85,12 +142,25 @@ def _build_foundation() -> RuntimeFoundation:
     )
 
 
+def _execution_handoff() -> dict[str, object]:
+    return {
+        "execution_goal": "Run a fast pocket evaluator",
+        "question_to_answer": "Which evaluator should run first?",
+        "required_artifact_ids": ["art_input_structure"],
+        "context_artifact_ids": [],
+        "preferred_stage_tags": ["execution", "evaluator"],
+        "preferred_capability_tags": ["pocket_detection"],
+        "recommended_next_phase": "execution",
+    }
+
+
 def test_execution_subgraph_discovers_fpocket_and_submits_after_approval(monkeypatch) -> None:
     monkeypatch.setattr(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
     foundation = _build_foundation()
+    foundation = replace(foundation, model_factory=ValidExecutionModelFactory())
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 
@@ -99,15 +169,7 @@ def test_execution_subgraph_discovers_fpocket_and_submits_after_approval(monkeyp
             {
                 "episode_id": "ep_001",
                 "project_id": "proj_001",
-                "execution_handoff": {
-                    "execution_goal": "Run a fast pocket evaluator",
-                    "question_to_answer": "Which evaluator should run first?",
-                    "required_artifact_ids": ["art_input_structure"],
-                    "context_artifact_ids": [],
-                    "preferred_stage_tags": ["execution", "evaluator"],
-                    "preferred_capability_tags": ["pocket_detection"],
-                    "recommended_next_phase": "execution",
-                },
+                "execution_handoff": _execution_handoff(),
             },
             config,
         )
@@ -119,3 +181,59 @@ def test_execution_subgraph_discovers_fpocket_and_submits_after_approval(monkeyp
     assert result["execution_result_handoff"]["output_artifact_ids"] == ["run_001-artifact-1"]
     assert result["execution_result_handoff"]["run_summary"]["run_id"] == "run_001"
     assert len(foundation.repositories.runs.list_by_episode("ep_001")) == 1
+
+
+def test_execution_subgraph_fails_without_model_factory(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation = _build_foundation()
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_execution_subgraph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "execution_handoff": _execution_handoff(),
+            },
+            config,
+        )
+
+    handoff = result["execution_result_handoff"]
+    assert "__interrupt__" not in result
+    assert handoff["status"] == "failed"
+    assert handoff["result_summary"] == "Execution planner requires a configured model factory."
+    assert not foundation.repositories.runs.list_by_episode("ep_001")
+
+
+def test_execution_subgraph_rejects_research_url_as_artifact_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    foundation = _build_foundation()
+    foundation = replace(
+        foundation,
+        model_factory=InvalidArtifactExecutionModelFactory(),
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_execution_subgraph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "execution_handoff": _execution_handoff(),
+            },
+            config,
+        )
+
+    handoff = result["execution_result_handoff"]
+    assert "__interrupt__" not in result
+    assert handoff["status"] == "failed"
+    assert "not present in the execution handoff workspace" in handoff["result_summary"]
+    assert not foundation.repositories.runs.list_by_episode("ep_001")

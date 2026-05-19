@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+from urllib.error import HTTPError
+
+import pytest
+
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
+from openzyme_runtime import LimiterRegistry
 from openzyme_runtime.research_tools import DefaultResearchToolProvider
 from openzyme_runtime.research_tools import build_bio_research_tools
 from openzyme_runtime.seams import ResearchToolContext
@@ -106,3 +114,97 @@ def test_default_research_tools_expose_web_tools_without_search_collect() -> Non
         == "https://example.org/result"
     )
     assert fetch_result.payload["findings"][0]["summary"] == "Fetched page content."
+
+
+def test_default_research_tool_provider_limits_web_and_bio_provider_calls() -> None:
+    active = 0
+    observed_max = 0
+    lock = threading.Lock()
+
+    def provider_call(result):
+        nonlocal active, observed_max
+        with lock:
+            active += 1
+            observed_max = max(observed_max, active)
+        try:
+            time.sleep(0.01)
+            return result
+        finally:
+            with lock:
+                active -= 1
+
+    class FakeBioService:
+        def search_pubmed(self, *, query: str, limit: int):
+            del query, limit
+            return provider_call([])
+
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: provider_call(
+            {
+                "results": [
+                    {
+                        "title": "Result",
+                        "url": "https://example.org/result",
+                        "content": "Search result content.",
+                    }
+                ]
+            }
+        ),
+        extract_callable=lambda **_: {"results": []},
+    )
+    registry = LimiterRegistry({"research_provider": 3})
+    tools = {
+        tool.name: tool
+        for tool in DefaultResearchToolProvider(
+            adapter,
+            mcp_tools=build_bio_research_tools(FakeBioService()),  # type: ignore[arg-type]
+            mcp_enabled=True,
+            limiter_registry=registry,
+        ).list_tools(_context())
+    }
+
+    async def run_calls() -> None:
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    tools["web.search"].invoke,
+                    args={"query": f"enzyme design {index}", "max_results": 1},
+                    context=_context(),
+                )
+                if index % 2 == 0
+                else asyncio.to_thread(
+                    tools["pubmed.search"].invoke,
+                    args={"query": f"enzyme design {index}", "limit": 1},
+                    context=_context(),
+                )
+                for index in range(10)
+            )
+        )
+
+    asyncio.run(run_calls())
+
+    assert observed_max <= 3
+
+
+def test_bio_provider_http_failure_propagates_to_live_gate() -> None:
+    class RateLimitedBioService:
+        def search_semantic_scholar(self, *, query: str, limit: int):
+            del query, limit
+            raise HTTPError(
+                url="https://api.semanticscholar.org/",
+                code=429,
+                msg="rate limited",
+                hdrs=None,
+                fp=None,
+            )
+
+    tools = {
+        tool.name: tool
+        for tool in build_bio_research_tools(RateLimitedBioService())  # type: ignore[arg-type]
+    }
+
+    with pytest.raises(HTTPError):
+        tools["semantic_scholar.search"].invoke(
+            args={"query": "enzyme engineering", "limit": 1},
+            context=_context(),
+        )

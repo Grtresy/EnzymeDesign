@@ -11,6 +11,13 @@ from openzyme_domain import RunStatus
 from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
+from openzyme_engines import EvidenceSynthesis
+from openzyme_engines import EvidenceSynthesisItem
+from openzyme_engines import ResearchBriefDraft
+from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchSupervisorAction
+from openzyme_engines import ResearchUnitDraft
+from openzyme_engines import ResearchUnitPlan
 from openzyme_graph.design import build_phase_c_design_graph
 from openzyme_runtime import DesignNextAction
 from openzyme_runtime import GraphRuntimeFacade
@@ -147,27 +154,169 @@ class FakeResearchAdapter:
 
 class FakeStructuredInvoker:
     def __init__(
-        self, responses: dict[str, object], calls: list[str], purpose: str
+        self,
+        responses: dict[str, object],
+        calls: list[str],
+        prompts: dict[str, str],
+        payloads: dict[str, dict[str, object]],
+        purpose: str,
     ) -> None:
         self._response = responses[purpose]
         self._calls = calls
+        self._prompts = prompts
+        self._payloads = payloads
         self._purpose = purpose
 
     def invoke_structured(
         self, *, schema, system_prompt: str, user_payload: dict[str, object]
     ):
-        del schema, system_prompt, user_payload
+        del schema
         self._calls.append(self._purpose)
+        self._prompts[self._purpose] = system_prompt
+        self._payloads[self._purpose] = user_payload
+        if isinstance(self._response, list):
+            index = self._factory_response_index()
+            return self._response[min(index, len(self._response) - 1)]
         return self._response
+
+    def _factory_response_index(self) -> int:
+        key = f"__{self._purpose}_response_index"
+        current = int(self._payloads.get(key, {}).get("index", 0))
+        self._payloads[key] = {"index": current + 1}
+        return current
+
+
+class FakeToolCallingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "tool_calls": [
+                    {
+                        "name": "web.search",
+                        "id": "test-web-search-1",
+                        "args": {
+                            "query": "thermostability evidence",
+                            "topic": "supporting evidence",
+                            "max_results": 1,
+                        },
+                    }
+                ]
+            }
+        return {"tool_calls": []}
 
 
 class FakeModelFactory:
     def __init__(self, responses: dict[str, object]) -> None:
         self._responses = responses
         self.calls: list[str] = []
+        self.prompts: dict[str, str] = {}
+        self.payloads: dict[str, dict[str, object]] = {}
+        self.tool_invoker = FakeToolCallingInvoker()
 
     def create_structured_invoker(self, *, purpose: str) -> FakeStructuredInvoker:
-        return FakeStructuredInvoker(self._responses, self.calls, purpose)
+        return FakeStructuredInvoker(
+            self._responses,
+            self.calls,
+            self.prompts,
+            self.payloads,
+            purpose,
+        )
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
+        self.calls.append(purpose)
+        return self.tool_invoker
+
+
+class RaisingStructuredInvoker:
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+        del schema, system_prompt, user_payload
+        raise RuntimeError("planner provider unavailable")
+
+
+class RaisingModelFactory:
+    calls: list[str]
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def create_structured_invoker(self, *, purpose: str) -> RaisingStructuredInvoker:
+        self.calls.append(purpose)
+        return RaisingStructuredInvoker()
+
+
+def _request_execution_model_factory() -> FakeModelFactory:
+    return FakeModelFactory(
+        {
+            "design_next_action": DesignNextAction(
+                action_kind="request_execution",
+                summary="Use the execution-ready structure artifact.",
+                rationale="The workspace already has an execution-ready artifact.",
+                arguments={},
+            ),
+        }
+    )
+
+
+def _collect_research_model_factory() -> FakeModelFactory:
+    return FakeModelFactory(
+        {
+            "design_next_action": [
+                DesignNextAction(
+                    action_kind="collect_research",
+                    summary="Collect initial evidence for the objective.",
+                    rationale="No canonical evidence exists yet.",
+                    arguments={},
+                ),
+                DesignNextAction(
+                    action_kind="request_execution",
+                    summary="Use the curated research artifact for execution.",
+                    rationale="Research collection produced execution-ready references.",
+                    arguments={},
+                ),
+            ],
+            "deep_research_brief": ResearchBriefDraft(
+                research_brief="thermostability evidence"
+            ),
+            "deep_research_supervisor": ResearchSupervisorAction(
+                action_kind="conduct_research",
+                rationale="No usable finding exists yet.",
+                unit_plan=ResearchUnitPlan(
+                    units=[
+                        ResearchUnitDraft(
+                            unit_id="evidence",
+                            topic="supporting evidence",
+                            query="thermostability evidence",
+                            rationale="Collect evidence for the design objective.",
+                        )
+                    ],
+                    synthesis_goal="Support downstream design.",
+                ),
+            ),
+            "deep_research_synthesis": EvidenceSynthesis(
+                summary="Research evidence supports the design objective.",
+                evidence_items=[
+                    EvidenceSynthesisItem(
+                        summary="Thermostability evidence supports the scaffold.",
+                        query="thermostability evidence",
+                        confidence_label="high",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Synthetic source",
+                                locator="https://example.org/source",
+                                kind="web_page",
+                            )
+                        ],
+                    )
+                ],
+                unresolved_gaps=[],
+            ),
+        }
+    )
 
 
 @contextmanager
@@ -176,7 +325,10 @@ def _memory_checkpointer_open(self: PostgresCheckpointerFactory):
 
 
 def _build_foundation(
-    *, with_research: bool = True, with_research_adapter: bool = False
+    *,
+    with_research: bool = True,
+    with_research_adapter: bool = False,
+    model_factory: object | None = None,
 ) -> RuntimeFoundation:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -242,6 +394,7 @@ def _build_foundation(
             RepoBackedHpcCatalogProvider()
         ),
         research_adapter=FakeResearchAdapter() if with_research_adapter else None,
+        model_factory=model_factory,
     )
 
 
@@ -252,7 +405,7 @@ def test_phase_c_design_graph_curates_artifacts_and_prepares_execution_handoff(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
-    foundation = _build_foundation()
+    foundation = _build_foundation(model_factory=_request_execution_model_factory())
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 
@@ -280,7 +433,7 @@ def test_phase_c_design_graph_routes_curated_artifacts_into_execution(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
-    foundation = _build_foundation()
+    foundation = _build_foundation(model_factory=_request_execution_model_factory())
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 
@@ -312,7 +465,11 @@ def test_phase_c_design_graph_collects_research_inside_design_when_missing(
         "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
         _memory_checkpointer_open,
     )
-    foundation = _build_foundation(with_research=False, with_research_adapter=True)
+    foundation = _build_foundation(
+        with_research=False,
+        with_research_adapter=True,
+        model_factory=_collect_research_model_factory(),
+    )
     facade = GraphRuntimeFacade(foundation)
     config = build_episode_graph_config("ep_001")
 
@@ -380,3 +537,148 @@ def test_phase_c_design_graph_uses_structured_next_action_output(monkeypatch) ->
         "execution",
         "evaluator",
     ]
+
+
+def test_phase_c_design_graph_payload_blocks_redundant_research_after_evidence(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    model_factory = FakeModelFactory(
+        {
+            "design_next_action": DesignNextAction(
+                action_kind="request_execution",
+                summary="Use the execution-ready structure artifact.",
+                rationale="The workspace already has an execution-ready artifact.",
+                arguments={},
+            ),
+        }
+    )
+    foundation = _build_foundation()
+    foundation = RuntimeFoundation(
+        repositories=foundation.repositories,
+        checkpointer_factory=foundation.checkpointer_factory,
+        execution_adapter=foundation.execution_adapter,
+        hpc_catalog_provider=foundation.hpc_catalog_provider,
+        hpc_execution_registry=foundation.hpc_execution_registry,
+        model_factory=model_factory,
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_design_graph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Design a thermostable variant",
+            },
+            config,
+        )
+
+    assert model_factory.calls == ["design_next_action"]
+    payload = model_factory.payloads["design_next_action"]
+    assert "allowed_actions" in payload
+    assert "blocked_actions" in payload
+    assert "recommended_next_action" in payload
+    assert "state_machine_guidance" in payload
+    assert "allowed_actions only" in model_factory.prompts["design_next_action"]
+    assert "collect_research" not in payload["allowed_actions"]
+    assert "stop" not in payload["allowed_actions"]
+    assert payload["recommended_next_action"] == "request_execution"
+    assert (
+        "art_input_structure"
+        in payload["state_machine_guidance"]["execution_ready_artifact_ids"]
+    )
+    assert result["recommended_next_phase"] == "execution"
+    assert result["execution_handoff"]["required_artifact_ids"] == [
+        "art_input_structure"
+    ]
+    decisions = foundation.repositories.decisions.list_by_episode("ep_001")
+    assert [decision.action_kind for decision in decisions] == ["request_execution"]
+
+
+def test_phase_c_design_graph_fails_illegal_planner_action_without_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    model_factory = FakeModelFactory(
+        {
+            "design_next_action": DesignNextAction(
+                action_kind="collect_research",
+                summary="Collect more literature even though evidence exists.",
+                rationale="The model returned an action outside the state contract.",
+                arguments={},
+            ),
+        }
+    )
+    foundation = _build_foundation()
+    foundation = RuntimeFoundation(
+        repositories=foundation.repositories,
+        checkpointer_factory=foundation.checkpointer_factory,
+        execution_adapter=foundation.execution_adapter,
+        hpc_catalog_provider=foundation.hpc_catalog_provider,
+        hpc_execution_registry=foundation.hpc_execution_registry,
+        model_factory=model_factory,
+    )
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_design_graph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Design a thermostable variant",
+            },
+            config,
+        )
+
+    assert result["status"] == "completed"
+    assert result["recommended_next_phase"] == "report_review"
+    assert result["design_handoff"]["design_summary"]["outcome"] == "planner_failed"
+    decisions = foundation.repositories.decisions.list_by_episode("ep_001")
+    assert [decision.action_kind for decision in decisions] == ["collect_research"]
+    assert decisions[0].status.value == "failed"
+    violation = decisions[0].action_payload["planner_contract_violation"]
+    assert violation["type"] == "planner_contract_violation"
+    assert violation["original_action"]["action_kind"] == "collect_research"
+    assert "recovery_action" not in violation
+    assert "collect_research" not in violation["allowed_actions"]
+    assert decisions[0].observation_payload == violation
+
+
+def test_phase_c_design_graph_fails_planner_exception_without_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
+        _memory_checkpointer_open,
+    )
+    model_factory = RaisingModelFactory()
+    foundation = _build_foundation(model_factory=model_factory)
+    facade = GraphRuntimeFacade(foundation)
+    config = build_episode_graph_config("ep_001")
+
+    with facade.compile_graph(build_phase_c_design_graph) as graph:
+        result = graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Design a thermostable variant",
+            },
+            config,
+        )
+
+    assert result["recommended_next_phase"] == "report_review"
+    assert result["design_handoff"]["design_summary"]["outcome"] == "planner_failed"
+    decisions = foundation.repositories.decisions.list_by_episode("ep_001")
+    assert [decision.action_kind for decision in decisions] == ["stop"]
+    assert decisions[0].status.value == "failed"
+    assert decisions[0].observation_payload["type"] == "planner_failed"
+    assert decisions[0].observation_payload["error_type"] == "RuntimeError"

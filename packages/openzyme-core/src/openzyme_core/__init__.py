@@ -12,6 +12,7 @@ from .conversation import load_recent_conversation
 from .conversation import persist_conversation_message
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
+from .agent_scheduler import AgentRuntimeScheduler
 from .harness import HarnessDriver
 from .harness import HarnessEvent
 from .harness import HarnessInput
@@ -108,6 +109,7 @@ from .llm_driver import LlmConversationDriver
 __all__ = [
     "ActivityFeedItem",
     "AgentRuntimeOutcome",
+    "AgentRuntimeScheduler",
     "AgentRuntimeService",
     "AgentMemberRepository",
     "AgentRuntimeSignalRepository",

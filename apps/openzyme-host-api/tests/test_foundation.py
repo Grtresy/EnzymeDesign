@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from dataclasses import replace
+import threading
+import time
 
 from fastapi.testclient import TestClient
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_host_api.app import V3ExecutionRunnerAdapter
 from openzyme_host_api.app import create_app
 from openzyme_host_api.foundation import apply_live_llm_test_budget
 from openzyme_host_api.foundation import build_configured_foundation
@@ -13,12 +17,14 @@ from openzyme_host_api.foundation import build_local_eval_foundation
 from openzyme_host_api.foundation import build_model_factory_from_env
 from openzyme_host_api.foundation import DeterministicExecutionAdapter
 from openzyme_host_api.foundation import DeterministicResearchAdapter
+from openzyme_host_api.eval_support import DeterministicLocalModelFactory
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
 from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import HostApiSettings
 from openzyme_runtime import HostCliSettings
 from openzyme_runtime import LiveLlmTestSettings as RuntimeLiveLlmTestSettings
+from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import LlmPurposePolicy
 from openzyme_runtime import LlmSettings
 from openzyme_runtime import OpenAICompatibleChatModelFactory
@@ -114,7 +120,8 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
     calls: dict[str, object] = {}
 
     class FakeHpcRunnerExecutionAdapter:
-        def __init__(self, config_path: str | None) -> None:
+        def __init__(self, config_path: str | None, **kwargs) -> None:
+            calls["limiter_registry"] = kwargs.get("limiter_registry")
             calls["config_path"] = config_path
 
     monkeypatch.setattr(
@@ -128,6 +135,7 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
     )
 
     assert calls["config_path"] == "/tmp/hpc.toml"
+    assert calls["limiter_registry"] is foundation.limiter_registry
     assert type(foundation.execution_adapter).__name__ == "FakeHpcRunnerExecutionAdapter"
     assert type(foundation.research_adapter).__name__ == "TavilyResearchAdapter"
 
@@ -171,6 +179,33 @@ def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
     assert constrained.llm.purpose_policies == {}
 
 
+def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
+    base = _settings()
+    configured_settings = replace(
+        base,
+        test=replace(
+            base.test,
+            enable_live_llm=True,
+            live_llm=RuntimeLiveLlmTestSettings(
+                max_tokens=512,
+                timeout=240.0,
+                max_retries=0,
+                structured_output_method="function_calling",
+                structured_output_max_attempts=2,
+                structured_output_retry_backoff_seconds=0.5,
+            ),
+        ),
+    )
+
+    constrained = apply_live_llm_test_budget(configured_settings)
+
+    assert constrained.llm.max_tokens == 512
+    assert constrained.llm.timeout == 240.0
+    assert constrained.llm.max_retries == 0
+    assert constrained.llm.structured_output_max_attempts == 2
+    assert constrained.llm.structured_output_retry_backoff_seconds == 0.5
+
+
 def test_local_eval_foundation_preloads_default_project(tmp_path) -> None:
     foundation = build_local_eval_foundation(sqlite_db_path=tmp_path / "eval.sqlite3")
 
@@ -178,6 +213,17 @@ def test_local_eval_foundation_preloads_default_project(tmp_path) -> None:
 
     assert project is not None
     assert project.name == "Thermostability local project"
+
+
+def test_local_eval_foundation_owns_deterministic_model_factory(tmp_path) -> None:
+    foundation = build_local_eval_foundation(sqlite_db_path=tmp_path / "eval.sqlite3")
+    configured = build_configured_foundation(
+        sqlite_db_path=tmp_path / "configured.sqlite3",
+        settings=replace(_settings(), llm=replace(_settings().llm, api_key=None)),
+    )
+
+    assert isinstance(foundation.model_factory, DeterministicLocalModelFactory)
+    assert configured.model_factory is None
 
 
 def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
@@ -216,6 +262,110 @@ def test_deterministic_execution_adapter_scopes_run_ids_per_episode_and_call_cou
     assert first.status is RunStatus.SUCCEEDED
     assert first.remote_run_dir == "/local/ep_local/run_ep_local_1"
     assert first.artifacts[0].kind is ArtifactKind.LOG
+
+
+def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
+    @dataclass(frozen=True, slots=True)
+    class FakeOutcome:
+        run_id: str = "run_001"
+        status: RunStatus = RunStatus.SUCCEEDED
+        execution_mode: str = "demo"
+        remote_run_dir: str = "/remote/run_001"
+        raw_result: dict[str, object] = None  # type: ignore[assignment]
+        artifacts: tuple[object, ...] = ()
+        job_id: str | None = None
+        exit_code: int | None = 0
+
+        def __post_init__(self) -> None:
+            if self.raw_result is None:
+                object.__setattr__(self, "raw_result", {"status": "completed"})
+
+    @dataclass(frozen=True, slots=True)
+    class FakeSnapshot:
+        run_id: str = "run_001"
+        status: RunStatus = RunStatus.SUCCEEDED
+        remote_run_dir: str = "/remote/run_001"
+        raw_result: dict[str, object] = None  # type: ignore[assignment]
+        job_id: str | None = None
+        exit_code: int | None = 0
+
+        def __post_init__(self) -> None:
+            if self.raw_result is None:
+                object.__setattr__(self, "raw_result", {"state": "completed"})
+
+    class FakeExecutionAdapter:
+        def __init__(self) -> None:
+            self.active = 0
+            self.observed_max = 0
+            self.lock = threading.Lock()
+
+        def _call(self, result):
+            with self.lock:
+                self.active += 1
+                self.observed_max = max(self.observed_max, self.active)
+            try:
+                time.sleep(0.01)
+                return result
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+        def submit_execution(self, session_id: str, payload: dict[str, object]):
+            del session_id, payload
+            return self._call(FakeOutcome())
+
+        def get_execution_status(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):
+            del run_id, remote_run_dir, job_id
+            return self._call(FakeSnapshot())
+
+        def fetch_execution_artifacts(
+            self,
+            *,
+            run_id: str,
+            remote_run_dir: str,
+            runspec: dict[str, object],
+            job_id: str | None = None,
+        ):
+            del run_id, remote_run_dir, runspec, job_id
+            return self._call(FakeOutcome())
+
+        def cancel_execution(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):
+            del run_id, remote_run_dir, job_id
+            return self._call(FakeOutcome(status=RunStatus.CANCELLED))
+
+    fake = FakeExecutionAdapter()
+    adapter = V3ExecutionRunnerAdapter(
+        fake,
+        LimiterRegistry({"execution_provider": 1}),
+    )
+
+    async def run_calls() -> None:
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(adapter.submit_execution, "sess_001", {})
+                for _ in range(3)
+            ),
+            asyncio.to_thread(
+                adapter.get_execution_status,
+                run_id="run_001",
+                remote_run_dir="/remote/run_001",
+            ),
+            asyncio.to_thread(
+                adapter.fetch_execution_artifacts,
+                run_id="run_001",
+                remote_run_dir="/remote/run_001",
+                runspec={},
+            ),
+            asyncio.to_thread(
+                adapter.cancel_execution,
+                run_id="run_001",
+                remote_run_dir="/remote/run_001",
+            ),
+        )
+
+    asyncio.run(run_calls())
+
+    assert fake.observed_max == 1
 
 
 def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:

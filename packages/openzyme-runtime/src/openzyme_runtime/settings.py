@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from functools import lru_cache
 import json
 import os
 from pathlib import Path
 from typing import Any
+
+from .limits import DEFAULT_PROVIDER_LIMITS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -19,6 +22,14 @@ DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_HOST_API_BIND_HOST = "127.0.0.1"
 DEFAULT_HOST_API_BIND_PORT = 8000
+LIMIT_ENV_VARS = {
+    "global": "OPENZYME_LIMIT_GLOBAL_CONCURRENCY",
+    "session": "OPENZYME_LIMIT_SESSION_CONCURRENCY",
+    "agent": "OPENZYME_LIMIT_AGENT_CONCURRENCY",
+    "llm_provider": "OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY",
+    "research_provider": "OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY",
+    "execution_provider": "OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY",
+}
 LLM_PURPOSES = (
     "intake",
     "research",
@@ -267,6 +278,7 @@ class ResearchSettings:
     tavily_topic: str
     mcp_enabled: bool
     mcp_tool_allowlist: tuple[str, ...] = ()
+    tavily_timeout_seconds: float = 30.0
 
     @property
     def tavily_enabled(self) -> bool:
@@ -288,6 +300,10 @@ class ResearchSettings:
                 item.strip()
                 for item in (os.getenv("OPENZYME_RESEARCH_MCP_TOOL_ALLOWLIST") or "").split(",")
                 if item.strip()
+            ),
+            tavily_timeout_seconds=_parse_float(
+                os.getenv("OPENZYME_TAVILY_TIMEOUT_SECONDS"),
+                30.0,
             ),
         )
 
@@ -357,6 +373,25 @@ class ExecutionSettings:
                 or None
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class LimiterSettings:
+    provider_limits: dict[str, int]
+
+    @classmethod
+    def from_env(cls) -> "LimiterSettings":
+        limits: dict[str, int] = {}
+        for name, default in DEFAULT_PROVIDER_LIMITS.items():
+            value = _parse_int(os.getenv(LIMIT_ENV_VARS[name]), default)
+            if value <= 0:
+                raise ValueError(f"{LIMIT_ENV_VARS[name]} must be positive")
+            limits[name] = value
+        return cls(provider_limits=limits)
+
+
+def _default_limiter_settings() -> LimiterSettings:
+    return LimiterSettings(provider_limits=dict(DEFAULT_PROVIDER_LIMITS))
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +469,7 @@ class OpenZymeSettings:
     host_api: HostApiSettings
     execution: ExecutionSettings
     test: TestSettings
+    limits: LimiterSettings = field(default_factory=_default_limiter_settings)
 
     @classmethod
     def from_env(cls) -> "OpenZymeSettings":
@@ -445,6 +481,7 @@ class OpenZymeSettings:
             host_cli=HostCliSettings.from_env(),
             host_api=HostApiSettings.from_env(),
             execution=ExecutionSettings.from_env(),
+            limits=LimiterSettings.from_env(),
             test=TestSettings.from_env(),
         )
 
@@ -471,6 +508,7 @@ __all__ = [
     "HostApiSettings",
     "HostCliSettings",
     "LiveLlmTestSettings",
+    "LimiterSettings",
     "LlmPurposePolicy",
     "LlmSettings",
     "OpenZymeSettings",

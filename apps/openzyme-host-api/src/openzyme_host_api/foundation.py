@@ -15,6 +15,7 @@ from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_execution import HpcRunnerExecutionAdapter
 from openzyme_runtime import OpenAICompatibleChatModelFactory
+from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import RuntimeFoundation
@@ -33,6 +34,8 @@ from openzyme_research import BioResearchService
 from openzyme_research import DefaultBioResearchService
 from openzyme_research import DeterministicBioResearchService
 from openzyme_runtime import build_bio_research_tools
+
+from .eval_support import DeterministicLocalModelFactory
 
 
 DEFAULT_PROJECT_ID = "proj_001"
@@ -220,6 +223,7 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
 
 def build_model_factory_from_settings(
     settings: OpenZymeSettings,
+    limiter_registry: LimiterRegistry | None = None,
 ) -> OpenAICompatibleChatModelFactory | None:
     if not settings.llm.enabled or settings.llm.api_key is None:
         return None
@@ -248,11 +252,21 @@ def build_model_factory_from_settings(
             }
             for purpose, policy in settings.llm.purpose_policies.items()
         },
+        limiter_registry=limiter_registry,
+        diagnostic_label=(
+            "live-provider"
+            if settings.test.enable_live_llm or settings.test.enable_live_e2e
+            else None
+        ),
     )
 
 
 def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
-    return build_model_factory_from_settings(get_settings())
+    settings = get_settings()
+    return build_model_factory_from_settings(
+        settings,
+        LimiterRegistry(dict(settings.limits.provider_limits)),
+    )
 
 
 def _connect_sqlite_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
@@ -274,12 +288,16 @@ def _connect_sqlite_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
     return repositories
 
 
-def _build_execution_adapter(settings: OpenZymeSettings):
+def _build_execution_adapter(
+    settings: OpenZymeSettings,
+    limiter_registry: LimiterRegistry,
+):
     if settings.execution.backend == "demo":
         return DeterministicExecutionAdapter()
     if settings.execution.backend == "hpc":
         return HpcRunnerExecutionAdapter(
-            config_path=settings.execution.hpc_runner_config
+            config_path=settings.execution.hpc_runner_config,
+            limiter_registry=limiter_registry,
         )
     raise ValueError(f"Unsupported execution backend: {settings.execution.backend}")
 
@@ -290,6 +308,14 @@ def _build_research_adapter(settings: OpenZymeSettings):
             api_key=settings.research.tavily_api_key,
             max_results=settings.research.tavily_max_results,
             topic=settings.research.tavily_topic,
+            timeout_seconds=settings.research.tavily_timeout_seconds,
+            diagnostic_label=(
+                "live-provider"
+                if settings.test.enable_live_llm
+                or settings.test.enable_live_tavily
+                or settings.test.enable_live_e2e
+                else None
+            ),
         )
     return DeterministicResearchAdapter()
 
@@ -305,6 +331,7 @@ def build_local_eval_foundation(
     settings: OpenZymeSettings | None = None,
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
+    limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
     repositories = _connect_sqlite_database(sqlite_db_path)
     research_adapter = DeterministicResearchAdapter()
     bio_research_service = DeterministicBioResearchService()
@@ -322,9 +349,11 @@ def build_local_eval_foundation(
             mcp_tools=build_bio_research_tools(bio_research_service),
             mcp_enabled=True,
             mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+            limiter_registry=limiter_registry,
         ),
         bio_research_service=bio_research_service,
-        model_factory=build_model_factory_from_settings(effective_settings),
+        model_factory=DeterministicLocalModelFactory(),
+        limiter_registry=limiter_registry,
         settings=effective_settings,
     )
 
@@ -337,13 +366,14 @@ def build_configured_foundation(
     effective_settings = settings or get_settings()
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
         effective_settings = apply_live_llm_test_budget(effective_settings)
+    limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
     repositories = _connect_sqlite_database(sqlite_db_path)
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)
     return RuntimeFoundation(
         repositories=repositories,
         checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
-        execution_adapter=_build_execution_adapter(effective_settings),
+        execution_adapter=_build_execution_adapter(effective_settings, limiter_registry),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(
             RepoBackedHpcCatalogProvider()
@@ -354,8 +384,13 @@ def build_configured_foundation(
             mcp_tools=build_bio_research_tools(bio_research_service),
             mcp_enabled=True,
             mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+            limiter_registry=limiter_registry,
         ),
         bio_research_service=bio_research_service,
-        model_factory=build_model_factory_from_settings(effective_settings),
+        model_factory=build_model_factory_from_settings(
+            effective_settings,
+            limiter_registry,
+        ),
+        limiter_registry=limiter_registry,
         settings=effective_settings,
     )

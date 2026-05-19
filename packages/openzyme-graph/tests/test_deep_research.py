@@ -11,6 +11,13 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
 from openzyme_runtime import get_settings
+from openzyme_engines import EvidenceSynthesis
+from openzyme_engines import EvidenceSynthesisItem
+from openzyme_engines import ResearchBriefDraft
+from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchSupervisorAction
+from openzyme_engines import ResearchUnitDraft
+from openzyme_engines import ResearchUnitPlan
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnit
@@ -113,6 +120,91 @@ class FakeResearchAdapter:
         return self.normalize_search_response(unit=unit, response=response)
 
 
+class FakeDeepResearchStructuredInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+        del schema, system_prompt
+        if self.purpose == "deep_research_brief":
+            return ResearchBriefDraft(research_brief="Find evidence that can support downstream enzyme design.")
+        if self.purpose == "deep_research_supervisor":
+            unit_results = list(user_payload.get("unit_results") or [])
+            if any(result.get("findings") for result in unit_results):
+                return ResearchSupervisorAction(action_kind="complete", rationale="A finding exists.")
+            return ResearchSupervisorAction(
+                action_kind="conduct_research",
+                rationale="Collect one evidence unit.",
+                unit_plan=ResearchUnitPlan(
+                    units=[
+                        ResearchUnitDraft(
+                            unit_id="evidence",
+                            topic="supporting evidence",
+                            query="thermostability approaches",
+                            rationale="Collect evidence for downstream design.",
+                        )
+                    ],
+                    synthesis_goal="Support downstream design.",
+                ),
+            )
+        if self.purpose == "deep_research_synthesis":
+            return EvidenceSynthesis(
+                summary="Research evidence supports downstream enzyme design.",
+                evidence_items=[
+                    EvidenceSynthesisItem(
+                        summary="Finding for thermostability approaches",
+                        query="thermostability approaches",
+                        confidence_label="high",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Source for evidence",
+                                locator="https://example.org/overview",
+                                kind="web_page",
+                            )
+                        ],
+                    )
+                ],
+                unresolved_gaps=["Need experimental validation."],
+            )
+        raise AssertionError(f"Unexpected purpose {self.purpose}")
+
+
+class FakeDeepResearchToolInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "tool_calls": [
+                    {
+                        "name": "web.search",
+                        "id": "web-search-1",
+                        "args": {
+                            "query": "thermostability approaches",
+                            "topic": "supporting evidence",
+                            "max_results": 1,
+                        },
+                    }
+                ]
+            }
+        return {"tool_calls": []}
+
+
+class FakeDeepResearchModelFactory:
+    def __init__(self) -> None:
+        self.tool_invoker = FakeDeepResearchToolInvoker()
+
+    def create_structured_invoker(self, *, purpose: str) -> FakeDeepResearchStructuredInvoker:
+        return FakeDeepResearchStructuredInvoker(purpose)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FakeDeepResearchToolInvoker:
+        del purpose
+        return self.tool_invoker
+
+
 def _build_foundation() -> RuntimeFoundation:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -144,7 +236,7 @@ def test_run_deep_research_returns_normalized_dossier() -> None:
         research_adapter=foundation.research_adapter,
         research_tool_provider=DefaultResearchToolProvider(foundation.research_adapter),
         projection_loader=None,
-        model_factory=None,
+        model_factory=FakeDeepResearchModelFactory(),
         host_toolbox=OpenZymeHostToolbox(foundation.repositories),
         settings=get_settings(),
     )

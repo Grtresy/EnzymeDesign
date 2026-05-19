@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
@@ -18,11 +22,179 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain import ArtifactKind
 from openzyme_engines import DeepResearchEngine
+from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
+from openzyme_engines import ResearchBriefDraft
 from openzyme_engines import ResearchDossier
 from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchSupervisorAction
 from openzyme_engines import ResearchTurnRecord
+from openzyme_engines import ResearchUnitDraft
+from openzyme_engines import ResearchUnitPlan
+from openzyme_engines import build_deep_research_subgraph
 from openzyme_engines import register_deep_research_tools
+from openzyme_runtime import GraphAssemblyInputs
+from openzyme_runtime import OpenZymeHostToolbox
+from openzyme_runtime import PhaseBRepositories
+from openzyme_runtime import apply_sqlite_migrations as apply_phase_b_sqlite_migrations
+from openzyme_runtime import connect_sqlite as connect_phase_b_sqlite
+from openzyme_runtime import get_settings
+
+
+class CapturingDeepResearchInvoker:
+    def __init__(self, factory: "CapturingDeepResearchModelFactory", purpose: str) -> None:
+        self._factory = factory
+        self._purpose = purpose
+
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+        self._factory.calls.append(self._purpose)
+        self._factory.prompts[self._purpose] = system_prompt
+        self._factory.payloads[self._purpose] = user_payload
+        if schema is ResearchBriefDraft:
+            return ResearchBriefDraft(research_brief="thermostability evidence")
+        if schema is ResearchSupervisorAction:
+            return ResearchSupervisorAction(
+                action_kind="complete",
+                rationale="A usable finding already exists.",
+            )
+        if schema is EvidenceSynthesis:
+            return EvidenceSynthesis(
+                summary="Existing finding is enough for downstream design.",
+                evidence_items=[
+                    EvidenceSynthesisItem(
+                        summary="Existing finding supports the scaffold.",
+                        query="thermostability",
+                        confidence_label="high",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Existing source",
+                                locator="https://example.org/existing",
+                                kind="web_page",
+                            )
+                        ],
+                    )
+                ],
+                unresolved_gaps=[],
+            )
+        raise AssertionError(f"Unexpected schema {schema}")
+
+
+class CapturingDeepResearchModelFactory:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.prompts: dict[str, str] = {}
+        self.payloads: dict[str, dict] = {}
+
+    def create_structured_invoker(self, *, purpose: str) -> CapturingDeepResearchInvoker:
+        return CapturingDeepResearchInvoker(self, purpose)
+
+
+class FailingSynthesisInvoker(CapturingDeepResearchInvoker):
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+        if schema is EvidenceSynthesis:
+            self._factory.calls.append(self._purpose)
+            self._factory.prompts[self._purpose] = system_prompt
+            self._factory.payloads[self._purpose] = user_payload
+            raise RuntimeError("synthesis provider exploded")
+        return super().invoke_structured(
+            schema=schema,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+        )
+
+
+class FailingSynthesisModelFactory(CapturingDeepResearchModelFactory):
+    def create_structured_invoker(self, *, purpose: str) -> CapturingDeepResearchInvoker:
+        if purpose == "deep_research_synthesis":
+            return FailingSynthesisInvoker(self, purpose)
+        return super().create_structured_invoker(purpose=purpose)
+
+
+class InvalidToolCallInvoker:
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        del system_prompt, messages, tools
+        return {
+            "tool_calls": [
+                {
+                    "name": "web.search",
+                    "id": "invalid-web-search",
+                    "args": {"topic": "general"},
+                }
+            ]
+        }
+
+
+class ValidToolCallInvoker:
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        del system_prompt, messages, tools
+        return {
+            "tool_calls": [
+                {
+                    "name": "web.search",
+                    "id": "valid-web-search",
+                    "args": {"query": "thermostability evidence", "topic": "general"},
+                }
+            ]
+        }
+
+
+class InvalidToolCallModelFactory:
+    def create_structured_invoker(self, *, purpose: str):
+        class StructuredInvoker:
+            def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict):
+                del system_prompt, user_payload
+                if schema is ResearchBriefDraft:
+                    return ResearchBriefDraft(research_brief="thermostability evidence")
+                if schema is ResearchSupervisorAction:
+                    return ResearchSupervisorAction(
+                        action_kind="conduct_research",
+                        rationale="Collect one unit.",
+                        unit_plan=ResearchUnitPlan(
+                            units=[
+                                ResearchUnitDraft(
+                                    unit_id="invalid_args",
+                                    topic="supporting evidence",
+                                    query="thermostability evidence",
+                                    rationale="Exercise validation observations.",
+                                )
+                            ],
+                            synthesis_goal="Exercise validation observations.",
+                        ),
+                    )
+                raise AssertionError(f"Unexpected schema {schema}")
+
+        del purpose
+        return StructuredInvoker()
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> InvalidToolCallInvoker:
+        del purpose
+        return InvalidToolCallInvoker()
+
+
+class ValidToolCallModelFactory(InvalidToolCallModelFactory):
+    def create_tool_calling_invoker(self, *, purpose: str) -> ValidToolCallInvoker:
+        del purpose
+        return ValidToolCallInvoker()
+
+
+class MinimalWebResearchAdapter:
+    def web_search(self, **kwargs):
+        raise AssertionError(f"provider should not be called for invalid args: {kwargs}")
+
+    def fetch_url(self, **kwargs):
+        raise AssertionError(f"provider should not be called for invalid args: {kwargs}")
+
+    def normalize_search_response(self, **kwargs):
+        raise AssertionError(f"provider should not be called for invalid args: {kwargs}")
+
+    def normalize_fetch_response(self, **kwargs):
+        raise AssertionError(f"provider should not be called for invalid args: {kwargs}")
+
+
+class RaisingWebResearchAdapter(MinimalWebResearchAdapter):
+    def web_search(self, **kwargs):
+        del kwargs
+        raise RuntimeError("provider exploded")
 
 
 class CompletedDeepResearchRunner:
@@ -224,6 +396,232 @@ def _seed_session(repositories: CoreRepositories) -> Session:
         )
     )
     return session
+
+
+def _build_phase_b_inputs(*, model_factory: object | None, research_adapter: object | None = None) -> GraphAssemblyInputs:
+    connection = connect_phase_b_sqlite(":memory:")
+    apply_phase_b_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+    settings = get_settings()
+    settings = replace(
+        settings,
+        research=replace(
+            settings.research,
+            allow_clarification=False,
+            max_research_iterations=1,
+            max_react_tool_calls=1,
+            max_concurrent_research_units=1,
+        ),
+    )
+    return GraphAssemblyInputs(
+        repositories=repositories,
+        checkpointer=None,
+        execution_adapter=None,
+        hpc_catalog_provider=None,
+        hpc_execution_registry=None,
+        research_adapter=research_adapter,
+        research_tool_provider=None,
+        projection_loader=None,
+        model_factory=model_factory,
+        host_toolbox=OpenZymeHostToolbox(repositories),
+        settings=settings,
+    )
+
+
+def test_deep_research_without_model_factory_returns_failed_dossier() -> None:
+    graph = build_deep_research_subgraph(_build_phase_b_inputs(model_factory=None))
+
+    result = graph.invoke(
+        {
+            "episode_id": "ep_001",
+            "project_id": "proj_001",
+            "objective": "Investigate thermostability approaches with cited evidence.",
+            "design_brief": "Find enough evidence to support downstream enzyme design.",
+            "research_brief": "thermostability evidence",
+        }
+    )
+
+    assert result["research_dossier"]["status"] == "failed"
+    assert result["research_dossier"]["completion_reason"] == "missing_model_factory"
+    assert "model factory" in result["research_dossier"]["summary"]
+
+
+def test_deep_research_tool_validation_error_returns_observation() -> None:
+    graph = build_deep_research_subgraph(
+        _build_phase_b_inputs(
+            model_factory=InvalidToolCallModelFactory(),
+            research_adapter=MinimalWebResearchAdapter(),
+        )
+    )
+
+    result = graph.invoke(
+        {
+            "episode_id": "ep_001",
+            "project_id": "proj_001",
+            "objective": "Investigate thermostability approaches with cited evidence.",
+            "design_brief": "Find enough evidence to support downstream enzyme design.",
+            "research_brief": "thermostability evidence",
+        }
+    )
+
+    dossier = result["research_dossier"]
+    assert dossier["status"] == "failed"
+    assert "Tool web.search received invalid arguments." in dossier["unresolved_gaps"]
+    assert any(
+        turn["action_kind"] == "web.search" and turn["status"] == "failed"
+        for turn in dossier["recent_turns"]
+    )
+
+
+def test_deep_research_unexpected_tool_exception_raises() -> None:
+    graph = build_deep_research_subgraph(
+        _build_phase_b_inputs(
+            model_factory=ValidToolCallModelFactory(),
+            research_adapter=RaisingWebResearchAdapter(),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        graph.invoke(
+            {
+                "episode_id": "ep_001",
+                "project_id": "proj_001",
+                "objective": "Investigate thermostability approaches with cited evidence.",
+                "design_brief": "Find enough evidence to support downstream enzyme design.",
+                "research_brief": "thermostability evidence",
+            }
+        )
+
+
+def test_deep_research_supervisor_completes_when_findings_exist() -> None:
+    state = {
+        "unit_results": [
+            {
+                "findings": [
+                    {
+                        "summary": "Existing source supports the scaffold.",
+                        "query": "thermostability",
+                        "confidence_label": "high",
+                        "sources": [
+                            {
+                                "title": "Existing source",
+                                "locator": "https://example.org/existing",
+                                "kind": "web_page",
+                            }
+                        ],
+                    }
+                ],
+                "status": "completed",
+            }
+        ]
+    }
+    connection = connect_phase_b_sqlite(":memory:")
+    apply_phase_b_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+    model_factory = CapturingDeepResearchModelFactory()
+    settings = get_settings()
+    settings = replace(
+        settings,
+        research=replace(settings.research, allow_clarification=False),
+    )
+    inputs = GraphAssemblyInputs(
+        repositories=repositories,
+        checkpointer=None,
+        execution_adapter=None,
+        hpc_catalog_provider=None,
+        hpc_execution_registry=None,
+        research_adapter=None,
+        research_tool_provider=None,
+        projection_loader=None,
+        model_factory=model_factory,
+        host_toolbox=OpenZymeHostToolbox(repositories),
+        settings=settings,
+    )
+
+    graph = build_deep_research_subgraph(inputs)
+    result = graph.invoke(
+        {
+            "episode_id": "ep_001",
+            "project_id": "proj_001",
+            "objective": "Investigate thermostability approaches with cited evidence.",
+            "design_brief": "Find enough evidence to support downstream enzyme design.",
+            "research_brief": "thermostability evidence",
+            "unit_results": state["unit_results"],
+        }
+    )
+
+    assert result["research_dossier"]["status"] == "completed"
+    supervisor_payload = model_factory.payloads["deep_research_supervisor"]
+    assert supervisor_payload["completion_guidance"]["findings_available"] is True
+    assert (
+        supervisor_payload["completion_guidance"]["recommended_action"] == "complete"
+    )
+    assert "If any usable unit result or finding already exists" in model_factory.prompts[
+        "deep_research_supervisor"
+    ]
+
+
+def test_deep_research_synthesis_model_exception_returns_failed_dossier() -> None:
+    connection = connect_phase_b_sqlite(":memory:")
+    apply_phase_b_sqlite_migrations(connection)
+    repositories = PhaseBRepositories.from_connection(connection)
+    model_factory = FailingSynthesisModelFactory()
+    settings = get_settings()
+    settings = replace(
+        settings,
+        research=replace(settings.research, allow_clarification=False),
+    )
+    inputs = GraphAssemblyInputs(
+        repositories=repositories,
+        checkpointer=None,
+        execution_adapter=None,
+        hpc_catalog_provider=None,
+        hpc_execution_registry=None,
+        research_adapter=None,
+        research_tool_provider=None,
+        projection_loader=None,
+        model_factory=model_factory,
+        host_toolbox=OpenZymeHostToolbox(repositories),
+        settings=settings,
+    )
+
+    graph = build_deep_research_subgraph(inputs)
+    result = graph.invoke(
+        {
+            "episode_id": "ep_001",
+            "project_id": "proj_001",
+            "objective": "Investigate thermostability approaches with cited evidence.",
+            "design_brief": "Find enough evidence to support downstream enzyme design.",
+            "research_brief": "thermostability evidence",
+            "unit_results": [
+                {
+                    "summary": "Existing source supports the scaffold.",
+                    "findings": [
+                        {
+                            "summary": "Existing source supports the scaffold.",
+                            "query": "thermostability",
+                            "confidence_label": "high",
+                            "sources": [
+                                {
+                                    "title": "Existing source",
+                                    "locator": "https://example.org/existing",
+                                    "kind": "web_page",
+                                }
+                            ],
+                        }
+                    ],
+                    "status": "completed",
+                }
+            ],
+        }
+    )
+
+    dossier = result["research_dossier"]
+    assert dossier["status"] == "failed"
+    assert dossier["completion_reason"] == "synthesis_model_failed"
+    assert dossier["evidence_items"] == []
+    assert any("RuntimeError" in gap for gap in dossier["unresolved_gaps"])
+    assert any("synthesis provider exploded" in note for note in dossier["raw_notes"])
 
 
 def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:

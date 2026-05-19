@@ -13,6 +13,7 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - V3 execution can run an approved pipeline sandbox whose SDK performs required preprocess steps and supervised HPC calls for format-sensitive tools such as Vina.
 - Runtime signal queue has durable claim leases, stale claim recovery, duplicate wakeup dedupe, and bounded scheduler drain coverage.
 - Provider/tool limits cover agent/session/global concurrency, LLM provider calls, research provider calls, and execution/HPC submission calls.
+- Design and deep-research production paths use no heuristic decision fallback: planner/model failures produce failed decisions or failed dossiers, tool argument validation is returned as a tool error observation, and unexpected runtime/provider exceptions are allowed to fail the gate.
 - V2 continues to run for rollback only; no new product semantics are added to V2 during the cutover window.
 - `docs/OpenZyme架构设计.md` is not changed as part of this cutover unless separately approved.
 
@@ -21,6 +22,9 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - `uv run pytest -m "not integration" apps/openzyme-host-api packages/openzyme-core packages/openzyme-engines`
 - `uv run python -m openzyme_host_api.evals --v3`
 - `uv run pytest -m "integration and live_llm" apps/openzyme-host-api/tests -k v3`
+- `uv run pytest -m "integration and live_tavily" apps/openzyme-host-api/tests packages/openzyme-research/tests`
+- `uv run pytest -m "integration and live_hpc" apps/mcp-hpc-runner/tests apps/openzyme-host-api/tests`
+- `uv run pytest -m "integration and live_e2e" apps/openzyme-host-api/tests`
 - `cd apps/openzyme-web-ui && npm test && npm run build`
 - `./scripts/check-mainline.sh`
 
@@ -28,6 +32,8 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 
 - Deterministic V3 E2E: `run_v3_local_evals()` must pass `v3_design_cutover_path`.
 - Live LLM smoke: `run_v3_live_evals()` must pass `v3_live_design_task_plan` when live LLM tests are enabled.
+- Seeded execution smoke tests that pre-create DB rows, patch UUIDs, or inject local fixture artifacts are useful regression evidence, but they do not satisfy the full `live_e2e` release gate.
+- Full `live_e2e` evidence must run with real LLM, Tavily, and HPC configuration enabled. Missing configuration must be reported as missing gate prerequisites, not counted as a successful cutover result.
 - Evidence must include task count, delegated teammate roles, capability keys, report count, and per-check pass/fail values.
 - Execution evidence must include at least one pipeline invocation, one staged-input run, one multi-input run, one declared-output artifact fetch, and one preprocess-in-pipeline chain when Vina is enabled.
 - Failed evals block cutover unless explicitly accepted as non-release-blocking by the owner.
@@ -53,6 +59,6 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 ## Exit Criteria
 
 - V3 deterministic eval and mainline checks pass.
-- Live V3 task-plan smoke passes in environments with live LLM enabled.
+- Live V3 task-plan, Tavily, HPC, and full live E2E gates pass in an environment with the corresponding provider configuration enabled.
 - At least one full V3 workspace has a published final report projected through `/v3/sessions/{session_id}/workspace`.
 - Rollback path has been rehearsed and documented in `docs/v3/rollback-strategy.md`.

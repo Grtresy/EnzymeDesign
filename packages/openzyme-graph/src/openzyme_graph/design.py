@@ -117,7 +117,7 @@ def _recent_turns(inputs: GraphAssemblyInputs, episode_id: str, limit: int = 10)
     return payloads[-limit:]
 
 
-def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
+def _recommended_next_action(state: dict[str, Any]) -> DesignNextAction:
     latest_execution_result = dict(state.get("execution_result_handoff") or {})
     latest_findings = dict(latest_execution_result.get("structured_findings") or {})
     design_signal = str(latest_findings.get("design_signal") or "")
@@ -202,6 +202,204 @@ def _fallback_next_action(state: dict[str, Any]) -> DesignNextAction:
         stop_reason="design_loop_complete",
         arguments={},
     )
+
+
+def _latest_failed_turn(state: dict[str, Any]) -> dict[str, Any] | None:
+    status = state.get("latest_turn_status")
+    if status != DecisionStatus.FAILED.value:
+        return None
+    return {
+        "action_kind": state.get("latest_turn_action_kind"),
+        "status": status,
+    }
+
+
+def _build_design_action_policy(state: dict[str, Any]) -> dict[str, Any]:
+    recommended_action = _recommended_next_action(state)
+    evidence_refs = list(state.get("evidence_refs") or [])
+    artifact_refs = list(state.get("artifact_refs") or [])
+    workspace_summary = state.get("artifact_workspace_summary")
+    execution_ready_artifacts = _execution_ready_artifacts(artifact_refs)
+    latest_execution_result = dict(state.get("execution_result_handoff") or {})
+    latest_findings = dict(latest_execution_result.get("structured_findings") or {})
+    design_signal = str(latest_findings.get("design_signal") or "")
+    latest_failed_turn = _latest_failed_turn(state)
+
+    allowed_actions: list[str] = []
+    blocked_actions: list[dict[str, str]] = []
+
+    if latest_failed_turn is not None:
+        allowed_actions.append("stop")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "The latest design tool turn failed; stop and surface the failed state instead of retrying implicitly.",
+                },
+                {
+                    "action_kind": "curate_artifacts",
+                    "reason": "The latest design tool turn failed; curation should not hide the failed state.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "The latest design tool turn failed; execution should not be requested from a failed design state.",
+                },
+            ]
+        )
+    elif int(state.get("execution_iteration_count") or 0) >= 3:
+        allowed_actions.append("stop")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "The execution iteration budget has already been reached.",
+                },
+                {
+                    "action_kind": "curate_artifacts",
+                    "reason": "The execution iteration budget has already been reached.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "The execution iteration budget has already been reached.",
+                },
+            ]
+        )
+    elif not evidence_refs and not state.get("research_summary"):
+        allowed_actions.append("collect_research")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "curate_artifacts",
+                    "reason": "No evidence or artifact exists yet for curation.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "No curated execution-ready artifact exists yet.",
+                },
+            ]
+        )
+    elif not workspace_summary:
+        allowed_actions.append("curate_artifacts")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "Canonical evidence already exists; move to workspace curation.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "The artifact workspace has not been curated yet.",
+                },
+            ]
+        )
+    elif design_signal == "revise":
+        allowed_actions.append("curate_artifacts")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "Research evidence already exists; the latest execution finding asks for curation revision.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "The latest execution finding asks for a workspace revision before another run.",
+                },
+            ]
+        )
+    elif not execution_ready_artifacts:
+        allowed_actions.append("curate_artifacts")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "Research evidence already exists; curation needs to identify execution inputs.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "The current workspace has no execution-ready artifact.",
+                },
+            ]
+        )
+    elif not state.get("run_summary") or design_signal == "rerun":
+        allowed_actions.append("request_execution")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "Canonical evidence already exists; repeated research is not legal in this state.",
+                },
+                {
+                    "action_kind": "curate_artifacts",
+                    "reason": "The workspace already contains execution-ready artifacts.",
+                },
+            ]
+        )
+    else:
+        allowed_actions.append("stop")
+        blocked_actions.extend(
+            [
+                {
+                    "action_kind": "collect_research",
+                    "reason": "Research evidence already exists and the design loop has an execution result.",
+                },
+                {
+                    "action_kind": "curate_artifacts",
+                    "reason": "The workspace is already curated and execution-ready.",
+                },
+                {
+                    "action_kind": "request_execution",
+                    "reason": "An execution result is already recorded; stop and package the current dossier.",
+                },
+            ]
+        )
+
+    return {
+        "allowed_actions": allowed_actions,
+        "blocked_actions": blocked_actions,
+        "recommended_next_action": recommended_action.action_kind,
+        "state_machine_guidance": {
+            "existing_evidence_count": len(evidence_refs),
+            "existing_evidence_ids": [
+                str(item.get("evidence_id") or item.get("id") or "")
+                for item in evidence_refs
+            ],
+            "has_artifact_workspace": workspace_summary is not None,
+            "artifact_workspace_summary": workspace_summary or {},
+            "execution_ready_artifact_ids": [
+                str(item.get("artifact_id") or "") for item in execution_ready_artifacts
+            ],
+            "run_summary": state.get("run_summary") or {},
+            "latest_failed_turn": latest_failed_turn,
+            "latest_execution_design_signal": design_signal or None,
+            "recommended_next_action": recommended_action.action_kind,
+            "recommended_action_summary": recommended_action.summary,
+        },
+    }
+
+
+def _failed_planner_action(*, summary: str, rationale: str) -> DesignNextAction:
+    return DesignNextAction(
+        action_kind="stop",
+        summary=summary,
+        rationale=rationale,
+        stop_reason="planner_failed",
+        arguments={},
+    )
+
+
+def _diagnostic_observation(
+    state: dict[str, Any], observation: dict[str, Any]
+) -> dict[str, Any]:
+    violation = state.get("planner_contract_violation")
+    if not violation:
+        return observation
+    return {
+        **observation,
+        "diagnostic_observations": [
+            *list(observation.get("diagnostic_observations") or []),
+            violation,
+        ],
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +510,11 @@ class DesignSupervisorState(TypedDict, total=False):
     recommended_next_phase: str | None
     latest_turn_action_kind: str | None
     latest_turn_status: str | None
+    allowed_actions: list[str]
+    blocked_actions: list[dict[str, Any]]
+    recommended_next_action: str | None
+    state_machine_guidance: dict[str, Any]
+    planner_contract_violation: dict[str, Any] | None
 
 
 def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
@@ -367,6 +570,11 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "execution_iteration_count": len(execution_turns),
             "latest_turn_action_kind": None if latest_turn is None else latest_turn.action_kind,
             "latest_turn_status": None if latest_turn is None else latest_turn.status.value,
+            "allowed_actions": [],
+            "blocked_actions": [],
+            "recommended_next_action": None,
+            "state_machine_guidance": {},
+            "planner_contract_violation": None,
             "progress": _progress(
                 "load_design_context",
                 ProgressStatus.RUNNING,
@@ -375,9 +583,18 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
         }
 
     def diagnose_next_action(state: DesignSupervisorState) -> dict[str, Any]:
+        policy = _build_design_action_policy(state)
+        allowed_actions = list(policy["allowed_actions"])
+        blocked_actions = list(policy["blocked_actions"])
+        state_machine_guidance = dict(policy["state_machine_guidance"])
+        recommended_next_action = str(policy["recommended_next_action"])
+        action_source = "provided"
+        planner_contract_violation = None
+        planner_failure: dict[str, Any] | None = None
         if state.get("current_action") is not None:
             action = DesignNextAction.model_validate(state["current_action"])
         elif inputs.model_factory is not None:
+            action_source = "llm"
             try:
                 invoker = inputs.model_factory.create_structured_invoker(purpose="design_next_action")
                 action = invoker.invoke_structured(
@@ -385,13 +602,19 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     system_prompt=(
                         "You are the design loop planner for an enzyme engineering workflow. "
                         "Inspect the current state and return exactly one next action. "
-                        "Choose only among the allowed action kinds and keep the summary concise."
+                        "You must choose action_kind from allowed_actions only. "
+                        "Do not request collect_research, curate_artifacts, or request_execution when that action is listed in blocked_actions. "
+                        "If the recommended_next_action is sufficient, use it. Keep the summary concise."
                     ),
                     user_payload={
                         "episode_id": state.get("episode_id"),
                         "objective": state.get("objective"),
                         "design_brief": state.get("design_brief"),
                         "research_brief": state.get("research_brief"),
+                        "allowed_actions": allowed_actions,
+                        "blocked_actions": blocked_actions,
+                        "recommended_next_action": recommended_next_action,
+                        "state_machine_guidance": state_machine_guidance,
                         "research_summary": state.get("research_summary") or {},
                         "evidence_refs": state.get("evidence_refs") or [],
                         "artifact_refs": state.get("artifact_refs") or [],
@@ -402,26 +625,105 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                         "execution_iteration_count": state.get("execution_iteration_count") or 0,
                     },
                 )
-            except Exception:
-                action = _fallback_next_action(state)
+            except Exception as exc:
+                action = _failed_planner_action(
+                    summary="Design planner failed before selecting a legal next action.",
+                    rationale="The LLM planner raised an exception; the design loop must surface the failed decision instead of substituting a heuristic action.",
+                )
+                planner_failure = {
+                    "type": "planner_failed",
+                    "message": "Design planner raised an exception.",
+                    "source": action_source,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "allowed_actions": allowed_actions,
+                    "blocked_actions": blocked_actions,
+                    "recommended_next_action": recommended_next_action,
+                    "retryable": True,
+                }
         else:
-            action = _fallback_next_action(state)
+            action = _failed_planner_action(
+                summary="Design planner is not configured.",
+                rationale="A configured model factory is required to choose the next design action; deterministic fallback planning has been removed.",
+            )
+            planner_failure = {
+                "type": "planner_failed",
+                "message": "Design planner requires a configured model_factory.",
+                "source": "configuration",
+                "error_type": "missing_model_factory",
+                "allowed_actions": allowed_actions,
+                "blocked_actions": blocked_actions,
+                "recommended_next_action": recommended_next_action,
+                "retryable": False,
+            }
+        if planner_failure is None and action.action_kind not in allowed_actions:
+            original_action = action
+            planner_contract_violation = {
+                "type": "planner_contract_violation",
+                "message": "Design planner returned an action outside the allowed action set.",
+                "source": action_source,
+                "original_action": original_action.model_dump(),
+                "allowed_actions": allowed_actions,
+                "blocked_actions": blocked_actions,
+                "recommended_next_action": recommended_next_action,
+            }
+        failed_observation = planner_failure or planner_contract_violation
+        action_status = (
+            DecisionStatus.FAILED.value
+            if failed_observation is not None
+            else DecisionStatus.PROPOSED.value
+        )
         return {
             "current_action": action.model_dump(),
-            "action_status": DecisionStatus.PROPOSED.value,
-            "action_error": None,
+            "action_status": action_status,
+            "action_error": None if failed_observation is None else str(failed_observation["type"]),
             "current_tool_name": None,
+            "allowed_actions": allowed_actions,
+            "blocked_actions": blocked_actions,
+            "recommended_next_action": recommended_next_action,
+            "state_machine_guidance": state_machine_guidance,
+            "planner_contract_violation": planner_contract_violation,
+            "observation_payload": failed_observation,
+            "design_summary": None
+            if failed_observation is None
+            else {
+                "outcome": "planner_failed",
+                "message": str(failed_observation["message"]),
+            },
             "progress": _progress(
                 "diagnose_next_action",
-                ProgressStatus.RUNNING,
-                f"Diagnosed next design action: {action.action_kind}",
+                ProgressStatus.FAILED
+                if failed_observation is not None
+                else ProgressStatus.RUNNING,
+                str(failed_observation["message"])
+                if failed_observation is not None
+                else f"Diagnosed next design action: {action.action_kind}",
             ),
         }
 
     def validate_action(
         state: DesignSupervisorState,
     ) -> Command[Literal["dispatch_action", "persist_turn", "finalize_design"]]:
-        action = DesignNextAction.model_validate(state.get("current_action") or _fallback_next_action(state).model_dump())
+        if state.get("current_action") is None:
+            raise RuntimeError("design action validation requires current_action")
+        action = DesignNextAction.model_validate(state["current_action"])
+        if state.get("action_status") == DecisionStatus.FAILED.value:
+            return Command(
+                update={
+                    "current_action": action.model_dump(),
+                    "current_tool_name": None,
+                    "action_status": DecisionStatus.FAILED.value,
+                    "progress": _progress(
+                        "validate_action",
+                        ProgressStatus.FAILED,
+                        str(
+                            (state.get("observation_payload") or {}).get("message")
+                            or "Design planner failed"
+                        ),
+                    ),
+                },
+                goto="persist_turn",
+            )
         observation: dict[str, Any] | None = None
         action_status = DecisionStatus.PROPOSED
         tool_name: str | None = None
@@ -438,7 +740,15 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     "observation_payload": {
                         "summary": action.summary,
                         "message": action.stop_reason or "requested_stop",
-                    },
+                    }
+                    if not state.get("planner_contract_violation")
+                    else _diagnostic_observation(
+                        state,
+                        {
+                            "summary": action.summary,
+                            "message": action.stop_reason or "requested_stop",
+                        },
+                    ),
                     "action_status": DecisionStatus.COMPLETED.value,
                     "progress": _progress(
                         "validate_action",
@@ -479,7 +789,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     "current_action": action.model_dump(),
                     "current_tool_name": tool_name,
                     "action_status": action_status.value,
-                    "observation_payload": observation,
+                    "observation_payload": _diagnostic_observation(state, observation),
                     "progress": _progress(
                         "validate_action",
                         ProgressStatus.FAILED,
@@ -560,7 +870,18 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                             "status": completion_status,
                             "completion_reason": tool_result.get("completion_reason"),
                             "clarification_question": tool_result.get("clarification_question"),
-                        },
+                        }
+                        if not state.get("planner_contract_violation")
+                        else _diagnostic_observation(
+                            state,
+                            {
+                                "summary": str(tool_result.get("summary") or "Research collection failed."),
+                                "message": str(tool_result.get("completion_reason") or "research_failed"),
+                                "status": completion_status,
+                                "completion_reason": tool_result.get("completion_reason"),
+                                "clarification_question": tool_result.get("clarification_question"),
+                            },
+                        ),
                         "design_summary": {
                             "outcome": "research_failed",
                             "message": str(tool_result.get("summary") or "Research collection failed."),
@@ -658,7 +979,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                         if str((artifact.get("provenance") or {}).get("source_type") or "") == "external_reference"
                     ],
                 },
-                "observation_payload": observation,
+                "observation_payload": _diagnostic_observation(state, observation),
                 "action_status": status.value,
                 "progress": _progress(
                     "dispatch_action",
@@ -691,7 +1012,7 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                 "artifact_workspace_summary": workspace_summary,
                 "focused_artifact_ids": list(observation["focused_artifact_ids"]),
                 "execution_result_handoff": None,
-                "observation_payload": observation,
+                "observation_payload": _diagnostic_observation(state, observation),
                 "action_status": status.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, observation["summary"]),
             }, goto="persist_turn")
@@ -707,7 +1028,15 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
                     "observation_payload": {
                         "summary": "Could not identify an execution-ready artifact for handoff.",
                         "message": "missing execution-ready artifact",
-                    },
+                    }
+                    if not state.get("planner_contract_violation")
+                    else _diagnostic_observation(
+                        state,
+                        {
+                            "summary": "Could not identify an execution-ready artifact for handoff.",
+                            "message": "missing execution-ready artifact",
+                        },
+                    ),
                     "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Execution handoff failed"),
                 }, goto="persist_turn")
             execution_handoff: ExecutionHandoff = {
@@ -726,11 +1055,14 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             return Command(update={
                 "execution_handoff": execution_handoff,
                 "execution_result_handoff": None,
-                "observation_payload": {
-                    "summary": "Prepared execution handoff for the curated artifact workspace.",
-                    "execution_goal": execution_handoff["execution_goal"],
-                    "required_artifact_ids": execution_handoff["required_artifact_ids"],
-                },
+                "observation_payload": _diagnostic_observation(
+                    state,
+                    {
+                        "summary": "Prepared execution handoff for the curated artifact workspace.",
+                        "execution_goal": execution_handoff["execution_goal"],
+                        "required_artifact_ids": execution_handoff["required_artifact_ids"],
+                    },
+                ),
                 "action_status": DecisionStatus.COMPLETED.value,
                 "progress": _progress("dispatch_action", ProgressStatus.SUCCEEDED, "Prepared execution handoff"),
             }, goto="persist_turn")
@@ -740,7 +1072,15 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             "observation_payload": {
                 "summary": f"Action {action.action_kind} could not be dispatched.",
                 "message": "dispatch failure",
-            },
+            }
+            if not state.get("planner_contract_violation")
+            else _diagnostic_observation(
+                state,
+                {
+                    "summary": f"Action {action.action_kind} could not be dispatched.",
+                    "message": "dispatch failure",
+                },
+            ),
             "progress": _progress("dispatch_action", ProgressStatus.FAILED, "Dispatch failed"),
         }, goto="persist_turn")
 
@@ -795,6 +1135,13 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
             action_payload={
                 **action.model_dump(),
                 "focused_artifact_ids": list(state.get("focused_artifact_ids") or []),
+                "state_machine_policy": {
+                    "allowed_actions": list(state.get("allowed_actions") or []),
+                    "blocked_actions": list(state.get("blocked_actions") or []),
+                    "recommended_next_action": state.get("recommended_next_action"),
+                    "state_machine_guidance": dict(state.get("state_machine_guidance") or {}),
+                },
+                "planner_contract_violation": state.get("planner_contract_violation"),
             },
             observation_payload=state.get("observation_payload"),
             created_at=_utc_now_iso(),
@@ -815,6 +1162,8 @@ def build_phase_c_design_graph(inputs: GraphAssemblyInputs, *, include_checkpoin
     def finalize_or_continue(state: DesignSupervisorState) -> str:
         action = DesignNextAction.model_validate(state["current_action"])
         action_status = DecisionStatus(str(state.get("action_status") or DecisionStatus.COMPLETED.value))
+        if action_status is DecisionStatus.FAILED:
+            return "finalize_design"
         if action.action_kind == "stop":
             return "finalize_design"
         if state.get("execution_handoff") is not None and action.action_kind == "request_execution" and action_status is DecisionStatus.COMPLETED:

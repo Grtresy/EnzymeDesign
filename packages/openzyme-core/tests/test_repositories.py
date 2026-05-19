@@ -1,5 +1,10 @@
+from dataclasses import replace
+
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
+from openzyme_domain import AgentRuntimeSignalReason
+from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocation
@@ -492,3 +497,140 @@ def test_memory_scope_checks_require_existing_scope_records() -> None:
         assert "lanes.lane_id='lane_missing' does not exist" in str(exc)
     else:
         raise AssertionError("expected OwnershipError")
+
+
+def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session = Session.create("sess_lease", "proj_001", "Lease", "Lease")
+    repositories.sessions.save(session)
+    agent = AgentMember(
+        agent_id="agent:researcher",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="Researcher",
+        role="researcher",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-04-16T10:00:00+00:00",
+        updated_at="2026-04-16T10:00:00+00:00",
+    )
+    repositories.agents.save(agent)
+    signal = AgentRuntimeSignal(
+        signal_id="sig_lease",
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-04-16T10:00:01+00:00",
+        source_ref="manual:1",
+    )
+    repositories.runtime_signals.save(signal)
+
+    claimed = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:a",
+        lease_seconds=60,
+    )
+    assert claimed is not None
+    assert claimed.status is AgentRuntimeSignalStatus.CLAIMED
+    assert claimed.claimed_by == "worker:a"
+    assert claimed.claim_expires_at is not None
+    assert claimed.attempt_count == 1
+    assert repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:b",
+    ) is None
+    assert repositories.runtime_signals.find_pending_duplicate(
+        session_id=session.session_id,
+        agent_id=agent.agent_id,
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        source_ref="manual:1",
+    ) == claimed
+
+    repositories.runtime_signals.save(
+        replace(claimed, claim_expires_at="2020-01-01T00:00:00+00:00")
+    )
+    reclaimed = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:b",
+    )
+    assert reclaimed is not None
+    assert reclaimed.claimed_by == "worker:b"
+    assert reclaimed.attempt_count == 2
+
+
+def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session = Session.create("sess_retry", "proj_001", "Retry", "Retry")
+    repositories.sessions.save(session)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:executor",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Executor",
+            role="executor",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-16T10:00:00+00:00",
+            updated_at="2026-04-16T10:00:00+00:00",
+        )
+    )
+    completed_signal = AgentRuntimeSignal(
+        signal_id="sig_complete",
+        session_id=session.session_id,
+        agent_id="agent:executor",
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+        status=AgentRuntimeSignalStatus.PENDING,
+        created_at="2026-04-16T10:00:01+00:00",
+    )
+    retry_signal = replace(completed_signal, signal_id="sig_retry")
+    repositories.runtime_signals.save(completed_signal)
+    repositories.runtime_signals.save(retry_signal)
+
+    first_complete = repositories.runtime_signals.complete("sig_complete")
+    second_complete = repositories.runtime_signals.complete("sig_complete")
+    assert first_complete is not None
+    assert second_complete == first_complete
+    assert second_complete.status is AgentRuntimeSignalStatus.COMPLETED
+
+    claimed = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:a",
+        signal_ids={"sig_retry"},
+    )
+    assert claimed is not None
+    retryable = repositories.runtime_signals.fail(
+        "sig_retry",
+        error_message="transient provider error",
+        retryable=True,
+        max_attempts=2,
+    )
+    assert retryable is not None
+    assert retryable.status is AgentRuntimeSignalStatus.PENDING
+    assert retryable.last_error == "transient provider error"
+
+    claimed_again = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:b",
+        signal_ids={"sig_retry"},
+    )
+    assert claimed_again is not None
+    final = repositories.runtime_signals.fail(
+        "sig_retry",
+        error_message="still failing",
+        retryable=True,
+        max_attempts=2,
+    )
+    assert final is not None
+    assert final.status is AgentRuntimeSignalStatus.FAILED
+    assert final.completed_at is not None
+    assert final.last_error == "still failing"

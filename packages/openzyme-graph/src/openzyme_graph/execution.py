@@ -164,23 +164,41 @@ def _build_langchain_tool(tool_def: Any) -> Any:
     )
 
 
-def _fallback_execution_plan(state: ExecutionSubgraphState) -> ExecutionPlanDraft:
-    discovered = list(state.get("discovered_tools") or [])
-    preferred = next(
-        (tool for tool in discovered if tool.get("tool_id") == "fpocket"),
-        None,
+def _handoff_artifact_ids(state: ExecutionSubgraphState) -> list[str]:
+    handoff = state.get("execution_handoff") or {}
+    return [
+        *list(handoff.get("required_artifact_ids") or []),
+        *list(handoff.get("context_artifact_ids") or []),
+    ]
+
+
+def _available_artifacts(
+    inputs: GraphAssemblyInputs,
+    state: ExecutionSubgraphState,
+) -> list[dict[str, Any]]:
+    return inputs.host_toolbox.resolve_artifacts(
+        state["episode_id"],
+        _handoff_artifact_ids(state),
     )
-    tool_id = "fpocket" if preferred is None else str(preferred["tool_id"])
-    required_artifact_ids = list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
-    primary_ref = None if not required_artifact_ids else required_artifact_ids[0]
-    return ExecutionPlanDraft(
-        catalog_tool_id=tool_id,
-        rationale="Use the runnable pocket-detection evaluator as the default execution path.",
-        tool_inputs={"structure_path": f"{str(primary_ref or 'input_structure')}.pdb"},
-        execution_mode="auto",
-        expected_result_summary="Return a quick evaluator run for the selected artifact set.",
-        planner_summary="Fallback planner selected the default runnable evaluator.",
-    )
+
+
+def _invalid_explicit_artifact_inputs(
+    plan: ExecutionPlanDraft,
+    available_artifacts: list[dict[str, Any]],
+) -> dict[str, str]:
+    available_ids = {
+        str(artifact.get("artifact_id"))
+        for artifact in available_artifacts
+        if artifact.get("artifact_id")
+    }
+    invalid: dict[str, str] = {}
+    for key, value in plan.tool_inputs.items():
+        if not key.endswith("_artifact_id") or value is None:
+            continue
+        requested = str(value)
+        if requested not in available_ids:
+            invalid[key] = requested
+    return invalid
 
 
 def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointer: bool = True) -> Any:
@@ -217,85 +235,105 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
         }
 
     def select_execution_plan(state: ExecutionSubgraphState) -> dict[str, Any]:
-        plan = _fallback_execution_plan(state)
         selected_skill = None
         planner_trace = {
             "catalog_queries": [{"query": str((state.get("execution_handoff") or {}).get("execution_goal") or "")}],
             "skill_reads": [],
-            "selected_tool_id": plan.catalog_tool_id,
-            "planner_summary": "Fallback execution planner selected a runnable tool.",
+            "selected_tool_id": None,
+            "planner_summary": None,
         }
-        if inputs.model_factory is not None:
-            try:
-                invoker = inputs.model_factory.create_tool_calling_invoker(purpose="execution_planner")
-                messages = [
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                        "execution_handoff": state.get("execution_handoff") or {},
-                        "discovered_tools": state.get("discovered_tools") or [],
-                        "available_artifacts": inputs.host_toolbox.resolve_artifacts(
-                            state["episode_id"],
-                            list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
-                            + list((state.get("execution_handoff") or {}).get("context_artifact_ids") or []),
-                        ),
-                    },
-                    ensure_ascii=True,
-                    sort_keys=True,
-                        ),
-                    }
-                ]
-                for _ in range(2):
-                    response = invoker.invoke_with_tools(
-                        system_prompt=(
-                            "You are an execution planner for HPC evaluation. "
-                            "Use hpc.search_catalog to inspect available tools, "
-                            "use hpc.read_skill for one tool when needed, and stop once you can choose one runnable tool."
-                        ),
-                        messages=messages,
-                        tools=[_build_langchain_tool(search_tool), _build_langchain_tool(read_tool)],
-                    )
-                    tool_calls = getattr(response, "tool_calls", None) or response.get("tool_calls", [])
-                    if not tool_calls:
-                        break
-                    tool_results: list[dict[str, Any]] = []
-                    for tool_call in tool_calls:
-                        name = str(tool_call["name"])
-                        args = dict(tool_call.get("args") or {})
-                        if name == search_tool.name:
-                            planner_trace["catalog_queries"].append(args)
-                            tool_results.append(search_tool.invoke(args=args))
-                        if name == read_tool.name:
-                            skill_result = read_tool.invoke(args=args)
-                            selected_skill = dict(skill_result.get("skill") or {})
-                            planner_trace["skill_reads"].append({"tool_id": skill_result.get("tool_id")})
-                            tool_results.append(skill_result)
-                    messages.append({"role": "assistant", "content": json.dumps({"tool_calls": tool_calls}, ensure_ascii=True, sort_keys=True)})
-                    messages.append({"role": "user", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=True, sort_keys=True)})
-                structured_invoker = inputs.model_factory.create_structured_invoker(purpose="execution_plan")
-                plan = structured_invoker.invoke_structured(
-                    schema=ExecutionPlanDraft,
-                    system_prompt=(
-                        "Choose one runnable HPC catalog tool and return the execution plan. "
-                        "Only choose a tool that is marked runnable in the discovered summaries."
+        if inputs.model_factory is None:
+            return {
+                "current_plan": None,
+                "selected_skill": None,
+                "planner_trace": planner_trace,
+                "current_plan_status": DecisionStatus.FAILED.value,
+                "observation_payload": {
+                    "summary": "Execution planner requires a configured model factory.",
+                    "message": "missing_model_factory",
+                },
+                "progress": _progress(
+                    "select_execution_plan",
+                    ProgressStatus.FAILED,
+                    "Execution planner is not configured",
+                ),
+            }
+        try:
+            invoker = inputs.model_factory.create_tool_calling_invoker(purpose="execution_planner")
+            available_artifacts = _available_artifacts(inputs, state)
+            messages = [
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "execution_handoff": state.get("execution_handoff") or {},
+                            "discovered_tools": state.get("discovered_tools") or [],
+                            "available_artifacts": available_artifacts,
+                            "artifact_id_contract": (
+                                "Only values listed in available_artifacts[].artifact_id are valid artifact inputs. "
+                                "Research source URLs, paper URLs, titles, and locators are evidence references, not runnable artifact ids."
+                            ),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
                     ),
-                    user_payload={
-                        "execution_handoff": state.get("execution_handoff") or {},
-                        "discovered_tools": state.get("discovered_tools") or [],
-                        "available_artifacts": inputs.host_toolbox.resolve_artifacts(
-                            state["episode_id"],
-                            list((state.get("execution_handoff") or {}).get("required_artifact_ids") or [])
-                            + list((state.get("execution_handoff") or {}).get("context_artifact_ids") or []),
-                        ),
-                        "selected_skill": selected_skill,
-                    },
+                }
+            ]
+            for _ in range(2):
+                response = invoker.invoke_with_tools(
+                    system_prompt=(
+                        "You are an execution planner for HPC evaluation. "
+                        "Use hpc.search_catalog to inspect available tools, "
+                        "use hpc.read_skill for one tool when needed, and stop once you can choose one runnable tool. "
+                        "When discussing artifacts, only use artifact ids from the provided available_artifacts list. "
+                        "Never use research source URLs or paper locators as artifact ids."
+                    ),
+                    messages=messages,
+                    tools=[_build_langchain_tool(search_tool), _build_langchain_tool(read_tool)],
                 )
-                planner_trace["selected_tool_id"] = plan.catalog_tool_id
-                planner_trace["planner_summary"] = f"Planner selected {plan.catalog_tool_id} after querying catalog data."
-                plan.planner_summary = str(planner_trace["planner_summary"])
-            except Exception:
-                plan = _fallback_execution_plan(state)
+                tool_calls = getattr(response, "tool_calls", None) or response.get("tool_calls", [])
+                if not tool_calls:
+                    break
+                tool_results: list[dict[str, Any]] = []
+                for tool_call in tool_calls:
+                    name = str(tool_call["name"])
+                    args = dict(tool_call.get("args") or {})
+                    if name == search_tool.name:
+                        planner_trace["catalog_queries"].append(args)
+                        tool_results.append(search_tool.invoke(args=args))
+                    if name == read_tool.name:
+                        skill_result = read_tool.invoke(args=args)
+                        selected_skill = dict(skill_result.get("skill") or {})
+                        planner_trace["skill_reads"].append({"tool_id": skill_result.get("tool_id")})
+                        tool_results.append(skill_result)
+                messages.append({"role": "assistant", "content": json.dumps({"tool_calls": tool_calls}, ensure_ascii=True, sort_keys=True)})
+                messages.append({"role": "user", "content": json.dumps({"tool_results": tool_results}, ensure_ascii=True, sort_keys=True)})
+            structured_invoker = inputs.model_factory.create_structured_invoker(purpose="execution_plan")
+            plan = structured_invoker.invoke_structured(
+                schema=ExecutionPlanDraft,
+                system_prompt=(
+                    "Choose one runnable HPC catalog tool and return the execution plan. "
+                    "Only choose a tool that is marked runnable in the discovered summaries. "
+                    "Artifact-id fields in tool_inputs must come from available_artifacts[].artifact_id only; "
+                    "research source URLs and paper locators are not executable artifact ids."
+                ),
+                user_payload={
+                    "execution_handoff": state.get("execution_handoff") or {},
+                    "discovered_tools": state.get("discovered_tools") or [],
+                    "available_artifacts": available_artifacts,
+                    "artifact_id_contract": (
+                        "Only values listed in available_artifacts[].artifact_id are valid for tool_inputs keys such as structure_artifact_id. "
+                        "If the selected tool can use the first required artifact by default, omit the explicit artifact id instead of inventing one. "
+                        "Do not copy research source URLs, paper URLs, titles, or source locators into artifact-id fields."
+                    ),
+                    "selected_skill": selected_skill,
+                },
+            )
+            planner_trace["selected_tool_id"] = plan.catalog_tool_id
+            planner_trace["planner_summary"] = f"Planner selected {plan.catalog_tool_id} after querying catalog data."
+            plan.planner_summary = str(planner_trace["planner_summary"])
+        except Exception:
+            raise
         if selected_skill is None and plan.catalog_tool_id:
             try:
                 selected_skill = read_tool.invoke(args={"tool_id": plan.catalog_tool_id}).get("skill")
@@ -311,7 +349,18 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
         }
 
     def validate_execution_plan(state: ExecutionSubgraphState) -> Command[Literal["prepare_approval", "finalize_execution"]]:
-        plan = ExecutionPlanDraft.model_validate(state.get("current_plan") or _fallback_execution_plan(state).model_dump())
+        if state.get("current_plan_status") == DecisionStatus.FAILED.value:
+            return Command(goto="finalize_execution")
+        if state.get("current_plan") is None:
+            return Command(
+                update={
+                    "current_plan_status": DecisionStatus.FAILED.value,
+                    "observation_payload": {"summary": "Execution planner did not produce a plan."},
+                    "progress": _progress("validate_execution_plan", ProgressStatus.FAILED, "Execution planning failed"),
+                },
+                goto="finalize_execution",
+            )
+        plan = ExecutionPlanDraft.model_validate(state["current_plan"])
         provider = inputs.hpc_catalog_provider
         if provider is None or not hasattr(provider, "get_entry"):
             return Command(
@@ -341,6 +390,36 @@ def build_execution_subgraph(inputs: GraphAssemblyInputs, *, include_checkpointe
                     "current_plan_status": DecisionStatus.FAILED.value,
                     "observation_payload": {"summary": f"{plan.catalog_tool_id} is discovery-only in V1."},
                     "progress": _progress("validate_execution_plan", ProgressStatus.FAILED, "Execution tool is not runnable"),
+                },
+                goto="finalize_execution",
+            )
+        available_artifacts = _available_artifacts(inputs, state)
+        invalid_artifact_inputs = _invalid_explicit_artifact_inputs(
+            plan,
+            available_artifacts,
+        )
+        if invalid_artifact_inputs:
+            return Command(
+                update={
+                    "current_plan": plan.model_dump(),
+                    "current_plan_status": DecisionStatus.FAILED.value,
+                    "observation_payload": {
+                        "summary": (
+                            "Execution plan referenced artifact ids that are not "
+                            "present in the execution handoff workspace."
+                        ),
+                        "invalid_artifact_inputs": invalid_artifact_inputs,
+                        "available_artifact_ids": [
+                            artifact["artifact_id"]
+                            for artifact in available_artifacts
+                            if artifact.get("artifact_id")
+                        ],
+                    },
+                    "progress": _progress(
+                        "validate_execution_plan",
+                        ProgressStatus.FAILED,
+                        "Execution plan used invalid artifact inputs",
+                    ),
                 },
                 goto="finalize_execution",
             )

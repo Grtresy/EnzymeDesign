@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 import json
 import sqlite3
 from typing import Any
@@ -96,6 +99,16 @@ def _load_blocked_by(connection: sqlite3.Connection, task_id: str) -> tuple[str,
         (task_id,),
     ).fetchall()
     return tuple(str(row["blocked_by_task_id"]) for row in rows)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+
+
+def _utc_after_iso(seconds: int) -> str:
+    return (
+        datetime.now(tz=UTC).replace(microsecond=0) + timedelta(seconds=seconds)
+    ).isoformat()
 
 
 @dataclass(slots=True)
@@ -1075,9 +1088,10 @@ class AgentRuntimeSignalRepository:
             """
             INSERT INTO agent_runtime_signals (
                 signal_id, session_id, agent_id, task_id, lane_id, correlation_id, reason, source_ref, status,
-                created_at, claimed_at, completed_at, error_message
+                created_at, claimed_at, claimed_by, claim_expires_at, attempt_count,
+                completed_at, error_message, last_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(signal_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 agent_id = excluded.agent_id,
@@ -1088,8 +1102,12 @@ class AgentRuntimeSignalRepository:
                 source_ref = excluded.source_ref,
                 status = excluded.status,
                 claimed_at = excluded.claimed_at,
+                claimed_by = excluded.claimed_by,
+                claim_expires_at = excluded.claim_expires_at,
+                attempt_count = excluded.attempt_count,
                 completed_at = excluded.completed_at,
-                error_message = excluded.error_message
+                error_message = excluded.error_message,
+                last_error = excluded.last_error
             """,
             (
                 signal.signal_id,
@@ -1103,8 +1121,12 @@ class AgentRuntimeSignalRepository:
                 signal.status.value,
                 signal.created_at,
                 signal.claimed_at,
+                signal.claimed_by,
+                signal.claim_expires_at,
+                signal.attempt_count,
                 signal.completed_at,
                 signal.error_message,
+                signal.last_error,
             ),
         )
         self.connection.commit()
@@ -1142,6 +1164,171 @@ class AgentRuntimeSignalRepository:
         ).fetchall()
         return [self._row_to_signal(row) for row in rows]
 
+    def claim_next(
+        self,
+        *,
+        session_id: str,
+        claimed_by: str,
+        lease_seconds: int = 60,
+        signal_ids: set[str] | None = None,
+    ) -> AgentRuntimeSignal | None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        now = _utc_now_iso()
+        params: list[Any] = [
+            session_id,
+            AgentRuntimeSignalStatus.PENDING.value,
+            AgentRuntimeSignalStatus.CLAIMED.value,
+            now,
+        ]
+        signal_filter = ""
+        if signal_ids is not None:
+            if not signal_ids:
+                return None
+            placeholders = ", ".join("?" for _ in signal_ids)
+            signal_filter = f" AND signal_id IN ({placeholders})"
+            params.extend(sorted(signal_ids))
+        row = self.connection.execute(
+            f"""
+            SELECT *
+            FROM agent_runtime_signals
+            WHERE session_id = ?
+              AND (
+                status = ?
+                OR (
+                  status = ?
+                  AND claim_expires_at IS NOT NULL
+                  AND claim_expires_at <= ?
+                )
+              )
+              {signal_filter}
+            ORDER BY created_at, rowid
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+        if row is None:
+            return None
+        signal_id = row["signal_id"]
+        cursor = self.connection.execute(
+            """
+            UPDATE agent_runtime_signals
+            SET status = ?,
+                claimed_at = ?,
+                claimed_by = ?,
+                claim_expires_at = ?,
+                attempt_count = attempt_count + 1,
+                completed_at = NULL,
+                error_message = NULL
+            WHERE signal_id = ?
+              AND (
+                status = ?
+                OR (
+                  status = ?
+                  AND claim_expires_at IS NOT NULL
+                  AND claim_expires_at <= ?
+                )
+              )
+            """,
+            (
+                AgentRuntimeSignalStatus.CLAIMED.value,
+                now,
+                claimed_by,
+                _utc_after_iso(lease_seconds),
+                signal_id,
+                AgentRuntimeSignalStatus.PENDING.value,
+                AgentRuntimeSignalStatus.CLAIMED.value,
+                now,
+            ),
+        )
+        self.connection.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get(str(signal_id))
+
+    def complete(self, signal_id: str) -> AgentRuntimeSignal | None:
+        existing = self.get(signal_id)
+        if existing is None:
+            return None
+        if existing.status.is_terminal:
+            return existing
+        now = _utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE agent_runtime_signals
+            SET status = ?,
+                completed_at = ?,
+                claim_expires_at = NULL,
+                error_message = NULL
+            WHERE signal_id = ?
+            """,
+            (AgentRuntimeSignalStatus.COMPLETED.value, now, signal_id),
+        )
+        self.connection.commit()
+        return self.get(signal_id)
+
+    def fail(
+        self,
+        signal_id: str,
+        *,
+        error_message: str,
+        retryable: bool = False,
+        max_attempts: int = 3,
+    ) -> AgentRuntimeSignal | None:
+        existing = self.get(signal_id)
+        if existing is None:
+            return None
+        if existing.status.is_terminal:
+            return existing
+        next_status = (
+            AgentRuntimeSignalStatus.PENDING
+            if retryable and existing.attempt_count < max_attempts
+            else AgentRuntimeSignalStatus.FAILED
+        )
+        completed_at = None if next_status is AgentRuntimeSignalStatus.PENDING else _utc_now_iso()
+        self.connection.execute(
+            """
+            UPDATE agent_runtime_signals
+            SET status = ?,
+                completed_at = ?,
+                claim_expires_at = NULL,
+                claimed_by = CASE WHEN ? = ? THEN NULL ELSE claimed_by END,
+                error_message = ?,
+                last_error = ?
+            WHERE signal_id = ?
+            """,
+            (
+                next_status.value,
+                completed_at,
+                next_status.value,
+                AgentRuntimeSignalStatus.PENDING.value,
+                error_message,
+                error_message,
+                signal_id,
+            ),
+        )
+        self.connection.commit()
+        return self.get(signal_id)
+
+    def release(self, signal_id: str) -> AgentRuntimeSignal | None:
+        existing = self.get(signal_id)
+        if existing is None:
+            return None
+        if existing.status.is_terminal:
+            return existing
+        self.connection.execute(
+            """
+            UPDATE agent_runtime_signals
+            SET status = ?,
+                claimed_by = NULL,
+                claim_expires_at = NULL
+            WHERE signal_id = ?
+            """,
+            (AgentRuntimeSignalStatus.PENDING.value, signal_id),
+        )
+        self.connection.commit()
+        return self.get(signal_id)
+
     def find_pending_duplicate(
         self,
         *,
@@ -1156,11 +1343,18 @@ class AgentRuntimeSignalRepository:
             """
             SELECT *
             FROM agent_runtime_signals
-            WHERE session_id = ? AND agent_id = ? AND reason = ? AND source_ref = ? AND status = ?
+            WHERE session_id = ? AND agent_id = ? AND reason = ? AND source_ref = ? AND status IN (?, ?)
             ORDER BY created_at, rowid
             LIMIT 1
             """,
-            (session_id, agent_id, reason.value, source_ref, AgentRuntimeSignalStatus.PENDING.value),
+            (
+                session_id,
+                agent_id,
+                reason.value,
+                source_ref,
+                AgentRuntimeSignalStatus.PENDING.value,
+                AgentRuntimeSignalStatus.CLAIMED.value,
+            ),
         ).fetchone()
         if row is None:
             return None
@@ -1179,8 +1373,12 @@ class AgentRuntimeSignalRepository:
             status=AgentRuntimeSignalStatus(row["status"]),
             created_at=row["created_at"],
             claimed_at=row["claimed_at"],
+            claimed_by=row["claimed_by"],
+            claim_expires_at=row["claim_expires_at"],
+            attempt_count=int(row["attempt_count"] or 0),
             completed_at=row["completed_at"],
             error_message=row["error_message"],
+            last_error=row["last_error"],
         )
 
 

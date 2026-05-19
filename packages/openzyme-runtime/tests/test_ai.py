@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
+import time
 from types import ModuleType
 
 from pydantic import BaseModel
 
+from openzyme_runtime import LimiterRegistry
 from openzyme_runtime.ai import LangChainStructuredInvoker
 from openzyme_runtime.ai import LangChainToolCallingInvoker
 from openzyme_runtime.ai import OpenAICompatibleChatModelFactory
@@ -195,6 +199,8 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     )
 
     invoker = factory.create_structured_invoker(purpose="report_review")
+    assert isinstance(invoker, LangChainStructuredInvoker)
+    assert invoker.invocation_timeout_seconds == 90.0
     result = invoker.invoke_structured(
         schema=ExampleSchema,
         system_prompt="Return the schema.",
@@ -214,6 +220,189 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
         "timeout": 90.0,
         "max_retries": 0,
     }
+
+
+def test_diagnostic_structured_invoker_wraps_provider_call_with_stage_timeout(monkeypatch) -> None:
+    observed: list[tuple[str, float, bool]] = []
+
+    class FakeTimeout:
+        def __init__(self, phase, seconds, *, hard_exit=True, **kwargs):
+            del kwargs
+            observed.append((phase, seconds, hard_exit))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeStructuredModel:
+        def invoke(self, messages):
+            del messages
+            return ExampleSchema(value="ok")
+
+    class FakeModel:
+        def with_structured_output(self, schema, *, method: str):
+            assert schema is ExampleSchema
+            assert method == "function_calling"
+            return FakeStructuredModel()
+
+    monkeypatch.setattr("openzyme_runtime.ai.LiveStageTimeout", FakeTimeout)
+
+    invoker = LangChainStructuredInvoker(
+        model=FakeModel(),
+        purpose="design_next_action",
+        diagnostic_label="live-provider",
+        structured_output_method="function_calling",
+        invocation_timeout_seconds=12.5,
+    )
+
+    result = invoker.invoke_structured(
+        schema=ExampleSchema,
+        system_prompt="Return the schema.",
+        user_payload={"value": "ignored"},
+    )
+
+    assert result.value == "ok"
+    assert observed == [
+        ("invoking LLM structured purpose='design_next_action' attempt=1", 12.5, False)
+    ]
+
+
+def test_diagnostic_tool_invoker_wraps_provider_call_with_stage_timeout(monkeypatch) -> None:
+    observed: list[tuple[str, float, bool]] = []
+
+    class FakeTimeout:
+        def __init__(self, phase, seconds, *, hard_exit=True, **kwargs):
+            del kwargs
+            observed.append((phase, seconds, hard_exit))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeRunnable:
+        def invoke(self, messages):
+            del messages
+            return {"content": "ok"}
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            assert tools == []
+            return FakeRunnable()
+
+    monkeypatch.setattr("openzyme_runtime.ai.LiveStageTimeout", FakeTimeout)
+
+    invoker = LangChainToolCallingInvoker(
+        model=FakeModel(),
+        purpose="deep_research_researcher",
+        diagnostic_label="live-provider",
+        invocation_timeout_seconds=7.0,
+    )
+    response = invoker.invoke_with_tools(
+        system_prompt="Use tools.",
+        messages=[],
+        tools=[],
+    )
+
+    assert response == {"content": "ok"}
+    assert observed == [
+        ("invoking LLM tool-calling purpose='deep_research_researcher' attempt=1", 7.0, False)
+    ]
+
+
+def test_openai_compatible_factory_limits_structured_and_tool_invocations(monkeypatch) -> None:
+    lock = threading.Lock()
+    active = 0
+    observed_max = 0
+
+    def enter_provider() -> None:
+        nonlocal active, observed_max
+        with lock:
+            active += 1
+            observed_max = max(observed_max, active)
+
+    def leave_provider() -> None:
+        nonlocal active
+        with lock:
+            active -= 1
+
+    class FakeStructuredRunnable:
+        def invoke(self, messages):
+            del messages
+            enter_provider()
+            try:
+                time.sleep(0.01)
+                return ExampleSchema(value="ok")
+            finally:
+                leave_provider()
+
+    class FakeToolRunnable:
+        def invoke(self, messages):
+            del messages
+            enter_provider()
+            try:
+                time.sleep(0.01)
+                return {"content": "ok"}
+            finally:
+                leave_provider()
+
+    class FakeModel:
+        def with_structured_output(self, schema, *, method: str):
+            del schema, method
+            return FakeStructuredRunnable()
+
+        def bind_tools(self, tools):
+            del tools
+            return FakeToolRunnable()
+
+    monkeypatch.setattr(
+        "langchain.chat_models.init_chat_model",
+        lambda *args, **kwargs: FakeModel(),
+        raising=False,
+    )
+    registry = LimiterRegistry({"llm_provider": 2})
+    factory = OpenAICompatibleChatModelFactory(
+        model="glm-5.1",
+        api_key="llm-key",
+        base_url="https://example.test/v1",
+        limiter_registry=registry,
+    )
+    structured = factory.create_structured_invoker(purpose="test_structured")
+    tool_calling = factory.create_tool_calling_invoker(purpose="test_tools")
+
+    async def run_structured_calls() -> None:
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    structured.invoke_structured,
+                    schema=ExampleSchema,
+                    system_prompt="Return schema.",
+                    user_payload={"value": "ignored"},
+                )
+                for _ in range(10)
+            )
+        )
+
+    async def run_tool_calls() -> None:
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    tool_calling.invoke_with_tools,
+                    system_prompt="Use tools.",
+                    messages=[],
+                    tools=[],
+                )
+                for _ in range(10)
+            )
+        )
+
+    asyncio.run(run_structured_calls())
+    asyncio.run(run_tool_calls())
+
+    assert observed_max <= 2
 
 
 def test_retryable_openai_error_recognizes_rate_limit_and_transient_status(monkeypatch) -> None:

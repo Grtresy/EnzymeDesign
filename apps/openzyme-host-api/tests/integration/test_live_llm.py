@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import signal
 from dataclasses import replace
 
 import pytest
 
+from openzyme_runtime.live_testing import LiveStageTimeout
+from openzyme_runtime.live_testing import derive_live_stage_timeout_seconds
+from openzyme_runtime.live_testing import log_live_phase
 from openzyme_host_api.foundation import build_model_factory_from_settings
 from openzyme_runtime import get_settings
 from openzyme_runtime import LlmSettings
@@ -16,29 +18,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.live_llm]
 
 class LiveLlmTestTimeoutError(TimeoutError):
     """Raised when the live LLM smoke test exceeds its local timeout budget."""
-
-
-class _AlarmTimeout:
-    def __init__(self, seconds: int) -> None:
-        self._seconds = seconds
-        self._previous_handler = None
-
-    def __enter__(self) -> "_AlarmTimeout":
-        self._previous_handler = signal.getsignal(signal.SIGALRM)
-        signal.signal(signal.SIGALRM, self._handle_timeout)
-        signal.alarm(self._seconds)
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        signal.alarm(0)
-        if self._previous_handler is not None:
-            signal.signal(signal.SIGALRM, self._previous_handler)
-        return None
-
-    @staticmethod
-    def _handle_timeout(signum: int, frame: object | None) -> None:
-        del signum, frame
-        raise LiveLlmTestTimeoutError("live_llm smoke test exceeded its local timeout budget.")
 
 
 def _live_llm_settings() -> LlmSettings:
@@ -67,14 +46,27 @@ def _live_llm_settings() -> LlmSettings:
 
 
 def test_live_llm_generates_structured_report_draft() -> None:
+    log_live_phase("building live LLM model factory")
     settings = get_settings()
+    llm_settings = _live_llm_settings()
     factory = build_model_factory_from_settings(
-        replace(settings, llm=_live_llm_settings())
+        replace(settings, llm=llm_settings)
     )
     assert factory is not None
 
+    log_live_phase("creating live LLM structured invoker")
     invoker = factory.create_structured_invoker(purpose="report_review")
-    with _AlarmTimeout(70):
+    stage_timeout_seconds = derive_live_stage_timeout_seconds(
+        provider_timeout_seconds=llm_settings.timeout,
+        attempts=llm_settings.structured_output_max_attempts,
+        buffer_seconds=30,
+        minimum_seconds=70,
+    )
+    with LiveStageTimeout(
+        "invoking live LLM structured report smoke",
+        stage_timeout_seconds,
+        timeout_type=LiveLlmTestTimeoutError,
+    ):
         result = invoker.invoke_structured(
             schema=ReportDraft,
             system_prompt=(

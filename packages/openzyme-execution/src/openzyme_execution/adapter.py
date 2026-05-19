@@ -7,6 +7,7 @@ from typing import Any
 from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_runtime.limits import LimiterRegistry
 from openzyme_runtime.seams import ExecutionAdapter
 
 _SUPPORTED_EXECUTION_TOOLS = frozenset({"exec.run"})
@@ -80,6 +81,7 @@ class ExecutionStatusSnapshot:
 class HpcRunnerExecutionAdapter(ExecutionAdapter):
     config_path: str | None = None
     server: MCPHpcServer | None = None
+    limiter_registry: LimiterRegistry | None = None
 
     def __post_init__(self) -> None:
         if self.server is None:
@@ -99,7 +101,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         if tool_name != requested_tool_name:
             metadata["openzyme"]["requested_tool_name"] = requested_tool_name
         runspec["metadata"] = metadata
-        result = self.server.call_tool(tool_name, {"runspec": runspec})
+        result = self._call_tool(tool_name, {"runspec": runspec})
         return self._normalize_result(result, declared_paths=_declared_output_paths(runspec))
 
     def get_execution_status(
@@ -109,7 +111,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         remote_run_dir: str,
         job_id: str | None = None,
     ) -> ExecutionStatusSnapshot:
-        result = self.server.call_tool(
+        result = self._call_tool(
             "job.status",
             {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
         )
@@ -130,7 +132,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         runspec: dict[str, Any],
         job_id: str | None = None,
     ) -> ExecutionOutcome:
-        result = self.server.call_tool(
+        result = self._call_tool(
             "job.fetch_artifacts",
             {
                 "run_id": run_id,
@@ -148,11 +150,22 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         remote_run_dir: str,
         job_id: str | None = None,
     ) -> ExecutionOutcome:
-        result = self.server.call_tool(
+        result = self._call_tool(
             "job.cancel",
             {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
         )
         return self._normalize_result(result)
+
+    def _call_tool(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.server is None:
+            raise RuntimeError("HPC runner server is not initialized")
+
+        def operation() -> dict[str, Any]:
+            return self.server.call_tool(tool_name, payload)
+
+        if self.limiter_registry is None:
+            return operation()
+        return self.limiter_registry.sync_limiter("execution_provider").run(operation)
 
     def _normalize_result(
         self,

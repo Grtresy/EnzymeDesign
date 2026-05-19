@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
@@ -27,6 +28,7 @@ from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
 from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
+from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import persist_conversation_message
 from openzyme_core import run_agent_harness_loop
 from openzyme_domain import AgentRuntimeSignalReason
@@ -157,6 +159,7 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    scheduler_limits: dict[str, int] = field(default_factory=dict)
 
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
@@ -340,7 +343,14 @@ class V3HostApiService:
         runtime = AgentRuntimeService(context)
         if auto_enqueue_ready_tasks:
             runtime.auto_enqueue_ready_tasks(session_id)
-        outcomes = runtime.drain_session(
+        scheduler = AgentRuntimeScheduler(
+            context,
+            worker_id="host-api:runtime-drain",
+            max_global_concurrency=int(self.scheduler_limits.get("global", 1)),
+            max_session_concurrency=int(self.scheduler_limits.get("session", 1)),
+            max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
+        )
+        outcomes = scheduler.run_once_sync(
             session_id,
             max_signals=max_signals,
             max_steps_per_agent=max_steps_per_agent,

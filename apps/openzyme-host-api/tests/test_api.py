@@ -24,10 +24,19 @@ from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_runtime import GraphRuntimeFacade
+from openzyme_runtime import ConstraintItem
+from openzyme_runtime import ConstraintSet
+from openzyme_runtime import DesignBriefDraft
+from openzyme_runtime import DesignNextAction
+from openzyme_runtime import ExecutionPlanDraft
+from openzyme_runtime import IntakeClarification
+from openzyme_runtime import IntakePhaseOutput
 from openzyme_runtime import LangChainToolCallingInvoker
 from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import PostgresCheckpointerConfig
 from openzyme_runtime import PostgresCheckpointerFactory
+from openzyme_runtime import ReportDraft
+from openzyme_runtime import ResearchBriefDraft as RuntimeResearchBriefDraft
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import apply_sqlite_migrations
 from openzyme_runtime import connect_sqlite
@@ -56,7 +65,14 @@ from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_engines import EvidenceSynthesis
+from openzyme_engines import EvidenceSynthesisItem
 from openzyme_engines import ExecutionParsedResult
+from openzyme_engines import ResearchBriefDraft as EngineResearchBriefDraft
+from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchSupervisorAction
+from openzyme_engines import ResearchUnitDraft as EngineResearchUnitDraft
+from openzyme_engines import ResearchUnitPlan as EngineResearchUnitPlan
 from openzyme_engines.execution import ExecutionStartResult
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
@@ -231,6 +247,174 @@ class FakeHarnessModelFactory:
         if purpose not in self.invokers:
             self.invokers[purpose] = FakeHarnessInvoker()
         return self.invokers[purpose]
+
+
+class FakePhaseBStructuredInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+
+    def invoke_structured(self, *, schema, system_prompt: str, user_payload: dict[str, object]):
+        del system_prompt
+        objective = str(user_payload.get("objective") or "Improve thermostability")
+        if self.purpose == "intake_collect":
+            return IntakePhaseOutput(
+                clarification=IntakeClarification(),
+                constraint_set=ConstraintSet(
+                    objective_summary=objective,
+                    constraints=[
+                        ConstraintItem(
+                            category="technical",
+                            description="Prepare an execution-ready design workspace.",
+                        )
+                    ],
+                ),
+                design_brief=DesignBriefDraft(
+                    design_brief=f"Design brief for {objective}",
+                    success_criteria=["Prepare execution-ready artifacts."],
+                ),
+                research_brief=RuntimeResearchBriefDraft(
+                    research_brief=f"Research brief for {objective}",
+                    focus_areas=["evidence"],
+                    expected_outputs=["research summary"],
+                ),
+            )
+        if self.purpose == "design_next_action":
+            evidence_refs = list(user_payload.get("evidence_refs") or [])
+            run_summary = dict(user_payload.get("run_summary") or {})
+            if not evidence_refs:
+                return DesignNextAction(
+                    action_kind="collect_research",
+                    summary="Collect evidence for the design objective.",
+                    rationale="No canonical evidence exists yet.",
+                    arguments={},
+                )
+            if not run_summary:
+                return DesignNextAction(
+                    action_kind="request_execution",
+                    summary="Route the curated workspace into execution.",
+                    rationale="Evidence and execution-ready artifacts are available.",
+                    arguments={},
+                )
+            return DesignNextAction(
+                action_kind="stop",
+                summary="Package the completed design dossier.",
+                rationale="Research, workspace curation, and execution are complete.",
+                stop_reason="design_loop_complete",
+                arguments={},
+            )
+        if self.purpose == "deep_research_brief":
+            return EngineResearchBriefDraft(research_brief=f"Research brief for {objective}")
+        if self.purpose == "deep_research_supervisor":
+            unit_results = list(user_payload.get("unit_results") or [])
+            if any(result.get("findings") for result in unit_results):
+                return ResearchSupervisorAction(
+                    action_kind="complete",
+                    rationale="A usable finding exists.",
+                )
+            return ResearchSupervisorAction(
+                action_kind="conduct_research",
+                rationale="Collect one evidence unit.",
+                unit_plan=EngineResearchUnitPlan(
+                    units=[
+                        EngineResearchUnitDraft(
+                            unit_id="evidence",
+                            topic="supporting evidence",
+                            query=f"{objective} evidence",
+                            rationale="Collect evidence for downstream design.",
+                        )
+                    ],
+                    synthesis_goal="Support downstream design.",
+                ),
+            )
+        if self.purpose == "deep_research_synthesis":
+            return EvidenceSynthesis(
+                summary="Research evidence supports the current objective.",
+                evidence_items=[
+                    EvidenceSynthesisItem(
+                        summary="Evidence supports the current scaffold direction.",
+                        query=f"{objective} evidence",
+                        confidence_label="high",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Synthetic source",
+                                locator="https://example.org/evidence",
+                                kind="web_page",
+                            )
+                        ],
+                    ),
+                    EvidenceSynthesisItem(
+                        summary="Structure-backed evidence supports execution.",
+                        query=f"{objective} structure evidence",
+                        confidence_label="medium",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Synthetic structure source",
+                                locator="https://example.org/structure-evidence",
+                                kind="web_page",
+                            )
+                        ],
+                    ),
+                ],
+                unresolved_gaps=["Need wet-lab validation."],
+            )
+        if self.purpose == "execution_plan":
+            return ExecutionPlanDraft(
+                catalog_tool_id="fpocket",
+                rationale="Use the curated execution-ready structure artifact.",
+                tool_inputs={},
+                expected_result_summary="Run fpocket on the selected structure artifact.",
+            )
+        if self.purpose == "report_review":
+            return ReportDraft(
+                title="OpenZyme design report",
+                summary="Objective Improve thermostability completed with research, execution, and report outputs.",
+                stage_summary="Research summary: evidence was collected and execution results were recorded.",
+                key_decisions=["Proceed with the current scaffold direction."],
+            )
+        raise AssertionError(f"Unhandled structured purpose {self.purpose!r}")
+
+
+class FakePhaseBToolCallingInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+        self.calls = 0
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del system_prompt, messages, tools
+        self.calls += 1
+        if self.purpose == "deep_research_researcher" and self.calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_web_search",
+                        "name": "web.search",
+                        "args": {
+                            "query": "thermostability evidence",
+                            "topic": "supporting evidence",
+                            "max_results": 1,
+                        },
+                    }
+                ],
+            }
+        return {"content": "", "tool_calls": []}
+
+
+class FakePhaseBModelFactory:
+    def __init__(self) -> None:
+        self.tool_invokers: dict[str, FakePhaseBToolCallingInvoker] = {}
+
+    def create_structured_invoker(self, *, purpose: str) -> FakePhaseBStructuredInvoker:
+        return FakePhaseBStructuredInvoker(purpose)
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        if purpose.startswith("v3_"):
+            return FakeHarnessInvoker()
+        if purpose not in self.tool_invokers:
+            self.tool_invokers[purpose] = FakePhaseBToolCallingInvoker(purpose)
+        return self.tool_invokers[purpose]
 
 
 class FakeEchoHarnessInvoker:
@@ -638,9 +822,14 @@ class FakeEngineHarnessInvoker:
 class FakeEngineHarnessModelFactory:
     def __init__(self) -> None:
         self.invokers: dict[str, FakeEngineHarnessInvoker] = {}
+        self.phase_b = FakePhaseBModelFactory()
 
-    def create_tool_calling_invoker(self, *, purpose: str) -> FakeEngineHarnessInvoker:
-        assert purpose.startswith("v3_")
+    def create_structured_invoker(self, *, purpose: str) -> FakePhaseBStructuredInvoker:
+        return self.phase_b.create_structured_invoker(purpose=purpose)
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        if not purpose.startswith("v3_"):
+            return self.phase_b.create_tool_calling_invoker(purpose=purpose)
         if purpose not in self.invokers:
             self.invokers[purpose] = FakeEngineHarnessInvoker(purpose)
         return self.invokers[purpose]
@@ -825,7 +1014,9 @@ def _resolve_next_approval(
     return response.json()
 
 
-def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
+def _build_client(
+    monkeypatch, *, with_model_factory: bool = True
+) -> tuple[TestClient, RuntimeFoundation]:
     saver = InMemorySaver()
 
     @contextmanager
@@ -852,6 +1043,7 @@ def _build_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
             RepoBackedHpcCatalogProvider()
         ),
         research_adapter=FakeResearchAdapter(),
+        model_factory=FakePhaseBModelFactory() if with_model_factory else None,
     )
     return (
         TestClient(
@@ -1052,6 +1244,52 @@ def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> Non
     assert len(signals) == 1
     assert signals[0].task_id == "task_ready_auto_claim"
     assert signals[0].reason.value == "task_available"
+
+
+def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_drain_limits",
+            "proj_001",
+            "Drain limits",
+            "Use configured scheduler limits.",
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakeScheduler:
+        def __init__(self, context, **kwargs):
+            captured["context"] = context
+            captured.update(kwargs)
+
+        def run_once_sync(self, session_id: str, *, max_signals: int, max_steps_per_agent: int, signal_ids=None):
+            captured["session_id"] = session_id
+            captured["max_signals"] = max_signals
+            captured["max_steps_per_agent"] = max_steps_per_agent
+            captured["signal_ids"] = signal_ids
+            return ()
+
+    monkeypatch.setattr("openzyme_host_api.v3_service.AgentRuntimeScheduler", FakeScheduler)
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        scheduler_limits={"global": 7, "session": 5, "agent": 3},
+    )
+
+    service.drain_runtime(
+        session_id="sess_drain_limits",
+        max_signals=4,
+        max_steps_per_agent=6,
+        run_master_followup=False,
+    )
+
+    assert captured["worker_id"] == "host-api:runtime-drain"
+    assert captured["max_global_concurrency"] == 7
+    assert captured["max_session_concurrency"] == 5
+    assert captured["max_agent_concurrency"] == 3
+    assert captured["max_signals"] == 4
+    assert captured["max_steps_per_agent"] == 6
 
 
 def test_v3_drain_runtime_request_defaults_disable_auto_claim() -> None:
@@ -1874,7 +2112,7 @@ def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_coun
 def test_v3_message_ingress_returns_service_unavailable_without_model_factory(
     monkeypatch,
 ) -> None:
-    client, _ = _build_client(monkeypatch)
+    client, _ = _build_client(monkeypatch, with_model_factory=False)
 
     created = client.post(
         "/v3/sessions",

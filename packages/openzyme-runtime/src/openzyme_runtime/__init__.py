@@ -1,10 +1,16 @@
 from .ai import ChatModelFactory
 from .ai import LangChainModelFactory
 from .ai import LangChainToolCallingInvoker
+from .ai import LimitedStructuredOutputInvoker
+from .ai import LimitedToolCallingInvoker
 from .ai import MissingLangChainDependencyError
 from .ai import MissingLangChainProviderDependencyError
 from .ai import MissingLlmConfigurationError
 from .ai import OpenAICompatibleChatModelFactory
+from .limits import AsyncConcurrencyLimiter
+from .limits import DEFAULT_PROVIDER_LIMITS
+from .limits import LimiterRegistry
+from .limits import SyncConcurrencyLimiter
 from .ai import StructuredOutputInvoker
 from .llm_debug import LlmDebugRecorder
 from .llm_debug import current_llm_debug_context
@@ -70,6 +76,7 @@ from .repositories import connect_sqlite
 from .research_tools import CompositeResearchToolProvider
 from .research_tools import build_bio_research_tools
 from .research_tools import DefaultResearchToolProvider
+from .research_tools import LimitedResearchTool
 from .research_tools import StaticResearchToolProvider
 from .research_tools import ThinkResearchTool
 from .research_tools import ThinkToolArgs
@@ -102,6 +109,7 @@ from .settings import ExecutionSettings
 from .settings import HostApiSettings
 from .settings import HostCliSettings
 from .settings import LiveLlmTestSettings
+from .settings import LimiterSettings
 from .settings import LlmPurposePolicy
 from .settings import LlmSettings
 from .settings import OpenZymeSettings
@@ -166,7 +174,10 @@ __all__ = [
     "IntakePhaseOutput",
     "LangChainModelFactory",
     "LangChainToolCallingInvoker",
+    "LimitedStructuredOutputInvoker",
+    "LimitedToolCallingInvoker",
     "LiveLlmTestSettings",
+    "LimiterSettings",
     "LlmDebugRecorder",
     "LlmPurposePolicy",
     "LlmSettings",
@@ -177,6 +188,10 @@ __all__ = [
     "MissingLlmConfigurationError",
     "OpenZymeHostToolbox",
     "OpenAICompatibleChatModelFactory",
+    "AsyncConcurrencyLimiter",
+    "DEFAULT_PROVIDER_LIMITS",
+    "LimiterRegistry",
+    "SyncConcurrencyLimiter",
     "OpenZymeSettings",
     "OwnershipError",
     "PhaseBRepositories",
@@ -222,6 +237,7 @@ __all__ = [
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",
     "DefaultResearchToolProvider",
+    "LimitedResearchTool",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
