@@ -4,7 +4,7 @@
 
 本文定义 V3 顶层真实 LLM master-agent harness loop 的实现边界。
 
-它只描述 master agent 如何在顶层会话回合中与模型、tools、memory、workspace projection 协作，不描述 capability engine 或 teammate agent 内部 loop 的细节。
+它只描述 master agent 如何在 scheduler 启动的顶层会话回合中与模型、tools、memory、workspace projection 协作，不描述 capability engine 或 teammate agent 内部 loop 的细节。
 
 ## 2. 基本原则
 
@@ -15,16 +15,19 @@
 - conversation、task、lane、approval、memory、engine invocation 仍以 control plane 为真状态
 - 顶层 loop 的职责是支撑 master agent 与用户对话、编排 task、发起 delegation，而不是直接承担所有具体工作执行
 - 顶层 loop 默认不直接扮演 teammate worker；delegation 后的具体推进应由 teammate loop 在共享 workspace 上继续完成
+- 顶层 loop 只能由 scheduler claim `agent:master` wakeup signal 后启动；REST handler 只持久化用户动作并排队 signal
 
 一句话约束：
 
-`Top-level harness loop stays custom. Reuse LangChain for model binding and tool-calling only.`
+`Top-level harness loop stays custom, but scheduler is the only normal loop launcher. Reuse LangChain for model binding and tool-calling only.`
 
 ## 3. 顶层回合流程
 
 ```text
 user message
   -> persist message content + inbox envelope
+  -> enqueue agent:master wakeup signal
+  -> scheduler claims signal
   -> build restore context
   -> call top-level master-agent model with V3 tool catalog
   -> tool calls?
@@ -41,9 +44,9 @@ After every tool call, master must first read the tool-result envelope fields `o
 - if `ok=false`, master must not assume the requested action completed
 - if `status` is `recipient_not_found`, master should choose an existing agent id or a valid role alias
 - if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
-- if `status` is `sync_execution_not_supported`, master should remove synchronous protocol execution arguments and rely on the scheduler/runtime drain path
-- if `task.delegate` returns `wakeup_queued`, master should treat delegation as queued, not completed; teammate execution requires an explicit scheduler/runtime drain command
-- if a later explicit drain or protocol thread shows failure or an unclear summary, master should inspect task state and `protocol.thread(correlation_id)`, then choose an existing action: send a follow-up with `protocol.send`, update task state with `task.update`, ask the user for clarification, or report the result
+- if `status` is `sync_execution_not_supported`, master should remove synchronous protocol execution arguments and rely on scheduler wakeup
+- if `task.delegate` returns `wakeup_queued`, master should treat delegation as queued, not completed; teammate execution starts only after scheduler claims the teammate signal
+- if a later scheduler turn or protocol thread shows failure or an unclear summary, master should inspect task state and `protocol.thread(correlation_id)`, then choose an existing action: send a follow-up with `protocol.send`, update task state with `task.update`, ask the user for clarification, or report the result
 
 ## 4. 顶层模型接入
 
@@ -95,7 +98,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - `workspace.conversation` 是 canonical chat read model
 - conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
-- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。显式 scheduler/runtime drain 恢复 executor；executor 读取 workspace evidence，并通过 `task.update` 与 protocol result 显式写入业务结果。随后当前实现只在该显式 drain command 内继续一次 top-level master loop，由 master 基于 restore context 和 `protocol.thread(correlation_id)` 向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
+- approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.update` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 
@@ -108,6 +111,6 @@ After every tool call, master must first read the tool-result envelope fields `o
 
 ## 8. 测试
 
-- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认走真实顶层 LLM driver
+- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；后台 scheduler claim 后运行真实顶层 LLM driver
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`

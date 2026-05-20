@@ -36,8 +36,8 @@ V3 Host Control Plane
   v
 Agent Runtime / Scheduler
   |
-  +--> resident teammate roster
-  +--> inbox wakeups
+  +--> resident agent roster (master + teammates)
+  +--> user / inbox wakeups
   +--> explicit scheduler auto-claim for recovery/debug
   +--> approval / engine completion wakeups
   +--> idle / shutdown policy
@@ -47,7 +47,7 @@ Agent Harness Kernel
   |
   +--> tool registry
   +--> docs retrieval
-  +--> teammate loop runtime
+  +--> master / teammate loop runtime
   +--> capability dispatch
   +--> background jobs
   |
@@ -84,10 +84,12 @@ V3 的产品主语义改为：
 
 V3 里不再要求所有产品动作都投射为顶层 phase。
 
-同时，V3 的 teammate 不应继续建模为一次性 subagent。默认语义是 resident teammate：
+同时，V3 的 agent 不应继续建模为 REST 调用栈里的临时 loop 或一次性 subagent。默认语义是 resident agent team：
 
+- master agent 是默认 resident member，例如 `agent:master`；它负责 user-facing conversation、task 编排与 teammate 协调
 - teammate 的身份、role、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在
-- 常驻不表示持续占用 LLM 推理；idle teammate 不运行模型，只等待 scheduler 的 wakeup signal
+- 常驻不表示持续占用 LLM 推理；idle agent 不运行模型，只等待 scheduler 的 wakeup signal
+- 用户消息只持久化消息并排队 `agent:master` wakeup；Host API 不直接运行 master loop
 - teammate 默认由 master delegation 唤醒，也可以被 inbox message、approval resolution、engine completion 或 manual resume 唤醒；task auto-claim 仅用于显式 recovery/debug/operator 场景
 - `protocol.send` 不只是写入消息记录，还应产生 recipient 可消费的 wakeup signal
 
@@ -101,7 +103,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 持久化 `task / lane / approval / inbox / memory / agent roster / engine invocation`
 - 持久化 `artifact catalog / report draft / report / run` 并将其暴露为 session 共享工作面
 - 提供统一 API / streaming / projection
-- 触发 harness kernel 运行
+- 将用户动作与 control-plane 变化转换为 agent wakeup signal
 - 为 UI / CLI 提供 canonical workspace snapshot
 
 不负责：
@@ -137,24 +139,24 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 
 ### 3.2.1 Agent Runtime / Scheduler
 
-Agent runtime / scheduler 负责让 teammate 以“持久 agent 成员”存在，而不是只在 `task.delegate` 调用栈中短暂运行。
+Agent runtime / scheduler 负责让 master 与 teammate 都以“持久 agent 成员”存在，而不是让 master 在 REST handler 调用栈中运行、teammate 在 `task.delegate` 调用栈中短暂运行。
 
-第一阶段目标是单进程 async scheduler：Host 进程内 worker 从持久化 signal queue claim lease 并运行 bounded turn。多进程 worker、Redis/外部队列、跨进程共享 limiter 是后续扩展，不作为第一版阻塞项；但 claim API、worker id、lease expiry 与 limiter 抽象必须从第一版开始保留。
+第一阶段目标是单进程 async scheduler：Host 进程内 worker 从持久化 signal queue claim lease，并运行 master 或 teammate 的 bounded turn。多进程 worker、Redis/外部队列、跨进程共享 limiter 是后续扩展，不作为第一版阻塞项；但 claim API、worker id、lease expiry 与 limiter 抽象必须从第一版开始保留。
 
 职责：
 
-- 维护 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`
-- 根据 inbox unread、pending task、approval resolved、engine completed、manual resume 等信号唤醒对应 teammate
-- 在 teammate idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
-- 将 `protocol.send`、explicit delegation、显式 task auto-claim、background completion 转化为可审计的 wakeup event
-- 为被唤醒 teammate 构建 focused restore context，包括 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
+- 维护 master 与 teammate lifecycle：`spawned -> working -> idle -> working ... -> shutdown`
+- 根据 user message、inbox unread、pending task、approval resolved、engine completed、manual resume 等信号唤醒对应 agent
+- 在 agent idle 时停止 LLM turn loop，只保留可恢复身份与 control-plane 状态
+- 将 user message、`protocol.send`、explicit delegation、显式 task auto-claim、background completion 转化为可审计的 wakeup event
+- 为被唤醒 agent 构建 focused restore context；master context 包含 conversation、task board、protocol threads 与 workspace evidence，teammate context 包含 identity、role、task/lane focus、unread inbox、protocol thread、workspace artifacts 与相关 memory
 - 执行 idle timeout、shutdown handshake、failure recovery 与重试策略
 
 不负责：
 
 - 直接决定业务任务内容
 - 替代 master 做项目管理
-- 把所有 teammate 变成永远运行的后台 LLM process
+- 把所有 agent 变成永远运行的后台 LLM process
 - 把 runtime 内部队列暴露成普通用户需要操作的产品界面
 
 顶层 loop 的默认形态是一个 bounded turn loop：
@@ -201,15 +203,21 @@ restore context
 
 ```text
 create session
+  -> ensure resident agent:master
+  -> user message is persisted and queues agent:master wakeup
+  -> scheduler claims master signal
   -> master agent understands user goal
   -> master agent create / prioritize tasks
   -> master agent spawn / assign / resume teammate agents when needed
   -> agent runtime records roster state and wakeup signals
+  -> scheduler claims teammate signal
   -> teammate agent wakes on delegation, inbox, task claim, approval, or engine completion
   -> teammate agent restores on shared session workspace with task/lane focus
   -> teammate inspects artifacts / protocols / task state
   -> teammate chooses tools / capability calls when needed
   -> teammate returns to idle when no immediate work remains
+  -> teammate protocol / task / report change queues agent:master wakeup
+  -> scheduler claims master signal
   -> report teammate may update report draft directly on shared workspace
   -> assign / claim lane for delegated task when execution context is required
   -> resolve approvals through unified protocol

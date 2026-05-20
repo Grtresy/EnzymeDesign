@@ -24,21 +24,19 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `POST /v3/sessions`
 - `GET /v3/sessions/{session_id}`
 - `POST /v3/sessions/{session_id}/messages`
-- `POST /v3/sessions/{session_id}/runtime/drain`
 - `GET /v3/sessions/{session_id}/workspace`
 - `GET /v3/sessions/{session_id}/events`
 - `POST /v3/approvals/{approval_id}/resolve`
 
-`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution 和必要的 execution continuation 状态；若需要 resident teammate 继续工作，则排队 runtime signal，由显式 runtime drain 执行恢复。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution、必要的 execution continuation 状态，并排队相关 agent wakeup signal；恢复执行由后台 scheduler claim signal 后启动。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
 
-`POST /v3/sessions/{session_id}/runtime/drain` 是显式 scheduler/runtime command，用于 bounded teammate runtime turn。请求字段：
+`POST /v3/sessions/{session_id}/runtime/drain` 是 debug / operator / manual scheduler command，不是普通产品主路径。它用于本地诊断、测试 scheduler claim lease、或在后台 worker 禁用时有界推进 pending signals。请求字段：
 
 - `max_signals: int = 3`
 - `max_steps_per_agent: int = 8`
 - `auto_enqueue_ready_tasks: bool = false`
-- `run_master_followup: bool = true`
 
-该 endpoint 返回 `V3CommandResult` shape。它是 Host API 唯一负责 bounded teammate drain 的入口；内部必须通过 scheduler claim lease 语义认领 signal，而不是直接顺序调用 `wake_agent()`。第一版仍可同步等待 bounded drain 结果；语义上它是显式 scheduler command。当 `run_master_followup=true` 且 drain 产生 terminal teammate outcome 时，当前实现可在该显式 command 内继续一次 top-level master follow-up。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
+该 endpoint 返回 `V3CommandResult` shape。它内部必须通过 scheduler claim lease 语义认领 signal，而不是直接顺序调用 `wake_agent()`、`run_agent_harness_loop()` 或任何 service-level master response helper。它可以 claim `agent:master` 与 teammate signals，但不能绕过与后台 scheduler 相同的 runtime 入口。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -60,7 +58,7 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 - `protocol.thread`
 - `protocol.send`
 
-这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；如果需要 bounded teammate turn，必须由显式 scheduler/runtime drain action 执行。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 teammate 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
+这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；recipient turn 由后台 scheduler claim signal 后启动，debug/manual 场景也只能通过 scheduler claim path 推进。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 agent team 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
 
 默认内部只读文档工具还应包括：
 
@@ -108,12 +106,12 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 说明：
 
-- `POST /v3/sessions/{session_id}/messages` 是默认的 harness command ingress，可触发普通消息处理、task updates、delegation request 排队、report draft 推进等顶层 master loop 行为；它不隐式执行 bounded teammate runtime drain
-- 当 `model_factory` 可用时，该入口默认走真实 top-level LLM harness driver
+- `POST /v3/sessions/{session_id}/messages` 是默认的 user command ingress；它持久化用户消息并排队 `agent:master` wakeup，不直接执行 master loop，也不隐式执行 bounded teammate runtime drain
+- 当 `model_factory` 可用时，后台 scheduler claim `agent:master` signal 后默认走真实 top-level LLM harness driver
 - Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 master agent 在 loop 中创建和编排，再通过 workspace projection 展示
 - task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台；task create/update endpoint 是 control-plane mutation，不应隐式 drain agent runtime
 - V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol 的用户可理解状态；低层 wakeup queues 和 signal counters 默认留在 debug/event 面
-- 默认主路径是 `conversation -> master planning -> task -> resident teammate wakeup -> teammate work surface -> user feedback`，而不是用户消息直接裸触发 capability
+- 默认主路径是 `conversation -> agent:master wakeup -> scheduler starts master -> master planning -> task -> resident teammate wakeup -> scheduler starts teammate -> teammate work surface -> master wakeup -> user feedback`，而不是用户消息直接裸触发 capability
 
 ## 3. Workspace Contract
 
@@ -276,8 +274,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `execution.preprocess.completed` 表示 pipeline 内格式转换或输入准备已生成新的可信 workspace artifact
 - `execution.artifacts.fetched` 表示 runner 已按 declared `expected_outputs` 下载远端结果，随后应产生对应 `artifact.recorded`
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
-- `agent.woken` 表示 scheduler 已为 resident teammate 开始一次 work turn；wakeup reason 必须能回链到 inbox、task、approval、engine invocation 或 manual resume
-- `agent.idle` 表示 teammate 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
+- `agent.woken` 表示 scheduler 已为 resident master 或 teammate 开始一次 work turn；wakeup reason 必须能回链到 user message、inbox、task、approval、engine invocation 或 manual resume
+- `agent.idle` 表示 agent 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
 - `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
 
 ## 7. 弃用策略

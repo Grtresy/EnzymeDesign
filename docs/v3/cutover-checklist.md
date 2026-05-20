@@ -8,10 +8,10 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 
 - `docs/v3/00-harness-doctrine.md` remains the governing boundary: top-level product truth is the harness control plane, not a workflow graph.
 - `/v3` public API shape is frozen for this cutover window.
-- V3 can create a session, accept a user message, create tasks, delegate to teammates, wake teammate runtime, run research and execution capabilities, create a report draft, publish a final report, and project the workspace.
+- V3 can create a session, accept a user message, enqueue `agent:master`, let the background scheduler start master, create tasks, delegate to teammates, let the scheduler start teammates, run research and execution capabilities, create a report draft, publish a final report, wake master for user-facing synthesis, and project the workspace.
 - V3 execution can stage session artifacts into HPC `RunSpec.inputs`, fetch declared `expected_outputs`, and register fetched files as session artifacts.
 - V3 execution can run an approved pipeline sandbox whose SDK performs required preprocess steps and supervised HPC calls for format-sensitive tools such as Vina.
-- Runtime signal queue has durable claim leases, stale claim recovery, duplicate wakeup dedupe, and bounded scheduler drain coverage.
+- Runtime signal queue has durable claim leases, stale claim recovery, duplicate wakeup dedupe, background scheduler coverage for master and teammates, and bounded debug/manual drain coverage.
 - Provider/tool limits cover agent/session/global concurrency, LLM provider calls, research provider calls, and execution/HPC submission calls.
 - Design and deep-research production paths use no heuristic decision fallback: planner/model failures produce failed decisions or failed dossiers, tool argument validation is returned as a tool error observation, and unexpected runtime/provider exceptions are allowed to fail the gate.
 - V2 continues to run for rollback only; no new product semantics are added to V2 during the cutover window.
@@ -34,7 +34,8 @@ This checklist covers the V3 product-surface cutover from the frozen V2 workflow
 - Live LLM smoke: `run_v3_live_evals()` must pass `v3_live_design_task_plan` when live LLM tests are enabled.
 - Seeded execution smoke tests that pre-create DB rows, patch UUIDs, or inject local fixture artifacts are useful regression evidence, but they do not satisfy the full `live_e2e` release gate.
 - Full `live_e2e` evidence must run with real LLM, Tavily, and HPC configuration enabled. Missing configuration must be reported as missing gate prerequisites, not counted as a successful cutover result.
-- Evidence must include task count, delegated teammate roles, capability keys, report count, and per-check pass/fail values.
+- Full `live_e2e` must use the product path: send user message, resolve approvals when needed, poll workspace/events, and not call `/runtime/drain` to advance agent work.
+- Evidence must include master and teammate wakeup lifecycle, task count, delegated teammate roles, capability keys, report count, and per-check pass/fail values.
 - Execution evidence must include at least one pipeline invocation, one staged-input run, one multi-input run, one declared-output artifact fetch, and one preprocess-in-pipeline chain when Vina is enabled.
 - Failed evals block cutover unless explicitly accepted as non-release-blocking by the owner.
 

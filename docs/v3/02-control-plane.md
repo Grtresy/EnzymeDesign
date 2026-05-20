@@ -176,15 +176,16 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 - teammate 在“是否是 agent”这件事上与 master 平级；差异在于职责，而不是本体类型
 - master 是 team leader 与 user-facing agent；teammate 是 internal worker / specialist
+- master 也必须作为 resident member 建模，例如默认 `agent:master`，由 scheduler wakeup signal 启动 loop
 - teammate 应拥有自己的 restore context、tool surface、protocol thread 与状态投影
-- teammate 的身份与 inbox 默认常驻；idle 状态不持续调用 LLM，但必须可被 scheduler 恢复
+- master 与 teammate 的身份与 inbox 默认常驻；idle 状态不持续调用 LLM，但必须可被 scheduler 恢复
 - master 显式 delegation 是默认产品路径；teammate auto-claim 仅用于显式 recovery/debug/operator 场景中的 role 匹配认领
 
 ### 2.7.1 AgentRuntimeSignal
 
 用途：
 
-- 表达哪些事件需要唤醒 resident teammate
+- 表达哪些事件需要唤醒 resident master 或 teammate
 - 将 inbox、task、approval、engine completion、manual resume 等变化统一接入 scheduler
 - 避免 `protocol.send` 只写入数据库但无人消费
 
@@ -210,9 +211,9 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 
 补充约束：
 
-- `reason` 至少覆盖 `delegation_assigned`、`inbox_unread`、`task_available`、`approval_resolved`、`engine_completed`、`manual_resume`
+- `reason` 至少覆盖 `user_message`、`delegation_assigned`、`inbox_unread`、`task_available`、`approval_resolved`、`engine_completed`、`manual_resume`
 - `inbox_unread` 不只来自 teammate-to-teammate 消息，也包括 master-to-teammate 的 follow-up message
-- signal 的 `task_id`、`lane_id`、`correlation_id` 与 `source_ref` 应足够让 runtime 恢复 focused teammate turn，并从 source inbox payload 渲染 wakeup context
+- signal 的 `task_id`、`lane_id`、`correlation_id` 与 `source_ref` 应足够让 runtime 恢复 focused master / teammate turn，并从 source inbox payload 或 user message 渲染 wakeup context
 - scheduler 只能 claim `pending` signal 或 lease 已过期的 `claimed` signal；claim 时必须写入 `claimed_by`、`claim_expires_at` 并递增 `attempt_count`
 - claim 后必须要么 `completed`，要么释放回 `pending`，要么写入 `failed`；失败重试只允许在明确 retryable 且未超过 attempt 上限时回到 `pending`
 - duplicate wakeup 去重按 `session_id + agent_id + reason + source_ref` 作用于未完成 signal，避免同一 inbox message 或 engine completion 被重复排队

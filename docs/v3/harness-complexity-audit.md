@@ -43,25 +43,25 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   Doctrine 风险：Host API 开始像 orchestration engine 一样，把用户消息处理、teammate wakeup 和后续工作串在一次 service call 里。
 
-  目标边界：Host API 应暴露清晰命令，例如 post message、resolve approval、drain pending signals、read projection。隐式 drain 应被视为策略，而不是隐藏副作用。
+  目标边界：Host API 应暴露清晰命令，例如 post message、resolve approval、read projection，以及 debug/operator 的 drain pending signals。普通产品路径中，Host API 只写入用户动作和 control-plane 状态并排队 wakeup signal；后台 scheduler 是唯一正常 runtime 入口。
 
-  后续修正方向：在 API / service 命名中显式表达 runtime drain 行为，或将其移动到一个文档化的 scheduler command 后面。
+  后续修正方向：将 master 与 teammate 都建模为 resident agent member，`post_message()` 只排队 `agent:master` wakeup，approval resolve 只排队相关 agent wakeup，`/runtime/drain` 只保留为 debug/manual scheduler command。
 
-  修正记录：已移除 `create_task()` / `update_task()` / `post_message()` 的隐式 drain。`task.delegate` 现在只创建 protocol delegation、resident teammate 与 wakeup signal；bounded teammate turn 只能通过 `POST /v3/sessions/{session_id}/runtime/drain` 显式执行。
+  修正记录：已移除 `create_task()` / `update_task()` / `post_message()` 的隐式 drain。下一步产品语义是：`task.delegate` 只创建 protocol delegation、resident teammate 与 wakeup signal；master 与 teammate turn 都只能由 scheduler claim signal 后执行。
 
   追加修正记录：`runtime/drain` 现在通过 scheduler claim lease 语义认领 signal；repository 层记录 `claimed_by`、`claim_expires_at`、`attempt_count` 与 `last_error`，支持 stale claim recovery 与失败重试边界。
 
-- [x] Host API 在 teammate 终态结果后触发 master follow-up。
+- [x] Host API 在 teammate 终态结果后触发 service-level master response turn，而不是排队 master wakeup。
 
-  证据：`V3HostApiService._run_master_followup_after_teammates()` 会在 teammate outcomes 后启动另一次 top-level master loop。
+  证据：历史实现中的 service helper 会在 teammate outcomes 后启动另一次 top-level master loop。
 
   Doctrine 风险：service 代码决定“teammate 终态结果应触发 master response turn”。这是产品 workflow policy，被嵌入 Host service 逻辑。
 
-  目标边界：master follow-up 应是 master agent 消费的显式 scheduler event，或是一条范围很小、已文档化的 harness rule。
+  目标边界：teammate result 应表达为 task / protocol / report state 加 `agent:master` wakeup signal；master loop 由 scheduler claim signal 后启动，并由 master agent 自己决定是否回复以及如何回复。
 
   后续修正方向：将 teammate result 表达为 inbox / protocol state 加 master wakeup signal，让 master loop 自己决定是否回复以及如何回复。
 
-  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master follow-up。当前实现保留一次 master follow-up，但只在显式 `runtime/drain` scheduler command 内、且 drain 产生 terminal teammate outcome 时运行。
+  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master response turn。目标语义改为：teammate terminal outcome 只写 task/protocol/report state 并排队 `agent:master` wakeup；master loop 只能由 scheduler claim signal 后启动，由 master 自己决定是否回复用户以及如何回复。
 
 - [x] `protocol.send(await_response=true)` 同时承担消息投递和同步 teammate 执行。
 
@@ -73,7 +73,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   后续修正方向：从正常 protocol 语义中移除 `await_response`，或拆成单独的 `runtime.drain` / `agent.resume` tool 或 API。
 
-  修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，需要显式 runtime drain 才会运行 agent。
+  修正记录：已从正常 `protocol.send` 语义中移除同步 teammate 执行。`protocol.send` 现在只持久化 message 并排队 wakeup signal；`await_response` / `max_steps` 参数会返回 `sync_execution_not_supported`，recipient turn 由 scheduler claim signal 后运行。`/runtime/drain` 只能作为 debug/manual claim 工具。
 
 - [x] Delegation 存在多条重叠路径。
 

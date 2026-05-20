@@ -28,12 +28,9 @@ V3 的核心立场：
 
 分 session 执行计划：
 
-- [sessions/01-async-runtime-docs-and-boundary.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/01-async-runtime-docs-and-boundary.md)
-- [sessions/02-runtime-signal-queue-semantics.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/02-runtime-signal-queue-semantics.md)
-- [sessions/03-async-scheduler-worker.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/03-async-scheduler-worker.md)
-- [sessions/04-provider-tool-limits.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/04-provider-tool-limits.md)
-- [sessions/05-host-api-events-projection.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/05-host-api-events-projection.md)
-- [sessions/06-e2e-hardening-and-cutover.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/06-e2e-hardening-and-cutover.md)
+- [sessions/A-unified-agent-scheduler.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/A-unified-agent-scheduler.md)
+- [sessions/B-background-runtime-service.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/B-background-runtime-service.md)
+- [sessions/C-product-e2e-and-failure-semantics.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/C-product-e2e-and-failure-semantics.md)
 
 Execution pipeline SDK docs:
 

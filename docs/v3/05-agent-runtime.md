@@ -2,15 +2,15 @@
 
 ## 1. 目标
 
-V3 teammate 默认是 resident agent member，而不是一次性 subagent。
+V3 master 与 teammate 默认都是 resident agent member。master 不在 REST handler 调用栈中同步运行，teammate 也不是一次性 subagent。
 
-resident 的含义是：agent identity、role、status、task focus、inbox、protocol thread 与 workspace 读视野持久存在；LLM loop 不常驻占用资源，只在 runtime / scheduler 收到明确 wakeup signal 后恢复执行。
+resident 的含义是：agent identity、role、status、task focus、inbox、protocol thread 与 workspace 读视野持久存在；LLM loop 不常驻占用资源，只在 runtime / scheduler 收到明确 wakeup signal 并 claim lease 后恢复执行。
 
 参考模型来自 `/home/grtresy/VSCodeRepo/learn-claude-code` 的 s09 Agent Teams、s10 Team Protocols、s11 Autonomous Agents，但 OpenZyme 不采用 JSONL inbox 或 Python thread 作为架构要求。V3 的 canonical truth 仍然是 control plane、event log 与 workspace projection。
 
 ## 2. Lifecycle
 
-默认 teammate 生命周期：
+默认 agent 生命周期：
 
 ```text
 ---------+
@@ -46,19 +46,21 @@ Status 语义：
 
 runtime / scheduler 应把以下 control-plane 变化转化为 wakeup signal：
 
+- user message created，唤醒 `agent:master`
 - master 创建或更新 delegation / assignment
 - `protocol.send` 投递给该 teammate 的 unread inbox message
+- teammate task completed / failed / blocked、protocol reply、report publish 等需要 master 判断的变化，唤醒 `agent:master`
 - task board 出现 role 匹配、未阻塞、可认领的 pending task
 - approval 被 resolve，且关联 task / protocol thread 需要继续
 - engine invocation completed / failed，且关联 task 需要 teammate 消费结果
 - background job completion、artifact recorded、report draft feedback 等可继续工作的事件
 - user message 或 manual resume 明确要求继续某个 task / teammate
 
-wakeup signal 至少需要记录 recipient agent、reason、session、task/lane/correlation 关联与创建时间。scheduler 恢复 teammate 时，应把 reason 注入 restore context，而不是只让模型从全局状态中猜测发生了什么。
+wakeup signal 至少需要记录 recipient agent、reason、session、task/lane/correlation 关联与创建时间。scheduler 恢复 master 或 teammate 时，应把 reason 注入 restore context，而不是只让模型从全局状态中猜测发生了什么。
 
 ## 3.1 Scheduler / Worker Boundary
 
-第一版采用单进程 async scheduler：同一 Host 进程内的 scheduler/worker pool 从持久化 `AgentRuntimeSignal` 队列 claim work，并运行 bounded teammate turn。agent 本身不是常驻进程；常驻的是 `AgentMember` identity、inbox、task focus、memory 和 protocol state。
+第一版采用单进程 async scheduler：同一 Host 进程内的 scheduler/worker pool 从持久化 `AgentRuntimeSignal` 队列 claim work，并运行 bounded master 或 teammate turn。agent 本身不是常驻进程；常驻的是 `AgentMember` identity、inbox、task focus、memory 和 protocol state。
 
 claim 语义：
 
@@ -67,6 +69,7 @@ claim 语义：
 - worker 完成 turn 后把 signal 写为 `completed` 或 `failed`
 - retryable failure 在 attempt 上限内可释放回 `pending`，否则保持 `failed`
 - stale claim recovery 只基于 lease，不依赖进程内内存
+- 没有 LLM 配置或 model factory 不可用时，后台 worker 不应 claim 需要 LLM 的 signal；缺失配置应作为诊断状态暴露
 
 第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：claim API 是 repository 层能力，scheduler 通过 worker id 和 lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
 
@@ -74,7 +77,7 @@ claim 语义：
 
 runtime 并发限制分层表达：
 
-- agent/session/global：限制同时运行的 teammate turn 数
+- agent/session/global：限制同时运行的 master / teammate turn 数
 - LLM provider：限制 chat/structured/tool-calling model 调用
 - research provider：限制 Tavily、PubMed、Semantic Scholar、UniProt、RCSB PDB 等外部检索调用
 - execution provider：限制 sandbox/HPC submission 和 runner-side expensive operation
@@ -101,14 +104,14 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。显式 Host runtime drain 发现 terminal teammate outcome 后，当前实现最多继续一次 top-level master loop；master 通过 restore summary 和 `protocol.thread(correlation_id)` 读取结果并回复用户。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master follow-up。
+teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master response turn。
 
 ### Failed Delegation Follow-up Flow
 
 失败委托的后续处理由 master 主动判断，不由 `task.delegate`、protocol tool 或 runtime 自动追问：
 
 ```text
-explicit runtime drain or protocol.thread shows failed / unclear summary
+scheduler master turn or protocol.thread shows failed / unclear summary
   -> master inspects task state and protocol.thread(correlation_id)
   -> master chooses an existing action:
        protocol.send follow-up to the same teammate
@@ -116,12 +119,12 @@ explicit runtime drain or protocol.thread shows failed / unclear summary
        ask the user for clarification
        report the result in user-facing language
   -> protocol persists unread inbox + inbox_unread wakeup signal
-  -> an explicit scheduler/runtime drain wakes the same resident teammate with task/lane/correlation focus
+  -> scheduler wakes the same resident teammate with task/lane/correlation focus
   -> restore context / seed message includes the protocol thread payload; runtime does not generate message-type-specific instructions
   -> teammate replies on the same thread with a normal protocol message
 ```
 
-`protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; if a bounded teammate turn is required, it must be performed through an explicit scheduler/runtime drain action.
+`protocol.send` does not run the recipient. It only persists the message, creates the wakeup signal, and returns message / signal / thread metadata. Synchronous execution parameters such as `await_response` and `max_steps` are not part of normal protocol semantics; recipient execution is performed by the scheduler after claim. `/runtime/drain` may manually claim signals for debug/operator use, but it is not the product path.
 
 `protocol.send` recipient resolution:
 
@@ -159,32 +162,32 @@ runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `t
 
 ## 6. Restore Context
 
-每次唤醒 teammate 时，restore context 至少包含：
+每次唤醒 agent 时，restore context 至少包含：
 
-- teammate identity：agent id、name、role、parent/master、session
+- agent identity：agent id、name、role、parent/master、session
 - current focus：task、lane、correlation thread、wakeup reason
 - unread inbox messages 与相关 protocol thread
 - task board 中与该 role/focus 相关的任务
 - session-wide artifact catalog、report drafts、engine invocations 与 source refs 的摘要
 - memory summary 与压缩后的 continuity notes
 
-发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 teammate 忘记自己是谁、负责什么、应该向谁回复。
+master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。
 
 ## 7. Failure And Recovery Defaults
 
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
 - 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
-- approval resolved 是唤醒 resident teammate 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
+- approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.update(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 写入 `status="failed"`、`failure_summary` 与 `failure_ref`。
 - 如果 bounded loop 到达 max steps，runtime 可以标记 runtime signal / agent 状态为 failed，但不能据此推断 task 业务终态；master 或 teammate 应通过 protocol thread、task state 与 artifacts 决定下一步。
-- 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾。
+- 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 消费后再通过 task/protocol/report 变化唤醒 master。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
 - failed teammate 的 task 应回到可诊断状态，由 master 或其他 teammate 接管，workspace projection 必须显示失败原因与关联 thread。
 
 ## 8. Projection Requirements
 
-Workspace projection 中的 `delegation` 不应只表达最近一次 `task.delegate` 调用结果，而应表达 resident team roster：
+Workspace projection 中的 `delegation` 不应只表达最近一次 `task.delegate` 调用结果，而应表达 resident team roster，包括 master 与 teammates：
 
 - agent identity、role、status、task/lane focus
 - current correlation id 与最新 message type
