@@ -11,10 +11,10 @@
 3. 一次 session 在 Host、Harness、Agent Runtime、Capability Engines、Storage、UI 之间如何流动
 4. 当前哪些机制已经落地，哪些仍是切换期约束或未完成证明
 
-当前主线已经从 V2 的 `episode + phase graph` 产品语义转向 V3 的
+当前主线采用 V3 的
 `session + task board + lane/workspace + approval + resident teammates + explicit runtime/drain`
-语义。V2 相关实现仍可作为兼容、回滚、迁移或局部 engine 代码存在，但新产品行为不再以
-`intake -> design -> report_review` 作为顶层真状态。
+语义。旧 `episode + phase graph` 产品面、接口、包和规格已经从主线删除；新产品行为不再以
+`intake -> design -> report_review` 作为顶层真状态，也不再维护双栈兼容入口。
 
 V3 稳定文档入口见：
 
@@ -27,7 +27,7 @@ V3 稳定文档入口见：
 - [docs/v3/05-agent-runtime.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/05-agent-runtime.md)
 - [docs/v3/06-top-level-llm-loop.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/06-top-level-llm-loop.md)
 
-本文档是主线架构入口；`docs/v3/` 是 V3 主题细则。若两者与当前代码实现出现差异，必须同时核对代码、V3 稳定文档与最近验收事实后修正文档或实现，不能用旧 V2 叙述压过当前 V3 代码事实。
+本文档是主线架构入口；`docs/v3/` 是 V3 主题细则。若两者与当前代码实现出现差异，必须同时核对代码、V3 稳定文档与最近验收事实后修正文档或实现，不能用旧 workflow 叙述压过当前 V3 代码事实。
 
 ---
 
@@ -37,7 +37,7 @@ V3 稳定文档入口见：
 
 当前主线保留的主要应用：
 
-- `apps/openzyme-host-api`：FastAPI Host API，包含 V3 `/v3` 产品接口和仍保留的 V2/兼容入口
+- `apps/openzyme-host-api`：FastAPI Host API，包含 V3 `/v3` 产品接口
 - `apps/openzyme-host-cli`：Thin CLI client
 - `apps/openzyme-web-ui`：浏览器工作区 UI
 - `apps/mcp-hpc-runner`：SSH/Slurm/HPC runner 边界
@@ -51,15 +51,13 @@ V3 稳定文档入口见：
 - `packages/openzyme-research`：research provider 与 research capability 相关实现
 - `packages/preprocess-backend`：受控 preprocess 能力后端
 
-仍存在但不是新 V3 产品语义首选落点的 V2-era 或兼容包：
+共享能力包：
 
-- `packages/openzyme-graph`
 - `packages/openzyme-runtime`
-- `packages/openzyme-storage`
 - `packages/openzyme-tools`
 - `packages/openzyme-execution`
 
-这些包可以继续服务迁移、回滚、兼容或局部 engine 复用；但新增 V3 产品状态、协议、调度、workspace projection、report draft、execution pipeline 语义时，默认应优先放在 V3 harness/control-plane 相关包中。
+这些包不拥有顶层产品真状态。新增产品状态、协议、调度、workspace projection、report draft、execution pipeline 语义时，默认应优先放在 V3 harness/control-plane 相关包中。
 
 ---
 
@@ -83,7 +81,7 @@ V3 的产品真状态由 Host control plane 持久化，并通过 workspace proj
 - `report`
 - `research evidence / source refs / gaps`
 
-LangGraph / LangChain 可以继续作为 `deep_research`、局部 research loop、旧 V2 兼容或其他内部能力实现工具，但不能重新成为 V3 产品级 workflow truth owner。
+LangGraph / LangChain 可以继续作为 `deep_research`、局部 research loop 或其他内部能力实现工具，但不能重新成为 V3 产品级 workflow truth owner。
 
 ### 3.2 用户只与 Master 对话，Teammate 是内部团队成员
 
@@ -428,16 +426,9 @@ Live gate 解释：
 
 ---
 
-## 10. V2 / Legacy / 兼容层
+## 10. Legacy Boundary
 
-V1 已迁入 legacy。V2 相关 graph、runtime、storage、tools 仍在仓库中保留，用于兼容、回滚、测试、迁移和局部能力复用。
-
-V2 的历史产品语义：
-
-- `episode`
-- `intake -> design -> report_review`
-- design 内部调用 research / execution
-- LangGraph supervisor graph 管理顶层 workflow state
+V1 已迁入 legacy。旧 `episode + phase graph` 产品面已从主线删除，主线不再维护回滚用的 graph/storage/API/UI 双栈。
 
 当前 V3 的产品语义：
 
@@ -456,4 +447,4 @@ V2 的历史产品语义：
 - 新产品状态写入 V3 control plane，而不是只写 prompt、browser state 或 graph checkpoint
 - 新 agent/team 行为通过 task、inbox、protocol、signal 和 explicit drain 表达
 - 新 execution 行为走 pipeline sandbox、artifact catalog、SDK、approval 和 runner staging
-- V2 endpoint 或 package 可以保留，但不应继续吸收新的 V3 产品语义
+- 不新增 `episode`、phase graph、supervisor-route 或旧 workspace projection 入口

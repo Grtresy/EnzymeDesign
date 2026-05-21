@@ -255,7 +255,7 @@ claimed --operator release--> pending
 
 用途：
 
-- 保留 V2 的 artifact-first 优势
+- 保留 artifact-first 的工作面优势
 - 但将其纳入更大的 harness control plane
 - `report_draft` 作为 report teammate 的共享中间工作对象，用于承载可修订、可恢复、可发布的总结过程
 
@@ -361,10 +361,10 @@ control plane 需要最小事件流，便于 streaming 与审计。
 - `report_draft.updated`
 - `report.generated`
 
-## 5. 与 V2 的迁移关系
+## 5. Legacy Boundary
 
-- V2 `episode` 不能直接继续担任 V3 的唯一顶层对象
-- V2 `approvals / runs / artifacts` 可以迁移并保留语义
-- V2 graph checkpoint 不再作为产品顶层真状态来源
-- 若有 state 仍需存于 LangGraph，只允许是某 capability engine 的局部运行态
-- V2 control model 默认冻结，不再继续扩展新的顶层对象或 phase 语义
+- `session` 是唯一顶层产品锚点。
+- `approval`、`run`、`artifact`、`report_draft` 与 `report` 均以 session/task/lane/invocation 关系进入 control plane。
+- Graph checkpoint 不作为产品顶层真状态来源。
+- 若有 state 仍需存于 LangGraph，只允许是某 capability engine 的局部运行态。
+- 不新增 `episode`、phase rail 或 supervisor-route 语义。

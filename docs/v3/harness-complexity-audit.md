@@ -149,7 +149,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
 - [x] Design / deep-research planner fallback 会掩盖真实 provider 或 contract 失败。
 
-  证据：`packages/openzyme-graph/src/openzyme_graph/design.py` 曾在 LLM planner 异常或非法 action 时调用 heuristic next action，并把 blocked action 重新加入 `allowed_actions`。`packages/openzyme-engines/src/openzyme_engines/deep_research_graph.py` 曾在缺少 model 或 researcher 未调用 search 时编造 supervisor plan、tool call 和硬编码 enzyme search query。
+  证据：已删除的旧 graph 路径曾在 LLM planner 异常或非法 action 时调用 heuristic next action，并把 blocked action 重新加入 `allowed_actions`。已删除的旧 deep research graph 曾在缺少 model 或 researcher 未调用 search 时编造 supervisor plan、tool call 和硬编码 enzyme search query。
 
   Doctrine 风险：生产路径看似推进成功，但实际的 LLM/tool/provider contract 已失败；测试可能验证的是 fallback 行为，而不是产品真实语义。
 

@@ -4,12 +4,12 @@
 
 V3 的核心立场：
 
-- 这是一次 **harness-first** 的版本升级，不是对 V2 supervisor graph 的局部修补。
-- V2 视为冻结并准备废弃的路线；V3 不以延续 V2 产品模型为目标。
+- 这是一次 **harness-first** 的主线架构，不是对旧 supervisor graph 的局部修补。
 - 顶层产品真状态从 `episode + phase graph` 转向 `session + task board + lane/workspace + approval + teammate work surface`。
+- 旧 `episode + phase graph` 产品面已从主线删除；新工作不得恢复这些公共语义。
 - `learn-claude-code` 是 V3 的方法论基线。
 - LangGraph / LangChain 可以继续存在，但只能作为 `deep_research`、`execution` 等**内部能力引擎**的实现工具，不能重新成为产品级 workflow truth owner。
-- Monorepo 包布局默认收敛为：`packages/openzyme-domain`、`packages/openzyme-core`、`packages/openzyme-engines`，避免沿着 V2 的 `runtime/storage/tools/graph` 继续过细拆分。
+- Monorepo 包布局默认收敛为：`packages/openzyme-domain`、`packages/openzyme-core`、`packages/openzyme-engines`，避免重新拆出产品级 graph/storage 栈。
 
 先读文档顺序：
 
@@ -20,7 +20,6 @@ V3 的核心立场：
 5. [04-public-interfaces.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/04-public-interfaces.md)
 6. [05-agent-runtime.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/05-agent-runtime.md)
 7. [06-top-level-llm-loop.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/06-top-level-llm-loop.md)
-8. [05-migration-roadmap.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/05-migration-roadmap.md)
 
 架构审计与后续修正追踪：
 
@@ -41,5 +40,4 @@ Execution pipeline SDK docs:
 - 后续 AI 在开始 V3 工作前，必须先读本目录至少 `README + 00-harness-doctrine.md + 与本次改动相关的稳定主题文档`。
 - 涉及 V3 harness、agent runtime、protocol、scheduler 或 Host API 编排边界的修改，必须先读 `harness-complexity-audit.md`，并在修正对应问题后更新其中的复选框。
 - 若实现选择与这些文档冲突，应优先更新文档并解释偏差，不能静默偏离。
-- 若涉及对现有 `docs/OpenZyme架构设计.md` 的回写，必须单独征求用户确认。
 - 实现 V3 execution 前必须先读 `03-capability-engines.md` 与 `execution-pipeline-docs/README.md`；不得继续依赖“Host 本地 artifact path 直接作为 HPC command path”的旧行为。

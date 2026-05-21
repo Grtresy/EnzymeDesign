@@ -4,7 +4,7 @@
 
 本仓库是基于 `uv` 的 Python monorepo。应用入口放在 `apps/`，共享库放在 `packages/`。Python 子项目统一采用 `src/` 布局，并在各自目录下维护 `tests/`。`apps/openzyme-web-ui` 是独立的 Node 前端工作区。
 
-- `apps/openzyme-host-api`：FastAPI Host API，包含当前 V3 `/v3` 产品接口与仍保留的 V2/兼容入口
+- `apps/openzyme-host-api`：FastAPI Host API，包含当前 V3 `/v3` 产品接口
 - `apps/openzyme-host-cli`：Thin CLI Client
 - `apps/openzyme-web-ui`：浏览器工作区 UI
 - `apps/mcp-hpc-runner`：SSH/Slurm/HPC runner 执行边界
@@ -13,7 +13,7 @@
 - `packages/openzyme-engines`：capability engines，尤其是 execution pipeline、sandbox supervision 与 engine tool 注册
 - `packages/openzyme-pipeline`：受控 execution pipeline sandbox 内 SDK
 - `packages/openzyme-research`、`packages/preprocess-backend`：research provider 与 preprocess 能力
-- `packages/openzyme-graph`、`packages/openzyme-runtime`、`packages/openzyme-storage`、`packages/openzyme-tools`、`packages/openzyme-execution`：V2-era/兼容/迁移相关包；新增 V3 产品语义时不要默认继续加到这些边界里
+- `packages/openzyme-runtime`、`packages/openzyme-tools`、`packages/openzyme-execution`：共享 runtime seams、tool adapters 与 runner adapters；不得承载新的顶层产品真状态
 - `docs/`：架构与开发文档；V3 稳定文档在 `docs/v3/`
 - `openspec/`：规格文档与变更工件
 
@@ -27,7 +27,7 @@
 - `uv run pytest -m "not integration"`：跳过依赖真实外部集成的测试
 - `uv run pytest packages/openzyme-core/tests/test_agent_scheduler.py packages/openzyme-core/tests/test_protocols.py`：V3 runtime signal / scheduler / protocol focused 回归
 - `uv run pytest apps/openzyme-host-api/tests/test_api.py -k v3`：V3 Host API focused 回归
-- `uv run python -m openzyme_host_api.evals --v3`：运行 V3 本地 workflow eval
+- `uv run python -m openzyme_host_api.evals`：运行 V3 本地 workflow eval
 - `uv --project apps/openzyme-host-cli run openzyme --help`：查看 CLI 入口与命令
 - `cd apps/openzyme-web-ui && npm test && npm run build`：运行前端测试与构建
 - `uv --project apps/mcp-hpc-runner run mcp-hpc-runner serve --config apps/mcp-hpc-runner/config/hpc_runner.toml`：启动 HPC Runner
@@ -60,7 +60,7 @@ Pytest markers 中的 live gate 需要显式配置与 opt-in：`live_llm`、`liv
 - `docs/v3/execution-pipeline-docs/README.md`，当改动涉及 execution pipeline / HPC SDK / sandbox 时
 - `docs/v3/harness-complexity-audit.md`，当改动涉及 harness/runtime/protocol 边界时
 
-V3 默认产品语义是 `session + task board + lane/workspace + approval + resident teammate + explicit runtime/drain`，不是 V2 的 `episode + phase graph`。LangGraph / LangChain 可以作为 capability engine 或局部实现工具存在，但不能重新成为 V3 顶层产品真状态。
+V3 默认产品语义是 `session + task board + lane/workspace + approval + resident teammate + explicit runtime/drain`。LangGraph / LangChain 可以作为 capability engine 或局部实现工具存在，但不能成为顶层产品真状态。
 
 ## V3 实施守则
 

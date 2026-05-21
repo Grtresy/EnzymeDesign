@@ -2,7 +2,7 @@
 
 ## 1. 总体原则
 
-V3 允许引入破坏性新接口，并以替代 V2 为目标。
+V3 公共接口以 harness-first 语义为唯一主线。
 
 目标：
 
@@ -11,9 +11,9 @@ V3 允许引入破坏性新接口，并以替代 V2 为目标。
 
 说明：
 
-- `/v3` namespace 仍然保留，便于在迁移窗口内识别新接口
-- 但 V3 默认不承担长期兼容 V2 语义的义务
-- 任何兼容层都只应视为短期迁移措施，而不是长期产品承诺
+- `/v3` namespace 是当前公共产品接口
+- 公共接口不暴露 workflow graph、checkpoint 或 capability-local engine state
+- 旧 `episode`、phase rail、supervisor-route 词汇不得重新进入公共接口
 
 ## 2. API 设计默认值
 
@@ -278,9 +278,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `agent.idle` 表示 agent 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
 - `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
 
-## 7. 弃用策略
+## 7. Legacy Boundary
 
-- V2 进入 `deprecated / frozen` 状态，不再继续功能性演进
-- V3 完成后应直接制定 V2 retirement plan，而不是默认长期双栈并行
-- 若迁移窗口内仍需保留少量兼容入口，它们只能作为临时 shim，不能反向主导 V3 设计
-- `current_phase`、phase rail、supervisor-route 等 V2 词汇不再是 V3 公共接口基线
+- 主线不再维护旧 workflow API/UI/CLI 双栈。
+- `current_phase`、phase rail、supervisor-route 等词汇不是公共接口基线。
+- 新接口必须以 `session_id`、task、lane、approval、engine invocation、artifact、report draft 与 report 为锚点。

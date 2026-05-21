@@ -1,8 +1,8 @@
 # OpenZyme Monorepo
 
-The repository has been hard-cut to a V2-first mainline.
+The repository now uses a V3-only OpenZyme mainline.
 
-- Mainline keeps reusable infrastructure and new V2 work.
+- Mainline product behavior is session/control-plane based.
 - Frozen V1 code now lives under [legacy/v1](/home/grtresy/VSCodeRepo/EnzymeDesign/legacy/v1).
 
 ## Mainline
@@ -14,16 +14,14 @@ Current root workspace members:
 - `apps/openzyme-host-cli`
 - `packages/openzyme-domain`
 - `packages/openzyme-execution`
-- `packages/openzyme-graph`
 - `packages/openzyme-research`
 - `packages/openzyme-runtime`
-- `packages/openzyme-storage`
 - `packages/openzyme-tools`
 
 Mainline reference documents:
 
-- [docs/OpenZyme V2 LangChain重写蓝图.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme%20V2%20LangChain重写蓝图.md)
 - [docs/OpenZyme架构设计.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme架构设计.md)
+- [docs/v3/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/README.md)
 
 Current retained assets:
 
@@ -33,7 +31,7 @@ Current retained assets:
 - `apps/openzyme-web-ui`: browser workspace shell and Node-side tests/build
 - `containers/`: runtime container assets
 - `database/`: structured biology datasets and examples
-- `openspec/`: mainline specs and future V2 changes
+- `openspec/`: mainline specs and change records
 
 ## Legacy V1
 

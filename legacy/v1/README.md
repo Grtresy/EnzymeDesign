@@ -1,7 +1,7 @@
 # OpenZyme V1 Legacy Workspace
 
 This subtree preserves the frozen V1 Host stack after the repository hard cut
-to a V2-first mainline.
+to the current V3 control-plane mainline.
 
 Run all V1 commands from `legacy/v1`.
 

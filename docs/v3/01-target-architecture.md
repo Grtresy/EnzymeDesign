@@ -63,15 +63,9 @@ Persistence + Infra
   +--> mcp-hpc-runner / SSH / Slurm
 ```
 
-## 2. V3 与 V2 的根本区别
+## 2. V3 产品语义
 
-V2 的产品主语义是：
-
-- `episode`
-- `intake -> design -> report_review`
-- design 内部再调用 research / execution
-
-V3 的产品主语义改为：
+V3 的产品主语义是：
 
 - `session`
 - `task DAG`
@@ -312,7 +306,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 
 ## 6. 推荐 Monorepo 包布局
 
-V3 默认不沿用 V2 那种偏细的 package 切法。
+V3 默认不沿用拆散的产品级 graph/storage 包切法。
 
 推荐收敛为：
 
@@ -334,19 +328,16 @@ V3 默认不沿用 V2 那种偏细的 package 切法。
 - engines 的替换性和演进节奏与 core 不同，适合单独收口
 - apps 仍然维持产品入口和外部执行边界
 
-迁移桥接默认值：
+当前边界：
 
-- `packages/openzyme-runtime` + `packages/openzyme-storage` + `packages/openzyme-tools`
-  逐步并入 `packages/openzyme-core`
-- `packages/openzyme-research` + `packages/openzyme-execution`
-  逐步并入 `packages/openzyme-engines`
-- `packages/openzyme-graph`
-  仅保留 capability engine 内部图，最终不再承载产品顶层真状态
+- `packages/openzyme-runtime` 保留 settings、LLM、limits、research tool seams 与 capability-local helper
+- `packages/openzyme-tools` 保留工具/adapter helpers
+- `packages/openzyme-research` 和 `packages/openzyme-execution` 保留 provider/runner integration
 
-迁移时允许先在旧目录中完成改造，但必须同时满足两条约束：
+所有边界必须满足两条约束：
 
 - 新增 V3 顶层语义只能先落到 `domain / core / engines` 的目标边界，不得继续扩展旧的产品级包职责
-- 每轮过渡实现都要附带明确的目标归宿，避免长期停留在 mixed-package 状态
+- capability-local state 必须回写 control plane 后才能成为产品可见状态
 
 ## 7. 参考实现路径
 
@@ -363,7 +354,7 @@ Deep research 参考：
 - `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/deep_researcher.py`
 - `/home/grtresy/VSCodeRepo/26/open_deep_research/docs/deep_researcher_graph_详解.md`
 
-现有 OpenZyme V2 现状参考：
+OpenZyme 主线参考：
 
 - `/home/grtresy/VSCodeRepo/EnzymeDesign/docs/OpenZyme架构设计.md`
-- `/home/grtresy/VSCodeRepo/EnzymeDesign/packages/openzyme-graph/src/openzyme_graph/`
+- `/home/grtresy/VSCodeRepo/EnzymeDesign/packages/openzyme-core/src/openzyme_core/`
