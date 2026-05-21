@@ -10,7 +10,7 @@ This package is the target home for V3 capability engines such as:
 - `execution`
 - `reporting`
 
-## Migration rule
+## Boundary rule
 
 - New V3 engine-facing product semantics should converge here.
-- Existing V2-era packages such as `openzyme-graph`, `openzyme-research`, and `openzyme-execution` may still contain transitional code, but they should not become the long-term owner of V3 control-plane behavior.
+- Engines may own capability-local execution state, but they must write product-visible state back through the V3 control plane.

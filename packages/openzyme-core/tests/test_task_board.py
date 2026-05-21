@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 
+from openzyme_domain import ArtifactKind
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
@@ -13,7 +15,9 @@ from openzyme_core import CoreRepositories
 from openzyme_core import HarnessInput
 from openzyme_core import HarnessStep
 from openzyme_core import MemoryEventBus
+from openzyme_core import RestoreFocus
 from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardBucket
 from openzyme_core import TaskMutation
 from openzyme_core import TaskBoardService
@@ -144,6 +148,24 @@ def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
         service.update_task("task_update", TaskMutation(assigned_ref="agent:executor"))
 
 
+def test_task_board_normalizes_teammate_role_assigned_refs() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_alias",
+        subject="Alias",
+        description="Normalize teammate role alias.",
+        assigned_ref="executor",
+    )
+    updated = service.update_task("task_alias", TaskMutation(assigned_ref="reporter"))
+
+    assert task.assigned_ref == "agent:executor"
+    assert updated.assigned_ref == "agent:reporter"
+
+
 def test_task_board_buckets_failed_task_as_terminal_failure() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -208,6 +230,84 @@ def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
     assert [item.task.task_id for item in projection.items] == ["task_lane"]
     assert projection.lane_id == "lane_001"
     assert next_task.task_id == "task_lane"
+
+
+def test_research_task_cannot_complete_before_required_structure_artifact() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.sessions.save(
+        Session(
+            session_id=session.session_id,
+            project_id=session.project_id,
+            title=session.title,
+            objective="Find a real RCSB PDB structure artifact and run fpocket execution.",
+            status=session.status,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+    )
+    repositories.tasks.save(
+        Task(
+            task_id="task_research",
+            session_id=session.session_id,
+            subject="Collect evidence",
+            description="Identify evidence and a PDB structure artifact.",
+            status=TaskStatus.IN_PROGRESS,
+            priority=TaskPriority.HIGH,
+            kind="research",
+            assigned_ref="agent:researcher",
+            created_at="2026-04-17T10:01:00+00:00",
+            updated_at="2026-04-17T10:01:00+00:00",
+        )
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_research"),
+    )
+
+    missing = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_missing_structure",
+            tool_name="task.update",
+            arguments={"task_id": "task_research", "status": "completed"},
+            task_id="task_research",
+        ),
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_structure",
+            session_id=session.session_id,
+            task_id="task_research",
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.STRUCTURE,
+            storage_uri="/tmp/structure.pdb",
+            relative_path="structure.pdb",
+            created_at="2026-04-17T10:02:00+00:00",
+            title="structure.pdb",
+        )
+    )
+    completed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_has_structure",
+            tool_name="task.update",
+            arguments={"task_id": "task_research", "status": "completed"},
+            task_id="task_research",
+        ),
+    )
+
+    assert missing.ok is False
+    assert missing.error_code == "required_structure_artifact_missing"
+    assert "rcsb_pdb.download_structure" in missing.hint
+    assert completed.ok is True
 
 
 class TaskToolDriver:

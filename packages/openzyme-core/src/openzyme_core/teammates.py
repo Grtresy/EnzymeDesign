@@ -213,7 +213,10 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="web.fetch",
-                    description="Fetch and extract readable content from one web page URL.",
+                    description=(
+                        "Fetch and extract readable content from one web page URL. "
+                        "This does not persist structure artifacts; for RCSB structure pages use rcsb_pdb.download_structure."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
@@ -435,14 +438,16 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="execution.pipeline.start",
-                    description="Submit Python pipeline code for the assigned task to the controlled execution sandbox.",
+                    description=(
+                        "Submit Python pipeline code for the assigned task to the controlled execution sandbox. "
+                        "This runs the pipeline; dry-run previews are not exposed to teammate execution tasks."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "task_id": {"type": "string"},
                             "code": {"type": "string"},
                             "inputs": {"type": "object"},
-                            "dry_run": {"type": "boolean"},
                         },
                         "required": ["task_id", "code"],
                         "additionalProperties": False,
@@ -643,8 +648,12 @@ class TeammateConversationDriver(HarnessDriver):
     def _system_prompt(self, context: SessionRuntimeContext) -> str:
         restore = context.restore_context
         assert restore is not None
-        artifact_titles = (
-            ", ".join(artifact.title for artifact in restore.artifacts[:8]) or "none"
+        artifact_bits = (
+            ", ".join(
+                f"{artifact.artifact_id} kind={artifact.kind.value} title={artifact.title or 'untitled'}"
+                for artifact in restore.artifacts[:8]
+            )
+            or "none"
         )
         draft_titles = (
             ", ".join(draft.title for draft in restore.report_drafts[:8]) or "none"
@@ -668,13 +677,16 @@ class TeammateConversationDriver(HarnessDriver):
                 "You may read any session artifact through artifact tools. Stay focused on your assigned task and lane.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
+                "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",
+                "Researcher contract: when the assigned objective requires execution against a real structure, use RCSB/UniProt tools to persist a workspace artifact such as rcsb_pdb.download_structure; fetching a web page is not a structure artifact.",
+                "Executor contract: when the assigned task asks for fpocket and Artifact catalog contains a structure artifact id, submit execution.pipeline.start with Python code that reads that artifact via artifacts.get('<artifact_id>') and calls hpc.fpocket(structure_artifact_id=structure['artifact_id']). Include that artifact id in inputs.artifact_ids. Do not use dry_run for assigned execution work unless the user explicitly asked only for a plan preview; dry_run does not run HPC and does not satisfy execution or reporting gates.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
                 f"Instructions: {self.instructions}",
                 f"Session objective: {context.snapshot.session.objective}",
                 f"Focused task: {restore.focused_task_id or 'none'}",
                 f"Focused lane: {restore.focused_lane_id or 'none'}",
-                "Artifact catalog: " + artifact_titles,
+                "Artifact catalog: " + artifact_bits,
                 "Report draft catalog: " + draft_titles,
                 "Report catalog: " + report_titles,
                 "Known protocol threads: " + protocol_bits,
@@ -704,9 +716,54 @@ class TeammateConversationDriver(HarnessDriver):
             return [{"role": "user", "content": content}]
         return [HumanMessage(content=content)]
 
-    def _allowed_tools(self) -> tuple[ToolDescriptor, ...]:
-        return teammate_tool_descriptors(
+    def _allowed_tools(
+        self, context: SessionRuntimeContext
+    ) -> tuple[ToolDescriptor, ...]:
+        descriptors = teammate_tool_descriptors(
             role=self.role, research_adapter=self.research_adapter
+        )
+        if self.role != "researcher":
+            return descriptors
+        task = context.repositories.tasks.get(self.task_id)
+        task_text = "" if task is None else f"{task.subject}\n{task.description}"
+        session_text = context.snapshot.session.objective
+        open_ended_needles = (
+            "research",
+            "evidence",
+            "literature",
+            "paper",
+            "papers",
+            "web",
+            "identify",
+            "search",
+        )
+        combined = f"{task_text}\n{self.instructions}\n{session_text}".lower()
+        requires_deep_research_first = any(
+            needle in combined for needle in open_ended_needles
+        )
+        if not requires_deep_research_first:
+            return descriptors
+        has_deep_research_invocation = any(
+            invocation.engine_name == "deep_research"
+            for invocation in context.repositories.invocations.list_by_task(
+                context.snapshot.session.session_id, self.task_id
+            )
+        )
+        if has_deep_research_invocation:
+            return descriptors
+        return tuple(
+            descriptor
+            for descriptor in descriptors
+            if not descriptor.tool_name.startswith(
+                (
+                    "web.",
+                    "pubmed.",
+                    "semantic_scholar.",
+                    "uniprot.",
+                    "rcsb_pdb.",
+                    "interpro.",
+                )
+            )
         )
 
     def _initial_prompt_projection(
@@ -772,7 +829,10 @@ class TeammateConversationDriver(HarnessDriver):
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose=f"v3_teammate_loop:{self.role}"
         )
-        tools = [descriptor.to_openai_tool() for descriptor in self._allowed_tools()]
+        tools = [
+            descriptor.to_openai_tool()
+            for descriptor in self._allowed_tools(context)
+        ]
         response = invoker.invoke_with_tools(
             system_prompt=self._system_prompt(context),
             messages=list(self._messages),

@@ -21,7 +21,7 @@ def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> 
     adapter = TavilyResearchAdapter(search_callable=fake_search, timeout_seconds=12.5)
 
     result = adapter.conduct(
-        episode_id="ep_001",
+        session_id="sess_001",
         research_brief="Find evidence for thermostable catalase scaffolds.",
         unit=ResearchUnit(
             unit_id="unit_001",

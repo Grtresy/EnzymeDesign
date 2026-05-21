@@ -3139,9 +3139,48 @@ class ExecutionEngine:
 
 def register_execution_tools(registry: ToolRegistry, engine: ExecutionEngine) -> None:
     def start_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
+        session_id = context.snapshot.session.session_id
+        task_id = str(invocation.arguments["task_id"])
+        existing_task_invocation = next(
+            (
+                candidate
+                for candidate in context.repositories.invocations.list_by_task(
+                    session_id, task_id
+                )
+                if candidate.engine_name == engine.descriptor.engine_name
+                and candidate.status
+                not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED}
+            ),
+            None,
+        )
+        if existing_task_invocation is not None:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=(
+                    "An execution pipeline invocation already exists for this task: "
+                    f"{existing_task_invocation.invocation_id} "
+                    f"status={existing_task_invocation.status.value}. "
+                    "Use execution.pipeline.status for that invocation instead of starting another pipeline."
+                ),
+                task_id=existing_task_invocation.task_id,
+                lane_id=existing_task_invocation.lane_id,
+                status="existing_execution_invocation",
+                summary="Use execution.pipeline.status for the existing execution invocation.",
+                error_code="existing_execution_invocation",
+                hint=(
+                    "Call execution.pipeline.status with invocation_id="
+                    f"{existing_task_invocation.invocation_id!r}; then update the task with the result."
+                ),
+                details={
+                    "invocation_id": existing_task_invocation.invocation_id,
+                    "invocation_status": existing_task_invocation.status.value,
+                },
+            )
         result = engine.start_pipeline(
-            session_id=context.snapshot.session.session_id,
-            task_id=str(invocation.arguments["task_id"]),
+            session_id=session_id,
+            task_id=task_id,
             code=str(invocation.arguments["code"]),
             inputs=None if invocation.arguments.get("inputs") is None else dict(invocation.arguments["inputs"]),
             dry_run=bool(invocation.arguments.get("dry_run", False)),

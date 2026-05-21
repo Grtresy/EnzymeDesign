@@ -139,13 +139,13 @@ class DefaultHpcExecutionRegistry:
         if str(entry.get("execution_support")) != "runnable":
             raise ValueError(f"HPC catalog tool {tool_id} is discovery-only in V1.")
         contract = get_hpc_tool_contract(tool_id)
-        episode_id = str(handoff.get("episode_id") or "")
+        session_id = str(handoff.get("session_id") or "")
         required_artifacts = host_toolbox.resolve_artifacts(
-            episode_id,
+            session_id,
             list(handoff.get("required_artifact_ids") or []),
         )
         context_artifacts = host_toolbox.resolve_artifacts(
-            episode_id,
+            session_id,
             list(handoff.get("context_artifact_ids") or []),
         )
         if tool_id == "fpocket":

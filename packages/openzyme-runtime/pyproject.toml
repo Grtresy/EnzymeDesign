@@ -1,14 +1,13 @@
 [project]
 name = "openzyme-runtime"
 version = "0.1.0"
-description = "Phase B runtime foundation for OpenZyme"
+description = "Runtime support utilities for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "langchain>=1.0,<2.0",
   "openzyme-domain",
   "openzyme-research",
-  "openzyme-storage",
 ]
 
 [project.optional-dependencies]

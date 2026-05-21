@@ -1,30 +1,30 @@
 # openzyme-domain
 
-V2 typed contracts for OpenZyme core business entities.
+Shared OpenZyme domain enums and V3 control-plane contracts.
 
 ## Scope
 
-This package defines the Phase A canonical entity vocabulary shared by:
+This package owns stable vocabulary used across Host API, UI, CLI, core services,
+capability engines, research adapters, and execution adapters.
 
-- `packages/openzyme-graph`
-- `packages/openzyme-storage`
-- `apps/openzyme-host-api`
-- `apps/openzyme-web-ui`
-- `packages/openzyme-execution`
+## Core objects
 
-## Core entities
+Top-level product state is defined in `openzyme_domain.control_plane`:
 
-- `Project`
-- `Episode`
-- `Decision`
-- `Approval`
-- `Run`
-- `ArtifactRecord`
-- `ReportRecord`
+- `Session`
+- `Task`
+- `Lane`
+- `ApprovalRequest`
+- `InboxMessage`
+- `MemoryEntry`
+- `AgentMember`
+- `AgentRuntimeSignal`
+- `EngineInvocation`
+- `RunRecord`
+- `SessionArtifactRecord`
+- `SessionReportDraftRecord`
+- `SessionReportRecord`
 
-## Key rules
-
-- `Episode` is the workflow business anchor.
-- `thread_id = episode_id` in later graph contracts.
-- Each core entity uses a stable object identifier rather than filesystem paths.
-- Later workflow entities such as `EvidenceRecord` and `ArtifactRecord` extend the model by referencing existing IDs instead of reshaping the Phase A core set.
+Shared enums such as `ArtifactKind`, `RunStatus`, and `SourceRefKind` remain in
+`openzyme_domain.models` because they are consumed by multiple capability
+packages.

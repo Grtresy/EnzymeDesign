@@ -17,11 +17,7 @@ from .llm_debug import current_llm_debug_context
 from .llm_debug import get_llm_debug_recorder
 from .llm_debug import llm_debug_context
 from .llm_debug import serialize_llm_payload
-from .bootstrap import GraphAssemblyInputs
-from .bootstrap import GraphRuntimeFacade
-from .bootstrap import GRAPH_THREAD_KEY
 from .bootstrap import RuntimeFoundation
-from .bootstrap import build_episode_graph_config
 from .bootstrap import validate_runtime_foundation_support
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
@@ -55,24 +51,7 @@ from .contracts import ResearchUnitPlan
 from .checkpointer import MissingLangGraphPostgresDependencyError
 from .checkpointer import PostgresCheckpointerConfig
 from .checkpointer import PostgresCheckpointerFactory
-from .migration_assets import MIGRATION_IDS
-from .migration_assets import apply_sqlite_migrations
-from .migration_assets import get_migration_sql
 from .hpc_catalog import RepoBackedHpcCatalogProvider
-from .repositories import ArtifactRecordRepository
-from .repositories import DecisionRepository
-from .repositories import EvidenceRecordRepository
-from .repositories import EpisodeRepository
-from .repositories import OwnershipError
-from .repositories import PhaseBRepositories
-from .repositories import ProjectRepository
-from .repositories import ReportRepository
-from .repositories import ResearchSummaryRepository
-from .repositories import RunRepository
-from .repositories import SourceRefRepository
-from .repositories import UnresolvedGapRepository
-from .repositories import ApprovalRepository
-from .repositories import connect_sqlite
 from .research_tools import CompositeResearchToolProvider
 from .research_tools import build_bio_research_tools
 from .research_tools import DefaultResearchToolProvider
@@ -90,7 +69,6 @@ from .seams import DesignToolContext
 from .seams import HpcCatalogProvider
 from .seams import HpcCatalogQuery
 from .seams import HpcExecutionRegistry
-from .seams import ProjectionLoader
 from .seams import ResearchAdapter
 from .seams import ResearchTool
 from .seams import ResearchToolContext
@@ -127,7 +105,6 @@ from .test_gates import live_llm_skip_reason
 from .test_gates import live_tavily_skip_reason
 from .test_gates import load_current_settings
 from .test_gates import quality_eval_skip_reason
-from .toolbox import OpenZymeHostToolbox
 
 __all__ = [
     "CanonicalResearchSnapshot",
@@ -139,11 +116,6 @@ __all__ = [
     "DesignToolCallResult",
     "DesignToolContext",
     "DesignBriefDraft",
-    "ApprovalRepository",
-    "ArtifactRecordRepository",
-    "DecisionRepository",
-    "EvidenceRecordRepository",
-    "EpisodeRepository",
     "ExecutionAdapter",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
@@ -160,9 +132,6 @@ __all__ = [
     "ExecutionStagedInputDraft",
     "ExecutionSuccessCheckDraft",
     "ExecutionSettings",
-    "GraphAssemblyInputs",
-    "GraphRuntimeFacade",
-    "GRAPH_THREAD_KEY",
     "get_settings",
     "HostApiSettings",
     "HostCliSettings",
@@ -181,28 +150,21 @@ __all__ = [
     "LlmDebugRecorder",
     "LlmPurposePolicy",
     "LlmSettings",
-    "MIGRATION_IDS",
     "MissingLangChainDependencyError",
     "MissingLangChainProviderDependencyError",
     "MissingLangGraphPostgresDependencyError",
     "MissingLlmConfigurationError",
-    "OpenZymeHostToolbox",
     "OpenAICompatibleChatModelFactory",
     "AsyncConcurrencyLimiter",
     "DEFAULT_PROVIDER_LIMITS",
     "LimiterRegistry",
     "SyncConcurrencyLimiter",
     "OpenZymeSettings",
-    "OwnershipError",
-    "PhaseBRepositories",
     "PostgresCheckpointerConfig",
     "PostgresCheckpointerFactory",
-    "ProjectionLoader",
-    "ProjectRepository",
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",
-    "ReportRepository",
     "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",
@@ -215,13 +177,10 @@ __all__ = [
     "REPO_ROOT",
     "ResearchSettings",
     "TestSettings",
-    "ResearchSummaryRepository",
     "ResearchUnitDraft",
     "ResearchUnitPlan",
     "ReportDraft",
     "reset_settings_cache",
-    "RunRepository",
-    "SourceRefRepository",
     "StructuredOutputInvoker",
     "StaticResearchToolProvider",
     "ThinkResearchTool",
@@ -231,7 +190,6 @@ __all__ = [
     "WebSearchArgs",
     "WebSearchTool",
     "TracingSettings",
-    "UnresolvedGapRepository",
     "RuntimeFoundation",
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",
@@ -244,12 +202,8 @@ __all__ = [
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
     "DEFAULT_OPENAI_COMPAT_EXTRA_BODY",
     "DEFAULT_OPENAI_COMPAT_MODEL",
-    "apply_sqlite_migrations",
-    "build_episode_graph_config",
-    "connect_sqlite",
     "current_llm_debug_context",
     "get_llm_debug_recorder",
-    "get_migration_sql",
     "load_env_files",
     "llm_debug_context",
     "load_current_settings",

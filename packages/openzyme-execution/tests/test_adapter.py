@@ -48,7 +48,7 @@ class FakeRunnerServer:
         }
 
 
-def test_runner_status_mapping_covers_minimum_phase_b_lifecycle() -> None:
+def test_runner_status_mapping_covers_minimum_execution_lifecycle() -> None:
     assert map_runner_status_to_run_status("submitted") is RunStatus.QUEUED
     assert map_runner_status_to_run_status("running") is RunStatus.RUNNING
     assert map_runner_status_to_run_status("completed") is RunStatus.SUCCEEDED
@@ -61,7 +61,7 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
     adapter = HpcRunnerExecutionAdapter(server=server)
 
     outcome = adapter.submit_execution(
-        "ep_001",
+        "sess_001",
         {
             "tool_name": "exec.run",
             "runspec": {
@@ -76,7 +76,7 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
 
     assert server.calls[0][0] == "exec.run"
     sent_runspec = server.calls[0][1]["runspec"]
-    assert sent_runspec["metadata"]["openzyme"]["episode_id"] == "ep_001"
+    assert sent_runspec["metadata"]["openzyme"]["session_id"] == "sess_001"
     assert outcome.run_id == "run_001"
     assert outcome.status is RunStatus.SUCCEEDED
     assert outcome.execution_mode == "ssh"
@@ -89,7 +89,7 @@ def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
     adapter = HpcRunnerExecutionAdapter(server=server)
 
     adapter.submit_execution(
-        "ep_001",
+        "sess_001",
         {
             "tool_name": "protein_engineering_pipeline",
             "runspec": {
@@ -104,7 +104,7 @@ def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
 
     assert server.calls[0][0] == "exec.run"
     sent_runspec = server.calls[0][1]["runspec"]
-    assert sent_runspec["metadata"]["openzyme"]["episode_id"] == "ep_001"
+    assert sent_runspec["metadata"]["openzyme"]["session_id"] == "sess_001"
     assert (
         sent_runspec["metadata"]["openzyme"]["requested_tool_name"]
         == "protein_engineering_pipeline"

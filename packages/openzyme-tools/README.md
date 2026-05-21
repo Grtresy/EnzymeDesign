@@ -1,3 +1,3 @@
 # openzyme-tools
 
-Reserved mainline location for V2 tool bindings and service adapters.
+Tool adapters and service helpers shared by OpenZyme capability engines.

@@ -184,7 +184,6 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.research.tavily_timeout_seconds == 12.5
     assert settings.host_cli.base_url == "http://localhost:9999"
     assert settings.host_cli.project_id == "proj_test"
-    assert settings.host_cli.episode_id == "ep_test"
     assert settings.host_cli.output_format == "json"
     assert settings.host_api.bind_host == "0.0.0.0"
     assert settings.host_api.bind_port == 9000

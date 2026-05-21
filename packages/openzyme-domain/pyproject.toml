@@ -1,7 +1,7 @@
 [project]
 name = "openzyme-domain"
 version = "0.1.0"
-description = "V2 domain contracts for OpenZyme"
+description = "Shared OpenZyme domain enums and V3 control-plane contracts"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

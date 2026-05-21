@@ -17,7 +17,7 @@ from openzyme_runtime.seams import ResearchToolContext
 
 def _context() -> ResearchToolContext:
     return ResearchToolContext(
-        episode_id="ep_001",
+        session_id="sess_001",
         project_id="proj_001",
         objective="Test objective",
         design_brief=None,

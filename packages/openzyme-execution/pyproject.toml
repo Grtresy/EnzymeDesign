@@ -1,7 +1,7 @@
 [project]
 name = "openzyme-execution"
 version = "0.1.0"
-description = "Execution adapters for OpenZyme Phase B"
+description = "Execution adapters for the OpenZyme V3 execution engine"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

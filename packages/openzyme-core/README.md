@@ -19,4 +19,4 @@ This package owns the first V3 canonical persistence layer for:
 
 - V3 control-plane truth lives here, not in LangGraph checkpoints.
 - New V3 top-level semantics should land in `openzyme-domain.control_plane` and `openzyme-core`.
-- V2 packages may coexist during migration, but they should not absorb new V3 product semantics.
+- Do not recreate graph-owned top-level workflow state; sessions, tasks, lanes, approvals, artifacts, reports, and runtime signals are canonical here.

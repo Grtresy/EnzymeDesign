@@ -56,8 +56,8 @@ class FakeHostToolbox:
         ]
         self.built_requests = []
 
-    def resolve_artifacts(self, episode_id: str, artifact_ids: list[str]) -> list[dict[str, object]]:
-        assert episode_id == "ep_001"
+    def resolve_artifacts(self, session_id: str, artifact_ids: list[str]) -> list[dict[str, object]]:
+        assert session_id == "sess_001"
         assert artifact_ids == ["art_001"] or artifact_ids == []
         return list(self.resolved) if artifact_ids else []
 
@@ -117,7 +117,7 @@ def test_execution_registry_compiles_fpocket_request_from_artifacts() -> None:
             expected_result_summary="Pocket ranking",
         ),
         handoff={
-            "episode_id": "ep_001",
+            "session_id": "sess_001",
             "execution_goal": "Find pockets",
             "required_artifact_ids": ["art_001"],
             "context_artifact_ids": [],
@@ -154,7 +154,7 @@ def test_execution_registry_compiles_vina_request_from_two_artifacts() -> None:
             expected_result_summary="Docking score",
         ),
         handoff={
-            "episode_id": "ep_001",
+            "session_id": "sess_001",
             "execution_goal": "Dock ligand",
             "required_artifact_ids": ["art_001"],
             "context_artifact_ids": [],
@@ -190,7 +190,7 @@ def test_execution_registry_rejects_vina_without_ligand() -> None:
                 expected_result_summary="Docking score",
             ),
             handoff={
-                "episode_id": "ep_001",
+                "session_id": "sess_001",
                 "execution_goal": "Dock ligand",
                 "required_artifact_ids": ["art_001"],
                 "context_artifact_ids": [],
@@ -213,7 +213,7 @@ def test_execution_registry_rejects_query_only_tools() -> None:
                 expected_result_summary="Structure prediction",
             ),
             handoff={
-                "episode_id": "ep_001",
+                "session_id": "sess_001",
                 "execution_goal": "Predict structure",
                 "required_artifact_ids": [],
                 "context_artifact_ids": [],

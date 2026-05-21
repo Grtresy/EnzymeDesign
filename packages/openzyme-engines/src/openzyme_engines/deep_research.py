@@ -12,12 +12,10 @@ from openzyme_core import ToolRegistry
 from openzyme_core import ToolResult
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
-from openzyme_domain import Episode
 from openzyme_domain import ArtifactKind
 from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
-from openzyme_domain import Project
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SourceRefKind
 from openzyme_domain import ResearchEvidence
@@ -27,6 +25,12 @@ from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain.control_plane import utc_now_iso
 
+from .deep_research_contracts import EvidenceSynthesisItem
+from .deep_research_contracts import ResearchDossier
+from .deep_research_contracts import ResearchSourceItem
+from .deep_research_contracts import ResearchTurnRecord
+from .deep_research_graph import DeepResearchGraphInputs
+from .deep_research_graph import resolve_research_graph_settings
 from .deep_research_graph import run_deep_research
 
 
@@ -121,6 +125,33 @@ class NormalizedResearchDossier:
 class ResearchStartResult:
     invocation: EngineInvocation
     dossier: NormalizedResearchDossier
+    artifact_refs: tuple[SessionArtifactRecord, ...] = ()
+
+
+def _artifact_ref_payload(artifact: SessionArtifactRecord) -> dict[str, Any]:
+    return {
+        "artifact_id": artifact.artifact_id,
+        "kind": artifact.kind.value,
+        "title": artifact.title,
+        "description": artifact.description,
+        "relative_path": artifact.relative_path,
+        "task_id": artifact.task_id,
+        "lane_id": artifact.lane_id,
+        "invocation_id": artifact.invocation_id,
+        "metadata": {} if artifact.metadata is None else dict(artifact.metadata),
+    }
+
+
+def _tool_payload(
+    invocation: EngineInvocation,
+    dossier: NormalizedResearchDossier,
+    artifact_refs: tuple[SessionArtifactRecord, ...],
+) -> dict[str, Any]:
+    payload = dossier.to_dict()
+    payload["invocation_id"] = invocation.invocation_id
+    payload["engine_status"] = invocation.status.value
+    payload["artifact_refs"] = [_artifact_ref_payload(artifact) for artifact in artifact_refs]
+    return payload
 
 
 class DeepResearchRunner(Protocol):
@@ -133,6 +164,90 @@ class DeepResearchRunner(Protocol):
         research_brief: str,
         resolution: str | None,
     ) -> Any: ...
+
+
+@dataclass(slots=True)
+class DirectDeepResearchRunner:
+    repositories: Any
+    research_adapter: Any
+    research_tool_provider: Any | None = None
+    model_factory: Any | None = None
+    limiter_registry: Any | None = None
+    settings: Any | None = None
+
+    def run(
+        self,
+        *,
+        invocation_id: str,
+        objective: str,
+        design_brief: str,
+        research_brief: str,
+        resolution: str | None,
+    ) -> Any:
+        if self.research_adapter is None:
+            raise ValueError("DirectDeepResearchRunner requires a research_adapter")
+        effective_brief = research_brief
+        if resolution:
+            effective_brief = f"{research_brief}\n\nResolution:\n{resolution}"
+        query = " ".join(part for part in (objective, design_brief, effective_brief) if part)
+        response = self.research_adapter.web_search(
+            query=query,
+            max_results=3,
+            topic="enzyme design",
+            include_raw_content=True,
+        )
+        results = list(response.get("results", []))
+        evidence_items: list[EvidenceSynthesisItem] = []
+        raw_notes: list[str] = []
+        for index, raw_result in enumerate(results[:3], start=1):
+            result = dict(raw_result)
+            title = str(result.get("title") or f"Research source {index}")
+            locator = str(result.get("url") or result.get("locator") or "")
+            snippet = str(
+                result.get("content") or result.get("raw_content") or title
+            )
+            raw_notes.append(snippet)
+            evidence_items.append(
+                EvidenceSynthesisItem(
+                    summary=snippet,
+                    query=query,
+                    confidence_label="medium",
+                    sources=[
+                        ResearchSourceItem(
+                            title=title,
+                            locator=locator,
+                            kind=SourceRefKind.WEB_PAGE.value,
+                            snippet=snippet,
+                        )
+                    ],
+                )
+            )
+        summary = (
+            "Research completed with web evidence for the requested design brief."
+            if evidence_items
+            else "Research completed without source-backed findings."
+        )
+        return ResearchDossier(
+            status="completed",
+            completion_reason="research_completed",
+            research_brief=effective_brief,
+            summary=summary,
+            evidence_items=evidence_items,
+            unresolved_gaps=[] if evidence_items else ["No source-backed findings were returned."],
+            raw_notes=raw_notes,
+            recent_turns=[
+                ResearchTurnRecord(
+                    turn_index=1,
+                    action_kind="web_search",
+                    status="completed",
+                    summary=summary,
+                    rationale="Direct V3 research runner executed a bounded web search.",
+                    tool_names=["web.search"],
+                    observation_summary=summary,
+                    created_at=utc_now_iso(),
+                )
+            ],
+        )
 
 
 @dataclass(slots=True)
@@ -153,52 +268,30 @@ class GraphBackedDeepResearchRunner:
         research_brief: str,
         resolution: str | None,
     ) -> Any:
-        from langgraph.checkpoint.memory import InMemorySaver
-        from openzyme_runtime import DefaultResearchToolProvider
-        from openzyme_runtime import GraphAssemblyInputs
-        from openzyme_runtime import OpenZymeHostToolbox
-        from openzyme_runtime import get_settings
-
-        if self.research_adapter is None:
-            raise ValueError("GraphBackedDeepResearchRunner requires a research_adapter")
-        settings = self.settings or get_settings()
-        effective_brief = research_brief
+        invocation = self.repositories.invocations.get(invocation_id)
+        if invocation is None:
+            raise ValueError(f"invocation {invocation_id!r} does not exist")
+        session = self.repositories.sessions.get(invocation.session_id)
+        if session is None:
+            raise ValueError(f"session {invocation.session_id!r} does not exist")
+        effective_research_brief = research_brief
         if resolution:
-            effective_brief = f"{research_brief}\n\nResolution:\n{resolution}"
-        tool_provider = self.research_tool_provider or DefaultResearchToolProvider(
-            self.research_adapter,
-            mcp_enabled=settings.research.mcp_enabled,
-            mcp_tool_allowlist=settings.research.mcp_tool_allowlist,
-            limiter_registry=self.limiter_registry,
-        )
-        project = Project.create(project_id=f"proj_{invocation_id}", name="V3 deep research")
-        episode = Episode.create(
-            episode_id=invocation_id,
-            project_id=project.project_id,
-            objective=objective,
-        )
-        inputs = GraphAssemblyInputs(
-            repositories=self.repositories,
-            checkpointer=InMemorySaver(),
-            execution_adapter=None,
-            hpc_catalog_provider=None,
-            hpc_execution_registry=None,
-            research_adapter=self.research_adapter,
-            research_tool_provider=tool_provider,
-            projection_loader=None,
-            model_factory=self.model_factory,
-            limiter_registry=self.limiter_registry,
-            host_toolbox=OpenZymeHostToolbox(self.repositories),
-            settings=settings,
-        )
+            effective_research_brief = f"{research_brief}\n\nResolution:\n{resolution}"
         return run_deep_research(
-            inputs,
-            episode_id=episode.episode_id,
-            project_id=project.project_id,
+            DeepResearchGraphInputs(
+                session_id=invocation.session_id,
+                project_id=session.project_id,
+                research_adapter=self.research_adapter,
+                research_tool_provider=self.research_tool_provider,
+                model_factory=self.model_factory,
+                limiter_registry=self.limiter_registry,
+                settings=resolve_research_graph_settings(self.settings),
+            ),
             objective=objective,
             design_brief=design_brief,
-            research_brief=effective_brief,
+            research_brief=effective_research_brief,
         )
+
 
 NativeDeepResearchRunner = GraphBackedDeepResearchRunner
 
@@ -325,6 +418,13 @@ class DeepResearchEngine:
     def get_research_status(self, invocation_id: str) -> dict[str, Any]:
         invocation = self._require_invocation(invocation_id)
         payload = invocation.to_dict()
+        payload["engine_status"] = invocation.status.value
+        payload["artifact_refs"] = [
+            _artifact_ref_payload(artifact)
+            for artifact in self._artifact_refs_for_invocation(
+                invocation.session_id, invocation_id
+            )
+        ]
         summary = self.repositories.research_summaries.get_by_invocation(invocation.session_id, invocation_id)
         if summary is not None:
             payload["canonical_summary"] = summary.to_dict()
@@ -358,6 +458,13 @@ class DeepResearchEngine:
                 resolution=resolution,
             )
             dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
+            if dossier.status == "failed":
+                return self._complete_failure(
+                    session=session,
+                    task=task,
+                    invocation=invocation,
+                    dossier=dossier,
+                )
             return self._complete_success(
                 session=session,
                 task=task,
@@ -399,7 +506,7 @@ class DeepResearchEngine:
             dossier=dossier,
             updated_at=now,
         )
-        self._persist_artifacts(
+        artifact_refs = self._persist_artifacts(
             session_id=session.session_id,
             task_id=task.task_id,
             lane_id=invocation.lane_id,
@@ -440,7 +547,11 @@ class DeepResearchEngine:
             "engine.invocation.completed",
             {"invocation_id": invocation.invocation_id, "engine_name": invocation.engine_name, "status": "succeeded"},
         )
-        return ResearchStartResult(invocation=updated_invocation, dossier=dossier)
+        return ResearchStartResult(
+            invocation=updated_invocation,
+            dossier=dossier,
+            artifact_refs=artifact_refs,
+        )
 
     def _complete_failure(
         self,
@@ -468,7 +579,7 @@ class DeepResearchEngine:
             dossier=dossier,
             updated_at=now,
         )
-        self._persist_artifacts(
+        artifact_refs = self._persist_artifacts(
             session_id=session.session_id,
             task_id=task.task_id,
             lane_id=invocation.lane_id,
@@ -496,7 +607,11 @@ class DeepResearchEngine:
             "engine.invocation.completed",
             {"invocation_id": invocation.invocation_id, "engine_name": invocation.engine_name, "status": "failed"},
         )
-        return ResearchStartResult(invocation=failed_invocation, dossier=dossier)
+        return ResearchStartResult(
+            invocation=failed_invocation,
+            dossier=dossier,
+            artifact_refs=artifact_refs,
+        )
 
     def _rewrite_canonical_research(
         self,
@@ -598,61 +713,82 @@ class DeepResearchEngine:
         output_ref: str,
         dossier: NormalizedResearchDossier,
         created_at: str,
-    ) -> None:
+    ) -> tuple[SessionArtifactRecord, ...]:
         from pathlib import PurePosixPath
 
-        self.repositories.artifacts.save(
-            SessionArtifactRecord(
-                artifact_id=f"{invocation_id}:dossier",
+        persisted: list[SessionArtifactRecord] = []
+        dossier_artifact = SessionArtifactRecord(
+            artifact_id=f"{invocation_id}:dossier",
+            session_id=session_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            invocation_id=invocation_id,
+            run_id=None,
+            kind=ArtifactKind.RESEARCH_DOSSIER,
+            storage_uri=f"engine-document://{output_ref}",
+            relative_path=f"deep-research/{invocation_id}/dossier.json",
+            title="Deep research dossier",
+            description="Normalized deep research dossier output.",
+            metadata={
+                "output_ref": output_ref,
+                "status": dossier.status,
+                "completion_reason": dossier.completion_reason,
+                "evidence_count": len(dossier.evidence_items),
+                "source_ref_count": len(dossier.source_refs),
+                "gap_count": len(dossier.unresolved_gaps),
+                "produced_by": "deep_research",
+            },
+            created_at=created_at,
+        )
+        self.repositories.artifacts.save(dossier_artifact)
+        persisted.append(dossier_artifact)
+        for index, item in enumerate(dossier.artifacts, start=1):
+            filename = str(item.get("filename") or f"artifact_{index}")
+            title = str(item.get("title") or PurePosixPath(filename).name)
+            artifact = SessionArtifactRecord(
+                artifact_id=f"{invocation_id}:artifact:{index}",
                 session_id=session_id,
                 task_id=task_id,
                 lane_id=lane_id,
                 invocation_id=invocation_id,
                 run_id=None,
-                kind=ArtifactKind.RESEARCH_DOSSIER,
-                storage_uri=f"engine-document://{output_ref}",
-                relative_path=f"deep-research/{invocation_id}/dossier.json",
-                title="Deep research dossier",
-                description="Normalized deep research dossier output.",
+                kind=ArtifactKind(str(item.get("kind") or "other")),
+                storage_uri=str(item.get("storage_uri") or item.get("source_locator") or f"research://{filename}"),
+                relative_path=filename,
+                title=title,
+                description=None if item.get("description") is None else str(item.get("description")),
                 metadata={
-                    "output_ref": output_ref,
-                    "status": dossier.status,
-                    "completion_reason": dossier.completion_reason,
-                    "evidence_count": len(dossier.evidence_items),
-                    "source_ref_count": len(dossier.source_refs),
-                    "gap_count": len(dossier.unresolved_gaps),
+                    "provider": item.get("provider"),
+                    "external_id": item.get("external_id"),
+                    "format": item.get("format"),
+                    "source_locator": item.get("source_locator"),
                     "produced_by": "deep_research",
+                    **({} if item.get("metadata") is None else dict(item.get("metadata"))),
                 },
                 created_at=created_at,
             )
-        )
-        for index, item in enumerate(dossier.artifacts, start=1):
-            filename = str(item.get("filename") or f"artifact_{index}")
-            title = str(item.get("title") or PurePosixPath(filename).name)
-            self.repositories.artifacts.save(
-                SessionArtifactRecord(
-                    artifact_id=f"{invocation_id}:artifact:{index}",
-                    session_id=session_id,
-                    task_id=task_id,
-                    lane_id=lane_id,
-                    invocation_id=invocation_id,
-                    run_id=None,
-                    kind=ArtifactKind(str(item.get("kind") or "other")),
-                    storage_uri=str(item.get("storage_uri") or item.get("source_locator") or f"research://{filename}"),
-                    relative_path=filename,
-                    title=title,
-                    description=None if item.get("description") is None else str(item.get("description")),
-                    metadata={
-                        "provider": item.get("provider"),
-                        "external_id": item.get("external_id"),
-                        "format": item.get("format"),
-                        "source_locator": item.get("source_locator"),
-                        "produced_by": "deep_research",
-                        **({} if item.get("metadata") is None else dict(item.get("metadata"))),
-                    },
-                    created_at=created_at,
-                )
-            )
+            self.repositories.artifacts.save(artifact)
+            persisted.append(artifact)
+        return tuple(persisted)
+
+    def _artifact_refs_for_invocation(
+        self, session_id: str, invocation_id: str
+    ) -> tuple[SessionArtifactRecord, ...]:
+        artifacts = self.repositories.artifacts.list_by_invocation(session_id, invocation_id)
+
+        def sort_key(artifact: SessionArtifactRecord) -> tuple[int, int, str]:
+            if artifact.artifact_id == f"{invocation_id}:dossier":
+                return (0, 0, artifact.artifact_id)
+            prefix = f"{invocation_id}:artifact:"
+            if artifact.artifact_id.startswith(prefix):
+                try:
+                    index = int(artifact.artifact_id.removeprefix(prefix))
+                except ValueError:
+                    index = 0
+                return (1, index, artifact.artifact_id)
+            return (2, 0, artifact.artifact_id)
+
+        return tuple(sorted(artifacts, key=sort_key))
 
     def _require_session(self, session_id: str) -> Any:
         session = self.repositories.sessions.get(session_id)
@@ -761,7 +897,10 @@ def register_deep_research_tools(registry: ToolRegistry, engine: DeepResearchEng
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=result.invocation.status is EngineInvocationStatus.SUCCEEDED,
-            content=json.dumps(result.dossier.to_dict(), sort_keys=True),
+            content=json.dumps(
+                _tool_payload(result.invocation, result.dossier, result.artifact_refs),
+                sort_keys=True,
+            ),
             task_id=result.invocation.task_id,
             lane_id=result.invocation.lane_id,
         )
@@ -775,7 +914,10 @@ def register_deep_research_tools(registry: ToolRegistry, engine: DeepResearchEng
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=result.invocation.status is EngineInvocationStatus.SUCCEEDED,
-            content=json.dumps(result.dossier.to_dict(), sort_keys=True),
+            content=json.dumps(
+                _tool_payload(result.invocation, result.dossier, result.artifact_refs),
+                sort_keys=True,
+            ),
             task_id=result.invocation.task_id,
             lane_id=result.invocation.lane_id,
         )
@@ -790,12 +932,20 @@ def register_deep_research_tools(registry: ToolRegistry, engine: DeepResearchEng
         )
 
     def dossier_handler(_context: Any, invocation: ToolInvocation) -> ToolResult:
-        dossier = engine.get_research_dossier(str(invocation.arguments["invocation_id"]))
+        invocation_id = str(invocation.arguments["invocation_id"])
+        engine_invocation = engine._require_invocation(invocation_id)
+        dossier = engine.get_research_dossier(invocation_id)
+        artifact_refs = engine._artifact_refs_for_invocation(
+            engine_invocation.session_id, invocation_id
+        )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(dossier.to_dict(), sort_keys=True),
+            content=json.dumps(
+                _tool_payload(engine_invocation, dossier, artifact_refs),
+                sort_keys=True,
+            ),
         )
 
     registry.register("deep_research.start", start_handler)
@@ -807,7 +957,8 @@ def register_deep_research_tools(registry: ToolRegistry, engine: DeepResearchEng
 __all__ = [
     "DeepResearchEngine",
     "DeepResearchRunner",
-    "GraphBackedDeepResearchRunner",
+    "DirectDeepResearchRunner",
+    "NativeDeepResearchRunner",
     "NormalizedResearchDossier",
     "ResearchEvidenceItem",
     "ResearchStartResult",

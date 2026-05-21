@@ -1,106 +1,30 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
-from typing import Callable
-from typing import Iterator
-
-from openzyme_storage import GRAPH_STATE_DEPENDENCY_EXPECTATIONS
-from openzyme_storage import HOST_UI_DEPENDENCY_EXPECTATIONS
-from openzyme_storage import RELATIONAL_RECORDS
 
 from .ai import ChatModelFactory
-from .checkpointer import PostgresCheckpointerFactory
 from .limits import LimiterRegistry
-from .repositories import PhaseBRepositories
 from .seams import ExecutionAdapter
 from .seams import HpcCatalogProvider
 from .seams import HpcExecutionRegistry
-from .seams import ProjectionLoader
 from .seams import ResearchAdapter
 from .seams import ResearchToolProvider
 from .settings import OpenZymeSettings
-from .settings import get_settings
-from .toolbox import OpenZymeHostToolbox
-
-
-GraphBuilder = Callable[["GraphAssemblyInputs"], Any]
-GRAPH_THREAD_KEY = "episode_id"
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeFoundation:
-    repositories: PhaseBRepositories
-    checkpointer_factory: PostgresCheckpointerFactory
     execution_adapter: ExecutionAdapter | None = None
     hpc_catalog_provider: HpcCatalogProvider | None = None
     hpc_execution_registry: HpcExecutionRegistry | None = None
     research_adapter: ResearchAdapter | None = None
     research_tool_provider: ResearchToolProvider | None = None
     bio_research_service: Any | None = None
-    projection_loader: ProjectionLoader | None = None
     model_factory: ChatModelFactory | None = None
     limiter_registry: LimiterRegistry | None = None
     settings: OpenZymeSettings | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class GraphAssemblyInputs:
-    repositories: PhaseBRepositories
-    checkpointer: Any
-    execution_adapter: ExecutionAdapter | None
-    hpc_catalog_provider: HpcCatalogProvider | None
-    hpc_execution_registry: HpcExecutionRegistry | None
-    research_adapter: ResearchAdapter | None
-    research_tool_provider: ResearchToolProvider | None
-    projection_loader: ProjectionLoader | None
-    model_factory: ChatModelFactory | None
-    host_toolbox: OpenZymeHostToolbox
-    settings: OpenZymeSettings
-    limiter_registry: LimiterRegistry | None = None
-
-
-class GraphRuntimeFacade:
-    def __init__(self, foundation: RuntimeFoundation) -> None:
-        self._foundation = foundation
-
-    @property
-    def repositories(self) -> PhaseBRepositories:
-        return self._foundation.repositories
-
-    def build_episode_graph_config(self, episode_id: str) -> dict[str, dict[str, str]]:
-        return build_episode_graph_config(episode_id)
-
-    @contextmanager
-    def compile_graph(self, builder: GraphBuilder) -> Iterator[Any]:
-        settings = self._foundation.settings or get_settings()
-        with self._foundation.checkpointer_factory.open() as checkpointer:
-            yield builder(
-                GraphAssemblyInputs(
-                    repositories=self._foundation.repositories,
-                    checkpointer=checkpointer,
-                    execution_adapter=self._foundation.execution_adapter,
-                    hpc_catalog_provider=self._foundation.hpc_catalog_provider,
-                    hpc_execution_registry=self._foundation.hpc_execution_registry,
-                    research_adapter=self._foundation.research_adapter,
-                    research_tool_provider=self._foundation.research_tool_provider,
-                    projection_loader=self._foundation.projection_loader,
-                    model_factory=self._foundation.model_factory,
-                    limiter_registry=self._foundation.limiter_registry,
-                    host_toolbox=OpenZymeHostToolbox(self._foundation.repositories),
-                    settings=settings,
-                )
-            )
-
-
-def build_episode_graph_config(episode_id: str) -> dict[str, dict[str, str]]:
-    return {"configurable": {"thread_id": episode_id}}
-
-
 def validate_runtime_foundation_support() -> None:
-    required_records = {"projects", "episodes", "decisions", "approvals", "runs", "artifact_records"}
-    assert required_records.issubset(set(RELATIONAL_RECORDS))
-    assert GRAPH_THREAD_KEY == "episode_id"
-    assert any("graph anchor" in item for item in GRAPH_STATE_DEPENDENCY_EXPECTATIONS)
-    assert any("canonical records" in item for item in HOST_UI_DEPENDENCY_EXPECTATIONS)
+    assert RuntimeFoundation is not None

@@ -1238,6 +1238,60 @@ def test_researcher_tool_descriptors_include_web_tools_when_adapter_supports_the
     assert "web.fetch" in tool_names
 
 
+def test_researcher_runtime_requires_deep_research_before_direct_open_research_tools() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {"results": []},
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+    driver = TeammateConversationDriver(
+        model_factory=object(),
+        role="researcher",
+        agent_id="agent:researcher",
+        correlation_id="corr_001",
+        task_id="task_001",
+        instructions="Collect research evidence and identify source-backed findings.",
+        research_adapter=adapter,
+    )
+
+    first_tool_names = {tool.tool_name for tool in driver._allowed_tools(context)}
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_deep_001",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id=None,
+            engine_name="deep_research",
+            status=EngineInvocationStatus.SUCCEEDED,
+            input_ref=None,
+            output_ref=None,
+            approval_id=None,
+            idempotency_key="task_001:deep_research:test",
+            started_at="2026-04-20T12:00:00+00:00",
+            finished_at="2026-04-20T12:01:00+00:00",
+        )
+    )
+
+    second_tool_names = {tool.tool_name for tool in driver._allowed_tools(context)}
+
+    assert "deep_research.start" in first_tool_names
+    assert "web.search" not in first_tool_names
+    assert "rcsb_pdb.download_structure" not in first_tool_names
+    assert "web.search" in second_tool_names
+    assert "rcsb_pdb.download_structure" in second_tool_names
+
+
 def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> None:
     descriptor = next(
         item
@@ -1251,6 +1305,17 @@ def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> No
     assert "read_hint" in descriptor.description
     assert "large dict" in descriptor.description
     assert "pageable keys" in descriptor.description
+
+
+def test_executor_pipeline_start_descriptor_hides_dry_run_for_assigned_work() -> None:
+    descriptor = next(
+        item
+        for item in teammate_tool_descriptors(role="executor")
+        if item.tool_name == "execution.pipeline.start"
+    )
+
+    assert "dry_run" not in descriptor.input_schema["properties"]
+    assert "dry-run previews are not exposed" in descriptor.description
 
 
 def test_research_teammate_direct_download_persists_workspace_artifact() -> None:
@@ -1409,6 +1474,115 @@ def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
     assert repositories.research_source_refs.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
+
+
+def test_research_teammate_web_fetch_rejects_rcsb_structure_page() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {
+            "results": [
+                {
+                    "title": "RCSB page",
+                    "url": "https://www.rcsb.org/structure/4A5T",
+                    "raw_content": "RCSB structure page.",
+                }
+            ]
+        },
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_fetch_rcsb",
+            tool_name="web.fetch",
+            arguments={"url": "https://www.rcsb.org/structure/4A5T"},
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "wrong_tool_for_structure_download"
+    assert result.error_code == "wrong_tool_for_structure_download"
+    assert "rcsb_pdb.download_structure" in result.content
+    assert result.details["pdb_id"] == "4A5T"
+    assert repositories.invocations.list_by_session(session.session_id) == []
+
+
+def test_research_teammate_web_fetch_rejects_rcsb_core_rest_metadata() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {"results": []},
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_fetch_rcsb_rest",
+            tool_name="web.fetch",
+            arguments={"url": "https://data.rcsb.org/rest/v1/core/entry/3QI8"},
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "wrong_tool_for_structure_download"
+    assert result.details["pdb_id"] == "3QI8"
+    assert "rcsb_pdb.download_structure" in result.hint
+
+
+def test_research_teammate_web_fetch_rejects_rcsb_experimental_page() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **_: {"results": []},
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_fetch_rcsb_experimental",
+            tool_name="web.fetch",
+            arguments={"url": "https://www.rcsb.org/experimental/7YDL"},
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.status == "wrong_tool_for_structure_download"
+    assert result.details["pdb_id"] == "7YDL"
+    assert "rcsb_pdb.download_structure" in result.hint
 
 
 def test_research_teammate_direct_search_provider_429_returns_failed_observation() -> (

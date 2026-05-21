@@ -9,6 +9,7 @@ from uuid import uuid4
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
+from openzyme_domain import ArtifactKind
 from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext
@@ -25,6 +26,11 @@ _PRIORITY_ORDER = {
     TaskPriority.LOW: 3,
 }
 _PSEUDO_EMPTY_ASSIGNED_REFS = {"", "none", "null"}
+_TEAMMATE_ASSIGNED_REF_ALIASES = {
+    "researcher": "agent:researcher",
+    "executor": "agent:executor",
+    "reporter": "agent:reporter",
+}
 
 
 def _normalize_assigned_ref(value: Any) -> str | None:
@@ -34,8 +40,31 @@ def _normalize_assigned_ref(value: Any) -> str | None:
         normalized = value.strip()
         if normalized.lower() in _PSEUDO_EMPTY_ASSIGNED_REFS:
             return None
+        if normalized.lower() in _TEAMMATE_ASSIGNED_REF_ALIASES:
+            return _TEAMMATE_ASSIGNED_REF_ALIASES[normalized.lower()]
         return normalized
     return str(value)
+
+
+def _session_requires_structure_artifact(context: SessionRuntimeContext) -> bool:
+    objective = context.snapshot.session.objective.lower()
+    return (
+        ("structure" in objective or "pdb" in objective)
+        and (
+            "artifact" in objective
+            or "execution" in objective
+            or "fpocket" in objective
+        )
+    )
+
+
+def _session_has_structure_artifact(context: SessionRuntimeContext) -> bool:
+    return any(
+        artifact.kind is ArtifactKind.STRUCTURE
+        for artifact in context.repositories.artifacts.list_by_session(
+            context.snapshot.session.session_id
+        )
+    )
 
 
 class TaskBoardBucket(StrEnum):
@@ -323,6 +352,40 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
     def update_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
+        task_id = str(arguments["task_id"])
+        existing = context.repositories.tasks.get(task_id)
+        requested_status = (
+            None
+            if "status" not in arguments
+            else TaskStatus(str(arguments["status"]))
+        )
+        if (
+            existing is not None
+            and requested_status is TaskStatus.COMPLETED
+            and existing.kind == "research"
+            and str(existing.assigned_ref or "").startswith("agent:researcher")
+            and _session_requires_structure_artifact(context)
+            and not _session_has_structure_artifact(context)
+        ):
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=(
+                    "Cannot complete this research task yet: the session objective "
+                    "requires a real structure artifact for execution, but no "
+                    "structure artifact is present in the workspace."
+                ),
+                task_id=task_id,
+                lane_id=invocation.lane_id,
+                status="required_structure_artifact_missing",
+                summary="Download a real structure artifact before completing research.",
+                error_code="required_structure_artifact_missing",
+                hint=(
+                    "Use rcsb_pdb.download_structure with a validated PDB ID, then "
+                    "retry task.update(status='completed')."
+                ),
+            )
         mutation = TaskMutation(
             subject=arguments["subject"] if "subject" in arguments else _UNSET,
             description=arguments["description"] if "description" in arguments else _UNSET,
@@ -336,7 +399,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             failure_ref=arguments["failure_ref"] if "failure_ref" in arguments else _UNSET,
             updated_at=str(arguments["updated_at"]) if "updated_at" in arguments else _UNSET,
         )
-        task = service.update_task(str(arguments["task_id"]), mutation)
+        task = service.update_task(task_id, mutation)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,

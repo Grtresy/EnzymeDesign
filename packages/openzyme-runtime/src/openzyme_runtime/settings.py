@@ -323,7 +323,7 @@ class TracingSettings:
             project_name=(
                 os.getenv("OPENZYME_LANGSMITH_PROJECT")
                 or os.getenv("LANGSMITH_PROJECT")
-                or "openzyme-v2"
+                or "openzyme-v3"
             ),
         )
 
@@ -332,7 +332,6 @@ class TracingSettings:
 class HostCliSettings:
     base_url: str
     project_id: str | None
-    episode_id: str | None
     output_format: str
 
     @classmethod
@@ -340,7 +339,6 @@ class HostCliSettings:
         return cls(
             base_url=os.getenv("OPENZYME_HOST_BASE_URL", DEFAULT_HOST_BASE_URL),
             project_id=os.getenv("OPENZYME_PROJECT_ID") or None,
-            episode_id=os.getenv("OPENZYME_EPISODE_ID") or None,
             output_format=os.getenv("OPENZYME_OUTPUT_FORMAT", "text"),
         )
 

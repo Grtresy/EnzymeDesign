@@ -120,7 +120,6 @@ class LlmDebugRecorder:
         kind: str | None = None,
         status: str | None = None,
         session_id: str | None = None,
-        episode_id: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._lock:
             records = list(reversed(self._records))
@@ -134,8 +133,6 @@ class LlmDebugRecorder:
             if status and record.get("status") != status:
                 continue
             if session_id and context.get("session_id") != session_id:
-                continue
-            if episode_id and context.get("episode_id") != episode_id:
                 continue
             filtered.append(record)
             if len(filtered) >= max(1, limit):

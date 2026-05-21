@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -592,6 +593,21 @@ def _web_tool_enabled(adapter: object | None) -> bool:
     )
 
 
+def _rcsb_structure_page_pdb_id(url: str) -> str | None:
+    match = re.search(
+        r"rcsb\.org/(?:structure|experimental)/([0-9A-Za-z]{4})(?:\b|[/?#])",
+        url,
+    )
+    if match is None:
+        match = re.search(
+            r"data\.rcsb\.org/rest/v1/core/[A-Za-z0-9_/-]+/([0-9A-Za-z]{4})(?:\b|[/?#])",
+            url,
+        )
+    if match is None:
+        return None
+    return match.group(1).upper()
+
+
 def register_web_research_tools(
     registry: ToolRegistry,
     *,
@@ -708,6 +724,28 @@ def register_web_research_tools(
         context: SessionRuntimeContext, invocation: ToolInvocation
     ) -> ToolResult:
         url = str(invocation.arguments["url"])
+        rcsb_pdb_id = _rcsb_structure_page_pdb_id(url)
+        if rcsb_pdb_id is not None:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=(
+                    "web.fetch only reads web page text and does not persist a "
+                    "structure artifact. Use rcsb_pdb.download_structure with "
+                    f"pdb_id={rcsb_pdb_id!r} for this RCSB structure."
+                ),
+                task_id=invocation.task_id,
+                lane_id=invocation.lane_id,
+                status="wrong_tool_for_structure_download",
+                summary="Use rcsb_pdb.download_structure to persist this RCSB structure.",
+                error_code="wrong_tool_for_structure_download",
+                hint=(
+                    "Call rcsb_pdb.download_structure with "
+                    f"pdb_id={rcsb_pdb_id!r} and format='pdb'."
+                ),
+                details={"pdb_id": rcsb_pdb_id, "url": url},
+            )
         query = (
             None
             if invocation.arguments.get("query") is None

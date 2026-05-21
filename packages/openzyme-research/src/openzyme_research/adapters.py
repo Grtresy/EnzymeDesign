@@ -88,7 +88,7 @@ class ResearchUnitResult:
 
 class ResearchAdapter(Protocol):
     def conduct(
-        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+        self, *, session_id: str, research_brief: str, unit: ResearchUnit
     ) -> ResearchUnitResult: ...
 
 
@@ -117,9 +117,9 @@ class TavilyResearchAdapter:
     extract_callable: ExtractCallable | None = None
 
     def conduct(
-        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+        self, *, session_id: str, research_brief: str, unit: ResearchUnit
     ) -> ResearchUnitResult:
-        del episode_id, research_brief
+        del session_id, research_brief
         response = self.web_search(query=unit.query, topic=unit.topic)
         return self.normalize_search_response(unit=unit, response=response)
 

@@ -10,32 +10,14 @@ from .contracts import HpcCatalogEntrySummary
 
 
 class ExecutionAdapter(Protocol):
-    """Boundary consumed by the execution graph to call the real runner."""
+    """Boundary consumed by execution engines to call the real runner."""
 
-    def submit_execution(self, episode_id: str, payload: dict[str, Any]) -> Any: ...
-
-
-class ProjectionLoader(Protocol):
-    """Boundary consumed by Host projection assembly over canonical and graph state."""
-
-    def load_workflow_projection(self, episode_id: str) -> dict[str, Any]: ...
-
-    def load_run_projection(self, episode_id: str) -> list[dict[str, Any]]: ...
-
-    def load_artifact_projection(self, episode_id: str) -> list[dict[str, Any]]: ...
-
-    def load_report_projection(self, episode_id: str) -> dict[str, Any] | None: ...
-
-    def load_pending_actions(self, episode_id: str) -> list[dict[str, Any]]: ...
-
-    def load_research_projection(self, episode_id: str) -> dict[str, Any]: ...
-
-    def load_design_projection(self, episode_id: str) -> dict[str, Any]: ...
+    def submit_execution(self, session_id: str, payload: dict[str, Any]) -> Any: ...
 
 
 @dataclass(frozen=True, slots=True)
 class DesignToolContext:
-    episode_id: str
+    session_id: str
     project_id: str | None
     objective: str | None
     design_brief: str | None
@@ -52,7 +34,7 @@ class DesignTool(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ResearchToolContext:
-    episode_id: str
+    session_id: str
     project_id: str | None
     objective: str | None
     design_brief: str | None
@@ -122,7 +104,6 @@ __all__ = [
     "HpcExecutionRegistry",
     "HpcCatalogProvider",
     "HpcCatalogQuery",
-    "ProjectionLoader",
     "ResearchAdapter",
     "ResearchTool",
     "ResearchToolContext",

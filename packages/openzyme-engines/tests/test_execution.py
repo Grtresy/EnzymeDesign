@@ -764,6 +764,53 @@ def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
     assert "unsupported_pipeline_handoff" in result.content
 
 
+def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    registry = ToolRegistry()
+    register_execution_tools(registry, engine)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    arguments = {
+        "task_id": "task_001",
+        "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_001')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+        "inputs": {"artifact_ids": ["art_001"]},
+    }
+
+    first = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_start_first",
+            tool_name="execution.pipeline.start",
+            arguments=arguments,
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    second = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_start_second",
+            tool_name="execution.pipeline.start",
+            arguments=arguments,
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    assert first.ok is True
+    assert second.ok is False
+    assert second.status == "existing_execution_invocation"
+    assert second.error_code == "existing_execution_invocation"
+    assert "execution.pipeline.status" in second.hint
+
+
 def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)

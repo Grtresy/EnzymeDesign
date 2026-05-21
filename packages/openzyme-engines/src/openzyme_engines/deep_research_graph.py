@@ -3,21 +3,23 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 from typing import Literal
+from typing import Protocol
 from typing import TypedDict
 
 from langgraph.graph import END
 from langgraph.graph import START
 from langgraph.graph import StateGraph
 from langgraph.types import Command
-from openzyme_domain import DecisionStatus
 from openzyme_runtime import DefaultResearchToolProvider
-from openzyme_runtime import GraphAssemblyInputs
 from openzyme_runtime import ResearchTool
 from openzyme_runtime import ResearchToolContext
+from openzyme_runtime import ResearchToolProvider
 from pydantic import ValidationError
 
 from .deep_research_contracts import EvidenceSynthesis
@@ -30,8 +32,51 @@ from .deep_research_contracts import ResearchSupervisorAction
 from .deep_research_contracts import ResearchTurnRecord
 
 
+class DecisionStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ResearchSettingsLike(Protocol):
+    allow_clarification: bool
+    max_research_iterations: int
+    max_react_tool_calls: int
+    max_concurrent_research_units: int
+    llm_synthesis_enabled: bool
+    mcp_enabled: bool
+    mcp_tool_allowlist: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultResearchGraphSettings:
+    allow_clarification: bool = False
+    max_research_iterations: int = 3
+    max_react_tool_calls: int = 4
+    max_concurrent_research_units: int = 3
+    llm_synthesis_enabled: bool = False
+    mcp_enabled: bool = False
+    mcp_tool_allowlist: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchGraphInputs:
+    session_id: str
+    project_id: str | None
+    research_adapter: Any | None
+    research_tool_provider: ResearchToolProvider | None
+    model_factory: Any | None
+    limiter_registry: Any | None
+    settings: ResearchSettingsLike
+
+
 def _utc_now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+
+
+def resolve_research_graph_settings(settings: Any | None) -> ResearchSettingsLike:
+    if settings is None:
+        return DefaultResearchGraphSettings()
+    return getattr(settings, "research", settings)
 
 
 def _default_research_brief(state: dict[str, Any]) -> str:
@@ -44,7 +89,10 @@ def _default_research_brief(state: dict[str, Any]) -> str:
 
 
 def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
-    return list(getattr(message, "tool_calls", None) or message.get("tool_calls", []))
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls is None and isinstance(message, dict):
+        tool_calls = message.get("tool_calls")
+    return [dict(call) for call in (tool_calls or [])]
 
 
 def _research_turns(state: dict[str, Any], limit: int = 10) -> list[ResearchTurnRecord]:
@@ -63,10 +111,8 @@ def _record_research_turn(
     observation_payload: dict[str, Any] | None = None,
 ) -> ResearchTurnRecord:
     current_turns = list(state.get("recent_turns") or [])
-    turn_index = len(current_turns) + 1
-    created_at = _utc_now_iso()
     return ResearchTurnRecord(
-        turn_index=turn_index,
+        turn_index=len(current_turns) + 1,
         action_kind=action_kind,
         status=status.value,
         summary=summary,
@@ -75,7 +121,7 @@ def _record_research_turn(
         observation_summary=None
         if observation_payload is None
         else (observation_payload.get("summary") or observation_payload.get("message")),
-        created_at=created_at,
+        created_at=_utc_now_iso(),
     )
 
 
@@ -105,7 +151,7 @@ def _failed_dossier(
 
 
 class DeepResearchState(TypedDict, total=False):
-    episode_id: str
+    session_id: str
     project_id: str | None
     objective: str | None
     design_brief: str | None
@@ -122,13 +168,14 @@ class DeepResearchState(TypedDict, total=False):
 
 
 def _build_tool_context(
+    inputs: DeepResearchGraphInputs,
     state: DeepResearchState,
     *,
     tool_call_iterations: int,
 ) -> ResearchToolContext:
     return ResearchToolContext(
-        episode_id=str(state["episode_id"]),
-        project_id=state.get("project_id"),
+        session_id=inputs.session_id,
+        project_id=inputs.project_id,
         objective=state.get("objective"),
         design_brief=state.get("design_brief"),
         research_brief=_default_research_brief(state),
@@ -137,22 +184,66 @@ def _build_tool_context(
 
 
 def _resolve_research_tools(
-    inputs: GraphAssemblyInputs,
+    inputs: DeepResearchGraphInputs,
     state: DeepResearchState,
     *,
     tool_call_iterations: int,
 ) -> list[ResearchTool]:
     provider = inputs.research_tool_provider or DefaultResearchToolProvider(
         inputs.research_adapter,
-        mcp_enabled=inputs.settings.research.mcp_enabled,
-        mcp_tool_allowlist=inputs.settings.research.mcp_tool_allowlist,
+        mcp_enabled=inputs.settings.mcp_enabled,
+        mcp_tool_allowlist=inputs.settings.mcp_tool_allowlist,
         limiter_registry=inputs.limiter_registry,
     )
-    return list(
-        provider.list_tools(
-            _build_tool_context(state, tool_call_iterations=tool_call_iterations)
+    return [
+        tool
+        for tool in provider.list_tools(
+            _build_tool_context(
+                inputs,
+                state,
+                tool_call_iterations=tool_call_iterations,
+            )
         )
+        if tool.name != "think_tool"
+    ]
+
+
+_RESEARCH_TOOL_PRIORITY = {
+    "rcsb_pdb.search": 0,
+    "web.search": 1,
+    "semantic_scholar.search": 2,
+    "pubmed.search": 3,
+    "uniprot.lookup": 4,
+    "interpro.query": 5,
+    "web.fetch": 6,
+    "rcsb_pdb.download_structure": 7,
+    "uniprot.download_fasta": 8,
+}
+
+
+def _select_tool_calls_for_budget(
+    tool_calls: list[dict[str, Any]],
+    *,
+    available_tool_names: set[str],
+    remaining_budget: int,
+) -> list[dict[str, Any]]:
+    if len(tool_calls) <= remaining_budget:
+        return tool_calls
+    indexed = list(enumerate(tool_calls))
+    prioritized = sorted(
+        indexed,
+        key=lambda item: (
+            str(item[1].get("name") or "") not in available_tool_names,
+            _RESEARCH_TOOL_PRIORITY.get(str(item[1].get("name") or ""), 100),
+            item[0],
+        ),
     )
+    selected_indices = {index for index, _ in prioritized[:remaining_budget]}
+    return [
+        tool_call
+        for index, tool_call in indexed
+        if index in selected_indices
+    ]
 
 
 def _build_langchain_tool(tool_def: ResearchTool, context: ResearchToolContext) -> Any:
@@ -180,7 +271,7 @@ def _build_langchain_tool(tool_def: ResearchTool, context: ResearchToolContext) 
 
 def _summarize_unit_observations(
     observations: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[str], list[str], str, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[str], str, list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     unresolved_gaps: list[str] = []
     summary_parts: list[str] = []
@@ -192,11 +283,11 @@ def _summarize_unit_observations(
         findings.extend(list(payload.get("findings", [])))
         artifacts.extend(dict(item) for item in payload.get("artifacts", []))
     summary = " ".join(part for part in summary_parts if part).strip()
-    return findings, unresolved_gaps, summary_parts, summary, artifacts
+    return findings, unresolved_gaps, summary, artifacts
 
 
 def _run_research_unit(
-    inputs: GraphAssemblyInputs,
+    inputs: DeepResearchGraphInputs,
     state: DeepResearchState,
     unit: dict[str, Any],
 ) -> dict[str, Any]:
@@ -217,9 +308,7 @@ def _run_research_unit(
             "query": "",
             "summary": "Research unit is missing a query.",
             "findings": [],
-            "unresolved_gaps": [
-                "Research planning returned a unit without a query."
-            ],
+            "unresolved_gaps": ["Research planning returned a unit without a query."],
             "artifacts": [],
             "status": "failed",
             "raw_notes": [],
@@ -228,7 +317,7 @@ def _run_research_unit(
 
     research_prompt = (
         f"Research topic: {unit_query}\n"
-        f"Topic label: {unit.get('topic') or 'supporting evidence'}\n"
+        f"Topic label: {unit_topic}\n"
         f"Research brief: {_default_research_brief(state)}"
     )
     messages: list[Any]
@@ -240,8 +329,7 @@ def _run_research_unit(
     observations: list[dict[str, Any]] = []
     raw_notes: list[str] = []
     turns: list[dict[str, Any]] = []
-
-    max_tool_calls = max(1, inputs.settings.research.max_react_tool_calls)
+    max_tool_calls = max(1, inputs.settings.max_react_tool_calls)
     executed_tool_call_count = 0
     for tool_call_iterations in range(max_tool_calls):
         available_tools = _resolve_research_tools(
@@ -251,14 +339,15 @@ def _run_research_unit(
         )
         if not available_tools:
             return {
-                "unit_id": str(unit.get("unit_id") or "unit"),
-                "topic": str(unit.get("topic") or "supporting evidence"),
-                "query": str(unit.get("query") or _default_research_brief(state)),
+                "unit_id": unit_id,
+                "topic": unit_topic,
+                "query": unit_query,
                 "summary": "No research tools are available for this unit.",
                 "findings": [],
                 "unresolved_gaps": [
                     "No research tools configured for this deep-research run."
                 ],
+                "artifacts": [],
                 "status": "failed",
                 "raw_notes": [],
                 "turns": [],
@@ -287,15 +376,16 @@ def _run_research_unit(
                     "You are a reusable deep research agent. "
                     "Use the provided tools to gather evidence for downstream enzyme design. "
                     "On the first turn for a research unit, call a search tool such as web.search when one is available. "
-                    "After a search returns enough credible sources to support synthesis, stop calling tools and let synthesis run. "
-                    "Do not continue searching only to improve completeness or polish."
+                    "After a search returns enough credible sources to support synthesis, stop calling tools and let synthesis run."
                 ),
                 messages=list(messages),
                 tools=[
                     _build_langchain_tool(
                         tool,
                         _build_tool_context(
-                            state, tool_call_iterations=tool_call_iterations
+                            inputs,
+                            state,
+                            tool_call_iterations=tool_call_iterations,
                         ),
                     )
                     for tool in available_tools
@@ -326,7 +416,11 @@ def _run_research_unit(
                 "Research tool-call budget truncated "
                 f"{len(tool_calls) - remaining_tool_call_budget} excess call(s)."
             )
-            tool_calls = tool_calls[:remaining_tool_call_budget]
+            tool_calls = _select_tool_calls_for_budget(
+                tool_calls,
+                available_tool_names={tool.name for tool in available_tools},
+                remaining_budget=remaining_tool_call_budget,
+            )
         if not tool_calls:
             break
 
@@ -348,19 +442,11 @@ def _run_research_unit(
                     result = tool.invoke(
                         args=dict(tool_call.get("args") or {}),
                         context=_build_tool_context(
-                            state, tool_call_iterations=tool_call_iterations
+                            inputs,
+                            state,
+                            tool_call_iterations=tool_call_iterations,
                         ),
                     )
-                    observation = {
-                        "tool_name": result.tool_name,
-                        "summary": result.summary,
-                        "payload": result.payload,
-                    }
-                    if str((result.payload or {}).get("status") or "").lower() in {
-                        "failed",
-                        "error",
-                    }:
-                        observation_status = DecisionStatus.FAILED
                 except ValidationError as exc:
                     observation = {
                         "tool_name": tool_name,
@@ -376,6 +462,32 @@ def _run_research_unit(
                         },
                     }
                     observation_status = DecisionStatus.FAILED
+                except Exception as exc:
+                    observation = {
+                        "tool_name": tool_name,
+                        "summary": f"Tool {tool_name} failed during execution.",
+                        "payload": {
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                            "unresolved_gaps": [
+                                f"Tool {tool_name} failed during execution: {type(exc).__name__}: {exc}"
+                            ],
+                            "retryable": False,
+                        },
+                    }
+                    observation_status = DecisionStatus.FAILED
+                else:
+                    observation = {
+                        "tool_name": result.tool_name,
+                        "summary": result.summary,
+                        "payload": result.payload,
+                    }
+                    if str((result.payload or {}).get("status") or "").lower() in {
+                        "failed",
+                        "error",
+                    }:
+                        observation_status = DecisionStatus.FAILED
 
             observations.append(observation)
             raw_notes.append(str(observation["summary"]))
@@ -410,9 +522,11 @@ def _run_research_unit(
                         tool_call_id=str(tool_call.get("id") or tool_name),
                     )
                 )
+        if executed_tool_call_count >= max_tool_calls:
+            break
 
-    findings, unresolved_gaps, _summary_parts, summary, artifacts = (
-        _summarize_unit_observations(observations)
+    findings, unresolved_gaps, summary, artifacts = _summarize_unit_observations(
+        observations
     )
     had_failure = any(turn["status"] == DecisionStatus.FAILED.value for turn in turns)
     if findings and not had_failure:
@@ -425,8 +539,7 @@ def _run_research_unit(
         "unit_id": unit_id,
         "topic": unit_topic,
         "query": unit_query,
-        "summary": summary
-        or f"Completed research for {unit_query}",
+        "summary": summary or f"Completed research for {unit_query}",
         "findings": findings,
         "unresolved_gaps": unresolved_gaps,
         "artifacts": artifacts,
@@ -436,21 +549,22 @@ def _run_research_unit(
     }
 
 
-def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
+def build_deep_research_subgraph(inputs: DeepResearchGraphInputs) -> Any:
     def clarify_research_scope(
         state: DeepResearchState,
     ) -> Command[Literal["write_research_brief", "synthesize_research_dossier"]]:
-        if not inputs.settings.research.allow_clarification:
+        if not inputs.settings.allow_clarification:
             return Command(goto="write_research_brief")
         if inputs.model_factory is None:
-            dossier = _failed_dossier(
-                state,
-                completion_reason="missing_model_factory",
-                summary="Deep research requires a configured model factory.",
-                unresolved_gap="No model factory configured for deep-research clarification.",
-            )
             return Command(
-                update={"research_dossier": dossier.model_dump()},
+                update={
+                    "research_dossier": _failed_dossier(
+                        state,
+                        completion_reason="missing_model_factory",
+                        summary="Deep research requires a configured model factory.",
+                        unresolved_gap="No model factory configured for deep-research clarification.",
+                    ).model_dump()
+                },
                 goto="synthesize_research_dossier",
             )
         try:
@@ -464,21 +578,22 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                     "If the objective is underspecified, ask exactly one concise clarification question."
                 ),
                 user_payload={
-                    "episode_id": state.get("episode_id"),
+                    "session_id": inputs.session_id,
                     "objective": state.get("objective"),
                     "design_brief": state.get("design_brief"),
                     "research_brief": state.get("research_brief"),
                 },
             )
         except Exception as exc:
-            dossier = _failed_dossier(
-                state,
-                completion_reason="clarification_model_failed",
-                summary="Deep research clarification failed.",
-                unresolved_gap=f"Clarification model failed: {type(exc).__name__}: {exc}",
-            )
             return Command(
-                update={"research_dossier": dossier.model_dump()},
+                update={
+                    "research_dossier": _failed_dossier(
+                        state,
+                        completion_reason="clarification_model_failed",
+                        summary="Deep research clarification failed.",
+                        unresolved_gap=f"Clarification model failed: {type(exc).__name__}: {exc}",
+                    ).model_dump()
+                },
                 goto="synthesize_research_dossier",
             )
 
@@ -514,7 +629,7 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                     "Rewrite the current objective into a focused brief with no extra commentary."
                 ),
                 user_payload={
-                    "episode_id": state.get("episode_id"),
+                    "session_id": inputs.session_id,
                     "objective": state.get("objective"),
                     "design_brief": state.get("design_brief"),
                     "research_brief": state.get("research_brief"),
@@ -538,7 +653,7 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
             return Command(goto="synthesize_research_dossier")
         iterations = int(state.get("research_iterations", 0))
         findings_available = _has_research_findings(state)
-        if iterations >= max(1, inputs.settings.research.max_research_iterations):
+        if iterations >= max(1, inputs.settings.max_research_iterations):
             action = ResearchSupervisorAction(
                 action_kind="complete",
                 rationale="The configured research iteration budget has been reached.",
@@ -560,7 +675,7 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                         "If you choose conduct_research, return a small standalone unit plan."
                     ),
                     user_payload={
-                        "episode_id": state.get("episode_id"),
+                        "session_id": inputs.session_id,
                         "objective": state.get("objective"),
                         "design_brief": state.get("design_brief"),
                         "research_brief": state.get("research_brief"),
@@ -577,31 +692,33 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                                 else "No usable findings exist yet; one concise research batch is allowed."
                             ),
                         },
-                        "max_research_iterations": inputs.settings.research.max_research_iterations,
-                        "max_concurrent_research_units": inputs.settings.research.max_concurrent_research_units,
+                        "max_research_iterations": inputs.settings.max_research_iterations,
+                        "max_concurrent_research_units": inputs.settings.max_concurrent_research_units,
                     },
                 )
             except Exception as exc:
-                dossier = _failed_dossier(
-                    state,
-                    completion_reason="supervisor_model_failed",
-                    summary="Deep research supervisor failed.",
-                    unresolved_gap=f"Supervisor model failed: {type(exc).__name__}: {exc}",
-                )
                 return Command(
-                    update={"research_dossier": dossier.model_dump()},
+                    update={
+                        "research_dossier": _failed_dossier(
+                            state,
+                            completion_reason="supervisor_model_failed",
+                            summary="Deep research supervisor failed.",
+                            unresolved_gap=f"Supervisor model failed: {type(exc).__name__}: {exc}",
+                        ).model_dump()
+                    },
                     goto="synthesize_research_dossier",
                 )
             completion_reason = "supervisor_complete"
         else:
-            dossier = _failed_dossier(
-                state,
-                completion_reason="missing_model_factory",
-                summary="Deep research requires a configured model factory.",
-                unresolved_gap="No model factory configured for deep-research supervision.",
-            )
             return Command(
-                update={"research_dossier": dossier.model_dump()},
+                update={
+                    "research_dossier": _failed_dossier(
+                        state,
+                        completion_reason="missing_model_factory",
+                        summary="Deep research requires a configured model factory.",
+                        unresolved_gap="No model factory configured for deep-research supervision.",
+                    ).model_dump()
+                },
                 goto="synthesize_research_dossier",
             )
 
@@ -628,18 +745,19 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         if action.action_kind == "complete":
             return Command(update=update, goto="synthesize_research_dossier")
         if action.unit_plan is None or not action.unit_plan.units:
-            dossier = _failed_dossier(
-                state,
-                completion_reason="missing_research_unit_plan",
-                summary="Deep research supervisor did not provide a unit plan.",
-                unresolved_gap="Supervisor selected conduct_research without research units.",
-            )
             return Command(
-                update={"research_dossier": dossier.model_dump()},
+                update={
+                    "research_dossier": _failed_dossier(
+                        state,
+                        completion_reason="missing_research_unit_plan",
+                        summary="Deep research supervisor did not provide a unit plan.",
+                        unresolved_gap="Supervisor selected conduct_research without research units.",
+                    ).model_dump()
+                },
                 goto="synthesize_research_dossier",
             )
         planned_units = action.unit_plan.units[
-            : max(1, inputs.settings.research.max_concurrent_research_units)
+            : max(1, inputs.settings.max_concurrent_research_units)
         ]
         return Command(
             update={
@@ -662,19 +780,20 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                 goto="synthesize_research_dossier",
             )
 
-        max_workers = max(1, inputs.settings.research.max_concurrent_research_units)
+        max_workers = max(1, inputs.settings.max_concurrent_research_units)
         scheduled_units = planned_units[:max_workers]
         if max_workers == 1:
             unit_results = [_run_research_unit(inputs, state, scheduled_units[0])]
         else:
-            scheduled_with_context = [
-                (unit, copy_context()) for unit in scheduled_units
-            ]
+            scheduled_with_context = [(unit, copy_context()) for unit in scheduled_units]
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 unit_results = list(
                     executor.map(
                         lambda item: item[1].run(
-                            _run_research_unit, inputs, state, item[0]
+                            _run_research_unit,
+                            inputs,
+                            state,
+                            item[0],
                         ),
                         scheduled_with_context,
                     )
@@ -710,28 +829,33 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
         if state.get("research_dossier") is not None:
             return {"research_dossier": state["research_dossier"]}
         if state.get("clarification_question"):
-            dossier = ResearchDossier(
-                status="needs_clarification",
-                completion_reason=str(
-                    state.get("completion_reason") or "clarification_requested"
-                ),
-                clarification_question=str(state["clarification_question"]),
-                research_brief=_default_research_brief(state),
-                summary="Research paused until the scope is clarified.",
-                evidence_items=[],
-                unresolved_gaps=[
-                    "Research scope needs clarification before evidence collection can continue."
-                ],
-                artifacts=[],
-                raw_notes=list(state.get("raw_notes") or []),
-                recent_turns=_research_turns(state),
-            )
-            return {"research_dossier": dossier.model_dump()}
+            return {
+                "research_dossier": ResearchDossier(
+                    status="needs_clarification",
+                    completion_reason=str(
+                        state.get("completion_reason") or "clarification_requested"
+                    ),
+                    clarification_question=str(state["clarification_question"]),
+                    research_brief=_default_research_brief(state),
+                    summary="Research paused until the scope is clarified.",
+                    evidence_items=[],
+                    unresolved_gaps=[
+                        "Research scope needs clarification before evidence collection can continue."
+                    ],
+                    artifacts=[],
+                    raw_notes=list(state.get("raw_notes") or []),
+                    recent_turns=_research_turns(state),
+                ).model_dump()
+            }
 
         unit_results = list(state.get("unit_results") or [])
         synthesis: EvidenceSynthesis | None = None
         findings_available = any(result.get("findings") for result in unit_results)
-        if inputs.model_factory is not None and findings_available:
+        if (
+            inputs.model_factory is not None
+            and findings_available
+            and getattr(inputs.settings, "llm_synthesis_enabled", False)
+        ):
             try:
                 invoker = inputs.model_factory.create_structured_invoker(
                     purpose="deep_research_synthesis"
@@ -743,7 +867,7 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                         "Compress the research results into a concise summary, normalized evidence items, and unresolved gaps."
                     ),
                     user_payload={
-                        "episode_id": state.get("episode_id"),
+                        "session_id": inputs.session_id,
                         "research_brief": state.get("research_brief"),
                         "unit_results": unit_results,
                     },
@@ -760,24 +884,25 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                         f"{error_type}: {error_message}"
                     ),
                 )
-                raw_notes = [
-                    *dossier.raw_notes,
-                    (
-                        "synthesis_model_failed "
-                        f"error_type={error_type} error_message={error_message}"
-                    ),
-                ]
                 return {
                     "research_dossier": dossier.model_copy(
-                        update={"raw_notes": raw_notes}
+                        update={
+                            "raw_notes": [
+                                *dossier.raw_notes,
+                                (
+                                    "synthesis_model_failed "
+                                    f"error_type={error_type} error_message={error_message}"
+                                ),
+                            ]
+                        }
                     ).model_dump()
                 }
 
+        artifacts: list[dict[str, Any]] = []
         if synthesis is None:
             evidence_items: list[EvidenceSynthesisItem] = []
             unresolved_gaps: list[str] = []
             summary_parts: list[str] = []
-            artifacts: list[dict[str, Any]] = []
             for result in unit_results:
                 if result.get("summary"):
                     summary_parts.append(str(result["summary"]))
@@ -805,13 +930,11 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
                 evidence_items=evidence_items,
                 unresolved_gaps=unresolved_gaps,
             )
-        else:
-            artifacts = []
 
         unit_statuses = {str(result.get("status") or "") for result in unit_results}
         if synthesis.evidence_items and unit_statuses <= {"completed"}:
             status = "completed"
-        elif synthesis.evidence_items or (unit_results and unit_statuses - {"failed"}):
+        elif synthesis.evidence_items:
             status = "partial"
         else:
             status = "failed"
@@ -853,10 +976,8 @@ def build_deep_research_subgraph(inputs: GraphAssemblyInputs) -> Any:
 
 
 def run_deep_research(
-    inputs: GraphAssemblyInputs,
+    inputs: DeepResearchGraphInputs,
     *,
-    episode_id: str,
-    project_id: str | None,
     objective: str | None,
     design_brief: str | None,
     research_brief: str | None,
@@ -864,8 +985,8 @@ def run_deep_research(
     graph = build_deep_research_subgraph(inputs)
     result = graph.invoke(
         {
-            "episode_id": episode_id,
-            "project_id": project_id,
+            "session_id": inputs.session_id,
+            "project_id": inputs.project_id,
             "objective": objective,
             "design_brief": design_brief,
             "research_brief": research_brief,
@@ -874,4 +995,10 @@ def run_deep_research(
     return ResearchDossier.model_validate(result["research_dossier"])
 
 
-__all__ = ["DeepResearchState", "build_deep_research_subgraph", "run_deep_research"]
+__all__ = [
+    "DeepResearchGraphInputs",
+    "DeepResearchState",
+    "build_deep_research_subgraph",
+    "resolve_research_graph_settings",
+    "run_deep_research",
+]

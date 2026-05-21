@@ -247,7 +247,7 @@ class ExecutionResultHandoff(BaseModel):
 
 class ArtifactManifest(BaseModel):
     artifact_id: str
-    episode_id: str
+    session_id: str
     kind: str
     storage_uri: str
     created_at: str
@@ -268,7 +268,7 @@ class ReportDraft(BaseModel):
 
 
 class CanonicalResearchSnapshot(BaseModel):
-    episode_id: str
+    session_id: str
     research_summary: dict[str, Any] | None = None
     evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
     unresolved_gaps: list[dict[str, Any]] = Field(default_factory=list)

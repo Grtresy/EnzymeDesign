@@ -87,7 +87,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         if self.server is None:
             self.server = MCPHpcServer(self.config_path)
 
-    def submit_execution(self, episode_id: str, payload: dict[str, Any]) -> ExecutionOutcome:
+    def submit_execution(self, session_id: str, payload: dict[str, Any]) -> ExecutionOutcome:
         requested_tool_name = str(payload.get("tool_name", "exec.run"))
         tool_name = (
             requested_tool_name
@@ -97,7 +97,7 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         runspec = dict(payload["runspec"])
         metadata = dict(runspec.get("metadata", {}))
         metadata.setdefault("openzyme", {})
-        metadata["openzyme"]["episode_id"] = episode_id
+        metadata["openzyme"]["session_id"] = session_id
         if tool_name != requested_tool_name:
             metadata["openzyme"]["requested_tool_name"] = requested_tool_name
         runspec["metadata"] = metadata

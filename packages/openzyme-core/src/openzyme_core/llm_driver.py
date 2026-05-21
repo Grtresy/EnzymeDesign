@@ -145,6 +145,8 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
         "If task.delegate returns wakeup_queued, delegation has been queued but not completed; teammate execution requires an explicit scheduler/runtime drain.",
+        "When a delegated research task completes and the session objective still asks for execution, HPC, fpocket, artifacts, or a final report, continue the workflow by creating or updating the next execution task and explicitly delegating it to executor.",
+        "When execution later completes and a final report is requested, create or delegate a reporting task to reporter unless one already exists.",
         "If delegated work fails or returns an unclear result, inspect the task state and protocol.thread(correlation_id) before deciding whether to ask the teammate a follow-up via protocol.send, update the task, ask the user for clarification, or report the result.",
         "When a delegated task is completed or failed, inspect protocol.thread(correlation_id) for the relevant protocol thread if the restore summary is not enough, then report the task result to the user in your own words.",
         "Protocol sends only deliver messages and queue wakeups; runtime execution is a separate scheduler action.",

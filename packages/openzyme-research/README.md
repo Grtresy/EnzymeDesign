@@ -1,11 +1,11 @@
 # openzyme-research
 
-Phase C research adapter seam for OpenZyme.
+Research adapter seam for the OpenZyme V3 capability engine.
 
 ## Scope
 
-- normalized research-unit inputs and outputs for LangGraph worker nodes
-- a provider-agnostic `ResearchAdapter` protocol consumed by graph code
+- normalized research-unit inputs and outputs for capability engines
+- a provider-agnostic `ResearchAdapter` protocol consumed by engine code
 - a first `TavilyResearchAdapter` that normalizes Tavily search results into canonical research findings
 
 ## Notes
