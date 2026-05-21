@@ -111,6 +111,6 @@ After every tool call, master must first read the tool-result envelope fields `o
 
 ## 8. 测试
 
-- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；后台 scheduler claim 后运行真实顶层 LLM driver
+- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler claim 后运行真实顶层 LLM driver。当前尚未启用 FastAPI background worker，因此 claim 由显式 `/runtime/drain` 推进；Session B 完成后可由后台 worker 自动推进
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`

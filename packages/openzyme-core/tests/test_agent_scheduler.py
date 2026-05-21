@@ -118,7 +118,12 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
     assert len(outcomes) == 1
     signals = repositories.runtime_signals.list_by_session("sess_scheduler")
     assert [signal.status for signal in signals].count(AgentRuntimeSignalStatus.COMPLETED) == 1
-    assert [signal.status for signal in signals].count(AgentRuntimeSignalStatus.PENDING) == 2
+    assert [signal.status for signal in signals].count(AgentRuntimeSignalStatus.PENDING) == 3
+    assert any(
+        signal.agent_id == "agent:master"
+        and signal.reason is AgentRuntimeSignalReason.MANUAL_RESUME
+        for signal in signals
+    )
     assert signals[0].claimed_by == "test:scheduler"
 
 

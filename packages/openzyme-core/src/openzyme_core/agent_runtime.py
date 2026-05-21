@@ -10,12 +10,18 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 
+from .harness import HarnessInput
+from .harness import HarnessStatus
+from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
+from .harness import run_agent_harness_loop
+from .llm_driver import LlmConversationDriver
 from .task_board import TaskBoardService
 from .task_board import TaskMutation
 from .teammate_roster import teammate_role_for_task_kind
@@ -198,6 +204,8 @@ class AgentRuntimeService:
         if agent is None:
             failed = self._fail_signal(claimed, error_message="agent not found")
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
+        if agent.agent_id == "agent:master" or agent.role == "master":
+            return self._wake_master(claimed, agent, max_steps=max_steps)
 
         payload = self._payload_for_signal(signal)
         task = self._resolve_task(signal, agent, payload)
@@ -260,6 +268,7 @@ class AgentRuntimeService:
                     {"agent_id": agent.agent_id, "task_id": task.task_id, "signal_id": signal.signal_id},
                 )
 
+        self._continue_execution_after_approval_signal(signal)
         instructions = self._instructions_for_signal(signal, task, payload)
         correlation_id = signal.correlation_id or _new_id("corr")
         result = run_teammate_loop(
@@ -315,12 +324,118 @@ class AgentRuntimeService:
         )
         if final_status is AgentMemberStatus.IDLE:
             self.context.emit("agent.idle", {"agent_id": agent.agent_id, "signal_id": signal.signal_id, "task_id": task.task_id})
+        if result.pending_approval_id is None:
+            self._enqueue_master_wakeup_after_teammate(
+                session_id=agent.session_id,
+                source_signal=signal,
+                task=task,
+                correlation_id=correlation_id,
+            )
         return AgentRuntimeOutcome(
             signal=completed,
             task=task,
             agent=agent,
             ok=ok,
             summary=summary,
+            teammate_status=result.status.value,
+            outputs=tuple(result.outputs),
+            waiting_approval_id=result.pending_approval_id,
+        )
+
+    def _wake_master(
+        self,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+        *,
+        max_steps: int,
+    ) -> AgentRuntimeOutcome:
+        now = utc_now_iso()
+        agent = self._update_agent(
+            agent,
+            status=AgentMemberStatus.WORKING,
+            task_id=claimed.task_id,
+            lane_id=claimed.lane_id,
+            correlation_id=claimed.correlation_id,
+            wakeup_reason=claimed.reason.value,
+            runtime_state="working",
+            last_active_at=now,
+            idle_since=None,
+        )
+        self.context.emit(
+            "agent.woken",
+            {
+                "agent_id": agent.agent_id,
+                "signal_id": claimed.signal_id,
+                "reason": claimed.reason.value,
+                "task_id": claimed.task_id,
+                "lane_id": claimed.lane_id,
+                "correlation_id": claimed.correlation_id,
+            },
+        )
+        result = run_agent_harness_loop(
+            self.context.repositories,
+            HarnessInput(
+                session_id=claimed.session_id,
+                message=None,
+                max_steps=max_steps,
+                restore_focus=RestoreFocus(
+                    task_id=claimed.task_id,
+                    lane_id=claimed.lane_id,
+                ),
+                persist_conversation=True,
+            ),
+            driver=LlmConversationDriver(
+                self.context.model_factory,
+                engine_registry=self.context.engine_registry,
+            ),
+            engine_registry=self.context.engine_registry,
+            event_sink=self.context.event_sink,
+            model_factory=self.context.model_factory,
+            bio_research_service=self.context.bio_research_service,
+            research_adapter=self.context.research_adapter,
+        )
+        ok = result.status is not HarnessStatus.FAILED
+        completed = (
+            self._complete_signal(claimed)
+            if ok
+            else self._fail_signal(
+                claimed,
+                error_message=result.outputs[-1] if result.outputs else result.status.value,
+                emit=False,
+            )
+        )
+        self.context.emit(
+            "signal.completed" if ok else "signal.failed",
+            {
+                "signal_id": completed.signal_id,
+                "agent_id": completed.agent_id,
+                "status": completed.status.value,
+                "error_message": completed.error_message,
+            },
+        )
+        agent = self._update_agent(
+            self.context.repositories.agents.get(agent.agent_id) or agent,
+            status=AgentMemberStatus.IDLE,
+            runtime_state="idle",
+            last_active_at=utc_now_iso(),
+            idle_since=utc_now_iso(),
+        )
+        self.context.emit(
+            "agent.idle",
+            {
+                "agent_id": agent.agent_id,
+                "signal_id": claimed.signal_id,
+                "task_id": claimed.task_id,
+            },
+        )
+        return AgentRuntimeOutcome(
+            signal=completed,
+            task=None
+            if claimed.task_id is None
+            else self.context.repositories.tasks.get(claimed.task_id),
+            agent=agent,
+            ok=ok,
+            summary=result.outputs[-1] if result.outputs else result.status.value,
             teammate_status=result.status.value,
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
@@ -499,9 +614,9 @@ class AgentRuntimeService:
             failure = self._execution_failure_for_approval(signal.source_ref)
             status_line = (
                 ""
-                if invocation_id is None
-                else f" Existing execution pipeline invocation: {invocation_id}."
-            )
+            if invocation_id is None
+            else f" Existing execution pipeline invocation: {invocation_id}."
+        )
             lines = [
                 f"Approval {signal.source_ref or signal.correlation_id or 'unknown'} was resolved for your assigned task.",
                 "Continue the existing delegated work from the shared workspace state." + status_line,
@@ -531,6 +646,81 @@ class AgentRuntimeService:
             if instructions:
                 return str(instructions)
         return task.description or task.subject
+
+    def _continue_execution_after_approval_signal(
+        self, signal: AgentRuntimeSignal
+    ) -> None:
+        if signal.reason is not AgentRuntimeSignalReason.APPROVAL_RESOLVED:
+            return
+        approval_id = signal.source_ref or signal.correlation_id
+        if not approval_id or self.context.engine_registry is None:
+            return
+        approval = self.context.repositories.approvals.get(approval_id)
+        if approval is None:
+            return
+        waiting = [
+            invocation
+            for invocation in self.context.repositories.invocations.list_by_session(
+                signal.session_id
+            )
+            if invocation.engine_name == "execution"
+            and invocation.approval_id == approval_id
+            and invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+        ]
+        if not waiting:
+            return
+        engine = self.context.engine_registry.get("execution")
+        if engine is None or not hasattr(engine, "continue_after_approval"):
+            return
+        continuation = engine.continue_after_approval(  # type: ignore[attr-defined]
+            invocation_id=waiting[0].invocation_id,
+            resolution=approval.status.value,
+        )
+        self.context.emit(
+            "execution.pipeline.completed"
+            if continuation.invocation.status is EngineInvocationStatus.SUCCEEDED
+            else "execution.pipeline.updated",
+            {
+                "invocation_id": continuation.invocation.invocation_id,
+                "status": continuation.invocation.status.value,
+                "approval_id": continuation.invocation.approval_id,
+            },
+        )
+
+    def _enqueue_master_wakeup_after_teammate(
+        self,
+        *,
+        session_id: str,
+        source_signal: AgentRuntimeSignal,
+        task: Task,
+        correlation_id: str,
+    ) -> None:
+        if self.context.repositories.agents.get("agent:master") is None:
+            now = utc_now_iso()
+            self.context.repositories.agents.save(
+                AgentMember(
+                    agent_id="agent:master",
+                    session_id=session_id,
+                    lane_id=None,
+                    task_id=None,
+                    name="OpenZyme",
+                    role="master",
+                    status=AgentMemberStatus.IDLE,
+                    parent_agent_id=None,
+                    created_at=now,
+                    updated_at=now,
+                    runtime_state="idle",
+                    idle_since=now,
+                )
+            )
+        self.enqueue_signal(
+            agent_id="agent:master",
+            task_id=task.task_id,
+            lane_id=task.lane_id,
+            correlation_id=correlation_id,
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            source_ref=source_signal.signal_id,
+        )
 
     def _execution_invocation_id_for_approval(self, approval_id: str | None) -> str | None:
         if not approval_id:

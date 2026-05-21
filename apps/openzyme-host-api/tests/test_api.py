@@ -39,9 +39,7 @@ from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
-from openzyme_domain import SessionStatus
 from openzyme_domain import Task
-from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
@@ -1136,7 +1134,7 @@ def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
     )
     service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
 
-    service.drain_runtime(session_id="sess_drain_no_auto_claim", run_master_followup=False)
+    service.drain_runtime(session_id="sess_drain_no_auto_claim")
 
     assert repositories.runtime_signals.list_by_session("sess_drain_no_auto_claim") == []
 
@@ -1181,7 +1179,6 @@ def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> Non
     service.drain_runtime(
         session_id="sess_drain_auto_claim",
         auto_enqueue_ready_tasks=True,
-        run_master_followup=False,
     )
 
     signals = repositories.runtime_signals.list_by_session("sess_drain_auto_claim")
@@ -1225,7 +1222,6 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
         session_id="sess_drain_limits",
         max_signals=4,
         max_steps_per_agent=6,
-        run_master_followup=False,
     )
 
     assert captured["worker_id"] == "host-api:runtime-drain"
@@ -1238,6 +1234,96 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
 
 def test_v3_drain_runtime_request_defaults_disable_auto_claim() -> None:
     assert DrainV3RuntimeRequest().auto_enqueue_ready_tasks is False
+
+
+def test_v3_post_message_only_enqueues_master_signal() -> None:
+    repositories = _build_v3_engine_repositories()
+    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    service.create_session(
+        project_id="proj_001",
+        objective="Queue the master.",
+        session_id="sess_msg_enqueue",
+    )
+
+    result = service.post_message(
+        session_id="sess_msg_enqueue",
+        message="Start planning.",
+    )
+
+    assert result.status == "completed"
+    assert result.outputs == ()
+    assert repositories.agents.get("agent:master") is not None
+    messages = repositories.inbox.list_by_session("sess_msg_enqueue")
+    assert [message.message_type for message in messages] == ["user_message"]
+    signals = repositories.runtime_signals.list_by_session("sess_msg_enqueue")
+    assert len(signals) == 1
+    assert signals[0].agent_id == "agent:master"
+    assert signals[0].reason.value == "inbox_unread"
+    assert signals[0].status.value == "pending"
+
+
+def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:
+    repositories = _build_v3_engine_repositories()
+    model_factory = FakeEchoHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Run the master via scheduler.",
+        session_id="sess_master_claim",
+    )
+    posted = service.post_message(
+        session_id="sess_master_claim",
+        message="Start planning.",
+    )
+    assert posted.outputs == ()
+
+    drained = service.drain_runtime(session_id="sess_master_claim")
+
+    assert drained.status == "completed"
+    assert drained.outputs == ("Planning started.",)
+    signals = repositories.runtime_signals.list_by_session("sess_master_claim")
+    assert len(signals) == 1
+    assert signals[0].status.value == "completed"
+    assert signals[0].claimed_by == "host-api:runtime-drain"
+
+
+def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
+    repositories = _build_v3_engine_repositories()
+    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    service.create_session(
+        project_id="proj_001",
+        objective="Resolve generic approval.",
+        session_id="sess_approval_master",
+    )
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id="appr_master",
+            session_id="sess_approval_master",
+            task_id=None,
+            lane_id=None,
+            kind="user_confirmation",
+            requested_action="Confirm next step.",
+            status=ApprovalRequestStatus.PENDING,
+            request_ref=None,
+            resolution_ref=None,
+            created_at="2026-05-03T15:59:10+00:00",
+        )
+    )
+
+    result = service.resolve_approval(
+        "appr_master", decision="approved", actor_ref="tester"
+    )
+
+    assert result.status == "completed"
+    signals = repositories.runtime_signals.list_by_session("sess_approval_master")
+    assert len(signals) == 1
+    assert signals[0].agent_id == "agent:master"
+    assert signals[0].reason.value == "approval_resolved"
+    assert signals[0].source_ref == "appr_master"
 
 
 def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic() -> (
@@ -1324,7 +1410,7 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
         "appr_hpc_diag", decision="approved", actor_ref="tester"
     )
 
-    assert result.status == "failed"
+    assert result.status == "completed"
     assert result.outputs == ()
     assert model_factory.invoker.calls == 0
     assert model_factory.master_calls == 0
@@ -1389,190 +1475,6 @@ def _seed_v3_execution_artifact(
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
-
-
-def test_v3_service_delegates_ready_execution_task_after_research_followup() -> None:
-    repositories = _build_v3_engine_repositories()
-    session = Session(
-        session_id="sess_v3_execution_followup",
-        project_id="proj_001",
-        title="Execution followup",
-        objective="Research a structure, run HPC/fpocket execution, and publish a final report.",
-        status=SessionStatus.ACTIVE,
-        created_at="2026-04-20T12:00:00+00:00",
-        updated_at="2026-04-20T12:00:00+00:00",
-    )
-    repositories.sessions.save(session)
-    _seed_v3_execution_artifact(repositories, session.session_id)
-    research_task = Task(
-        task_id="task_research_v3",
-        session_id=session.session_id,
-        subject="Research",
-        description="Find the structure artifact.",
-        status=TaskStatus.COMPLETED,
-        priority=TaskPriority.HIGH,
-        kind="research",
-        assigned_ref="agent:researcher",
-        created_at="2026-04-20T12:00:01+00:00",
-        updated_at="2026-04-20T12:00:02+00:00",
-    )
-    execution_task = Task(
-        task_id="task_execution_v3",
-        session_id=session.session_id,
-        subject="Run fpocket",
-        description="Run fpocket against art_v3_structure.",
-        status=TaskStatus.IN_PROGRESS,
-        priority=TaskPriority.HIGH,
-        kind="execution",
-        assigned_ref="agent:executor",
-        created_at="2026-04-20T12:00:04+00:00",
-        updated_at="2026-04-20T12:00:04+00:00",
-    )
-    repositories.tasks.save(research_task)
-    repositories.tasks.save(execution_task)
-    service = V3HostApiService(
-        repositories=repositories,
-        event_store=V3EventStore(),
-    )
-    events: list[dict[str, object]] = []
-
-    service._ensure_execution_task_after_teammates(
-        session.session_id,
-        events,
-        [
-            {
-                "ok": True,
-                "task": research_task.to_dict(),
-                "teammate_status": "completed",
-            }
-        ],
-    )
-
-    executor = repositories.agents.get("agent:executor")
-    signals = repositories.runtime_signals.list_by_session(session.session_id)
-    assert executor is not None
-    assert executor.task_id == "task_execution_v3"
-    assert signals
-    assert signals[0].agent_id == "agent:executor"
-    assert any(event["event_type"] == "agent.delegated" for event in events)
-
-
-def test_v3_service_creates_execution_task_after_research_when_missing() -> None:
-    repositories = _build_v3_engine_repositories()
-    session = Session(
-        session_id="sess_v3_execution_create",
-        project_id="proj_001",
-        title="Execution create",
-        objective="Research a structure, run HPC/fpocket execution, and publish a final report.",
-        status=SessionStatus.ACTIVE,
-        created_at="2026-04-20T12:00:00+00:00",
-        updated_at="2026-04-20T12:00:00+00:00",
-    )
-    repositories.sessions.save(session)
-    _seed_v3_execution_artifact(repositories, session.session_id)
-    research_task = Task(
-        task_id="task_research_v3",
-        session_id=session.session_id,
-        subject="Research",
-        description="Find the structure artifact.",
-        status=TaskStatus.COMPLETED,
-        priority=TaskPriority.HIGH,
-        kind="research",
-        assigned_ref="agent:researcher",
-        created_at="2026-04-20T12:00:01+00:00",
-        updated_at="2026-04-20T12:00:02+00:00",
-    )
-    repositories.tasks.save(research_task)
-    service = V3HostApiService(
-        repositories=repositories,
-        event_store=V3EventStore(),
-    )
-    events: list[dict[str, object]] = []
-
-    service._ensure_execution_task_after_teammates(
-        session.session_id,
-        events,
-        [
-            {
-                "ok": True,
-                "task": research_task.to_dict(),
-                "teammate_status": "completed",
-            }
-        ],
-    )
-
-    execution_task = repositories.tasks.get("task_execution_v3")
-    executor = repositories.agents.get("agent:executor")
-    assert execution_task is not None
-    assert execution_task.kind == "execution"
-    assert execution_task.blocked_by == ("task_research_v3",)
-    assert "art_v3_structure" in execution_task.description
-    assert executor is not None
-    assert executor.task_id == "task_execution_v3"
-    assert repositories.runtime_signals.list_by_session(session.session_id)
-
-
-def test_v3_service_delegates_existing_reporting_task_after_execution() -> None:
-    repositories = _build_v3_engine_repositories()
-    session = Session(
-        session_id="sess_v3_reporting_delegate",
-        project_id="proj_001",
-        title="Reporting delegate",
-        objective="Run execution and publish a final report.",
-        status=SessionStatus.ACTIVE,
-        created_at="2026-04-20T12:00:00+00:00",
-        updated_at="2026-04-20T12:00:00+00:00",
-    )
-    repositories.sessions.save(session)
-    execution_task = Task(
-        task_id="task_execution_v3",
-        session_id=session.session_id,
-        subject="Execution",
-        description="Run fpocket.",
-        status=TaskStatus.COMPLETED,
-        priority=TaskPriority.HIGH,
-        kind="execution",
-        assigned_ref="agent:executor",
-        created_at="2026-04-20T12:00:01+00:00",
-        updated_at="2026-04-20T12:00:02+00:00",
-    )
-    report_task = Task(
-        task_id="task_report_v3",
-        session_id=session.session_id,
-        subject="Publish report",
-        description="Publish the final report.",
-        status=TaskStatus.TODO,
-        priority=TaskPriority.HIGH,
-        kind="reporting",
-        assigned_ref=None,
-        created_at="2026-04-20T12:00:03+00:00",
-        updated_at="2026-04-20T12:00:03+00:00",
-    )
-    repositories.tasks.save(execution_task)
-    repositories.tasks.save(report_task)
-    service = V3HostApiService(
-        repositories=repositories,
-        event_store=V3EventStore(),
-    )
-    events: list[dict[str, object]] = []
-
-    service._ensure_reporting_task_after_teammates(
-        session.session_id,
-        events,
-        [
-            {
-                "ok": True,
-                "task": execution_task.to_dict(),
-                "teammate_status": "completed",
-            }
-        ],
-    )
-
-    reporter = repositories.agents.get("agent:reporter")
-    assert reporter is not None
-    assert reporter.task_id == "task_report_v3"
-    assert repositories.runtime_signals.list_by_session(session.session_id)
-    assert any(event["event_type"] == "agent.delegated" for event in events)
 
 
 def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
@@ -1643,13 +1545,19 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     )
     assert message.status_code == 200
     payload = message.json()
-    assert payload["outputs"] == ["Planning started."]
+    assert payload["outputs"] == []
     assert {event["event_type"] for event in payload["events"]} >= {
         "conversation.user_message",
+        "signal.queued",
+    }
+
+    drained = client.post("/v3/sessions/sess_v3_001/runtime/drain", json={})
+    assert drained.status_code == 200
+    payload = drained.json()
+    assert payload["outputs"] == ["Planning started."]
+    assert {event["event_type"] for event in payload["events"]} >= {
         "llm.response.created",
-        "message.received",
         "message.sent",
-        "conversation.assistant_message",
     }
     assert payload["workspace"]["inbox"]
     assert (
@@ -1661,7 +1569,6 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     assert events.status_code == 200
     assert "event: conversation.user_message" in events.text
     assert "event: llm.response.created" in events.text
-    assert "event: conversation.assistant_message" in events.text
 
     updated = client.patch("/v3/tasks/task_v3_001", json={"status": "in_progress"})
     assert updated.status_code == 200
@@ -1686,16 +1593,20 @@ def test_v3_llm_response_event_is_available_before_message_command_finishes() ->
     result_holder: dict[str, object] = {}
     error_holder: dict[str, BaseException] = {}
 
-    def _post_message() -> None:
+    service.post_message(
+        session_id="sess_realtime_trace",
+        message="create a task",
+    )
+
+    def _drain_runtime() -> None:
         try:
-            result_holder["result"] = service.post_message(
+            result_holder["result"] = service.drain_runtime(
                 session_id="sess_realtime_trace",
-                message="create a task",
             )
         except BaseException as exc:  # pragma: no cover - surfaced below
             error_holder["error"] = exc
 
-    thread = threading.Thread(target=_post_message)
+    thread = threading.Thread(target=_drain_runtime)
     thread.start()
     try:
         assert model_factory.entered_second_call.wait(timeout=5)
@@ -1772,7 +1683,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert research.status_code == 200
     research_payload = research.json()
     assert research_payload["status"] == "completed"
-    assert research_payload["outputs"] == ["Delegated research task task_research_v3."]
+    assert research_payload["outputs"] == []
     assert (
         research_payload["workspace"]["task_board"]["items"][0]["task"]["status"]
         == "todo"
@@ -1796,16 +1707,16 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         ]["status"]
         == "completed"
     )
-    assert (
-        research_payload["workspace"]["delegation"]["agents"][0]["agent"]["role"]
-        == "researcher"
+    assert any(
+        agent["agent"]["role"] == "researcher"
+        for agent in research_payload["workspace"]["delegation"]["agents"]
     )
     research_assistant_messages = [
         message["content"]
         for message in research_payload["workspace"]["conversation"]
         if message["role"] == "assistant"
     ]
-    assert research_payload["outputs"] == ["Research complete."]
+    assert "Research complete." in research_payload["outputs"]
     assert "Research complete." in research_assistant_messages
 
     execution_task = client.post(
@@ -1827,7 +1738,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     assert execution.status_code == 200
     execution_payload = execution.json()
     assert execution_payload["status"] == "completed"
-    assert execution_payload["outputs"] == ["Delegated execution task task_execution_v3."]
+    assert execution_payload["outputs"] == []
     execution_item = next(
         item
         for item in execution_payload["workspace"]["task_board"]["items"]
@@ -1906,22 +1817,10 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         resolved_payload["workspace"]["capabilities"]["execution"][0]["status"]
         == "succeeded"
     )
-    reporting_item = next(
-        item
-        for item in resolved_payload["workspace"]["task_board"]["items"]
-        if item["task"]["task_id"] == "task_report_v3"
-    )
-    assert reporting_item["task"]["kind"] == "reporting"
-    assert reporting_item["task"]["status"] == "todo"
-    assert any(
-        agent["agent"]["role"] == "reporter"
-        for agent in resolved_payload["workspace"]["delegation"]["agents"]
-    )
     assert resolved_payload["workspace"]["artifacts"]
-    assert len(resolved_payload["outputs"]) == 1
-    assert "fpocket found" in resolved_payload["outputs"][0]
-    assert "Output artifacts:" in resolved_payload["outputs"][0]
-    assert "Pipeline sandbox completed." not in resolved_payload["outputs"][0]
+    assert any("fpocket found" in output for output in resolved_payload["outputs"])
+    assert any("Output artifacts:" in output for output in resolved_payload["outputs"])
+    assert not any("Pipeline sandbox completed." in output for output in resolved_payload["outputs"])
     assert (
         "Protocol threads available via protocol.thread"
         in model_factory.invokers["v3_harness_loop"].system_prompts[-1]
@@ -1944,25 +1843,9 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         for agent in resolved_payload["workspace"]["delegation"]["agents"]
     )
 
-    report_drain = client.post(
-        "/v3/sessions/sess_v3_engines/runtime/drain",
-        json={},
-    )
-    assert report_drain.status_code == 200
-    report_payload = report_drain.json()
-    assert report_payload["status"] == "completed"
-    assert (
-        report_payload["workspace"]["report_drafts"][0]["task_id"] == "task_report_v3"
-    )
-    assert report_payload["workspace"]["report_drafts"][0]["status"] == "published"
-    assert report_payload["workspace"]["reports"][0]["status"] == "ready"
-    assert "reporting" not in report_payload["workspace"]["capabilities"]
-
     events = client.get("/v3/sessions/sess_v3_engines/events?replay=1")
     assert events.status_code == 200
     assert "event: engine.invocation.started" in events.text
-    assert "event: report_draft.updated" in events.text
-    assert "event: report.generated" in events.text
 
 
 def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(
@@ -1986,6 +1869,10 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(
     )
     assert message.status_code == 200
     payload = message.json()
+    assert payload["outputs"] == []
+    drained = client.post("/v3/sessions/sess_v3_llm/runtime/drain", json={})
+    assert drained.status_code == 200
+    payload = drained.json()
     assert payload["outputs"] == ["Created task task_llm_001 and captured the goal."]
     assert (
         payload["workspace"]["task_board"]["items"][0]["task"]["task_id"]
@@ -2000,7 +1887,10 @@ def test_v3_message_ingress_uses_llm_driver_when_model_factory_is_available(
         == "Created task task_llm_001 and captured the goal."
     )
     assert any(event["event_type"] == "tool.completed" for event in payload["events"])
-    assert payload["workspace"]["delegation"]["agents"] == []
+    assert not any(
+        agent["agent"]["role"] != "master"
+        for agent in payload["workspace"]["delegation"]["agents"]
+    )
 
 
 def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) -> None:
@@ -2031,6 +1921,8 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
         json={"message": "hello debug"},
     )
     assert message.status_code == 200
+    drained = debug_client.post("/v3/sessions/sess_v3_debug/runtime/drain", json={})
+    assert drained.status_code == 200
 
     records = debug_client.get("/debug/llm-calls?session_id=sess_v3_debug").json()
     assert len(records) == 1
@@ -2082,6 +1974,8 @@ def test_v3_project_sessions_lists_recent_sessions_with_preview_and_pending_coun
         json={"message": "Please track extracting the design goals as a task."},
     )
     assert message.status_code == 200
+    drained = client.post("/v3/sessions/sess_v3_list_a/runtime/drain", json={})
+    assert drained.status_code == 200
 
     listing = client.get("/v3/projects/proj_001/sessions")
     assert listing.status_code == 200
@@ -2118,5 +2012,11 @@ def test_v3_message_ingress_returns_service_unavailable_without_model_factory(
         "/v3/sessions/sess_v3_missing_llm/messages",
         json={"message": "Please track extracting the design goals as a task."},
     )
-    assert message.status_code == 503
-    assert "requires a configured model_factory" in message.json()["detail"]
+    assert message.status_code == 200
+    payload = message.json()
+    assert payload["outputs"] == []
+    assert any(
+        event["event_type"] == "signal.queued"
+        and event["payload"]["agent_id"] == "agent:master"
+        for event in payload["events"]
+    )

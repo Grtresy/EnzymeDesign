@@ -13,14 +13,9 @@ from uuid import uuid4
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineRegistry
 from openzyme_core import HarnessEvent
-from openzyme_core import HarnessInput
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
-from openzyme_core import LlmConversationDriver
-from openzyme_core import ProtocolService
 from openzyme_core import RestoreFocus
-from openzyme_core import ResumeDecision
-from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
@@ -30,12 +25,11 @@ from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import persist_conversation_message
-from openzyme_core import run_agent_harness_loop
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
-from openzyme_domain import ArtifactKind
-from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -44,7 +38,6 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
-from openzyme_runtime import MissingLlmConfigurationError
 
 
 def _new_id(prefix: str) -> str:
@@ -188,6 +181,7 @@ class V3HostApiService:
             status=SessionStatus.ACTIVE,
         )
         self.repositories.sessions.save(session)
+        self._ensure_master_agent(session.session_id)
         events = [
             _event(
                 "session.created",
@@ -201,6 +195,28 @@ class V3HostApiService:
             "workspace": self.workspace(session.session_id),
             "events": events,
         }
+
+    def _ensure_master_agent(self, session_id: str) -> AgentMember:
+        existing = self.repositories.agents.get("agent:master")
+        if existing is not None and existing.session_id == session_id:
+            return existing
+        now = utc_now_iso()
+        master = AgentMember(
+            agent_id="agent:master",
+            session_id=session_id,
+            lane_id=None,
+            task_id=None,
+            name="OpenZyme",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at=now,
+            updated_at=now,
+            runtime_state="idle",
+            idle_since=now,
+        )
+        self.repositories.agents.save(master)
+        return master
 
     def workspace(self, session_id: str) -> dict[str, Any]:
         return (
@@ -366,7 +382,6 @@ class V3HostApiService:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
-        run_master_followup: bool = True,
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
@@ -378,13 +393,6 @@ class V3HostApiService:
             max_steps_per_agent=max_steps_per_agent,
             auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
-        followup = None
-        if run_master_followup:
-            followup = self._run_master_followup_after_teammates(
-                session_id, events, outcomes
-            )
-        self._ensure_execution_task_after_teammates(session_id, events, outcomes)
-        self._ensure_reporting_task_after_teammates(session_id, events, outcomes)
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
@@ -392,14 +400,19 @@ class V3HostApiService:
             response_status = HarnessStatus.WAITING_APPROVAL
         elif self._outcomes_include_failure(outcomes):
             response_status = HarnessStatus.FAILED
-        elif followup is not None:
-            response_status = followup.status
         else:
             response_status = HarnessStatus.COMPLETED
+        master_outputs = tuple(
+            output
+            for outcome in outcomes
+            if isinstance(outcome.get("agent"), dict)
+            and outcome["agent"].get("agent_id") == "agent:master"
+            for output in outcome.get("outputs", ())
+        )
         response_outputs = (
             ()
             if has_pending_approval
-            else tuple(() if followup is None else followup.outputs)
+            else master_outputs
         )
         self._touch_session(session_id)
         self._extend_with_trace_events(session_id, events)
@@ -444,6 +457,8 @@ class V3HostApiService:
         return terminal
 
     def _outcomes_include_failure(self, outcomes: list[dict[str, Any]]) -> bool:
+        if any(outcome.get("ok") is False for outcome in outcomes):
+            return True
         for outcome in self._terminal_teammate_outcomes(outcomes):
             task = outcome.get("task")
             task_status = (
@@ -464,416 +479,6 @@ class V3HostApiService:
     ) -> bool:
         return any(outcome.get("waiting_approval_id") for outcome in outcomes)
 
-    def _run_master_followup_after_teammates(
-        self,
-        session_id: str,
-        events: list[dict[str, Any]],
-        outcomes: list[dict[str, Any]],
-        *,
-        max_steps: int = 4,
-    ):
-        terminal = self._terminal_teammate_outcomes(outcomes)
-        if not terminal:
-            return None
-        focus_task_id = None
-        focus_lane_id = None
-        if len(terminal) == 1 and isinstance(terminal[0].get("task"), dict):
-            task = terminal[0]["task"]
-            focus_task_id = task.get("task_id")
-            focus_lane_id = task.get("lane_id")
-        event_bus = self._event_sink()
-        result = run_agent_harness_loop(
-            self.repositories,
-            HarnessInput(
-                session_id=session_id,
-                message=None,
-                max_steps=max_steps,
-                restore_focus=RestoreFocus(
-                    task_id=focus_task_id, lane_id=focus_lane_id
-                ),
-                persist_conversation=True,
-            ),
-            driver=self._require_llm_driver(),
-            engine_registry=self.engine_registry,
-            event_sink=event_bus,
-            model_factory=self.model_factory,
-            bio_research_service=self.bio_research_service,
-            research_adapter=self.research_adapter,
-        )
-        events.extend(event.to_dict() for event in event_bus.events)
-        for output in result.outputs:
-            self._record_events(
-                session_id,
-                events,
-                [
-                    _event(
-                        "conversation.assistant_message",
-                        session_id,
-                        {"content": output},
-                    )
-                ],
-            )
-        return result
-
-    def _ensure_reporting_task_after_teammates(
-        self,
-        session_id: str,
-        events: list[dict[str, Any]],
-        outcomes: list[dict[str, Any]],
-    ) -> None:
-        terminal = self._terminal_teammate_outcomes(outcomes)
-        if not terminal or self._outcomes_include_failure(outcomes):
-            return
-        if self.repositories.reports.list_by_session(session_id):
-            return
-        if not self._session_requested_report(session_id):
-            return
-        open_non_report_tasks = [
-            task
-            for task in self.repositories.tasks.list_by_session(session_id)
-            if task.kind not in {"reporting", "report"}
-            and task.status is not TaskStatus.COMPLETED
-            and not task.status.is_terminal
-        ]
-        if open_non_report_tasks:
-            return
-        existing_report_tasks = [
-            task
-            for task in self.repositories.tasks.list_by_session(session_id)
-            if task.kind in {"reporting", "report"}
-        ]
-        if existing_report_tasks:
-            self._delegate_existing_reporting_task_if_ready(
-                session_id, events, existing_report_tasks
-            )
-            return
-        source_task_ids: list[str] = []
-        lane_id = None
-        for outcome in terminal:
-            task = outcome.get("task")
-            if not isinstance(task, dict):
-                continue
-            task_id = task.get("task_id")
-            if task_id is None:
-                continue
-            current = self.repositories.tasks.get(str(task_id))
-            if current is None or current.kind in {"reporting", "report"}:
-                continue
-            if current.status is not TaskStatus.COMPLETED:
-                continue
-            source_task_ids.append(current.task_id)
-            lane_id = lane_id or current.lane_id
-        if not source_task_ids:
-            return
-        has_execution_evidence = any(
-            (self.repositories.tasks.get(task_id) is not None)
-            and self.repositories.tasks.get(task_id).kind == "execution"
-            for task_id in source_task_ids
-        ) or bool(self.repositories.runs.list_by_session(session_id))
-        if not has_execution_evidence:
-            return
-
-        def emit(event_type: str, payload: dict[str, Any]) -> None:
-            events.append(_event(event_type, session_id, payload))
-
-        task_id = self._next_reporting_task_id(session_id)
-        report_task = TaskBoardService(
-            self.repositories,
-            event_emitter=emit,
-        ).create_task(
-            session_id=session_id,
-            task_id=task_id,
-            subject="Publish final report",
-            description=(
-                "Produce and publish the final V3 report from the completed "
-                "workspace tasks, evidence, runs, artifacts, and unresolved gaps."
-            ),
-            priority=TaskPriority.HIGH,
-            kind="reporting",
-            status=TaskStatus.TODO,
-            lane_id=lane_id,
-            blocked_by=tuple(source_task_ids),
-        )
-        protocol = ProtocolService(self.repositories, event_emitter=emit)
-        payload_ref = protocol.persist_payload(
-            session_id=session_id,
-            document_kind="delegation_request",
-            payload={
-                "task_id": report_task.task_id,
-                "instructions": report_task.description,
-                "role": "reporter",
-                "agent_id": "agent:reporter",
-                "source_task_ids": source_task_ids,
-            },
-        )
-        protocol.delegate(
-            session_id=session_id,
-            agent_id="agent:reporter",
-            name="reporter",
-            role="reporter",
-            payload_ref=payload_ref,
-            task_id=report_task.task_id,
-            lane_id=report_task.lane_id,
-            correlation_id=_new_id("corr"),
-        )
-
-    def _delegate_existing_reporting_task_if_ready(
-        self,
-        session_id: str,
-        events: list[dict[str, Any]],
-        report_tasks: list[Any],
-    ) -> None:
-        task_service = TaskBoardService(self.repositories)
-        candidates = [
-            task
-            for task in report_tasks
-            if task.status in {TaskStatus.TODO, TaskStatus.IN_PROGRESS}
-            and (task.assigned_ref is None or task.assigned_ref in {"reporter", "agent:reporter"})
-            and not task_service.open_blocker_ids(task)
-        ]
-        if not candidates:
-            return
-        task = sorted(candidates, key=lambda item: (item.created_at, item.task_id))[0]
-        if any(
-            agent.role == "reporter" and agent.task_id == task.task_id
-            for agent in self.repositories.agents.list_by_session(session_id)
-        ):
-            return
-
-        def emit(event_type: str, payload: dict[str, Any]) -> None:
-            events.append(_event(event_type, session_id, payload))
-
-        protocol = ProtocolService(self.repositories, event_emitter=emit)
-        payload_ref = protocol.persist_payload(
-            session_id=session_id,
-            document_kind="delegation_request",
-            payload={
-                "task_id": task.task_id,
-                "instructions": task.description or task.subject,
-                "role": "reporter",
-                "agent_id": "agent:reporter",
-                "source": "host_service_reporting_followup",
-            },
-        )
-        protocol.delegate(
-            session_id=session_id,
-            agent_id="agent:reporter",
-            name="reporter",
-            role="reporter",
-            payload_ref=payload_ref,
-            task_id=task.task_id,
-            lane_id=task.lane_id,
-            correlation_id=_new_id("corr"),
-        )
-
-    def _ensure_execution_task_after_teammates(
-        self,
-        session_id: str,
-        events: list[dict[str, Any]],
-        outcomes: list[dict[str, Any]],
-    ) -> None:
-        terminal = self._terminal_teammate_outcomes(outcomes)
-        if not terminal or self._outcomes_include_failure(outcomes):
-            return
-        if not self._session_requested_execution(session_id):
-            return
-        if self.repositories.approvals.list_pending_by_session(session_id):
-            return
-        if not self._session_has_structure_artifact(session_id):
-            return
-        if self.repositories.runs.list_by_session(session_id):
-            return
-        if any(
-            invocation.engine_name == "execution"
-            and invocation.status
-            not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED}
-            for invocation in self.repositories.invocations.list_by_session(session_id)
-        ):
-            return
-        task_service = TaskBoardService(self.repositories)
-        execution_tasks = [
-            task
-            for task in self.repositories.tasks.list_by_session(session_id)
-            if task.kind == "execution"
-        ]
-        candidates = [
-            task
-            for task in execution_tasks
-            if (task.assigned_ref is None or task.assigned_ref in {"executor", "agent:executor"})
-            and task.status in {TaskStatus.TODO, TaskStatus.IN_PROGRESS}
-            and not task_service.open_blocker_ids(task)
-        ]
-        if candidates:
-            task = sorted(candidates, key=lambda item: (item.created_at, item.task_id))[0]
-        else:
-            if execution_tasks:
-                return
-            source_task_ids, lane_id = self._completed_source_tasks_for_execution(terminal)
-            if not source_task_ids:
-                return
-            structure_artifact = self._latest_structure_artifact(session_id)
-            if structure_artifact is None:
-                return
-
-            def create_emit(event_type: str, payload: dict[str, Any]) -> None:
-                events.append(_event(event_type, session_id, payload))
-
-            task = TaskBoardService(
-                self.repositories,
-                event_emitter=create_emit,
-            ).create_task(
-                session_id=session_id,
-                task_id=self._next_execution_task_id(session_id),
-                subject=f"Run fpocket on {structure_artifact.title or structure_artifact.artifact_id}",
-                description=(
-                    "Run the controlled execution pipeline against structure artifact "
-                    f"{structure_artifact.artifact_id}. Use artifacts.get('{structure_artifact.artifact_id}') "
-                    "and hpc.fpocket(structure_artifact_id=structure['artifact_id']). "
-                    "Include the artifact id in inputs.artifact_ids and publish results for the final report."
-                ),
-                priority=TaskPriority.HIGH,
-                kind="execution",
-                status=TaskStatus.TODO,
-                lane_id=lane_id,
-                blocked_by=tuple(source_task_ids),
-            )
-        if any(
-            agent.role == "executor" and agent.task_id == task.task_id
-            for agent in self.repositories.agents.list_by_session(session_id)
-        ):
-            return
-
-        def emit(event_type: str, payload: dict[str, Any]) -> None:
-            events.append(_event(event_type, session_id, payload))
-
-        protocol = ProtocolService(self.repositories, event_emitter=emit)
-        payload_ref = protocol.persist_payload(
-            session_id=session_id,
-            document_kind="delegation_request",
-            payload={
-                "task_id": task.task_id,
-                "instructions": task.description or task.subject,
-                "role": "executor",
-                "agent_id": "agent:executor",
-                "source": "host_service_execution_followup",
-            },
-        )
-        protocol.delegate(
-            session_id=session_id,
-            agent_id="agent:executor",
-            name="executor",
-            role="executor",
-            payload_ref=payload_ref,
-            task_id=task.task_id,
-            lane_id=task.lane_id,
-            correlation_id=_new_id("corr"),
-        )
-
-    def _completed_source_tasks_for_execution(
-        self, terminal: list[dict[str, Any]]
-    ) -> tuple[list[str], str | None]:
-        source_task_ids: list[str] = []
-        lane_id = None
-        for outcome in terminal:
-            task_payload = outcome.get("task")
-            if not isinstance(task_payload, dict):
-                continue
-            task_id = task_payload.get("task_id")
-            if task_id is None:
-                continue
-            task = self.repositories.tasks.get(str(task_id))
-            if task is None or task.kind == "execution":
-                continue
-            if task.status is not TaskStatus.COMPLETED:
-                continue
-            source_task_ids.append(task.task_id)
-            lane_id = lane_id or task.lane_id
-        return source_task_ids, lane_id
-
-    def _next_execution_task_id(self, session_id: str) -> str:
-        existing = {
-            task.task_id for task in self.repositories.tasks.list_by_session(session_id)
-        }
-        candidate = "task_execution_v3"
-        if candidate not in existing:
-            return candidate
-        while True:
-            candidate = _new_id("task_execution")
-            if candidate not in existing:
-                return candidate
-
-    def _latest_structure_artifact(self, session_id: str):
-        artifacts = [
-            artifact
-            for artifact in self.repositories.artifacts.list_by_session(session_id)
-            if artifact.kind is ArtifactKind.STRUCTURE
-        ]
-        if not artifacts:
-            return None
-        return sorted(artifacts, key=lambda item: (item.created_at, item.artifact_id))[-1]
-
-    def _next_reporting_task_id(self, session_id: str) -> str:
-        existing = {
-            task.task_id for task in self.repositories.tasks.list_by_session(session_id)
-        }
-        candidate = "task_report_v3"
-        if candidate not in existing:
-            return candidate
-        while True:
-            candidate = _new_id("task_report")
-            if candidate not in existing:
-                return candidate
-
-    def _session_requested_execution(self, session_id: str) -> bool:
-        needles = ("execution", "hpc", "fpocket", "run ")
-        session = self.repositories.sessions.get(session_id)
-        if session is not None:
-            session_text = f"{session.title}\n{session.objective}".lower()
-            if any(needle in session_text for needle in needles):
-                return True
-        for task in self.repositories.tasks.list_by_session(session_id):
-            text = f"{task.subject}\n{task.description}".lower()
-            if task.kind == "execution" or any(needle in text for needle in needles):
-                return True
-        return False
-
-    def _session_has_structure_artifact(self, session_id: str) -> bool:
-        return any(
-            artifact.kind is ArtifactKind.STRUCTURE
-            for artifact in self.repositories.artifacts.list_by_session(session_id)
-        )
-
-    def _session_requested_report(self, session_id: str) -> bool:
-        needles = ("report", "publish", "final", "报告")
-        session = self.repositories.sessions.get(session_id)
-        if session is not None:
-            session_text = f"{session.title}\n{session.objective}".lower()
-            if any(needle in session_text for needle in needles):
-                return True
-        for event in self.event_store.list(session_id):
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            content = str(payload.get("content") or "")
-            lowered = content.lower()
-            if "report" in lowered or "报告" in content:
-                return True
-        for task in self.repositories.tasks.list_by_session(session_id):
-            text = f"{task.subject}\n{task.description}".lower()
-            if any(needle in text for needle in needles):
-                return True
-        for message in self.repositories.inbox.list_by_session(session_id):
-            if message.payload_ref is None:
-                continue
-            payload = self.repositories.engine_documents.get(message.payload_ref)
-            if payload is None:
-                continue
-            content = str(payload.payload.get("content") or payload.payload)
-            lowered = content.lower()
-            if "report" in lowered or "报告" in content:
-                return True
-        return False
-
     def post_message(
         self,
         *,
@@ -886,55 +491,72 @@ class V3HostApiService:
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
-        driver = self._require_llm_driver()
+        self._ensure_master_agent(session_id)
         events: list[dict[str, Any]] = []
+        message_id = None
         if message:
+            message_id = _new_id("msg")
+            created_at = utc_now_iso()
+            payload_ref = persist_conversation_message(
+                self.repositories,
+                session_id=session_id,
+                message_id=message_id,
+                role="user",
+                content=message,
+                created_at=created_at,
+            )
+            self.repositories.inbox.save(
+                InboxMessage(
+                    message_id=message_id,
+                    session_id=session_id,
+                    sender="user",
+                    sender_kind=InboxParticipantKind.USER,
+                    recipient="harness",
+                    recipient_kind=InboxParticipantKind.HARNESS,
+                    message_type="user_message",
+                    correlation_id=None,
+                    payload_ref=payload_ref,
+                    status=InboxStatus.DELIVERED,
+                    created_at=created_at,
+                )
+            )
             self._record_events(
                 session_id,
                 events,
                 [_event("conversation.user_message", session_id, {"content": message})],
             )
         event_bus = self._event_sink()
-        result = run_agent_harness_loop(
-            self.repositories,
-            HarnessInput(
-                session_id=session_id,
-                message=message,
-                max_steps=max_steps,
-                restore_focus=RestoreFocus(
-                    task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
-                ),
-            ),
-            driver=driver,
-            engine_registry=self.engine_registry,
+        context = SessionRuntimeContext(
+            repositories=self.repositories,
             event_sink=event_bus,
+            snapshot=SessionRuntimeSnapshot.load(self.repositories, session_id),
+            tool_registry=ToolRegistry(),
+            restore_focus=RestoreFocus(
+                task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
+            ),
             model_factory=self.model_factory,
+            engine_registry=self.engine_registry,
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
         )
-        events.extend(event.to_dict() for event in result.events)
-        if result.status is not HarnessStatus.WAITING_APPROVAL:
-            for output in result.outputs:
-                self._record_events(
-                    session_id,
-                    events,
-                    [
-                        _event(
-                            "conversation.assistant_message",
-                            session_id,
-                            {"content": output},
-                        )
-                    ],
-                )
+        AgentRuntimeService(context).enqueue_signal(
+            agent_id="agent:master",
+            task_id=task_id,
+            lane_id=lane_id,
+            correlation_id=None,
+            reason=AgentRuntimeSignalReason.INBOX_UNREAD,
+            source_ref=message_id,
+        )
+        events.extend(event.to_dict() for event in event_bus.events)
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
         response_status = (
             HarnessStatus.WAITING_APPROVAL
             if has_pending_approval
-            else result.status
+            else HarnessStatus.COMPLETED
         )
-        response_outputs = () if has_pending_approval else result.outputs
+        response_outputs = ()
         self._touch_session(session_id)
         self._extend_with_trace_events(session_id, events)
         self._extend_with_activity_events(session_id, events)
@@ -957,16 +579,6 @@ class V3HostApiService:
             raise ValueError(f"approval {approval_id!r} is not pending")
         if decision not in {"approved", "rejected"}:
             raise ValueError("decision must be 'approved' or 'rejected'")
-        execution_approval = (
-            approval.kind
-            in {
-                "execution_launch",
-                "execution_pipeline_plan",
-                "execution_pipeline_operation",
-            }
-            or self._execution_waiting_invocation_id(approval) is not None
-        )
-        continuation_output: dict[str, Any] | None = None
         events: list[dict[str, Any]] = []
         self._record_events(
             approval.session_id,
@@ -984,133 +596,15 @@ class V3HostApiService:
             ],
         )
         assigned_agent_id = self._approval_assigned_agent_id(approval)
-        if execution_approval:
-            self._resolve_approval_record(
-                approval, decision=decision, actor_ref=actor_ref
-            )
-            continuation_output = self._continue_execution_after_approval(
-                approval_id, decision
-            )
-            result_status = HarnessStatus.COMPLETED
-            pending_approval_id = None
-            result_outputs: list[str] = []
-            if continuation_output is None:
-                result_status = HarnessStatus.FAILED
-                result_outputs = [
-                    "Execution approval was resolved, but no waiting execution invocation was linked to it."
-                ]
-            else:
-                events.append(
-                    _event(
-                        "execution.pipeline.completed",
-                        approval.session_id,
-                        {
-                            "invocation_id": continuation_output["invocation_id"],
-                            "status": continuation_output["status"],
-                        },
-                    )
-                )
-                if (
-                    continuation_output["status"]
-                    == EngineInvocationStatus.WAITING_APPROVAL.value
-                ):
-                    result_status = HarnessStatus.WAITING_APPROVAL
-                    pending_approval_id = continuation_output.get("approval_id")
-                elif continuation_output["status"] in {
-                    EngineInvocationStatus.FAILED.value,
-                    EngineInvocationStatus.CANCELLED.value,
-                }:
-                    result_status = HarnessStatus.FAILED
-        elif assigned_agent_id is not None:
-            self._resolve_approval_record(
-                approval, decision=decision, actor_ref=actor_ref
-            )
-            result_outputs = []
-            result_status = HarnessStatus.COMPLETED
-            pending_approval_id = None
-        else:
-            driver = self._require_llm_driver()
-            event_bus = self._event_sink()
-            result = run_agent_harness_loop(
-                self.repositories,
-                HarnessInput(
-                    session_id=approval.session_id,
-                    resume=ResumeEnvelope(
-                        approval_id=approval_id,
-                        decision=ResumeDecision.APPROVED
-                        if decision == "approved"
-                        else ResumeDecision.REJECTED,
-                        actor_ref=actor_ref,
-                    ),
-                    restore_focus=RestoreFocus(
-                        task_id=approval.task_id, lane_id=approval.lane_id
-                    ),
-                    persist_conversation=False,
-                ),
-                driver=driver,
-                engine_registry=self.engine_registry,
-                event_sink=event_bus,
-                model_factory=self.model_factory,
-                bio_research_service=self.bio_research_service,
-                research_adapter=self.research_adapter,
-            )
-            events.extend(event.to_dict() for event in result.events)
-            result_outputs = list(result.outputs)
-            result_status = result.status
-            pending_approval_id = result.pending_approval_id
-
-        for output in result_outputs:
-            message_id = _new_id("msg")
-            created_at = utc_now_iso()
-            payload_ref = persist_conversation_message(
-                self.repositories,
-                session_id=approval.session_id,
-                message_id=message_id,
-                role="assistant",
-                content=output,
-                created_at=created_at,
-            )
-            self.repositories.inbox.save(
-                InboxMessage(
-                    message_id=message_id,
-                    session_id=approval.session_id,
-                    sender="harness",
-                    sender_kind=InboxParticipantKind.HARNESS,
-                    recipient="user",
-                    recipient_kind=InboxParticipantKind.USER,
-                    message_type="assistant_message",
-                    correlation_id=None,
-                    payload_ref=payload_ref,
-                    status=InboxStatus.DELIVERED,
-                    created_at=created_at,
-                )
-            )
-            self._record_events(
-                approval.session_id,
-                events,
-                [
-                    _event(
-                        "conversation.assistant_message",
-                        approval.session_id,
-                        {"content": output},
-                    )
-                ],
-            )
-        if execution_approval:
-            self._record_execution_continuation_result(
-                approval, continuation_output=continuation_output
-            )
-            if continuation_output is not None and continuation_output["status"] in {
-                EngineInvocationStatus.SUCCEEDED.value,
-                EngineInvocationStatus.FAILED.value,
-                EngineInvocationStatus.CANCELLED.value,
-            }:
-                self._enqueue_execution_agent_after_pipeline_completion(
-                    approval, continuation_output=continuation_output, events=events
-                )
-        elif assigned_agent_id is not None:
+        self._resolve_approval_record(approval, decision=decision, actor_ref=actor_ref)
+        if assigned_agent_id is not None:
             self._enqueue_approval_resolved_signal(
                 approval, agent_id=assigned_agent_id, events=events
+            )
+        else:
+            self._ensure_master_agent(approval.session_id)
+            self._enqueue_approval_resolved_signal(
+                approval, agent_id="agent:master", events=events
             )
         self._touch_session(approval.session_id)
         self._extend_with_trace_events(approval.session_id, events)
@@ -1118,26 +612,11 @@ class V3HostApiService:
         self.event_store.append(approval.session_id, events)
         return V3CommandResult(
             session_id=approval.session_id,
-            status=HarnessStatus.WAITING_APPROVAL.value
-            if pending_approval_id
-            else result_status.value,
-            outputs=tuple(result_outputs),
+            status=HarnessStatus.COMPLETED.value,
+            outputs=(),
             events=events,
             workspace=self.workspace(approval.session_id),
         )
-
-    def _enqueue_execution_agent_after_pipeline_completion(
-        self,
-        approval: ApprovalRequest,
-        *,
-        continuation_output: dict[str, Any],
-        events: list[dict[str, Any]],
-    ) -> None:
-        del continuation_output
-        agent_id = self._approval_assigned_agent_id(approval)
-        if agent_id is None:
-            return
-        self._enqueue_approval_resolved_signal(approval, agent_id=agent_id, events=events)
 
     def _enqueue_approval_resolved_signal(
         self,
@@ -1146,7 +625,9 @@ class V3HostApiService:
         agent_id: str | None,
         events: list[dict[str, Any]],
     ) -> None:
-        if agent_id is None or approval.task_id is None:
+        if agent_id is None:
+            return
+        if approval.task_id is None and agent_id != "agent:master":
             return
         event_bus = self._event_sink()
         context = SessionRuntimeContext(
@@ -1226,130 +707,6 @@ class V3HostApiService:
         )
         self.repositories.approvals.save(resolved)
         return resolved
-
-    def _execution_waiting_invocation_id(self, approval: ApprovalRequest) -> str | None:
-        for invocation in self.repositories.invocations.list_by_session(
-            approval.session_id
-        ):
-            if (
-                invocation.approval_id == approval.approval_id
-                and invocation.engine_name == "execution"
-                and invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-            ):
-                return invocation.invocation_id
-        return None
-
-    def _record_execution_continuation_result(
-        self,
-        approval: ApprovalRequest,
-        *,
-        continuation_output: dict[str, Any] | None,
-    ) -> None:
-        if approval.task_id is None:
-            return
-        task = self.repositories.tasks.get(approval.task_id)
-        if task is None:
-            return
-        agent = next(
-            (
-                candidate
-                for candidate in self.repositories.agents.list_by_session(
-                    approval.session_id
-                )
-                if candidate.role == "executor"
-                and (
-                    candidate.task_id == approval.task_id
-                    or candidate.lane_id == approval.lane_id
-                )
-            ),
-            None,
-        )
-        correlation_id = (
-            None if agent is None else agent.current_correlation_id
-        ) or approval.approval_id
-        status = None if continuation_output is None else continuation_output["status"]
-        summary = (
-            "Execution approval resolved."
-            if continuation_output is None
-            else f"Execution pipeline {status}."
-        )
-        if continuation_output is not None and continuation_output.get("summary"):
-            summary = str(continuation_output["summary"])
-        protocol = ProtocolService(self.repositories)
-        payload_ref = protocol.persist_payload(
-            session_id=approval.session_id,
-            document_kind="protocol_payload",
-            payload={
-                "task_id": approval.task_id,
-                "status": status,
-                "summary": summary,
-                "tool_result": {
-                    "tool_name": "execution.pipeline.start",
-                    "ok": status == EngineInvocationStatus.SUCCEEDED.value,
-                    "status": status,
-                    "summary": summary,
-                    "payload": continuation_output,
-                },
-            },
-        )
-        protocol.reply(
-            session_id=approval.session_id,
-            sender="agent:executor",
-            sender_kind=InboxParticipantKind.AGENT,
-            recipient="harness",
-            recipient_kind=InboxParticipantKind.HARNESS,
-            message_type="delegation_result",
-            correlation_id=correlation_id,
-            payload_ref=payload_ref,
-        )
-
-    def _continue_execution_after_approval(
-        self, approval_id: str, decision: str
-    ) -> dict[str, Any] | None:
-        approval = self.repositories.approvals.get(approval_id)
-        if approval is None:
-            return None
-        if self.engine_registry is None:
-            return None
-        engine = self.engine_registry.get("execution")
-        if engine is None or not hasattr(engine, "continue_after_approval"):
-            return None
-        waiting = [
-            invocation
-            for invocation in self.repositories.invocations.list_by_session(
-                approval.session_id
-            )
-            if invocation.approval_id == approval_id
-            and invocation.engine_name == "execution"
-            and invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-        ]
-        if not waiting:
-            return None
-        continuation = engine.continue_after_approval(  # type: ignore[attr-defined]
-            invocation_id=waiting[0].invocation_id, resolution=decision
-        )
-        return {
-            "invocation_id": continuation.invocation.invocation_id,
-            "status": continuation.invocation.status.value,
-            "approval_id": None
-            if continuation.approval is None
-            else continuation.approval.approval_id,
-            "summary": None
-            if continuation.parsed_result is None
-            else continuation.parsed_result.result_summary,
-            "details": None
-            if continuation.parsed_result is None
-            else continuation.parsed_result.structured_findings,
-        }
-
-    def _require_llm_driver(self) -> LlmConversationDriver:
-        if self.model_factory is None:
-            raise MissingLlmConfigurationError(
-                "V3 top-level harness loop requires a configured model_factory; deterministic fallback has been removed."
-            )
-        return LlmConversationDriver(
-            self.model_factory, engine_registry=self.engine_registry
-        )
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = TaskBoardService(self.repositories).create_task(

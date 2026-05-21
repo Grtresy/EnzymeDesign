@@ -102,7 +102,6 @@ def _drain_until_report(
             json={
                 "max_signals": 10,
                 "max_steps_per_agent": 8,
-                "run_master_followup": True,
             },
         )
         _raise_for_status_with_body(drained, step="runtime_drain")

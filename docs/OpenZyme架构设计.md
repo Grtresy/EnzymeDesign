@@ -160,9 +160,9 @@ Agent Runtime / Scheduler
   |
   +--> durable runtime signals
   +--> claim lease / stale recovery
+  +--> bounded master turns
   +--> bounded teammate turns
   +--> explicit runtime drain
-  +--> optional master follow-up
   |
   v
 Agent Harness Kernel
@@ -214,20 +214,19 @@ POST /v3/sessions
 
 POST /v3/sessions/{session_id}/messages
   -> persist user message
-  -> restore master context
-  -> master creates / updates tasks
-  -> master delegates concrete work with task.delegate
-  -> ProtocolService.delegate() persists AgentMember + InboxMessage
-  -> protocol.send / delegation queues AgentRuntimeSignal
-  -> return without implicit teammate drain
+  -> ensure resident agent:master
+  -> queue agent:master AgentRuntimeSignal
+  -> return without running master or teammate loop
 
 POST /v3/sessions/{session_id}/runtime/drain
   -> AgentRuntimeScheduler claims pending signals with lease
-  -> wake focused resident teammate
-  -> teammate reads task / lane / inbox / protocol / workspace
+  -> if signal is agent:master, run bounded top-level master loop
+  -> if signal is teammate, wake focused resident teammate
+  -> agent reads task / lane / inbox / protocol / workspace
+  -> master creates / updates tasks and delegates with task.delegate
   -> teammate calls role-scoped tools or capability engines
   -> task / artifact / run / report draft / approval state updates
-  -> optional master follow-up summarizes terminal teammate outcomes
+  -> terminal teammate outcome queues agent:master wakeup
 
 GET /v3/sessions/{session_id}/workspace
   -> project current canonical state for UI / CLI
@@ -235,12 +234,12 @@ GET /v3/sessions/{session_id}/workspace
 
 关键约束：
 
-- `POST /v3/sessions/{session_id}/messages` 是用户到 master 的入口，不隐式执行 bounded teammate runtime drain
-- `POST /v3/sessions/{session_id}/runtime/drain` 是 Host API 唯一负责 bounded teammate drain 的显式入口
+- `POST /v3/sessions/{session_id}/messages` 是用户到 master 的入口，只持久化用户消息并排队 `agent:master` wakeup，不直接执行 master loop，也不隐式执行 bounded teammate runtime drain
+- `POST /v3/sessions/{session_id}/runtime/drain` 是当前无 background worker 时推进 master / teammate signals 的显式 scheduler command；它必须通过 scheduler claim lease，不得绕过 scheduler 直接调用 agent loop
 - `task.delegate` 是产品-facing delegation tool，但真实写路径是 `ProtocolService.delegate()`
 - `protocol.send` 只投递消息并排队 wakeup signal，不同步运行 recipient
 - `auto_enqueue_ready_tasks` 默认关闭，只用于显式 operator/debug/recovery 场景
-- approval resolve 只改变 approval/resolution/continuation 状态并排队必要 wakeup，不直接替用户或 agent 批准后续未知动作
+- approval resolve 只改变 approval/resolution/continuation 状态并排队必要 wakeup，不直接恢复 execution、不直接运行 master loop，也不直接替用户或 agent 批准后续未知动作
 
 ---
 

@@ -60,7 +60,6 @@ class DrainV3RuntimeRequest(BaseModel):
     max_signals: int = 3
     max_steps_per_agent: int = 8
     auto_enqueue_ready_tasks: bool = False
-    run_master_followup: bool = True
 
 
 class ResolveV3ApprovalRequest(BaseModel):
@@ -371,7 +370,6 @@ def create_app(
                     max_signals=request.max_signals,
                     max_steps_per_agent=request.max_steps_per_agent,
                     auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
-                    run_master_followup=request.run_master_followup,
                 ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc

@@ -555,7 +555,6 @@ def _run_v3_design_cutover_scenario(
                     json={
                         "max_signals": 10,
                         "max_steps_per_agent": 8,
-                        "run_master_followup": False,
                     },
                 )
                 first_drain.raise_for_status()
@@ -572,17 +571,23 @@ def _run_v3_design_cutover_scenario(
                         json={
                             "max_signals": 10,
                             "max_steps_per_agent": 8,
-                            "run_master_followup": False,
                         },
                     )
                     approval_drain.raise_for_status()
 
+                report_turn = client.post(
+                    "/v3/sessions/sess_eval_v3_cutover/messages",
+                    json={
+                        "message": "Publish the final report from the completed research and execution evidence.",
+                        "max_steps": 8,
+                    },
+                )
+                report_turn.raise_for_status()
                 report_drain = client.post(
                     "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
                     json={
                         "max_signals": 10,
                         "max_steps_per_agent": 8,
-                        "run_master_followup": False,
                     },
                 )
                 report_drain.raise_for_status()

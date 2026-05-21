@@ -6,13 +6,15 @@ Host API 启动后，单进程后台 runtime service 自动推进所有 pending 
 
 第一版仍是单进程 Host 内 scheduler，不引入 Redis、多进程 worker 或分布式队列。
 
+当前实现状态：Session A 已统一 master / teammate 的 scheduler claim 启动路径，但尚未实现 FastAPI lifespan background worker。因此当前产品/测试路径仍依赖显式 `POST /v3/sessions/{session_id}/runtime/drain` 作为 manual scheduler command 来推进 pending signals；本文件描述的是下一步 Session B 目标，不是已上线语义。
+
 ## Product Semantics
 
 - 用户发消息后，后台 scheduler 自动 claim `agent:master` wakeup。
 - master delegate teammate 后，后台 scheduler 自动 claim teammate wakeup。
 - teammate 完成 task、回复 protocol 或发布 report 后，只排队 master wakeup，后台 scheduler 自动恢复 master。
 - approval resolve 后，只排队相关 agent wakeup，后台 scheduler 自动恢复对应 agent。
-- `/runtime/drain` 是 debug / operator / manual drain；它不得成为产品路径或测试伪装路径。
+- Session B 完成前，`/runtime/drain` 是当前 manual scheduler command；Session B 完成后，它应退回 debug / operator / manual drain，不再成为普通产品路径。
 
 ## Implementation Tasks
 
@@ -58,5 +60,4 @@ Host API 启动后，单进程后台 runtime service 自动推进所有 pending 
 - `uv run pytest packages/openzyme-core/tests/test_agent_scheduler.py`
 - `uv run pytest apps/openzyme-host-api/tests/test_api.py`
 - `uv run pytest -m "not integration"`
-- live LLM / Tavily / HPC 配置齐全时，使用真实产品路径验证无需 `/runtime/drain` 的后台推进。
-
+- live LLM / Tavily / HPC 配置齐全且 Session B worker 启用时，使用真实产品路径验证无需 `/runtime/drain` 的后台推进。
