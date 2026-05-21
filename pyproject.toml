@@ -8,11 +8,9 @@ members = [
   "packages/openzyme-engines",
   "packages/openzyme-execution",
   "packages/openzyme-pipeline",
-  "packages/openzyme-graph",
   "packages/preprocess-backend",
   "packages/openzyme-research",
   "packages/openzyme-runtime",
-  "packages/openzyme-storage",
   "packages/openzyme-tools",
 ]
 
@@ -25,11 +23,9 @@ openzyme-domain = { workspace = true }
 openzyme-engines = { workspace = true }
 openzyme-execution = { workspace = true }
 openzyme-pipeline = { workspace = true }
-openzyme-graph = { workspace = true }
 preprocess-backend = { workspace = true }
 openzyme-research = { workspace = true }
 openzyme-runtime = { workspace = true }
-openzyme-storage = { workspace = true }
 openzyme-tools = { workspace = true }
 
 [dependency-groups]
