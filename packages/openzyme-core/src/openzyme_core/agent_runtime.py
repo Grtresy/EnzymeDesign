@@ -82,6 +82,7 @@ class AgentRuntimeService:
             source_ref=source_ref,
         )
         if existing is not None:
+            self._notify_signal(existing.session_id)
             return existing
         signal = AgentRuntimeSignal(
             signal_id=_new_id("sig"),
@@ -108,7 +109,13 @@ class AgentRuntimeService:
                 "source_ref": signal.source_ref,
             },
         )
+        self._notify_signal(signal.session_id)
         return signal
+
+    def _notify_signal(self, session_id: str) -> None:
+        notifier = self.context.signal_notifier
+        if notifier is not None and hasattr(notifier, "notify"):
+            notifier.notify(session_id)
 
     def auto_enqueue_ready_tasks(self, session_id: str) -> tuple[AgentRuntimeSignal, ...]:
         signals: list[AgentRuntimeSignal] = []
@@ -395,6 +402,7 @@ class AgentRuntimeService:
             model_factory=self.context.model_factory,
             bio_research_service=self.context.bio_research_service,
             research_adapter=self.context.research_adapter,
+            signal_notifier=self.context.signal_notifier,
         )
         ok = result.status is not HarnessStatus.FAILED
         completed = (

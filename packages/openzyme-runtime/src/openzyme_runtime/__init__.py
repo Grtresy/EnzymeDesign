@@ -96,6 +96,7 @@ from .settings import ResolvedLlmPolicy
 from .settings import ResearchSettings
 from .settings import TestSettings
 from .settings import TracingSettings
+from .settings import V3BackgroundRuntimeSettings
 from .settings import get_settings
 from .settings import load_env_files
 from .settings import reset_settings_cache
@@ -190,6 +191,7 @@ __all__ = [
     "WebSearchArgs",
     "WebSearchTool",
     "TracingSettings",
+    "V3BackgroundRuntimeSettings",
     "RuntimeFoundation",
     "DEFAULT_HOST_BASE_URL",
     "DEFAULT_HOST_API_BIND_HOST",

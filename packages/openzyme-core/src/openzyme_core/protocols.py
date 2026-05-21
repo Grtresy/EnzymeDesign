@@ -97,6 +97,7 @@ class BackgroundCompletion:
 class ProtocolService:
     repositories: CoreRepositories
     event_emitter: Any | None = None
+    signal_notifier: Any | None = None
 
     def delegate(
         self,
@@ -437,6 +438,7 @@ class ProtocolService:
             source_ref=source_ref,
         )
         if existing is not None:
+            self._notify_signal(existing.session_id)
             return existing
         signal = AgentRuntimeSignal(
             signal_id=f"sig_{uuid4().hex[:12]}",
@@ -451,7 +453,12 @@ class ProtocolService:
             created_at=utc_now_iso(),
         )
         self.repositories.runtime_signals.save(signal)
+        self._notify_signal(signal.session_id)
         return signal
+
+    def _notify_signal(self, session_id: str) -> None:
+        if self.signal_notifier is not None and hasattr(self.signal_notifier, "notify"):
+            self.signal_notifier.notify(session_id)
 
     def _resolve_effective_lane_id(
         self,

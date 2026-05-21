@@ -565,6 +565,70 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
     assert reclaimed.attempt_count == 2
 
 
+def test_runtime_signal_repository_lists_claimable_sessions() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    now = "2026-04-16T10:00:00+00:00"
+    for session_id in ("sess_claimable_a", "sess_claimable_b", "sess_complete"):
+        repositories.sessions.save(
+            Session.create(session_id, "proj_001", session_id, session_id)
+        )
+        repositories.agents.save(
+            AgentMember(
+                agent_id="agent:master",
+                session_id=session_id,
+                lane_id=None,
+                task_id=None,
+                name="Master",
+                role="master",
+                status=AgentMemberStatus.IDLE,
+                parent_agent_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_b",
+            session_id="sess_claimable_b",
+            agent_id="agent:master",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-04-16T10:00:02+00:00",
+        )
+    )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_a",
+            session_id="sess_claimable_a",
+            agent_id="agent:master",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.CLAIMED,
+            created_at="2026-04-16T10:00:01+00:00",
+            claim_expires_at="2020-01-01T00:00:00+00:00",
+        )
+    )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_done",
+            session_id="sess_complete",
+            agent_id="agent:master",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.COMPLETED,
+            created_at="2026-04-16T10:00:00+00:00",
+        )
+    )
+
+    assert repositories.runtime_signals.list_claimable_session_ids() == [
+        "sess_claimable_a",
+        "sess_claimable_b",
+    ]
+    assert repositories.runtime_signals.list_claimable_session_ids(limit=1) == [
+        "sess_claimable_a"
+    ]
+
+
 def test_agent_members_are_scoped_by_session_local_agent_id() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

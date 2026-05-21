@@ -81,6 +81,7 @@ class LimiterRegistry:
     limits: dict[str, int]
     _async_limiters: dict[str, AsyncConcurrencyLimiter] = field(init=False, repr=False)
     _sync_limiters: dict[str, SyncConcurrencyLimiter] = field(init=False, repr=False)
+    _registry_lock: threading.Lock = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         for name, value in self.limits.items():
@@ -88,22 +89,25 @@ class LimiterRegistry:
                 raise ValueError(f"limit {name!r} must be positive")
         self._async_limiters: dict[str, AsyncConcurrencyLimiter] = {}
         self._sync_limiters: dict[str, SyncConcurrencyLimiter] = {}
+        self._registry_lock = threading.Lock()
 
     def async_limiter(self, name: str) -> AsyncConcurrencyLimiter:
-        if name not in self._async_limiters:
-            self._async_limiters[name] = AsyncConcurrencyLimiter(
-                name=name,
-                max_concurrency=self._limit_for(name),
-            )
-        return self._async_limiters[name]
+        with self._registry_lock:
+            if name not in self._async_limiters:
+                self._async_limiters[name] = AsyncConcurrencyLimiter(
+                    name=name,
+                    max_concurrency=self._limit_for(name),
+                )
+            return self._async_limiters[name]
 
     def sync_limiter(self, name: str) -> SyncConcurrencyLimiter:
-        if name not in self._sync_limiters:
-            self._sync_limiters[name] = SyncConcurrencyLimiter(
-                name=name,
-                max_concurrency=self._limit_for(name),
-            )
-        return self._sync_limiters[name]
+        with self._registry_lock:
+            if name not in self._sync_limiters:
+                self._sync_limiters[name] = SyncConcurrencyLimiter(
+                    name=name,
+                    max_concurrency=self._limit_for(name),
+                )
+            return self._sync_limiters[name]
 
     def _limit_for(self, name: str) -> int:
         return int(self.limits.get(name, self.limits.get("*", 1)))

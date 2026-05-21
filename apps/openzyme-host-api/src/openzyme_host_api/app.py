@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -22,6 +23,8 @@ from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
 
+from .background_runtime import RuntimeSignalNotifier
+from .background_runtime import V3BackgroundRuntimeService
 from .tracing import host_request_trace_context
 from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
@@ -235,6 +238,10 @@ class HostApiDependencies:
         default_factory=_build_default_v3_repositories
     )
     v3_event_store: V3EventStore = field(default_factory=V3EventStore)
+    v3_signal_notifier: RuntimeSignalNotifier = field(
+        default_factory=RuntimeSignalNotifier
+    )
+    v3_background_runtime_enabled: bool | None = None
 
     def build_v3_service(self) -> V3HostApiService:
         return V3HostApiService(
@@ -244,6 +251,7 @@ class HostApiDependencies:
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
+            signal_notifier=self.v3_signal_notifier,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
@@ -293,7 +301,18 @@ def create_app(
     *,
     ui_dist_dir: Path | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="OpenZyme Host API", version="0.1.0")
+    background_runtime = _build_background_runtime_service(dependencies)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+        app.state.v3_background_runtime = background_runtime
+        background_runtime.start()
+        try:
+            yield
+        finally:
+            await background_runtime.stop()
+
+    app = FastAPI(title="OpenZyme Host API", version="0.1.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def add_trace_context(request, call_next):  # type: ignore[no-untyped-def]
@@ -513,6 +532,10 @@ def create_app(
         get_llm_debug_recorder().clear()
         return {"ok": True}
 
+    @app.get("/debug/v3-runtime")
+    def get_v3_runtime_debug() -> dict[str, Any]:
+        return background_runtime.status()
+
     if ui_dist_dir is not None and ui_dist_dir.exists():
         app.mount("/ui", StaticFiles(directory=str(ui_dist_dir), html=True), name="ui")
 
@@ -525,3 +548,41 @@ def create_app(
             return RedirectResponse(url="/ui/")
 
     return app
+
+
+def _build_background_runtime_service(
+    dependencies: HostApiDependencies,
+) -> V3BackgroundRuntimeService:
+    settings = getattr(getattr(dependencies, "foundation", None), "settings", None)
+    runtime_settings = (
+        None if settings is None else getattr(settings, "v3_background_runtime", None)
+    )
+    enabled_override = getattr(dependencies, "v3_background_runtime_enabled", None)
+    notifier = getattr(dependencies, "v3_signal_notifier", RuntimeSignalNotifier())
+    enabled = (
+        enabled_override
+        if enabled_override is not None
+        else (False if runtime_settings is None else bool(runtime_settings.enabled))
+    )
+    build_service = getattr(dependencies, "build_v3_service", None)
+    if build_service is None:
+        def build_service() -> V3HostApiService:
+            raise RuntimeError("V3 service dependencies are not configured")
+
+    return V3BackgroundRuntimeService(
+        build_service=build_service,
+        notifier=notifier,
+        enabled=enabled,
+        poll_interval_seconds=2.0
+        if runtime_settings is None
+        else float(runtime_settings.poll_interval_seconds),
+        max_signals_per_tick=3
+        if runtime_settings is None
+        else int(runtime_settings.max_signals_per_tick),
+        max_steps_per_agent=8
+        if runtime_settings is None
+        else int(runtime_settings.max_steps_per_agent),
+        shutdown_timeout_seconds=10.0
+        if runtime_settings is None
+        else float(runtime_settings.shutdown_timeout_seconds),
+    )

@@ -154,6 +154,7 @@ class V3HostApiService:
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
+    signal_notifier: Any | None = None
 
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
@@ -336,6 +337,64 @@ class V3HostApiService:
                 events.append(event)
                 seen_trace_ids.add(trace_id)
 
+    def _build_runtime_context(
+        self,
+        session_id: str,
+        *,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+        skill_keys: tuple[str, ...] = (),
+    ) -> SessionRuntimeContext:
+        return SessionRuntimeContext(
+            repositories=self.repositories,
+            event_sink=self._event_sink(),
+            snapshot=SessionRuntimeSnapshot.load(self.repositories, session_id),
+            tool_registry=ToolRegistry(),
+            restore_focus=RestoreFocus(
+                task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
+            ),
+            model_factory=self.model_factory,
+            engine_registry=self.engine_registry,
+            bio_research_service=self.bio_research_service,
+            research_adapter=self.research_adapter,
+            signal_notifier=self.signal_notifier,
+        )
+
+    async def run_background_runtime_once(
+        self,
+        *,
+        session_id: str,
+        worker_id: str = "host-api:background-runtime",
+        max_signals: int = 3,
+        max_steps_per_agent: int = 8,
+    ) -> list[dict[str, Any]]:
+        if self.repositories.sessions.get(session_id) is None:
+            raise KeyError(f"session {session_id!r} does not exist")
+        context = self._build_runtime_context(session_id)
+        scheduler = self._build_scheduler(context, worker_id=worker_id)
+        outcomes = await scheduler.run_once(
+            session_id,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+        )
+        events = [event.to_dict() for event in context.event_sink.events]
+        self._touch_session(session_id)
+        self._extend_with_trace_events(session_id, events)
+        self._extend_with_activity_events(session_id, events)
+        self.event_store.append(session_id, events)
+        return [outcome.to_dict() for outcome in outcomes]
+
+    def _build_scheduler(
+        self, context: SessionRuntimeContext, *, worker_id: str
+    ) -> AgentRuntimeScheduler:
+        return AgentRuntimeScheduler(
+            context,
+            worker_id=worker_id,
+            max_global_concurrency=int(self.scheduler_limits.get("global", 1)),
+            max_session_concurrency=int(self.scheduler_limits.get("session", 1)),
+            max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
+        )
+
     def _drain_pending_agent_signals(
         self,
         session_id: str,
@@ -344,35 +403,19 @@ class V3HostApiService:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
         auto_enqueue_ready_tasks: bool = False,
+        worker_id: str = "host-api:runtime-drain",
     ) -> list[dict[str, Any]]:
-        event_bus = self._event_sink()
-        context = SessionRuntimeContext(
-            repositories=self.repositories,
-            event_sink=event_bus,
-            snapshot=SessionRuntimeSnapshot.load(self.repositories, session_id),
-            tool_registry=ToolRegistry(),
-            restore_focus=RestoreFocus(),
-            model_factory=self.model_factory,
-            engine_registry=self.engine_registry,
-            bio_research_service=self.bio_research_service,
-            research_adapter=self.research_adapter,
-        )
+        context = self._build_runtime_context(session_id)
         runtime = AgentRuntimeService(context)
         if auto_enqueue_ready_tasks:
             runtime.auto_enqueue_ready_tasks(session_id)
-        scheduler = AgentRuntimeScheduler(
-            context,
-            worker_id="host-api:runtime-drain",
-            max_global_concurrency=int(self.scheduler_limits.get("global", 1)),
-            max_session_concurrency=int(self.scheduler_limits.get("session", 1)),
-            max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
-        )
+        scheduler = self._build_scheduler(context, worker_id=worker_id)
         outcomes = scheduler.run_once_sync(
             session_id,
             max_signals=max_signals,
             max_steps_per_agent=max_steps_per_agent,
         )
-        events.extend(event.to_dict() for event in event_bus.events)
+        events.extend(event.to_dict() for event in context.event_sink.events)
         return [outcome.to_dict() for outcome in outcomes]
 
     def drain_runtime(
@@ -525,19 +568,8 @@ class V3HostApiService:
                 events,
                 [_event("conversation.user_message", session_id, {"content": message})],
             )
-        event_bus = self._event_sink()
-        context = SessionRuntimeContext(
-            repositories=self.repositories,
-            event_sink=event_bus,
-            snapshot=SessionRuntimeSnapshot.load(self.repositories, session_id),
-            tool_registry=ToolRegistry(),
-            restore_focus=RestoreFocus(
-                task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
-            ),
-            model_factory=self.model_factory,
-            engine_registry=self.engine_registry,
-            bio_research_service=self.bio_research_service,
-            research_adapter=self.research_adapter,
+        context = self._build_runtime_context(
+            session_id, task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
         )
         AgentRuntimeService(context).enqueue_signal(
             session_id=session_id,
@@ -548,7 +580,7 @@ class V3HostApiService:
             reason=AgentRuntimeSignalReason.INBOX_UNREAD,
             source_ref=message_id,
         )
-        events.extend(event.to_dict() for event in event_bus.events)
+        events.extend(event.to_dict() for event in context.event_sink.events)
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
@@ -630,21 +662,10 @@ class V3HostApiService:
             return
         if approval.task_id is None and agent_id != "agent:master":
             return
-        event_bus = self._event_sink()
-        context = SessionRuntimeContext(
-            repositories=self.repositories,
-            event_sink=event_bus,
-            snapshot=SessionRuntimeSnapshot.load(
-                self.repositories, approval.session_id
-            ),
-            tool_registry=ToolRegistry(),
-            restore_focus=RestoreFocus(
-                task_id=approval.task_id, lane_id=approval.lane_id
-            ),
-            model_factory=self.model_factory,
-            engine_registry=self.engine_registry,
-            bio_research_service=self.bio_research_service,
-            research_adapter=self.research_adapter,
+        context = self._build_runtime_context(
+            approval.session_id,
+            task_id=approval.task_id,
+            lane_id=approval.lane_id,
         )
         AgentRuntimeService(context).enqueue_signal(
             session_id=approval.session_id,
@@ -655,7 +676,7 @@ class V3HostApiService:
             reason=AgentRuntimeSignalReason.APPROVAL_RESOLVED,
             source_ref=approval.approval_id,
         )
-        events.extend(event.to_dict() for event in event_bus.events)
+        events.extend(event.to_dict() for event in context.event_sink.events)
 
     def _approval_assigned_agent_id(self, approval: ApprovalRequest) -> str | None:
         if approval.task_id is None:

@@ -52,11 +52,34 @@ class AgentRuntimeScheduler:
             async with global_limiter:
                 async with session_limiter:
                     async with agent_limiter:
-                        return await asyncio.to_thread(
-                            AgentRuntimeService(self.context).wake_agent,
-                            signal,
-                            max_steps=max_steps_per_agent,
-                        )
+                        try:
+                            return await asyncio.to_thread(
+                                AgentRuntimeService(self.context).wake_agent,
+                                signal,
+                                max_steps=max_steps_per_agent,
+                            )
+                        except Exception as exc:
+                            failed = (
+                                self.context.repositories.runtime_signals.fail(
+                                    signal.signal_id,
+                                    error_message=str(exc),
+                                    retryable=False,
+                                )
+                                or self.context.repositories.runtime_signals.get(
+                                    signal.signal_id
+                                )
+                                or signal
+                            )
+                            return AgentRuntimeOutcome(
+                                signal=failed,
+                                task=None,
+                                agent=self.context.repositories.agents.get(
+                                    signal.session_id, signal.agent_id
+                                ),
+                                ok=False,
+                                summary=str(exc),
+                                teammate_status="runtime_exception",
+                            )
 
         outcomes: list[AgentRuntimeOutcome] = []
         while len(outcomes) < max_signals and not self._shutdown_requested:

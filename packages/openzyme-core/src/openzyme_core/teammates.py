@@ -938,6 +938,7 @@ def run_teammate_loop(
         model_factory=parent_context.model_factory,
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
+        signal_notifier=parent_context.signal_notifier,
     )
 
 
@@ -952,6 +953,7 @@ def finalize_teammate_result(
     protocol = ProtocolService(
         context.repositories,
         event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+        signal_notifier=context.signal_notifier,
     )
     if result.status is HarnessStatus.WAITING_APPROVAL:
         message = (

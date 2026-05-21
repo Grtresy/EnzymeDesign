@@ -61,7 +61,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   后续修正方向：将 teammate result 表达为 inbox / protocol state 加 master wakeup signal，让 master loop 自己决定是否回复以及如何回复。
 
-  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master response turn。teammate terminal outcome 只写 task/protocol/report state 并排队 `agent:master` wakeup；master loop 只能由 scheduler claim signal 后启动，由 master 自己决定是否回复用户以及如何回复。当前未启用 background worker 时，显式 `/runtime/drain` 是推进该 scheduler claim 的 manual command。
+  修正记录：`post_message()` 和 approval resolve 不再在隐藏副作用中触发 master response turn。teammate terminal outcome 只写 task/protocol/report state 并排队 `agent:master` wakeup；master loop 只能由 scheduler claim signal 后启动，由 master 自己决定是否回复用户以及如何回复。配置化 Host 默认由 background runtime worker 推进 scheduler claim，显式 `/runtime/drain` 仅作为 debug/operator/manual recovery 命令。
 
 - [x] `protocol.send(await_response=true)` 同时承担消息投递和同步 teammate 执行。
 

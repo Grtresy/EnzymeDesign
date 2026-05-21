@@ -28,9 +28,9 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `GET /v3/sessions/{session_id}/events`
 - `POST /v3/approvals/{approval_id}/resolve`
 
-`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution、必要的 execution continuation 状态，并排队相关 agent wakeup signal；恢复执行由 scheduler claim signal 后启动。当前尚未启用 FastAPI background worker，因此本地/产品路径通过显式 `/runtime/drain` 推进该 signal；Session B 完成后可由后台 worker 自动推进。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution、必要的 execution continuation 状态，并排队相关 agent wakeup signal；恢复执行由 scheduler claim signal 后启动。配置化 Host 默认由 FastAPI lifespan 中的 background runtime worker 自动推进该 signal；`/runtime/drain` 只保留为 worker 禁用、测试 scheduler claim lease 或 operator recovery 时的手动入口。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
 
-`POST /v3/sessions/{session_id}/runtime/drain` 是 debug / operator / manual scheduler command。当前没有 FastAPI background worker 时，它也是推进 pending signals 的显式产品/测试路径；Session B background worker 完成后，它应退回本地诊断、测试 scheduler claim lease、或 worker 禁用时的有界推进入口。请求字段：
+`POST /v3/sessions/{session_id}/runtime/drain` 是 debug / operator / manual scheduler command。Session B background worker 启用后，它只用于本地诊断、测试 scheduler claim lease、或 worker 禁用时的有界推进入口。请求字段：
 
 - `max_signals: int = 3`
 - `max_steps_per_agent: int = 8`
@@ -58,7 +58,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `protocol.thread`
 - `protocol.send`
 
-这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；recipient turn 由 scheduler claim signal 后启动。当前无 background worker 时由显式 `/runtime/drain` 推进 claim，debug/manual 场景也只能通过同一 scheduler claim path 推进。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 agent team 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
+这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；recipient turn 由 scheduler claim signal 后启动。配置化 Host 默认由 background runtime worker 推进 claim，debug/manual 场景也只能通过同一 scheduler claim path 推进。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 agent team 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
 
 默认内部只读文档工具还应包括：
 
@@ -107,7 +107,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 说明：
 
 - `POST /v3/sessions/{session_id}/messages` 是默认的 user command ingress；它持久化用户消息并排队 `agent:master` wakeup，不直接执行 master loop，也不隐式执行 bounded teammate runtime drain
-- 当 `model_factory` 可用时，scheduler claim `agent:master` signal 后默认走真实 top-level LLM harness driver；当前由显式 `/runtime/drain` 触发 claim，Session B 后可由 background worker 自动触发
+- 当 `model_factory` 可用时，scheduler claim `agent:master` signal 后默认走真实 top-level LLM harness driver；配置化 Host 默认由 background runtime worker 自动触发，`/runtime/drain` 只用于 debug/manual 场景
 - Web UI 默认不要求用户手动创建或编排 task / lane；这些对象主要由 master agent 在 loop 中创建和编排，再通过 workspace projection 展示
 - task / lane endpoints 可以存在，但不得反向主导产品交互，把 V3 退化成手工 workflow 管理后台；task create/update endpoint 是 control-plane mutation，不应隐式 drain agent runtime
 - V3 初期不要求单独暴露 `agents` REST 资源，但 workspace projection 必须能显示 teammate / delegation / protocol 的用户可理解状态；低层 wakeup queues 和 signal counters 默认留在 debug/event 面

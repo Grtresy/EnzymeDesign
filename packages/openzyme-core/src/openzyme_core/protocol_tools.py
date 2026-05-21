@@ -230,7 +230,11 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                 error_code="sync_execution_not_supported",
                 hint="Send the protocol message first, then use an explicit scheduler/runtime drain action if a bounded teammate turn is required.",
             )
-        protocol = ProtocolService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
+        protocol = ProtocolService(
+            context.repositories,
+            event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+            signal_notifier=context.signal_notifier,
+        )
         resolved_recipient = recipient
         recipient_resolution = "literal"
         created_agent = None

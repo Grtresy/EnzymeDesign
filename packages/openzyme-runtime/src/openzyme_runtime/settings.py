@@ -357,6 +357,60 @@ class HostApiSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class V3BackgroundRuntimeSettings:
+    enabled: bool
+    poll_interval_seconds: float
+    max_signals_per_tick: int
+    max_steps_per_agent: int
+    shutdown_timeout_seconds: float
+
+    @classmethod
+    def from_env(cls) -> "V3BackgroundRuntimeSettings":
+        max_signals_per_tick = _parse_int(
+            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK"),
+            3,
+        )
+        max_steps_per_agent = _parse_int(
+            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT"),
+            8,
+        )
+        if max_signals_per_tick <= 0:
+            raise ValueError(
+                "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK must be positive"
+            )
+        if max_steps_per_agent <= 0:
+            raise ValueError(
+                "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT must be positive"
+            )
+        poll_interval_seconds = _parse_float(
+            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS"),
+            2.0,
+        )
+        shutdown_timeout_seconds = _parse_float(
+            os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS"),
+            10.0,
+        )
+        if poll_interval_seconds <= 0:
+            raise ValueError(
+                "OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS must be positive"
+            )
+        if shutdown_timeout_seconds <= 0:
+            raise ValueError(
+                "OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS must be positive"
+            )
+        return cls(
+            enabled=_parse_bool(
+                os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED"),
+                default=True,
+            ),
+            poll_interval_seconds=poll_interval_seconds,
+            max_signals_per_tick=max_signals_per_tick,
+            max_steps_per_agent=max_steps_per_agent,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionSettings:
     backend: str
     hpc_runner_config: str | None
@@ -465,6 +519,7 @@ class OpenZymeSettings:
     tracing: TracingSettings
     host_cli: HostCliSettings
     host_api: HostApiSettings
+    v3_background_runtime: V3BackgroundRuntimeSettings
     execution: ExecutionSettings
     test: TestSettings
     limits: LimiterSettings = field(default_factory=_default_limiter_settings)
@@ -478,6 +533,7 @@ class OpenZymeSettings:
             tracing=TracingSettings.from_env(),
             host_cli=HostCliSettings.from_env(),
             host_api=HostApiSettings.from_env(),
+            v3_background_runtime=V3BackgroundRuntimeSettings.from_env(),
             execution=ExecutionSettings.from_env(),
             limits=LimiterSettings.from_env(),
             test=TestSettings.from_env(),
@@ -514,6 +570,7 @@ __all__ = [
     "ResolvedLlmPolicy",
     "ResearchSettings",
     "TracingSettings",
+    "V3BackgroundRuntimeSettings",
     "get_settings",
     "load_env_files",
     "reset_settings_cache",

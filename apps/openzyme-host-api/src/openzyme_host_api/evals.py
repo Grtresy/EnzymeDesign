@@ -515,6 +515,7 @@ def _run_v3_design_cutover_scenario(
             HostApiDependencies(
                 foundation=foundation,
                 v3_repositories=v3_repositories,
+                v3_background_runtime_enabled=False,
             )
         )
         with TestClient(app) as client:

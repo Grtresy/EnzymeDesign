@@ -110,10 +110,10 @@ V3 的 teammate 是 resident agent member，常驻的是 identity、role、statu
 - `AgentRuntimeSignal` 持久化 signal queue
 - `AgentRuntimeScheduler` claim lease、bounded drain 和并发限制参数
 - stale claim recovery、attempt 计数、失败记录和 duplicate wakeup dedupe 相关 repository 覆盖
-- 显式 `POST /v3/sessions/{session_id}/runtime/drain`
-- drain 后可选 master follow-up
+- FastAPI lifespan 中的单进程 `V3BackgroundRuntimeService`，通过 durable signal + in-process notifier 自动唤醒 scheduler
+- 显式 `POST /v3/sessions/{session_id}/runtime/drain`，作为 debug/operator/manual recovery 工具
 
-当前实现不能被描述成已经接入 FastAPI lifespan 的全自动后台 teammate daemon。产品主路径仍依赖显式 runtime drain 来执行 queued teammate work。
+当前默认产品路径是：REST handler 持久化状态并排队 `AgentRuntimeSignal`，后台 runtime service claim pending 或 expired-lease signal 后启动 bounded master / teammate turn。`/runtime/drain` 保留为显式诊断与恢复命令，不再是普通产品路径的必要步骤。
 
 ### 3.4 No Hidden Fallback
 
@@ -235,7 +235,7 @@ GET /v3/sessions/{session_id}/workspace
 关键约束：
 
 - `POST /v3/sessions/{session_id}/messages` 是用户到 master 的入口，只持久化用户消息并排队 `agent:master` wakeup，不直接执行 master loop，也不隐式执行 bounded teammate runtime drain
-- `POST /v3/sessions/{session_id}/runtime/drain` 是当前无 background worker 时推进 master / teammate signals 的显式 scheduler command；它必须通过 scheduler claim lease，不得绕过 scheduler 直接调用 agent loop
+- `POST /v3/sessions/{session_id}/runtime/drain` 是 debug/operator/manual recovery 的显式 scheduler command；它必须通过 scheduler claim lease，不得绕过 scheduler 直接调用 agent loop
 - `task.delegate` 是产品-facing delegation tool，但真实写路径是 `ProtocolService.delegate()`
 - `protocol.send` 只投递消息并排队 wakeup signal，不同步运行 recipient
 - `auto_enqueue_ready_tasks` 默认关闭，只用于显式 operator/debug/recovery 场景

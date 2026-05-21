@@ -319,7 +319,7 @@ class TaskRepository:
         else:
             lane_clause = " AND t.lane_id = ?"
             params.append(lane_id)
-        params.extend([TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.CANCELLED.value])
+        params.append(TaskStatus.COMPLETED.value)
         rows = self.connection.execute(
             """
             SELECT t.*
@@ -334,7 +334,7 @@ class TaskRepository:
                 FROM task_dependencies AS td
                 JOIN tasks AS blocker ON blocker.task_id = td.blocked_by_task_id
                 WHERE td.task_id = t.task_id
-                  AND blocker.status NOT IN (?, ?, ?)
+                  AND blocker.status != ?
               )
             ORDER BY t.created_at, t.task_id
             """,
@@ -1186,6 +1186,38 @@ class AgentRuntimeSignalRepository:
             (session_id, AgentRuntimeSignalStatus.PENDING.value),
         ).fetchall()
         return [self._row_to_signal(row) for row in rows]
+
+    def list_claimable_session_ids(self, *, limit: int | None = None) -> list[str]:
+        now = _utc_now_iso()
+        limit_clause = "" if limit is None else " LIMIT ?"
+        params: list[Any] = [
+            AgentRuntimeSignalStatus.PENDING.value,
+            AgentRuntimeSignalStatus.CLAIMED.value,
+            now,
+        ]
+        if limit is not None:
+            if limit <= 0:
+                return []
+            params.append(limit)
+        rows = self.connection.execute(
+            """
+            SELECT session_id, MIN(created_at) AS earliest_created_at
+            FROM agent_runtime_signals
+            WHERE (
+                status = ?
+                OR (
+                  status = ?
+                  AND claim_expires_at IS NOT NULL
+                  AND claim_expires_at <= ?
+                )
+              )
+            GROUP BY session_id
+            ORDER BY earliest_created_at, session_id
+            """
+            + limit_clause,
+            tuple(params),
+        ).fetchall()
+        return [str(row["session_id"]) for row in rows]
 
     def claim_next(
         self,

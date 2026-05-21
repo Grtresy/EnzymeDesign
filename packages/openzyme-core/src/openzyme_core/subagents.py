@@ -39,6 +39,7 @@ def _protocol_service(context: SessionRuntimeContext) -> ProtocolService:
     return ProtocolService(
         context.repositories,
         event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+        signal_notifier=context.signal_notifier,
     )
 
 

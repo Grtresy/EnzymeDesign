@@ -115,6 +115,33 @@ def test_task_board_update_promotes_newly_unblocked_task() -> None:
     assert projection.blocked_tasks == ()
 
 
+def test_failed_or_cancelled_blocker_does_not_make_downstream_ready() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_a",
+        subject="A",
+        description="Root",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_b",
+        subject="B",
+        description="Depends on A",
+        blocked_by=("task_a",),
+    )
+
+    service.update_task("task_a", mutation=TaskMutation(status=TaskStatus.FAILED))
+    projection = service.build_projection(session.session_id)
+
+    assert projection.ready_tasks == ()
+    assert [item.task.task_id for item in projection.blocked_tasks] == ["task_b"]
+    assert projection.blocked_tasks[0].blocked_by_open_task_ids == ("task_a",)
+
+
 def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

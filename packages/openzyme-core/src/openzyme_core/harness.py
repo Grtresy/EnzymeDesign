@@ -334,6 +334,7 @@ class SessionRuntimeContext:
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    signal_notifier: Any | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(
@@ -643,6 +644,7 @@ def run_agent_harness_loop(
     model_factory: Any | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
+    signal_notifier: Any | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
 
@@ -663,6 +665,7 @@ def run_agent_harness_loop(
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
+        signal_notifier=signal_notifier,
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []

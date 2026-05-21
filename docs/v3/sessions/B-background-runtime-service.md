@@ -6,7 +6,7 @@ Host API 启动后，单进程后台 runtime service 自动推进所有 pending 
 
 第一版仍是单进程 Host 内 scheduler，不引入 Redis、多进程 worker 或分布式队列。
 
-当前实现状态：Session A 已统一 master / teammate 的 scheduler claim 启动路径，但尚未实现 FastAPI lifespan background worker。因此当前产品/测试路径仍依赖显式 `POST /v3/sessions/{session_id}/runtime/drain` 作为 manual scheduler command 来推进 pending signals；本文件描述的是下一步 Session B 目标，不是已上线语义。
+当前实现状态：Session B 已接入 FastAPI lifespan background worker。Host API 启动后，`V3BackgroundRuntimeService` 使用 durable `AgentRuntimeSignal` 作为唯一 work item；in-process notifier 只负责加速唤醒，低频 sweep 负责 missed notification、进程启动前已有 pending signal 与 expired lease。
 
 ## Product Semantics
 
@@ -14,34 +14,34 @@ Host API 启动后，单进程后台 runtime service 自动推进所有 pending 
 - master delegate teammate 后，后台 scheduler 自动 claim teammate wakeup。
 - teammate 完成 task、回复 protocol 或发布 report 后，只排队 master wakeup，后台 scheduler 自动恢复 master。
 - approval resolve 后，只排队相关 agent wakeup，后台 scheduler 自动恢复对应 agent。
-- Session B 完成前，`/runtime/drain` 是当前 manual scheduler command；Session B 完成后，它应退回 debug / operator / manual drain，不再成为普通产品路径。
+- `/runtime/drain` 现在是 debug / operator / manual drain，不再是普通产品路径。
 
 ## Implementation Tasks
 
-- [ ] 1. FastAPI lifespan
+- [x] 1. FastAPI lifespan
    - 在 V3 Host API lifespan 中启动 background runtime worker。
    - shutdown 时发出 stop signal，等待当前 bounded turn 完成或按超时优雅退出。
    - 测试环境可配置禁用后台 worker，避免 deterministic unit tests 被后台并发扰动。
 
-- [ ] 2. Scheduler worker loop
+- [x] 2. Scheduler worker loop
    - 持续扫描 / claim pending 或 expired-lease signal。
    - 支持 `agent:master` 与 teammate signal。
    - 每个 claimed signal 只运行一个 bounded turn。
    - 空队列时使用短 sleep/backoff，不 busy spin。
 
-- [ ] 3. Lease and retry
+- [x] 3. Lease and retry
    - claim 必须写入 `claimed_by`、`claim_expires_at` 并递增 `attempt_count`。
    - 成功走 `complete()`。
    - 程序/provider 异常默认走 `fail()`，记录 `last_error`。
    - retryable failure 只能按明确 policy 释放回 pending；不得吞异常伪造完成。
    - lease 过期后允许其他 worker reclaim。
 
-- [ ] 4. Concurrency and provider limits
+- [x] 4. Concurrency and provider limits
    - 保留 global / session / agent / provider limiter。
    - master 与 teammate turn 都进入统一 limiter。
    - 没有 LLM 配置或 model factory 不可用时，background worker 不 claim LLM-bound signal；应将缺失配置暴露为诊断状态，而不是把 signal 标成业务完成。
 
-- [ ] 5. Debug drain
+- [x] 5. Debug drain
    - `/runtime/drain` 内部仍必须通过 scheduler claim lease。
    - drain 可限制 `max_signals` / `max_steps_per_agent`，用于 tests、operators、local diagnosis。
    - drain 不允许绕过后台 scheduler 的语义，不允许直接调用 master 或 teammate loop。

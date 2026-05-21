@@ -53,6 +53,11 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY",
         "OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY",
         "OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY",
+        "OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED",
+        "OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS",
+        "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK",
+        "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT",
+        "OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS",
     ):
         monkeypatch.delenv(key, raising=False)
     for key in (
@@ -98,6 +103,11 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.limits.provider_limits == DEFAULT_PROVIDER_LIMITS
     assert settings.host_api.bind_host == DEFAULT_HOST_API_BIND_HOST
     assert settings.host_api.bind_port == DEFAULT_HOST_API_BIND_PORT
+    assert settings.v3_background_runtime.enabled is True
+    assert settings.v3_background_runtime.poll_interval_seconds == 2.0
+    assert settings.v3_background_runtime.max_signals_per_tick == 3
+    assert settings.v3_background_runtime.max_steps_per_agent == 8
+    assert settings.v3_background_runtime.shutdown_timeout_seconds == 10.0
     assert settings.tracing.enabled is False
     assert settings.test.enable_live_llm is False
     assert settings.test.enable_live_tavily is False
@@ -136,6 +146,11 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_OUTPUT_FORMAT", "json")
     monkeypatch.setenv("OPENZYME_HOST_API_HOST", "0.0.0.0")
     monkeypatch.setenv("OPENZYME_HOST_API_PORT", "9000")
+    monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS", "0.25")
+    monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK", "5")
+    monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT", "6")
+    monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", "1.5")
     monkeypatch.setenv("OPENZYME_LANGSMITH_TRACING", "true")
     monkeypatch.setenv("OPENZYME_LANGSMITH_PROJECT", "openzyme-test")
     monkeypatch.setenv("OPENZYME_EXECUTION_BACKEND", "hpc")
@@ -187,6 +202,11 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.host_cli.output_format == "json"
     assert settings.host_api.bind_host == "0.0.0.0"
     assert settings.host_api.bind_port == 9000
+    assert settings.v3_background_runtime.enabled is False
+    assert settings.v3_background_runtime.poll_interval_seconds == 0.25
+    assert settings.v3_background_runtime.max_signals_per_tick == 5
+    assert settings.v3_background_runtime.max_steps_per_agent == 6
+    assert settings.v3_background_runtime.shutdown_timeout_seconds == 1.5
     assert settings.tracing.enabled is True
     assert settings.tracing.project_name == "openzyme-test"
     assert settings.execution.backend == "hpc"

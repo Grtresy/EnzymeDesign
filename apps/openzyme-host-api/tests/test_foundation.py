@@ -33,6 +33,7 @@ from openzyme_runtime import ResearchSettings
 from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import TestSettings as RuntimeTestSettings
 from openzyme_runtime import TracingSettings
+from openzyme_runtime import V3BackgroundRuntimeSettings
 
 
 def _settings() -> OpenZymeSettings:
@@ -69,6 +70,13 @@ def _settings() -> OpenZymeSettings:
             output_format="text",
         ),
         host_api=HostApiSettings(bind_host="127.0.0.1", bind_port=8000),
+        v3_background_runtime=V3BackgroundRuntimeSettings(
+            enabled=True,
+            poll_interval_seconds=2.0,
+            max_signals_per_tick=3,
+            max_steps_per_agent=8,
+            shutdown_timeout_seconds=10.0,
+        ),
         execution=ExecutionSettings(backend="demo", hpc_runner_config=None),
         test=RuntimeTestSettings(
             enable_live_llm=False,

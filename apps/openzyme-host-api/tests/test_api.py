@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -1044,6 +1045,24 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
+def _wait_for_background_runtime(
+    client: TestClient,
+    *,
+    min_processed: int = 1,
+    timeout_seconds: float = 3.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    status: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        response = client.get("/debug/v3-runtime")
+        assert response.status_code == 200
+        status = response.json()
+        if int(status.get("processed_signal_count") or 0) >= min_processed:
+            return status
+        time.sleep(0.05)
+    return status
+
+
 def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     repositories = _build_v3_engine_repositories()
     repositories.sessions.save(
@@ -1260,6 +1279,76 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     assert signals[0].agent_id == "agent:master"
     assert signals[0].reason.value == "inbox_unread"
     assert signals[0].status.value == "pending"
+
+
+def test_v3_background_runtime_processes_message_without_manual_drain(
+    monkeypatch,
+) -> None:
+    client, foundation = _build_client(monkeypatch)
+    del client
+    dependencies = HostApiDependencies(
+        foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
+        v3_background_runtime_enabled=True,
+    )
+    app = create_app(dependencies)
+    with TestClient(app) as background_client:
+        created = background_client.post(
+            "/v3/sessions",
+            json={
+                "session_id": "sess_bg_runtime",
+                "project_id": "proj_001",
+                "objective": "Capture the user's design goal",
+            },
+        )
+        assert created.status_code == 200
+
+        message = background_client.post(
+            "/v3/sessions/sess_bg_runtime/messages",
+            json={"message": "Please track extracting the design goals as a task."},
+        )
+        assert message.status_code == 200
+        assert message.json()["outputs"] == []
+
+        status = _wait_for_background_runtime(background_client)
+
+        assert status["running"] is True
+        assert status["worker_id"] == "host-api:background-runtime"
+        workspace = background_client.get(
+            "/v3/sessions/sess_bg_runtime/workspace"
+        ).json()
+        assert (
+            workspace["conversation"][1]["content"]
+            == "Created task task_llm_001 and captured the goal."
+        )
+        signals = [
+            signal.to_dict()
+            for signal in dependencies.v3_repositories.runtime_signals.list_by_session(
+                "sess_bg_runtime"
+            )
+        ]
+        assert signals[0]["status"] == "completed"
+        assert signals[0]["claimed_by"] == "host-api:background-runtime"
+
+
+def test_v3_background_runtime_debug_exposes_model_factory_disabled_reason(
+    monkeypatch,
+) -> None:
+    client, foundation = _build_client(monkeypatch, with_model_factory=False)
+    del client
+    app = create_app(
+        HostApiDependencies(
+            foundation=foundation,
+            v3_background_runtime_enabled=True,
+        )
+    )
+    with TestClient(app) as background_client:
+        status = background_client.get("/debug/v3-runtime")
+
+    assert status.status_code == 200
+    payload = status.json()
+    assert payload["enabled"] is True
+    assert payload["running"] is False
+    assert payload["disabled_reason"] == "model_factory unavailable"
 
 
 def test_v3_master_agents_and_signals_are_session_scoped() -> None:

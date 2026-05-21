@@ -10,7 +10,7 @@
 - teammate task completed / failed / protocol reply 只排队 `agent:master` wakeup。
 - approval resolve 只排队相关 agent wakeup。
 - REST handler 不直接运行 master loop 或 teammate loop。
-- 当前没有 FastAPI background worker 时，`/runtime/drain` 是显式 manual scheduler command；它仍必须走 scheduler claim path，不能绕过 scheduler 直接调用 master / teammate loop。Session B 完成后它再退回 debug / operator / manual 工具。
+- Session B 完成后，配置化 Host 默认由 FastAPI background runtime worker 推进 pending signals；`/runtime/drain` 退回 debug / operator / manual 工具。它仍必须走 scheduler claim path，不能绕过 scheduler 直接调用 master / teammate loop。
 
 ## Design Constraints
 
@@ -54,12 +54,12 @@
 - master loop 只能由 scheduler claim `agent:master` wakeup signal 后启动。
 - teammate 结果不会直接写入 user chat；它们只更新 canonical state / protocol，并唤醒 master。
 - approval resolve 不直接 drain runtime，只排队相关 agent wakeup。
-- `/runtime/drain` 只通过 scheduler claim path 推进 pending signals；当前无 background worker 时，产品/测试需显式调用它。
+- `/runtime/drain` 只通过 scheduler claim path 推进 pending signals；Session B 后普通产品路径由 background runtime worker 推进，测试或 operator 可在 worker 禁用时显式调用它。
 - 文档和代码都不再把 master 与 teammate 描述为两套 runtime。
 
 ## Verification
 
-- 文档检查：不应出现把 teammate terminal outcome 描述为 service 直接启动 master response turn 的旧表述；若提到产品自动推进，必须明确那属于 Session B background worker，当前实现仍依赖显式 `/runtime/drain`。
+- 文档检查：不应出现把 teammate terminal outcome 描述为 service 直接启动 master response turn 的旧表述；若提到产品自动推进，必须明确它由 Session B background worker claim durable signal 后推进，而不是 REST handler 隐式 drain。
 - 调度器重点测试：`uv run pytest packages/openzyme-core/tests/test_agent_scheduler.py`。
 - Host API 重点测试：`uv run pytest apps/openzyme-host-api/tests/test_api.py`。
 - 主线非 live：`uv run pytest -m "not integration"`。

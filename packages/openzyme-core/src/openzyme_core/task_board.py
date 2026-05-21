@@ -229,7 +229,7 @@ class TaskBoardService:
         blockers: list[str] = []
         for blocker_id in task.blocked_by:
             blocker = self.repositories.tasks.get(blocker_id)
-            if blocker is None or not blocker.status.is_terminal:
+            if blocker is None or blocker.status is not TaskStatus.COMPLETED:
                 blockers.append(blocker_id)
         return tuple(blockers)
 
