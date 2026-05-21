@@ -64,6 +64,7 @@ class AgentRuntimeService:
     def enqueue_signal(
         self,
         *,
+        session_id: str,
         agent_id: str,
         reason: AgentRuntimeSignalReason,
         task_id: str | None = None,
@@ -71,11 +72,11 @@ class AgentRuntimeService:
         correlation_id: str | None = None,
         source_ref: str | None = None,
     ) -> AgentRuntimeSignal | None:
-        agent = self.context.repositories.agents.get(agent_id)
+        agent = self.context.repositories.agents.get(session_id, agent_id)
         if agent is None:
             return None
         existing = self.context.repositories.runtime_signals.find_pending_duplicate(
-            session_id=agent.session_id,
+            session_id=session_id,
             agent_id=agent_id,
             reason=reason,
             source_ref=source_ref,
@@ -84,7 +85,7 @@ class AgentRuntimeService:
             return existing
         signal = AgentRuntimeSignal(
             signal_id=_new_id("sig"),
-            session_id=agent.session_id,
+            session_id=session_id,
             agent_id=agent_id,
             task_id=task_id,
             lane_id=lane_id,
@@ -135,6 +136,7 @@ class AgentRuntimeService:
             if agent is None:
                 continue
             signal = self.enqueue_signal(
+                session_id=session_id,
                 agent_id=agent.agent_id,
                 task_id=task.task_id,
                 lane_id=task.lane_id,
@@ -200,7 +202,7 @@ class AgentRuntimeService:
                 "attempt_count": claimed.attempt_count,
             },
         )
-        agent = self.context.repositories.agents.get(signal.agent_id)
+        agent = self.context.repositories.agents.get(signal.session_id, signal.agent_id)
         if agent is None:
             failed = self._fail_signal(claimed, error_message="agent not found")
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
@@ -316,7 +318,7 @@ class AgentRuntimeService:
             if pending_signal.source_ref in set(consumed_message_ids):
                 self.context.repositories.runtime_signals.complete(pending_signal.signal_id)
         agent = self._update_agent(
-            self.context.repositories.agents.get(agent.agent_id) or agent,
+            self.context.repositories.agents.get(agent.session_id, agent.agent_id) or agent,
             status=final_status,
             runtime_state=final_status.value,
             last_active_at=utc_now_iso(),
@@ -414,7 +416,7 @@ class AgentRuntimeService:
             },
         )
         agent = self._update_agent(
-            self.context.repositories.agents.get(agent.agent_id) or agent,
+            self.context.repositories.agents.get(agent.session_id, agent.agent_id) or agent,
             status=AgentMemberStatus.IDLE,
             runtime_state="idle",
             last_active_at=utc_now_iso(),
@@ -695,7 +697,7 @@ class AgentRuntimeService:
         task: Task,
         correlation_id: str,
     ) -> None:
-        if self.context.repositories.agents.get("agent:master") is None:
+        if self.context.repositories.agents.get(session_id, "agent:master") is None:
             now = utc_now_iso()
             self.context.repositories.agents.save(
                 AgentMember(
@@ -714,6 +716,7 @@ class AgentRuntimeService:
                 )
             )
         self.enqueue_signal(
+            session_id=session_id,
             agent_id="agent:master",
             task_id=task.task_id,
             lane_id=task.lane_id,
@@ -786,6 +789,7 @@ class AgentRuntimeService:
             last_active_at=agent.last_active_at if last_active_at is ... else last_active_at,
             idle_since=agent.idle_since if idle_since is ... else idle_since,
             shutdown_requested_at=agent.shutdown_requested_at,
+            member_id=agent.member_id,
         )
         self.context.repositories.agents.save(updated)
         self.context.emit(

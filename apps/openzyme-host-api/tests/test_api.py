@@ -1252,7 +1252,7 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
 
     assert result.status == "completed"
     assert result.outputs == ()
-    assert repositories.agents.get("agent:master") is not None
+    assert repositories.agents.get("sess_msg_enqueue", "agent:master") is not None
     messages = repositories.inbox.list_by_session("sess_msg_enqueue")
     assert [message.message_type for message in messages] == ["user_message"]
     signals = repositories.runtime_signals.list_by_session("sess_msg_enqueue")
@@ -1260,6 +1260,49 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     assert signals[0].agent_id == "agent:master"
     assert signals[0].reason.value == "inbox_unread"
     assert signals[0].status.value == "pending"
+
+
+def test_v3_master_agents_and_signals_are_session_scoped() -> None:
+    repositories = _build_v3_engine_repositories()
+    model_factory = FakeEchoHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(project_id="proj_001", objective="A", session_id="sess_a")
+    service.create_session(project_id="proj_001", objective="B", session_id="sess_b")
+
+    service.post_message(session_id="sess_a", message="Plan A.")
+    service.post_message(session_id="sess_b", message="Plan B.")
+
+    agent_a = repositories.agents.get("sess_a", "agent:master")
+    agent_b = repositories.agents.get("sess_b", "agent:master")
+    assert agent_a is not None
+    assert agent_b is not None
+    assert agent_a.member_id != agent_b.member_id
+    assert [
+        signal.agent_id
+        for signal in repositories.runtime_signals.list_pending_by_session("sess_a")
+    ] == ["agent:master"]
+    assert [
+        signal.agent_id
+        for signal in repositories.runtime_signals.list_pending_by_session("sess_b")
+    ] == ["agent:master"]
+
+    drained_a = service.drain_runtime(session_id="sess_a")
+    assert drained_a.status == "completed"
+    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_a")] == ["completed"]
+    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_b")] == ["pending"]
+    assert repositories.agents.get("sess_a", "agent:master").member_id == agent_a.member_id
+    assert repositories.agents.get("sess_b", "agent:master").member_id == agent_b.member_id
+
+    drained_b = service.drain_runtime(session_id="sess_b")
+    assert drained_b.status == "completed"
+    assert [signal.status.value for signal in repositories.runtime_signals.list_by_session("sess_b")] == ["completed"]
+    assert [message.payload_ref for message in repositories.inbox.list_by_session("sess_a")] != [
+        message.payload_ref for message in repositories.inbox.list_by_session("sess_b")
+    ]
 
 
 def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:

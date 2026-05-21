@@ -209,7 +209,7 @@ def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() 
     )
 
     content = json.loads(result.content)
-    agent = repositories.agents.get("agent:researcher")
+    agent = repositories.agents.get(session.session_id, "agent:researcher")
     assert result.ok is True
     assert result.status == "wakeup_queued"
     assert content["recipient"] == "researcher"
@@ -220,6 +220,66 @@ def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() 
     assert agent.status is AgentMemberStatus.IDLE
     assert repositories.inbox.get(content["message"]["message_id"]).status is InboxStatus.UNREAD
     assert len(content["signals"]) == 1
+
+
+def test_protocol_send_role_alias_resolves_only_within_current_session() -> None:
+    repositories = _build_repositories()
+    session_a = _seed_session(repositories)
+    session_b = Session.create("sess_002", "proj_001", "Protocols B", "Session B")
+    repositories.sessions.save(session_b)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session_b.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Researcher B",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-17T12:00:00+00:00",
+            updated_at="2026-04-17T12:00:00+00:00",
+        )
+    )
+    registry = ToolRegistry()
+    register_protocol_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session_a.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001", lane_id="lane_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_send_alias_scoped",
+            tool_name="protocol.send",
+            arguments={
+                "recipient": "researcher",
+                "message_type": "diagnostic_request",
+                "correlation_id": "corr_alias_scoped",
+                "task_id": "task_001",
+                "payload": {"task_id": "task_001", "question": "What happened?"},
+            },
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+
+    assert result.ok is True
+    agent_a = repositories.agents.get(session_a.session_id, "agent:researcher")
+    agent_b = repositories.agents.get(session_b.session_id, "agent:researcher")
+    assert agent_a is not None
+    assert agent_b is not None
+    assert agent_a.member_id != agent_b.member_id
+    assert agent_a.name == "Researcher"
+    assert agent_b.name == "Researcher B"
+    assert repositories.runtime_signals.list_by_session(session_b.session_id) == []
+    signals_a = repositories.runtime_signals.list_by_session(session_a.session_id)
+    assert [signal.agent_id for signal in signals_a] == ["agent:researcher"]
+    assert signals_a[0].correlation_id == "corr_alias_scoped"
 
 
 def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() -> None:
@@ -255,7 +315,7 @@ def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() 
     assert result.error_code == "focused_task_missing"
     assert content["resolved_recipient"] == "agent:researcher"
     assert content["recipient_resolution"] == "role_alias_missing"
-    assert repositories.agents.get("agent:researcher") is None
+    assert repositories.agents.get(session.session_id, "agent:researcher") is None
     assert repositories.inbox.list_by_correlation(session.session_id, "corr_no_task") == []
     assert repositories.runtime_signals.list_by_session(session.session_id) == []
 
@@ -740,7 +800,7 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
 
     updated_task = repositories.tasks.get("task_blocked")
     updated_signal = repositories.runtime_signals.get("sig_blocked")
-    updated_agent = repositories.agents.get("agent:researcher")
+    updated_agent = repositories.agents.get(session.session_id, "agent:researcher")
     assert outcome.ok is False
     assert outcome.teammate_status == "task_blocked"
     assert "task_blocker" in outcome.summary
@@ -916,7 +976,7 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
     )
 
     assert completion.notification.message_type == "background_completion"
-    assert repositories.agents.get("agent:executor").status is AgentMemberStatus.IDLE
+    assert repositories.agents.get(session.session_id, "agent:executor").status is AgentMemberStatus.IDLE
     assert repositories.invocations.get("inv_001").status is EngineInvocationStatus.SUCCEEDED
     assert service.build_thread(session.session_id, "corr_bg_001").status is CorrelationStatus.COMPLETED
     assert any(

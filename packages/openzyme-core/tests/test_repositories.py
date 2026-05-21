@@ -318,7 +318,9 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.memory.list_by_scope(
         session.session_id, MemoryScopeKind.TASK, child_task.task_id
     ) == [memory]
-    assert repositories.agents.list_by_session(session.session_id) == [agent]
+    stored_agent = repositories.agents.list_by_session(session.session_id)[0]
+    assert stored_agent == replace(agent, member_id=stored_agent.member_id)
+    assert stored_agent.member_id is not None
     assert repositories.invocations.list_by_session(session.session_id) == [invocation]
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
     assert repositories.runs.get_by_invocation(session.session_id, invocation.invocation_id) == run
@@ -561,6 +563,96 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
     assert reclaimed is not None
     assert reclaimed.claimed_by == "worker:b"
     assert reclaimed.attempt_count == 2
+
+
+def test_agent_members_are_scoped_by_session_local_agent_id() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session_a = Session.create("sess_a", "proj_001", "A", "A")
+    session_b = Session.create("sess_b", "proj_001", "B", "B")
+    repositories.sessions.save(session_a)
+    repositories.sessions.save(session_b)
+    now = "2026-04-16T10:00:00+00:00"
+    agent_a = AgentMember(
+        agent_id="agent:master",
+        session_id=session_a.session_id,
+        lane_id=None,
+        task_id=None,
+        name="Master A",
+        role="master",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+    agent_b = replace(agent_a, session_id=session_b.session_id, name="Master B")
+
+    repositories.agents.save(agent_a)
+    repositories.agents.save(agent_b)
+    repositories.agents.save(replace(agent_a, name="Master A Updated"))
+
+    stored_a = repositories.agents.get(session_a.session_id, "agent:master")
+    stored_b = repositories.agents.get(session_b.session_id, "agent:master")
+    assert stored_a is not None
+    assert stored_b is not None
+    assert stored_a.member_id != stored_b.member_id
+    assert stored_a.name == "Master A Updated"
+    assert stored_b.name == "Master B"
+    assert [agent.agent_id for agent in repositories.agents.list_by_session(session_a.session_id)] == ["agent:master"]
+    assert [agent.agent_id for agent in repositories.agents.list_by_session(session_b.session_id)] == ["agent:master"]
+
+
+def test_runtime_signals_validate_session_local_agent_identity() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session_a = Session.create("sess_signal_a", "proj_001", "A", "A")
+    session_b = Session.create("sess_signal_b", "proj_001", "B", "B")
+    repositories.sessions.save(session_a)
+    repositories.sessions.save(session_b)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:researcher",
+            session_id=session_a.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Researcher",
+            role="researcher",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-16T10:00:00+00:00",
+            updated_at="2026-04-16T10:00:00+00:00",
+        )
+    )
+
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_a",
+            session_id=session_a.session_id,
+            agent_id="agent:researcher",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-04-16T10:00:01+00:00",
+        )
+    )
+    try:
+        repositories.runtime_signals.save(
+            AgentRuntimeSignal(
+                signal_id="sig_b",
+                session_id=session_b.session_id,
+                agent_id="agent:researcher",
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                status=AgentRuntimeSignalStatus.PENDING,
+                created_at="2026-04-16T10:00:02+00:00",
+            )
+        )
+    except OwnershipError as exc:
+        assert "sess_signal_b" in str(exc)
+    else:
+        raise AssertionError("cross-session agent signal was accepted")
 
 
 def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent() -> None:

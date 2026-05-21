@@ -16,6 +16,7 @@ def test_migration_asset_is_available() -> None:
     agent_runtime_sql = get_migration_sql("009_v3_agent_runtime")
     task_failure_sql = get_migration_sql("010_v3_task_failure_fields")
     runtime_signal_lease_sql = get_migration_sql("011_v3_runtime_signal_leases")
+    session_scoped_agent_sql = get_migration_sql("012_v3_session_scoped_agent_members")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -30,6 +31,7 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS agent_runtime_signals" in agent_runtime_sql
     assert "ALTER TABLE tasks ADD COLUMN failure_summary" in task_failure_sql
     assert "ADD COLUMN claimed_by" in runtime_signal_lease_sql
+    assert "agent_members_scoped" in session_scoped_agent_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -42,6 +44,7 @@ def test_migration_asset_is_available() -> None:
         "009_v3_agent_runtime",
         "010_v3_task_failure_fields",
         "011_v3_runtime_signal_leases",
+        "012_v3_session_scoped_agent_members",
     )
 
 
@@ -86,7 +89,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         row[1]
         for row in connection.execute("PRAGMA table_info(agent_members)").fetchall()
     }
-    assert {"runtime_state", "current_correlation_id", "wakeup_reason"}.issubset(agent_columns)
+    assert {"member_id", "runtime_state", "current_correlation_id", "wakeup_reason"}.issubset(agent_columns)
     signal_columns = {
         row[1]
         for row in connection.execute("PRAGMA table_info(agent_runtime_signals)").fetchall()

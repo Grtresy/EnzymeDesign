@@ -197,8 +197,8 @@ class V3HostApiService:
         }
 
     def _ensure_master_agent(self, session_id: str) -> AgentMember:
-        existing = self.repositories.agents.get("agent:master")
-        if existing is not None and existing.session_id == session_id:
+        existing = self.repositories.agents.get(session_id, "agent:master")
+        if existing is not None:
             return existing
         now = utc_now_iso()
         master = AgentMember(
@@ -540,6 +540,7 @@ class V3HostApiService:
             research_adapter=self.research_adapter,
         )
         AgentRuntimeService(context).enqueue_signal(
+            session_id=session_id,
             agent_id="agent:master",
             task_id=task_id,
             lane_id=lane_id,
@@ -646,6 +647,7 @@ class V3HostApiService:
             research_adapter=self.research_adapter,
         )
         AgentRuntimeService(context).enqueue_signal(
+            session_id=approval.session_id,
             agent_id=agent_id,
             task_id=approval.task_id,
             lane_id=approval.lane_id,

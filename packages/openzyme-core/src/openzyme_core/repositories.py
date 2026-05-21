@@ -7,6 +7,7 @@ from datetime import timedelta
 import json
 import sqlite3
 from typing import Any
+from uuid import uuid4
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -85,6 +86,21 @@ def _require_linked_session_id(
             f"{table_name}.{id_column}={record_id!r} belongs to "
             f"session {row['session_id']!r}, not {expected_session_id!r}"
         )
+        raise OwnershipError(msg)
+
+
+def _require_agent_member_exists(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+    agent_id: str,
+) -> None:
+    row = connection.execute(
+        "SELECT 1 FROM agent_members WHERE session_id = ? AND agent_id = ?",
+        (session_id, agent_id),
+    ).fetchone()
+    if row is None:
+        msg = f"agent_members(session_id={session_id!r}, agent_id={agent_id!r}) does not exist"
         raise OwnershipError(msg)
 
 
@@ -967,22 +983,20 @@ class AgentMemberRepository:
                 expected_session_id=agent.session_id,
             )
         if agent.parent_agent_id is not None:
-            _require_linked_session_id(
+            _require_agent_member_exists(
                 self.connection,
-                table_name="agent_members",
-                id_column="agent_id",
-                record_id=agent.parent_agent_id,
-                expected_session_id=agent.session_id,
+                session_id=agent.session_id,
+                agent_id=agent.parent_agent_id,
             )
+        member_id = agent.member_id or self._existing_member_id(agent.session_id, agent.agent_id) or f"member_{uuid4().hex[:12]}"
         self.connection.execute(
             """
             INSERT INTO agent_members (
-                agent_id, session_id, lane_id, task_id, name, role, status, parent_agent_id, created_at, updated_at,
+                member_id, agent_id, session_id, lane_id, task_id, name, role, status, parent_agent_id, created_at, updated_at,
                 runtime_state, current_correlation_id, wakeup_reason, last_active_at, idle_since, shutdown_requested_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agent_id) DO UPDATE SET
-                session_id = excluded.session_id,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, agent_id) DO UPDATE SET
                 lane_id = excluded.lane_id,
                 task_id = excluded.task_id,
                 name = excluded.name,
@@ -998,6 +1012,7 @@ class AgentMemberRepository:
                 shutdown_requested_at = excluded.shutdown_requested_at
             """,
             (
+                member_id,
                 agent.agent_id,
                 agent.session_id,
                 agent.lane_id,
@@ -1025,14 +1040,23 @@ class AgentMemberRepository:
         ).fetchall()
         return [self._row_to_agent(row) for row in rows]
 
-    def get(self, agent_id: str) -> AgentMember | None:
+    def get(self, session_id: str, agent_id: str) -> AgentMember | None:
         row = self.connection.execute(
-            "SELECT * FROM agent_members WHERE agent_id = ?",
-            (agent_id,),
+            "SELECT * FROM agent_members WHERE session_id = ? AND agent_id = ?",
+            (session_id, agent_id),
         ).fetchone()
         if row is None:
             return None
         return self._row_to_agent(row)
+
+    def _existing_member_id(self, session_id: str, agent_id: str) -> str | None:
+        row = self.connection.execute(
+            "SELECT member_id FROM agent_members WHERE session_id = ? AND agent_id = ?",
+            (session_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["member_id"])
 
     def _row_to_agent(self, row: sqlite3.Row) -> AgentMember:
         return AgentMember(
@@ -1052,6 +1076,7 @@ class AgentMemberRepository:
             last_active_at=row["last_active_at"],
             idle_since=row["idle_since"],
             shutdown_requested_at=row["shutdown_requested_at"],
+            member_id=row["member_id"],
         )
 
 
@@ -1061,12 +1086,10 @@ class AgentRuntimeSignalRepository:
 
     def save(self, signal: AgentRuntimeSignal) -> None:
         _require_session_exists(self.connection, signal.session_id)
-        _require_linked_session_id(
+        _require_agent_member_exists(
             self.connection,
-            table_name="agent_members",
-            id_column="agent_id",
-            record_id=signal.agent_id,
-            expected_session_id=signal.session_id,
+            session_id=signal.session_id,
+            agent_id=signal.agent_id,
         )
         if signal.task_id is not None:
             _require_linked_session_id(
@@ -2094,12 +2117,10 @@ class SessionReportDraftRepository:
                 expected_session_id=draft.session_id,
             )
         if draft.owner_agent_id is not None:
-            _require_linked_session_id(
+            _require_agent_member_exists(
                 self.connection,
-                table_name="agent_members",
-                id_column="agent_id",
-                record_id=draft.owner_agent_id,
-                expected_session_id=draft.session_id,
+                session_id=draft.session_id,
+                agent_id=draft.owner_agent_id,
             )
         if draft.published_report_id is not None:
             _require_linked_session_id(

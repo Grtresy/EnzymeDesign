@@ -63,13 +63,14 @@ def _resolve_agent_recipient(
     *,
     create_missing: bool = True,
 ) -> tuple[str | None, str, AgentMember | None]:
-    existing = context.repositories.agents.get(recipient)
-    if existing is not None and existing.session_id == context.snapshot.session.session_id:
+    session_id = context.snapshot.session.session_id
+    existing = context.repositories.agents.get(session_id, recipient)
+    if existing is not None:
         return existing.agent_id, "agent_id", existing
     if recipient in TEAMMATE_ROLE_NAMES:
         agent_id = _default_agent_id_for_role(recipient)
-        existing = context.repositories.agents.get(agent_id)
-        if existing is not None and existing.session_id == context.snapshot.session.session_id:
+        existing = context.repositories.agents.get(session_id, agent_id)
+        if existing is not None:
             return existing.agent_id, "role_alias", existing
         if not create_missing:
             return agent_id, "role_alias_missing", None

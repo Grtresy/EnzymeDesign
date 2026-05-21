@@ -241,6 +241,7 @@ class Session:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
+        data.pop("member_id", None)
         return data
 
 
@@ -401,6 +402,7 @@ class AgentMember:
     last_active_at: str | None = None
     idle_since: str | None = None
     shutdown_requested_at: str | None = None
+    member_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

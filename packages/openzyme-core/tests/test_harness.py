@@ -1069,7 +1069,7 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     assert result.outputs == ("delegated",)
     assert delegated_task.assigned_ref is None
     assert delegated_task.status is TaskStatus.TODO
-    agent = repositories.agents.get("agent:researcher")
+    agent = repositories.agents.get(session.session_id, "agent:researcher")
     assert agent is not None
     assert agent.task_id == "task_001"
     assert agent.role == "researcher"

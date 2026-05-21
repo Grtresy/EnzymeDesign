@@ -16,6 +16,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "009_v3_agent_runtime",
     "010_v3_task_failure_fields",
     "011_v3_runtime_signal_leases",
+    "012_v3_session_scoped_agent_members",
 )
 
 
@@ -29,5 +30,20 @@ def get_migration_sql(migration_id: str) -> str:
 
 def apply_sqlite_migrations(connection: sqlite3.Connection) -> None:
     for migration_id in MIGRATION_IDS:
+        if migration_id == "012_v3_session_scoped_agent_members" and _agent_members_are_session_scoped(connection):
+            continue
         connection.executescript(get_migration_sql(migration_id))
     connection.commit()
+
+
+def _agent_members_are_session_scoped(connection: sqlite3.Connection) -> bool:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_members'"
+    ).fetchone()
+    if table is None:
+        return False
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(agent_members)").fetchall()
+    }
+    return "member_id" in columns

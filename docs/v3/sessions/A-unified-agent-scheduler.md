@@ -26,6 +26,7 @@
    - session 创建时确保存在 `agent:master`。
    - master member 记录 role、status、last_active、current wakeup reason。
    - workspace `delegation.agents` / event projection 能展示 master 与 teammate 的 queued / working / idle / failed 状态。
+   - `agent:master` 是 session-local id；数据库里的 `AgentMember.member_id` 才是全局 member 主键。同一个 role/default agent id 可以在不同 session 中各有独立 member/runtime state。
 
 - [x] 2. 改造用户消息入口
    - `post_message()` 只持久化 user message、必要 inbox envelope 与 control-plane event。
@@ -41,6 +42,7 @@
    - scheduler claim 到 `agent:master` signal 时运行 top-level master loop。
    - scheduler claim 到 teammate signal 时运行对应 teammate loop。
    - signal completion / failure 走 repository `complete()` / `fail()` 语义，记录 `attempt_count` 与 `last_error`。
+   - signal 的 agent 校验以 `(session_id, agent_id)` 为边界，不允许引用另一个 session 的同名 agent。
 
 - [x] 5. 恢复上下文
    - master restore context 至少包含最新用户消息、user/master conversation、pending approvals、task board、teammate protocol threads、workspace artifacts、engine invocations、report drafts/reports、agent statuses。

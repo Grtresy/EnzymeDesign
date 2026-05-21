@@ -113,7 +113,7 @@ class ProtocolService:
     ) -> DelegationEnvelope:
         lane_id = self._resolve_effective_lane_id(session_id=session_id, task_id=task_id, lane_id=lane_id)
         now = utc_now_iso()
-        existing = self.repositories.agents.get(agent_id)
+        existing = self.repositories.agents.get(session_id, agent_id)
         agent = AgentMember(
             agent_id=agent_id,
             session_id=session_id,
@@ -131,6 +131,7 @@ class ProtocolService:
             last_active_at=None if existing is None else existing.last_active_at,
             idle_since=now if existing is None else existing.idle_since,
             shutdown_requested_at=None if existing is None else existing.shutdown_requested_at,
+            member_id=None if existing is None else existing.member_id,
         )
         self.repositories.agents.save(agent)
         self._emit(
@@ -319,7 +320,7 @@ class ProtocolService:
             )
         agent = None
         if agent_id is not None:
-            agent = self.repositories.agents.get(agent_id)
+            agent = self.repositories.agents.get(session_id, agent_id)
             if agent is None:
                 raise ValueError(f"agent {agent_id!r} does not exist")
             updated_status = AgentMemberStatus.IDLE if success else AgentMemberStatus.FAILED
@@ -340,6 +341,7 @@ class ProtocolService:
                 last_active_at=utc_now_iso(),
                 idle_since=utc_now_iso() if success else agent.idle_since,
                 shutdown_requested_at=agent.shutdown_requested_at,
+                member_id=agent.member_id,
             )
             self.repositories.agents.save(agent)
             self._emit(
@@ -426,7 +428,7 @@ class ProtocolService:
     ) -> AgentRuntimeSignal | None:
         if not hasattr(self.repositories, "runtime_signals"):
             return None
-        if self.repositories.agents.get(agent_id) is None:
+        if self.repositories.agents.get(session_id, agent_id) is None:
             return None
         existing = self.repositories.runtime_signals.find_pending_duplicate(
             session_id=session_id,

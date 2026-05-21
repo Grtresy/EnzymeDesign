@@ -10,7 +10,7 @@ ALTER TABLE agent_members ADD COLUMN shutdown_requested_at TEXT;
 CREATE TABLE IF NOT EXISTS agent_runtime_signals (
     signal_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    agent_id TEXT NOT NULL REFERENCES agent_members(agent_id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
     task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
     lane_id TEXT REFERENCES lanes(lane_id) ON DELETE SET NULL,
     correlation_id TEXT,
@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS agent_runtime_signals (
     created_at TEXT NOT NULL,
     claimed_at TEXT,
     completed_at TEXT,
-    error_message TEXT
+    error_message TEXT,
+    FOREIGN KEY (session_id, agent_id) REFERENCES agent_members(session_id, agent_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_signals_session_id ON agent_runtime_signals(session_id);

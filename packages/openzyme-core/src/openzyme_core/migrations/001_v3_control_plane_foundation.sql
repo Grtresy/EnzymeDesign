@@ -83,16 +83,18 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 );
 
 CREATE TABLE IF NOT EXISTS agent_members (
-    agent_id TEXT PRIMARY KEY,
+    member_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     lane_id TEXT REFERENCES lanes(lane_id) ON DELETE SET NULL,
     task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
     name TEXT NOT NULL,
     role TEXT NOT NULL,
     status TEXT NOT NULL,
-    parent_agent_id TEXT REFERENCES agent_members(agent_id) ON DELETE SET NULL,
+    parent_agent_id TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(session_id, agent_id)
 );
 
 CREATE TABLE IF NOT EXISTS engine_invocations (

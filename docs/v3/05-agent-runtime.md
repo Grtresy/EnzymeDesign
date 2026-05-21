@@ -128,10 +128,12 @@ scheduler master turn or protocol.thread shows failed / unclear summary
 
 `protocol.send` recipient resolution:
 
-- exact `AgentMember.agent_id` wins first
+- exact `AgentMember.agent_id` wins first within the current `session_id`
 - `researcher`, `executor`, and `reporter` are role aliases for default resident agents `agent:{role}`
 - if a default resident agent does not exist, `protocol.send` creates it in the current session with `status=idle`
 - unresolvable agent recipients return `ok=false/status=recipient_not_found/error_code=recipient_not_found`
+
+Agent role definitions may be reused across sessions, but `AgentMember` is session-scoped runtime state. `agent:master`, `agent:researcher`, `agent:executor`, and `agent:reporter` are session-local ids; repository and scheduler lookups must use `(session_id, agent_id)`. The internal `member_id` is the storage primary key and should not replace the public session-local `agent_id` in normal workspace/API flows.
 
 Delivery success semantics:
 

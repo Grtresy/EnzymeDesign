@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS session_report_draft_records (
     draft_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     task_id TEXT REFERENCES tasks(task_id) ON DELETE SET NULL,
-    owner_agent_id TEXT REFERENCES agent_members(agent_id) ON DELETE SET NULL,
+    owner_agent_id TEXT,
     status TEXT NOT NULL,
     title TEXT NOT NULL,
     summary TEXT NOT NULL,
