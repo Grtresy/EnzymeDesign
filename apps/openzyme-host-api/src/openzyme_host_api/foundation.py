@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
 from pathlib import Path
 
-from langgraph.checkpoint.memory import InMemorySaver
 from openzyme_domain import ArtifactKind
-from openzyme_domain import Project
 from openzyme_domain import RunStatus
 from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
@@ -17,13 +14,10 @@ from openzyme_execution import HpcRunnerExecutionAdapter
 from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import OpenZymeSettings
-from openzyme_runtime import PhaseBRepositories
 from openzyme_runtime import RuntimeFoundation
 from openzyme_tools import DefaultHpcExecutionRegistry
 from openzyme_tools import RepoBackedHpcCatalogProvider
 from openzyme_runtime import DefaultResearchToolProvider
-from openzyme_runtime import apply_sqlite_migrations
-from openzyme_runtime import connect_sqlite
 from openzyme_runtime import get_settings
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
@@ -38,26 +32,21 @@ from openzyme_runtime import build_bio_research_tools
 from .eval_support import DeterministicLocalModelFactory
 
 
-DEFAULT_PROJECT_ID = "proj_001"
-DEFAULT_PROJECT_NAME = "Thermostability local project"
-DEFAULT_PROJECT_DESCRIPTION = "Preloaded project for local OpenZyme Host API workflows."
-
-
 @dataclass(slots=True)
 class DeterministicExecutionAdapter:
-    _episode_call_counts: dict[str, int] = field(default_factory=dict)
+    _session_call_counts: dict[str, int] = field(default_factory=dict)
 
     def submit_execution(
-        self, episode_id: str, payload: dict[str, object]
+        self, session_id: str, payload: dict[str, object]
     ) -> ExecutionOutcome:
-        call_count = self._episode_call_counts.get(episode_id, 0) + 1
-        self._episode_call_counts[episode_id] = call_count
-        run_id = f"run_{episode_id}_{call_count}"
+        call_count = self._session_call_counts.get(session_id, 0) + 1
+        self._session_call_counts[session_id] = call_count
+        run_id = f"run_{session_id}_{call_count}"
         return ExecutionOutcome(
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
             execution_mode="demo",
-            remote_run_dir=f"/local/{episode_id}/{run_id}",
+            remote_run_dir=f"/local/{session_id}/{run_id}",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/openzyme-local/stdout.log",
@@ -77,9 +66,9 @@ class DeterministicExecutionAdapter:
 @dataclass(slots=True)
 class DeterministicResearchAdapter:
     def conduct(
-        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+        self, *, session_id: str, research_brief: str, unit: ResearchUnit
     ) -> ResearchUnitResult:
-        del episode_id, research_brief
+        del session_id, research_brief
         return self.normalize_search_response(
             unit=unit,
             response=self.web_search(
@@ -177,15 +166,6 @@ class DeterministicResearchAdapter:
         )
 
 
-class InMemoryCheckpointerFactory:
-    def __init__(self) -> None:
-        self._saver = InMemorySaver()
-
-    @contextmanager
-    def open(self):
-        yield self._saver
-
-
 def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
     live_policy = settings.test.live_llm
     return replace(
@@ -269,25 +249,6 @@ def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
     )
 
 
-def _connect_sqlite_database(sqlite_db_path: Path | None) -> PhaseBRepositories:
-    db_path = sqlite_db_path
-    if db_path is None:
-        raise ValueError("sqlite_db_path is required for local foundations")
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = connect_sqlite(str(db_path))
-    apply_sqlite_migrations(connection)
-    repositories = PhaseBRepositories.from_connection(connection)
-    if repositories.projects.get(DEFAULT_PROJECT_ID) is None:
-        repositories.projects.save(
-            Project.create(
-                DEFAULT_PROJECT_ID,
-                DEFAULT_PROJECT_NAME,
-                DEFAULT_PROJECT_DESCRIPTION,
-            )
-        )
-    return repositories
-
-
 def _build_execution_adapter(
     settings: OpenZymeSettings,
     limiter_registry: LimiterRegistry,
@@ -332,12 +293,11 @@ def build_local_eval_foundation(
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
-    repositories = _connect_sqlite_database(sqlite_db_path)
+    if sqlite_db_path is not None:
+        sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     research_adapter = DeterministicResearchAdapter()
     bio_research_service = DeterministicBioResearchService()
     return RuntimeFoundation(
-        repositories=repositories,
-        checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=DeterministicExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(
@@ -367,12 +327,11 @@ def build_configured_foundation(
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
         effective_settings = apply_live_llm_test_budget(effective_settings)
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
-    repositories = _connect_sqlite_database(sqlite_db_path)
+    if sqlite_db_path is not None:
+        sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)
     return RuntimeFoundation(
-        repositories=repositories,
-        checkpointer_factory=InMemoryCheckpointerFactory(),  # type: ignore[arg-type]
         execution_adapter=_build_execution_adapter(effective_settings, limiter_registry),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(

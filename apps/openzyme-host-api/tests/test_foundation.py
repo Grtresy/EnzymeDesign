@@ -66,7 +66,6 @@ def _settings() -> OpenZymeSettings:
         host_cli=HostCliSettings(
             base_url="http://127.0.0.1:8000",
             project_id=None,
-            episode_id=None,
             output_format="text",
         ),
         host_api=HostApiSettings(bind_host="127.0.0.1", bind_port=8000),
@@ -206,13 +205,13 @@ def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.5
 
 
-def test_local_eval_foundation_preloads_default_project(tmp_path) -> None:
+def test_local_eval_foundation_wires_deterministic_components(tmp_path) -> None:
     foundation = build_local_eval_foundation(sqlite_db_path=tmp_path / "eval.sqlite3")
 
-    project = foundation.repositories.projects.get("proj_001")
-
-    assert project is not None
-    assert project.name == "Thermostability local project"
+    assert isinstance(foundation.execution_adapter, DeterministicExecutionAdapter)
+    assert isinstance(foundation.research_adapter, DeterministicResearchAdapter)
+    assert isinstance(foundation.model_factory, DeterministicLocalModelFactory)
+    assert foundation.research_tool_provider is not None
 
 
 def test_local_eval_foundation_owns_deterministic_model_factory(tmp_path) -> None:
@@ -249,18 +248,18 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
     assert client.get("/debug").text == "<html><body>debug</body></html>"
 
 
-def test_deterministic_execution_adapter_scopes_run_ids_per_episode_and_call_count() -> None:
+def test_deterministic_execution_adapter_scopes_run_ids_per_session_and_call_count() -> None:
     adapter = DeterministicExecutionAdapter()
 
-    first = adapter.submit_execution("ep_local", {})
-    second = adapter.submit_execution("ep_local", {})
-    third = adapter.submit_execution("ep_other", {})
+    first = adapter.submit_execution("sess_local", {})
+    second = adapter.submit_execution("sess_local", {})
+    third = adapter.submit_execution("sess_other", {})
 
-    assert first.run_id == "run_ep_local_1"
-    assert second.run_id == "run_ep_local_2"
-    assert third.run_id == "run_ep_other_1"
+    assert first.run_id == "run_sess_local_1"
+    assert second.run_id == "run_sess_local_2"
+    assert third.run_id == "run_sess_other_1"
     assert first.status is RunStatus.SUCCEEDED
-    assert first.remote_run_dir == "/local/ep_local/run_ep_local_1"
+    assert first.remote_run_dir == "/local/sess_local/run_sess_local_1"
     assert first.artifacts[0].kind is ArtifactKind.LOG
 
 
@@ -366,6 +365,41 @@ def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
     asyncio.run(run_calls())
 
     assert fake.observed_max == 1
+
+
+def test_v3_execution_runner_adapter_fails_cancel_when_boundary_unsupported() -> None:
+    @dataclass(frozen=True, slots=True)
+    class FakeOutcome:
+        run_id: str = "run_unsupported_cancel"
+        status: RunStatus = RunStatus.SUCCEEDED
+        execution_mode: str = "demo"
+        remote_run_dir: str = "/remote/run_unsupported_cancel"
+        raw_result: dict[str, object] = None  # type: ignore[assignment]
+        artifacts: tuple[object, ...] = ()
+        job_id: str | None = None
+        exit_code: int | None = 0
+
+        def __post_init__(self) -> None:
+            if self.raw_result is None:
+                object.__setattr__(self, "raw_result", {"status": "completed"})
+
+    class FakeExecutionAdapter:
+        def submit_execution(self, session_id: str, payload: dict[str, object]):
+            del session_id, payload
+            return FakeOutcome()
+
+    adapter = V3ExecutionRunnerAdapter(FakeExecutionAdapter())
+    submitted = adapter.submit_execution("sess_cancel", {})
+
+    cancelled = adapter.cancel_execution(
+        run_id=submitted.run_id,
+        remote_run_dir=submitted.remote_run_dir,
+        job_id=submitted.job_id,
+    )
+
+    assert cancelled.status is RunStatus.FAILED
+    assert cancelled.raw_result["status"] == "unsupported"
+    assert cancelled.raw_result["error_code"] == "cancel_execution_unsupported"
 
 
 def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:

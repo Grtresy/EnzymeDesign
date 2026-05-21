@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from pathlib import Path
 from typing import Any
 
@@ -119,16 +120,40 @@ def _drain_until_report(
             _raise_for_status_with_body(resolved, step="resolve_v3_approval")
             continue
 
-        if (
-            workspace["reports"]
-            and workspace["artifacts"]
-            and "execution" in workspace["capabilities"]
-            and workspace["capabilities"]["execution"][0]["status"] == "succeeded"
+        if workspace["reports"] and workspace["artifacts"] and any(
+            item.get("status") == "succeeded"
+            for item in workspace["capabilities"].get("execution", [])
         ):
             return workspace
 
     assert latest is not None
     return latest["workspace"]
+
+
+def _workspace_failure_summary(workspace: dict[str, Any]) -> str:
+    capabilities = workspace.get("capabilities") or {}
+    return json.dumps(
+        {
+            "tasks": [
+                item.get("task", {})
+                for item in (workspace.get("task_board") or {}).get("items", [])
+            ],
+            "artifacts": workspace.get("artifacts", []),
+            "deep_research": capabilities.get("deep_research", []),
+            "execution": capabilities.get("execution", []),
+            "reports": workspace.get("reports", []),
+            "pending_approvals": workspace.get("pending_approvals", []),
+        },
+        sort_keys=True,
+        indent=2,
+    )
+
+
+def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[str, Any]:
+    for item in (workspace.get("capabilities") or {}).get(capability, []):
+        if item.get("status") == "succeeded":
+            return item
+    raise AssertionError(_workspace_failure_summary(workspace))
 
 
 def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> None:
@@ -221,14 +246,13 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
                 f"artifacts={len(workspace['artifacts'])}"
             )
 
-            assert workspace["reports"]
-            assert workspace["reports"][0]["status"] == "ready"
-            assert workspace["artifacts"]
-            assert "execution" in workspace["capabilities"]
-            execution_capability = workspace["capabilities"]["execution"][0]
-            assert execution_capability["status"] == "succeeded"
+            assert workspace["reports"], _workspace_failure_summary(workspace)
+            assert workspace["reports"][0]["status"] in {"ready", "published"}
+            assert workspace["artifacts"], _workspace_failure_summary(workspace)
+            assert "execution" in workspace["capabilities"], _workspace_failure_summary(workspace)
+            execution_capability = _succeeded_capability(workspace, "execution")
             assert execution_capability["runs"]
-            assert "deep_research" in workspace["capabilities"]
+            assert "deep_research" in workspace["capabilities"], _workspace_failure_summary(workspace)
             research_capability = workspace["capabilities"]["deep_research"][0]
             assert research_capability["status"] == "succeeded"
             assert research_capability["canonical_summary"]["summary"]

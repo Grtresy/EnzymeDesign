@@ -9,7 +9,6 @@ from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_host_api.evals import run_v3_live_evals
 from openzyme_host_api.foundation import build_configured_foundation
-from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api.foundation import apply_live_llm_test_budget
 from openzyme_runtime import get_settings
 
@@ -31,7 +30,6 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
         create_app(
             HostApiDependencies(
                 foundation=foundation,
-                graph_builder=build_v2_supervisor_graph,
             )
         )
     )

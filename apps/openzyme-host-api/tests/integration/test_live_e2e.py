@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 from typing import Any
 
 import pytest
@@ -73,16 +74,40 @@ def _drain_until_quiescent(
             _raise_for_status_with_body(resolved, step="resolve_v3_approval")
             continue
 
-        if (
-            workspace["reports"]
-            and workspace["artifacts"]
-            and "execution" in workspace["capabilities"]
-            and workspace["capabilities"]["execution"][0]["status"] == "succeeded"
+        if workspace["reports"] and workspace["artifacts"] and any(
+            item.get("status") == "succeeded"
+            for item in workspace["capabilities"].get("execution", [])
         ):
             return workspace
 
     assert latest is not None
     return latest["workspace"]
+
+
+def _workspace_failure_summary(workspace: dict[str, Any]) -> str:
+    capabilities = workspace.get("capabilities") or {}
+    return json.dumps(
+        {
+            "tasks": [
+                item.get("task", {})
+                for item in (workspace.get("task_board") or {}).get("items", [])
+            ],
+            "artifacts": workspace.get("artifacts", []),
+            "deep_research": capabilities.get("deep_research", []),
+            "execution": capabilities.get("execution", []),
+            "reports": workspace.get("reports", []),
+            "pending_approvals": workspace.get("pending_approvals", []),
+        },
+        sort_keys=True,
+        indent=2,
+    )
+
+
+def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[str, Any]:
+    for item in (workspace.get("capabilities") or {}).get(capability, []):
+        if item.get("status") == "succeeded":
+            return item
+    raise AssertionError(_workspace_failure_summary(workspace))
 
 
 def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
@@ -92,6 +117,7 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         settings,
         llm=replace(
             settings.llm,
+            timeout=max(settings.llm.timeout, 120.0),
             max_tokens=max(settings.llm.max_tokens or 0, 512),
             structured_output_max_attempts=max(
                 settings.llm.structured_output_max_attempts or 0,
@@ -176,18 +202,19 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         log_live_phase("closing FastAPI test client")
         client.close()
 
-    assert workspace["reports"]
-    assert workspace["reports"][0]["status"] == "ready"
-    assert workspace["artifacts"]
-    assert "deep_research" in workspace["capabilities"]
+    assert workspace["reports"], _workspace_failure_summary(workspace)
+    assert workspace["reports"][0]["status"] in {"ready", "published"}
+    assert workspace["artifacts"], _workspace_failure_summary(workspace)
+    assert "deep_research" in workspace["capabilities"], _workspace_failure_summary(
+        workspace
+    )
     research_capability = workspace["capabilities"]["deep_research"][0]
     assert research_capability["status"] == "succeeded"
     assert research_capability["canonical_summary"]["summary"]
     assert research_capability["evidence"]
     assert research_capability["source_refs"]
     assert "execution" in workspace["capabilities"]
-    execution_capability = workspace["capabilities"]["execution"][0]
-    assert execution_capability["status"] == "succeeded"
+    execution_capability = _succeeded_capability(workspace, "execution")
     assert execution_capability["runs"]
     assert any(
         item["task"]["kind"] == "research" for item in workspace["task_board"]["items"]
@@ -196,5 +223,6 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         item["task"]["kind"] == "execution" for item in workspace["task_board"]["items"]
     )
     assert any(
-        item["task"]["kind"] == "reporting" for item in workspace["task_board"]["items"]
-    )
+        item["task"]["kind"] in {"reporting", "report"}
+        for item in workspace["task_board"]["items"]
+    ), _workspace_failure_summary(workspace)

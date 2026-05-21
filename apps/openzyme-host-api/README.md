@@ -1,35 +1,28 @@
 # openzyme-host-api
 
-V2 Host API app and contracts for OpenZyme.
+V3 Host API app for OpenZyme.
 
 ## Scope
 
-This app defines the Phase B Host-side API surface for:
+This app exposes the V3 Host-side API surface for:
 
-- query resources
-- workflow commands
-- workflow-aware projected stream events
-- read-model payload shapes consumed by the Web UI
-
-## Contract rules
-
-- Resource and command identifiers reuse the domain and graph contracts.
-- Workflow events are Host projections derived from LangGraph stream/update data, not replacements for LangGraph runtime stream modes.
-- Read models remain projections over canonical business records and graph progress.
-- The stream endpoint emits projected workflow events for the UI and does not expose raw LangGraph transport chunks.
+- session creation and workspace queries
+- message ingress and explicit `runtime/drain`
+- task board, lane, approval, and debug endpoints
+- V3 session events consumed by the Web UI
 
 ## Local Workflow Evals
 
-Run the routed workflow smoke evals locally:
+Run the V3 workflow smoke eval locally:
 
 1. `cd /home/grtresy/VSCodeRepo/EnzymeDesign`
 2. `uv run python -m openzyme_host_api.evals`
 
-The eval harness uses an ephemeral sqlite database, an in-memory checkpointer, and deterministic execution/research adapters. It is the supported local regression path for the Host API closed loop.
+The eval harness uses an ephemeral sqlite database and deterministic execution/research adapters. It is the supported local regression path for the V3 Host API loop.
 
 ### Real LLM Configuration
 
-The local eval path can optionally use an OpenAI-compatible chat model for the LangChain structured-output path.
+The local eval path can optionally use an OpenAI-compatible chat model.
 
 Use the repository-level environment file conventions described in [README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/README.md:39):
 
@@ -49,7 +42,7 @@ Use the repository-level environment file conventions described in [README.md](/
 If no API key is set, the local eval harness keeps using the deterministic fallback path.
 For the current Zhipu OpenAI-compatible endpoint, `function_calling` is the recommended structured-output strategy. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
 
-By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces for each seeded scenario:
+By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces:
 
 1. set `OPENZYME_LANGSMITH_TRACING=true`
 2. optionally set `OPENZYME_LANGSMITH_PROJECT=<project-name>`

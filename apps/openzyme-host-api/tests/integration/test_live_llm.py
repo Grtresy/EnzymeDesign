@@ -74,7 +74,7 @@ def test_live_llm_generates_structured_report_draft() -> None:
                 "Return only the structured report fields."
             ),
             user_payload={
-                "episode_id": "ep_live_llm",
+                "session_id": "sess_live_llm",
                 "objective": "Produce a concise final report for a thermostable artifact workspace",
                 "research_summary": {"summary": "Two scaffold families show thermostability evidence."},
                 "focused_artifact_ids": ["artifact_live_001"],

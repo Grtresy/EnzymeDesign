@@ -1,29 +1,16 @@
 from __future__ import annotations
 
-import json
 import threading
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from langgraph.checkpoint.memory import InMemorySaver
-from openzyme_domain import Episode
-from openzyme_domain import Project
-from openzyme_domain import ArtifactRecord
-from openzyme_domain import EvidenceRecord
-from openzyme_domain import ResearchSummaryRecord
-from openzyme_domain import SourceRef
 from openzyme_domain import SourceRefKind
-from openzyme_domain import UnresolvedGapRecord
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
-from openzyme_graph.design import build_phase_c_design_graph
-from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
-from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import ConstraintItem
 from openzyme_runtime import ConstraintSet
 from openzyme_runtime import DesignBriefDraft
@@ -32,14 +19,9 @@ from openzyme_runtime import ExecutionPlanDraft
 from openzyme_runtime import IntakeClarification
 from openzyme_runtime import IntakePhaseOutput
 from openzyme_runtime import LangChainToolCallingInvoker
-from openzyme_runtime import PhaseBRepositories
-from openzyme_runtime import PostgresCheckpointerConfig
-from openzyme_runtime import PostgresCheckpointerFactory
 from openzyme_runtime import ReportDraft
 from openzyme_runtime import ResearchBriefDraft as RuntimeResearchBriefDraft
 from openzyme_runtime import RuntimeFoundation
-from openzyme_runtime import apply_sqlite_migrations
-from openzyme_runtime import connect_sqlite
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_tools import DefaultHpcExecutionRegistry
 from openzyme_tools import RepoBackedHpcCatalogProvider
@@ -57,7 +39,9 @@ from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionStatus
 from openzyme_domain import Task
+from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
@@ -80,13 +64,13 @@ from openzyme_host_api.v3_service import V3HostApiService
 
 class FakeExecutionAdapter:
     def submit_execution(
-        self, episode_id: str, payload: dict[str, object]
+        self, session_id: str, payload: dict[str, object]
     ) -> ExecutionOutcome:
         return ExecutionOutcome(
             run_id="run_001",
             status=RunStatus.SUCCEEDED,
             execution_mode="ssh",
-            remote_run_dir=f"/remote/{episode_id}/run_001",
+            remote_run_dir=f"/remote/{session_id}/run_001",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/stdout.log",
@@ -105,9 +89,9 @@ class FakeExecutionAdapter:
 
 class FakeResearchAdapter:
     def conduct(
-        self, *, episode_id: str, research_brief: str, unit: ResearchUnit
+        self, *, session_id: str, research_brief: str, unit: ResearchUnit
     ) -> ResearchUnitResult:
-        del episode_id, research_brief
+        del session_id, research_brief
         return self.normalize_search_response(
             unit=unit,
             response=self.web_search(
@@ -822,14 +806,14 @@ class FakeEngineHarnessInvoker:
 class FakeEngineHarnessModelFactory:
     def __init__(self) -> None:
         self.invokers: dict[str, FakeEngineHarnessInvoker] = {}
-        self.phase_b = FakePhaseBModelFactory()
+        self.fallback_factory = FakePhaseBModelFactory()
 
     def create_structured_invoker(self, *, purpose: str) -> FakePhaseBStructuredInvoker:
-        return self.phase_b.create_structured_invoker(purpose=purpose)
+        return self.fallback_factory.create_structured_invoker(purpose=purpose)
 
     def create_tool_calling_invoker(self, *, purpose: str):
         if not purpose.startswith("v3_"):
-            return self.phase_b.create_tool_calling_invoker(purpose=purpose)
+            return self.fallback_factory.create_tool_calling_invoker(purpose=purpose)
         if purpose not in self.invokers:
             self.invokers[purpose] = FakeEngineHarnessInvoker(purpose)
         return self.invokers[purpose]
@@ -995,48 +979,11 @@ class FailedHpcExecutionEngine:
         )
 
 
-def _resolve_next_approval(
-    client: TestClient, episode_id: str, decision: str = "approved"
-) -> dict[str, object]:
-    pending = client.get(f"/episodes/{episode_id}/pending-actions")
-    assert pending.status_code == 200
-    pending_actions = pending.json()
-    assert pending_actions
-    response = client.post(
-        "/commands/resolve_approval",
-        json={
-            "episode_id": episode_id,
-            "approval_id": pending_actions[0]["approval_id"],
-            "decision": decision,
-        },
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
 def _build_client(
     monkeypatch, *, with_model_factory: bool = True
 ) -> tuple[TestClient, RuntimeFoundation]:
-    saver = InMemorySaver()
-
-    @contextmanager
-    def _shared_open(self: PostgresCheckpointerFactory):
-        yield saver
-
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _shared_open,
-    )
-
-    connection = connect_sqlite(":memory:")
-    apply_sqlite_migrations(connection)
-    repositories = PhaseBRepositories.from_connection(connection)
-    repositories.projects.save(Project.create("proj_001", "Thermostability project"))
+    del monkeypatch
     foundation = RuntimeFoundation(
-        repositories=repositories,
-        checkpointer_factory=PostgresCheckpointerFactory(
-            PostgresCheckpointerConfig(conn_string="postgresql://phase-b/memory")
-        ),
         execution_adapter=FakeExecutionAdapter(),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
         hpc_execution_registry=DefaultHpcExecutionRegistry(
@@ -1050,7 +997,6 @@ def _build_client(
             create_app(
                 HostApiDependencies(
                     foundation=foundation,
-                    graph_builder=build_v2_supervisor_graph,
                 )
             )
         ),
@@ -1067,7 +1013,6 @@ def _build_v3_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
                     foundation=replace(
                         foundation, model_factory=FakeHarnessModelFactory()
                     ),
-                    graph_builder=build_v2_supervisor_graph,
                 )
             )
         ),
@@ -1086,7 +1031,6 @@ def _build_v3_engine_llm_client(
             create_app(
                 HostApiDependencies(
                     foundation=replace(foundation, model_factory=model_factory),
-                    graph_builder=build_v2_supervisor_graph,
                     v3_repositories=v3_repositories,
                 )
             )
@@ -1447,6 +1391,190 @@ def _seed_v3_execution_artifact(
     )
 
 
+def test_v3_service_delegates_ready_execution_task_after_research_followup() -> None:
+    repositories = _build_v3_engine_repositories()
+    session = Session(
+        session_id="sess_v3_execution_followup",
+        project_id="proj_001",
+        title="Execution followup",
+        objective="Research a structure, run HPC/fpocket execution, and publish a final report.",
+        status=SessionStatus.ACTIVE,
+        created_at="2026-04-20T12:00:00+00:00",
+        updated_at="2026-04-20T12:00:00+00:00",
+    )
+    repositories.sessions.save(session)
+    _seed_v3_execution_artifact(repositories, session.session_id)
+    research_task = Task(
+        task_id="task_research_v3",
+        session_id=session.session_id,
+        subject="Research",
+        description="Find the structure artifact.",
+        status=TaskStatus.COMPLETED,
+        priority=TaskPriority.HIGH,
+        kind="research",
+        assigned_ref="agent:researcher",
+        created_at="2026-04-20T12:00:01+00:00",
+        updated_at="2026-04-20T12:00:02+00:00",
+    )
+    execution_task = Task(
+        task_id="task_execution_v3",
+        session_id=session.session_id,
+        subject="Run fpocket",
+        description="Run fpocket against art_v3_structure.",
+        status=TaskStatus.IN_PROGRESS,
+        priority=TaskPriority.HIGH,
+        kind="execution",
+        assigned_ref="agent:executor",
+        created_at="2026-04-20T12:00:04+00:00",
+        updated_at="2026-04-20T12:00:04+00:00",
+    )
+    repositories.tasks.save(research_task)
+    repositories.tasks.save(execution_task)
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+    )
+    events: list[dict[str, object]] = []
+
+    service._ensure_execution_task_after_teammates(
+        session.session_id,
+        events,
+        [
+            {
+                "ok": True,
+                "task": research_task.to_dict(),
+                "teammate_status": "completed",
+            }
+        ],
+    )
+
+    executor = repositories.agents.get("agent:executor")
+    signals = repositories.runtime_signals.list_by_session(session.session_id)
+    assert executor is not None
+    assert executor.task_id == "task_execution_v3"
+    assert signals
+    assert signals[0].agent_id == "agent:executor"
+    assert any(event["event_type"] == "agent.delegated" for event in events)
+
+
+def test_v3_service_creates_execution_task_after_research_when_missing() -> None:
+    repositories = _build_v3_engine_repositories()
+    session = Session(
+        session_id="sess_v3_execution_create",
+        project_id="proj_001",
+        title="Execution create",
+        objective="Research a structure, run HPC/fpocket execution, and publish a final report.",
+        status=SessionStatus.ACTIVE,
+        created_at="2026-04-20T12:00:00+00:00",
+        updated_at="2026-04-20T12:00:00+00:00",
+    )
+    repositories.sessions.save(session)
+    _seed_v3_execution_artifact(repositories, session.session_id)
+    research_task = Task(
+        task_id="task_research_v3",
+        session_id=session.session_id,
+        subject="Research",
+        description="Find the structure artifact.",
+        status=TaskStatus.COMPLETED,
+        priority=TaskPriority.HIGH,
+        kind="research",
+        assigned_ref="agent:researcher",
+        created_at="2026-04-20T12:00:01+00:00",
+        updated_at="2026-04-20T12:00:02+00:00",
+    )
+    repositories.tasks.save(research_task)
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+    )
+    events: list[dict[str, object]] = []
+
+    service._ensure_execution_task_after_teammates(
+        session.session_id,
+        events,
+        [
+            {
+                "ok": True,
+                "task": research_task.to_dict(),
+                "teammate_status": "completed",
+            }
+        ],
+    )
+
+    execution_task = repositories.tasks.get("task_execution_v3")
+    executor = repositories.agents.get("agent:executor")
+    assert execution_task is not None
+    assert execution_task.kind == "execution"
+    assert execution_task.blocked_by == ("task_research_v3",)
+    assert "art_v3_structure" in execution_task.description
+    assert executor is not None
+    assert executor.task_id == "task_execution_v3"
+    assert repositories.runtime_signals.list_by_session(session.session_id)
+
+
+def test_v3_service_delegates_existing_reporting_task_after_execution() -> None:
+    repositories = _build_v3_engine_repositories()
+    session = Session(
+        session_id="sess_v3_reporting_delegate",
+        project_id="proj_001",
+        title="Reporting delegate",
+        objective="Run execution and publish a final report.",
+        status=SessionStatus.ACTIVE,
+        created_at="2026-04-20T12:00:00+00:00",
+        updated_at="2026-04-20T12:00:00+00:00",
+    )
+    repositories.sessions.save(session)
+    execution_task = Task(
+        task_id="task_execution_v3",
+        session_id=session.session_id,
+        subject="Execution",
+        description="Run fpocket.",
+        status=TaskStatus.COMPLETED,
+        priority=TaskPriority.HIGH,
+        kind="execution",
+        assigned_ref="agent:executor",
+        created_at="2026-04-20T12:00:01+00:00",
+        updated_at="2026-04-20T12:00:02+00:00",
+    )
+    report_task = Task(
+        task_id="task_report_v3",
+        session_id=session.session_id,
+        subject="Publish report",
+        description="Publish the final report.",
+        status=TaskStatus.TODO,
+        priority=TaskPriority.HIGH,
+        kind="reporting",
+        assigned_ref=None,
+        created_at="2026-04-20T12:00:03+00:00",
+        updated_at="2026-04-20T12:00:03+00:00",
+    )
+    repositories.tasks.save(execution_task)
+    repositories.tasks.save(report_task)
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+    )
+    events: list[dict[str, object]] = []
+
+    service._ensure_reporting_task_after_teammates(
+        session.session_id,
+        events,
+        [
+            {
+                "ok": True,
+                "task": execution_task.to_dict(),
+                "teammate_status": "completed",
+            }
+        ],
+    )
+
+    reporter = repositories.agents.get("agent:reporter")
+    assert reporter is not None
+    assert reporter.task_id == "task_report_v3"
+    assert repositories.runtime_signals.list_by_session(session.session_id)
+    assert any(event["event_type"] == "agent.delegated" for event in events)
+
+
 def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
     client, foundation = _build_client(monkeypatch)
     return (
@@ -1456,137 +1584,10 @@ def _build_v3_echo_llm_client(monkeypatch) -> tuple[TestClient, RuntimeFoundatio
                     foundation=replace(
                         foundation, model_factory=FakeEchoHarnessModelFactory()
                     ),
-                    graph_builder=build_v2_supervisor_graph,
                 )
             )
         ),
         foundation,
-    )
-
-
-def _build_design_client(monkeypatch) -> tuple[TestClient, RuntimeFoundation]:
-    saver = InMemorySaver()
-
-    @contextmanager
-    def _shared_open(self: PostgresCheckpointerFactory):
-        yield saver
-
-    monkeypatch.setattr(
-        "openzyme_runtime.bootstrap.PostgresCheckpointerFactory.open",
-        _shared_open,
-    )
-
-    connection = connect_sqlite(":memory:")
-    apply_sqlite_migrations(connection)
-    repositories = PhaseBRepositories.from_connection(connection)
-    repositories.projects.save(Project.create("proj_001", "Thermostability project"))
-    repositories.episodes.save(
-        Episode.create("ep_design", "proj_001", "Design a thermostable variant")
-    )
-    repositories.research_summaries.save(
-        ResearchSummaryRecord(
-            episode_id="ep_design",
-            summary="Literature supports two promising scaffold directions.",
-            created_at="2026-04-11T12:00:00+00:00",
-            updated_at="2026-04-11T12:00:00+00:00",
-        )
-    )
-    repositories.evidence_records.save(
-        EvidenceRecord(
-            evidence_id="ev_001",
-            episode_id="ep_design",
-            summary="Scaffold A is supported by thermostability evidence.",
-            query="scaffold A evidence",
-            created_at="2026-04-11T12:01:00+00:00",
-        )
-    )
-    repositories.evidence_records.save(
-        EvidenceRecord(
-            evidence_id="ev_002",
-            episode_id="ep_design",
-            summary="Scaffold B has structure-backed homolog support.",
-            query="scaffold B evidence",
-            created_at="2026-04-11T12:02:00+00:00",
-        )
-    )
-    repositories.artifact_records.save(
-        ArtifactRecord(
-            artifact_id="art_design_structure",
-            episode_id="ep_design",
-            kind=ArtifactKind.STRUCTURE,
-            storage_uri="/tmp/design_input_structure.pdb",
-            created_at="2026-04-11T12:03:00+00:00",
-            title="Design input structure",
-            tags=("input", "structure"),
-            availability={"local_readable": True, "execution_input": True},
-            provenance={"source_type": "imported"},
-        )
-    )
-    foundation = RuntimeFoundation(
-        repositories=repositories,
-        checkpointer_factory=PostgresCheckpointerFactory(
-            PostgresCheckpointerConfig(conn_string="postgresql://phase-c/design")
-        ),
-        execution_adapter=FakeExecutionAdapter(),
-        hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
-        hpc_execution_registry=DefaultHpcExecutionRegistry(
-            RepoBackedHpcCatalogProvider()
-        ),
-    )
-    runtime = GraphRuntimeFacade(foundation)
-    with runtime.compile_graph(build_phase_c_design_graph) as graph:
-        graph.invoke(
-            {
-                "episode_id": "ep_design",
-                "project_id": "proj_001",
-                "objective": "Design a thermostable variant",
-            },
-            runtime.build_episode_graph_config("ep_design"),
-        )
-    return (
-        TestClient(
-            create_app(
-                HostApiDependencies(
-                    foundation=foundation,
-                    graph_builder=build_phase_c_design_graph,
-                )
-            )
-        ),
-        foundation,
-    )
-
-
-def test_create_episode_projects_workspace_and_pending_actions(monkeypatch) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    response = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Improve thermostability"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["workspace"]["workflow"]["current_phase"] == "execution"
-    assert payload["workspace"]["workflow"]["pending_interrupt"]["type"] == "approval"
-    assert payload["workspace"]["pending_actions"][0]["status"] == "pending"
-    assert payload["workspace"]["workflow"]["summary"]["evidence_count"] == 2
-    assert len(payload["workspace"]["research"]["turns"]) >= 1
-    assert payload["workspace"]["workflow"]["summary"]["artifact_count"] >= 1
-    assert {event["event_type"] for event in payload["events"]} >= {
-        "workflow.phase_changed",
-        "workflow.progress_updated",
-        "workflow.interrupt_pending",
-        "workflow.approval_pending",
-        "workflow.evidence_updated",
-        "workflow.research_turn_recorded",
-        "workflow.design_workspace_updated",
-    }
-
-    episode_id = payload["episode_id"]
-    workspace = client.get(f"/episodes/{episode_id}/workspace")
-    assert workspace.status_code == 200
-    assert workspace.json()["workflow"]["pending_approval"]["approval_id"].startswith(
-        f"{episode_id}-execution-approval-"
     )
 
 
@@ -1736,7 +1737,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         json={
             "session_id": "sess_v3_engines",
             "project_id": "proj_001",
-            "objective": "Evaluate a thermostability candidate",
+            "objective": "Evaluate a thermostability candidate and publish the final report",
         },
     )
     assert created.status_code == 200
@@ -1905,6 +1906,17 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         resolved_payload["workspace"]["capabilities"]["execution"][0]["status"]
         == "succeeded"
     )
+    reporting_item = next(
+        item
+        for item in resolved_payload["workspace"]["task_board"]["items"]
+        if item["task"]["task_id"] == "task_report_v3"
+    )
+    assert reporting_item["task"]["kind"] == "reporting"
+    assert reporting_item["task"]["status"] == "todo"
+    assert any(
+        agent["agent"]["role"] == "reporter"
+        for agent in resolved_payload["workspace"]["delegation"]["agents"]
+    )
     assert resolved_payload["workspace"]["artifacts"]
     assert len(resolved_payload["outputs"]) == 1
     assert "fpocket found" in resolved_payload["outputs"][0]
@@ -1931,27 +1943,6 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         agent["agent"]["status"] == "idle"
         for agent in resolved_payload["workspace"]["delegation"]["agents"]
     )
-
-    reporting_task = client.post(
-        "/v3/tasks",
-        json={
-            "session_id": "sess_v3_engines",
-            "task_id": "task_report_v3",
-            "subject": "Summarize workspace",
-            "description": "Produce a concise report for the completed V3 workspace.",
-            "kind": "reporting",
-            "lane_id": "lane_v3_engines",
-        },
-    )
-    assert reporting_task.status_code == 200
-    report = client.post(
-        "/v3/sessions/sess_v3_engines/messages",
-        json={"message": "Create the report.", "task_id": "task_report_v3"},
-    )
-    assert report.status_code == 200
-    report_payload = report.json()
-    assert report_payload["status"] == "completed"
-    assert report_payload["outputs"] == ["Delegated reporting task task_report_v3."]
 
     report_drain = client.post(
         "/v3/sessions/sess_v3_engines/runtime/drain",
@@ -2021,7 +2012,6 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
                 foundation=replace(
                     foundation, model_factory=DebugRecordingModelFactory()
                 ),
-                graph_builder=build_v2_supervisor_graph,
             )
         )
     )
@@ -2130,219 +2120,3 @@ def test_v3_message_ingress_returns_service_unavailable_without_model_factory(
     )
     assert message.status_code == 503
     assert "requires a configured model_factory" in message.json()["detail"]
-
-
-def test_resolve_approval_advances_episode_and_exposes_runs_and_artifacts(
-    monkeypatch,
-) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Improve thermostability"},
-    ).json()
-    episode_id = created["episode_id"]
-    first_payload = _resolve_next_approval(client, episode_id)
-    assert first_payload["workspace"]["workflow"]["episode_status"] == "completed"
-    assert first_payload["workspace"]["workflow"]["current_phase"] == "report_review"
-    assert first_payload["workspace"]["pending_actions"] == []
-    assert len(first_payload["workspace"]["design"]["artifacts"]) >= 1
-    assert {event["event_type"] for event in first_payload["events"]} >= {
-        "workflow.phase_changed",
-        "workflow.summary_updated",
-        "workflow.run_status_changed",
-        "workflow.report_available",
-    }
-    payload = first_payload
-    assert payload["workspace"]["workflow"]["episode_status"] == "completed"
-    assert payload["workspace"]["workflow"]["current_phase"] == "report_review"
-    assert payload["workspace"]["pending_actions"] == []
-    assert len(payload["workspace"]["runs"]) == 1
-    assert len(payload["workspace"]["artifacts"]) >= 3
-    assert payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
-    assert {event["event_type"] for event in payload["events"]} >= {
-        "workflow.progress_updated",
-        "workflow.run_status_changed",
-        "workflow.artifact_available",
-        "workflow.report_available",
-    }
-
-    runs = client.get(f"/episodes/{episode_id}/runs")
-    artifacts = client.get(f"/episodes/{episode_id}/artifacts")
-    reports = client.get(f"/episodes/{episode_id}/reports")
-    pending = client.get(f"/episodes/{episode_id}/pending-actions")
-    assert runs.json()[0]["status"] == "succeeded"
-    assert len(artifacts.json()) >= 3
-    assert reports.json()[0]["artifact_id"] == f"{episode_id}-report-artifact"
-    assert pending.json() == []
-
-
-def test_resume_and_stream_endpoint_emit_projected_host_events(monkeypatch) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Improve thermostability"},
-    ).json()
-    episode_id = created["episode_id"]
-
-    resumed = client.post(
-        "/commands/resume_episode",
-        json={
-            "episode_id": episode_id,
-            "resume_payload": {"approved": True},
-        },
-    )
-    assert resumed.status_code == 200
-
-    stream_response = client.get(f"/episodes/{episode_id}/stream")
-    assert stream_response.status_code == 200
-    lines = [
-        line for line in stream_response.text.splitlines() if line.startswith("data: ")
-    ]
-    events = [json.loads(line[6:]) for line in lines]
-    event_types = {event["event_type"] for event in events}
-
-    assert "workflow.phase_changed" in event_types
-    assert "workflow.progress_updated" in event_types
-    assert "workflow.run_status_changed" in event_types
-    assert "workflow.artifact_available" in event_types
-    assert "workflow.report_available" in event_types
-
-
-def test_workspace_queries_return_canonical_research_outputs(monkeypatch) -> None:
-    client, foundation = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={
-            "project_id": "proj_001",
-            "objective": "Research thermostability evidence",
-        },
-    ).json()
-    episode_id = created["episode_id"]
-
-    foundation.repositories.evidence_records.save(
-        EvidenceRecord(
-            evidence_id="ev_001",
-            episode_id=episode_id,
-            summary="A homolog family remains active above 60C.",
-            query="thermostable homolog catalase",
-            confidence_label="high",
-            created_at="2026-04-11T12:00:00+00:00",
-        )
-    )
-    foundation.repositories.source_refs.save(
-        SourceRef(
-            source_ref_id="src_001",
-            evidence_id="ev_001",
-            episode_id=episode_id,
-            title="Thermostable catalase paper",
-            locator="https://example.org/paper",
-            kind=SourceRefKind.PAPER,
-            created_at="2026-04-11T12:01:00+00:00",
-        )
-    )
-    foundation.repositories.research_summaries.save(
-        ResearchSummaryRecord(
-            episode_id=episode_id,
-            summary="Public literature indicates one promising stable scaffold family.",
-            created_at="2026-04-11T12:02:00+00:00",
-            updated_at="2026-04-11T12:02:00+00:00",
-        )
-    )
-    foundation.repositories.unresolved_gaps.save(
-        UnresolvedGapRecord(
-            gap_id="gap_001",
-            episode_id=episode_id,
-            summary="Missing structure-backed comparison for top hits.",
-            created_at="2026-04-11T12:03:00+00:00",
-        )
-    )
-
-    workspace = client.get(f"/episodes/{episode_id}/workspace")
-
-    assert workspace.status_code == 200
-    research = workspace.json()["research"]
-    assert research["summary"]["summary"].startswith("Public literature indicates")
-    assert research["evidence"][0]["query"] == "thermostable homolog catalase"
-    assert research["evidence"][0]["source_refs"][0]["kind"] == "paper"
-    assert research["unresolved_gaps"][0]["summary"].startswith(
-        "Missing structure-backed"
-    )
-
-
-def test_unified_supervisor_resumes_design_then_execution_on_one_episode_thread(
-    monkeypatch,
-) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={
-            "project_id": "proj_001",
-            "objective": "Research thermostability evidence",
-        },
-    ).json()
-    episode_id = created["episode_id"]
-    assert created["workspace"]["workflow"]["current_phase"] == "execution"
-
-    design_payload = _resolve_next_approval(client, episode_id)
-    assert design_payload["workspace"]["workflow"]["current_phase"] == "report_review"
-    assert design_payload["workspace"]["pending_actions"] == []
-    assert design_payload["workspace"]["runs"][0]["episode_id"] == episode_id
-    assert design_payload["workspace"]["report"]["report_id"] == f"{episode_id}-report"
-
-
-def test_design_review_resume_uses_existing_host_command_path(monkeypatch) -> None:
-    client, _ = _build_design_client(monkeypatch)
-
-    created = client.get("/episodes/ep_design/workspace")
-    assert created.json()["workflow"]["summary"]["artifact_count"] >= 1
-    assert created.json()["workflow"]["current_phase"] == "design"
-    assert created.json()["pending_actions"] == []
-    assert len(created.json()["design"]["artifacts"]) >= 1
-    assert "artifact_workspace_summary" in created.json()["design"]
-
-
-def test_report_query_and_projection_become_available_after_supervisor_completion(
-    monkeypatch,
-) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Improve thermostability"},
-    ).json()
-    episode_id = created["episode_id"]
-    design_resume = _resolve_next_approval(client, episode_id)
-
-    workspace = design_resume["workspace"]
-    report = workspace["report"]
-    assert report["summary"].startswith("Objective")
-    assert report["stage_summary"].startswith("Research summary:")
-
-    query = client.get(f"/episodes/{episode_id}/reports")
-    assert query.status_code == 200
-    assert query.json()[0]["report_id"] == report["report_id"]
-
-
-def test_project_and_episode_queries_support_browser_shell_bootstrap(
-    monkeypatch,
-) -> None:
-    client, _ = _build_client(monkeypatch)
-
-    created = client.post(
-        "/commands/create_episode",
-        json={"project_id": "proj_001", "objective": "Bootstrap shell workspace"},
-    ).json()
-
-    projects = client.get("/projects")
-    episodes = client.get("/projects/proj_001/episodes")
-
-    assert projects.status_code == 200
-    assert projects.json()[0]["project_id"] == "proj_001"
-    assert episodes.status_code == 200
-    assert {episode["episode_id"] for episode in episodes.json()} >= {
-        created["episode_id"]
-    }

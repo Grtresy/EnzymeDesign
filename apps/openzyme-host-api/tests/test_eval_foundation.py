@@ -21,5 +21,6 @@ def test_local_eval_runtime_is_repeatable_with_fresh_sqlite_paths(tmp_path) -> N
     first = build_local_eval_runtime(tmp_path / "first.sqlite3")
     second = build_local_eval_runtime(tmp_path / "second.sqlite3")
 
-    assert first.repositories.projects.get("proj_001") is not None
-    assert second.repositories.projects.get("proj_001") is not None
+    assert first.execution_adapter is not second.execution_adapter
+    assert first.research_adapter is not second.research_adapter
+    assert first.model_factory is not second.model_factory

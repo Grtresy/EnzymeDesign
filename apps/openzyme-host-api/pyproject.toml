@@ -1,7 +1,7 @@
 [project]
 name = "openzyme-host-api"
 version = "0.1.0"
-description = "V2 Host API app and contracts for OpenZyme"
+description = "V3 Host API app for OpenZyme"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,10 +12,8 @@ dependencies = [
   "openzyme-domain",
   "openzyme-engines",
   "openzyme-execution",
-  "openzyme-graph",
   "openzyme-research[tavily]",
   "openzyme-runtime",
-  "openzyme-storage",
   "openzyme-tools",
   "uvicorn>=0.30,<1.0",
 ]

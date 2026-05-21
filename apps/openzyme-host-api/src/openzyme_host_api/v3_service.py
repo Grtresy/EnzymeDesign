@@ -34,6 +34,7 @@ from openzyme_core import run_agent_harness_loop
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
@@ -382,6 +383,8 @@ class V3HostApiService:
             followup = self._run_master_followup_after_teammates(
                 session_id, events, outcomes
             )
+        self._ensure_execution_task_after_teammates(session_id, events, outcomes)
+        self._ensure_reporting_task_after_teammates(session_id, events, outcomes)
         has_pending_approval = bool(
             self.repositories.approvals.list_pending_by_session(session_id)
         )
@@ -511,6 +514,365 @@ class V3HostApiService:
                 ],
             )
         return result
+
+    def _ensure_reporting_task_after_teammates(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+        outcomes: list[dict[str, Any]],
+    ) -> None:
+        terminal = self._terminal_teammate_outcomes(outcomes)
+        if not terminal or self._outcomes_include_failure(outcomes):
+            return
+        if self.repositories.reports.list_by_session(session_id):
+            return
+        if not self._session_requested_report(session_id):
+            return
+        open_non_report_tasks = [
+            task
+            for task in self.repositories.tasks.list_by_session(session_id)
+            if task.kind not in {"reporting", "report"}
+            and task.status is not TaskStatus.COMPLETED
+            and not task.status.is_terminal
+        ]
+        if open_non_report_tasks:
+            return
+        existing_report_tasks = [
+            task
+            for task in self.repositories.tasks.list_by_session(session_id)
+            if task.kind in {"reporting", "report"}
+        ]
+        if existing_report_tasks:
+            self._delegate_existing_reporting_task_if_ready(
+                session_id, events, existing_report_tasks
+            )
+            return
+        source_task_ids: list[str] = []
+        lane_id = None
+        for outcome in terminal:
+            task = outcome.get("task")
+            if not isinstance(task, dict):
+                continue
+            task_id = task.get("task_id")
+            if task_id is None:
+                continue
+            current = self.repositories.tasks.get(str(task_id))
+            if current is None or current.kind in {"reporting", "report"}:
+                continue
+            if current.status is not TaskStatus.COMPLETED:
+                continue
+            source_task_ids.append(current.task_id)
+            lane_id = lane_id or current.lane_id
+        if not source_task_ids:
+            return
+        has_execution_evidence = any(
+            (self.repositories.tasks.get(task_id) is not None)
+            and self.repositories.tasks.get(task_id).kind == "execution"
+            for task_id in source_task_ids
+        ) or bool(self.repositories.runs.list_by_session(session_id))
+        if not has_execution_evidence:
+            return
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            events.append(_event(event_type, session_id, payload))
+
+        task_id = self._next_reporting_task_id(session_id)
+        report_task = TaskBoardService(
+            self.repositories,
+            event_emitter=emit,
+        ).create_task(
+            session_id=session_id,
+            task_id=task_id,
+            subject="Publish final report",
+            description=(
+                "Produce and publish the final V3 report from the completed "
+                "workspace tasks, evidence, runs, artifacts, and unresolved gaps."
+            ),
+            priority=TaskPriority.HIGH,
+            kind="reporting",
+            status=TaskStatus.TODO,
+            lane_id=lane_id,
+            blocked_by=tuple(source_task_ids),
+        )
+        protocol = ProtocolService(self.repositories, event_emitter=emit)
+        payload_ref = protocol.persist_payload(
+            session_id=session_id,
+            document_kind="delegation_request",
+            payload={
+                "task_id": report_task.task_id,
+                "instructions": report_task.description,
+                "role": "reporter",
+                "agent_id": "agent:reporter",
+                "source_task_ids": source_task_ids,
+            },
+        )
+        protocol.delegate(
+            session_id=session_id,
+            agent_id="agent:reporter",
+            name="reporter",
+            role="reporter",
+            payload_ref=payload_ref,
+            task_id=report_task.task_id,
+            lane_id=report_task.lane_id,
+            correlation_id=_new_id("corr"),
+        )
+
+    def _delegate_existing_reporting_task_if_ready(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+        report_tasks: list[Any],
+    ) -> None:
+        task_service = TaskBoardService(self.repositories)
+        candidates = [
+            task
+            for task in report_tasks
+            if task.status in {TaskStatus.TODO, TaskStatus.IN_PROGRESS}
+            and (task.assigned_ref is None or task.assigned_ref in {"reporter", "agent:reporter"})
+            and not task_service.open_blocker_ids(task)
+        ]
+        if not candidates:
+            return
+        task = sorted(candidates, key=lambda item: (item.created_at, item.task_id))[0]
+        if any(
+            agent.role == "reporter" and agent.task_id == task.task_id
+            for agent in self.repositories.agents.list_by_session(session_id)
+        ):
+            return
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            events.append(_event(event_type, session_id, payload))
+
+        protocol = ProtocolService(self.repositories, event_emitter=emit)
+        payload_ref = protocol.persist_payload(
+            session_id=session_id,
+            document_kind="delegation_request",
+            payload={
+                "task_id": task.task_id,
+                "instructions": task.description or task.subject,
+                "role": "reporter",
+                "agent_id": "agent:reporter",
+                "source": "host_service_reporting_followup",
+            },
+        )
+        protocol.delegate(
+            session_id=session_id,
+            agent_id="agent:reporter",
+            name="reporter",
+            role="reporter",
+            payload_ref=payload_ref,
+            task_id=task.task_id,
+            lane_id=task.lane_id,
+            correlation_id=_new_id("corr"),
+        )
+
+    def _ensure_execution_task_after_teammates(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+        outcomes: list[dict[str, Any]],
+    ) -> None:
+        terminal = self._terminal_teammate_outcomes(outcomes)
+        if not terminal or self._outcomes_include_failure(outcomes):
+            return
+        if not self._session_requested_execution(session_id):
+            return
+        if self.repositories.approvals.list_pending_by_session(session_id):
+            return
+        if not self._session_has_structure_artifact(session_id):
+            return
+        if self.repositories.runs.list_by_session(session_id):
+            return
+        if any(
+            invocation.engine_name == "execution"
+            and invocation.status
+            not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED}
+            for invocation in self.repositories.invocations.list_by_session(session_id)
+        ):
+            return
+        task_service = TaskBoardService(self.repositories)
+        execution_tasks = [
+            task
+            for task in self.repositories.tasks.list_by_session(session_id)
+            if task.kind == "execution"
+        ]
+        candidates = [
+            task
+            for task in execution_tasks
+            if (task.assigned_ref is None or task.assigned_ref in {"executor", "agent:executor"})
+            and task.status in {TaskStatus.TODO, TaskStatus.IN_PROGRESS}
+            and not task_service.open_blocker_ids(task)
+        ]
+        if candidates:
+            task = sorted(candidates, key=lambda item: (item.created_at, item.task_id))[0]
+        else:
+            if execution_tasks:
+                return
+            source_task_ids, lane_id = self._completed_source_tasks_for_execution(terminal)
+            if not source_task_ids:
+                return
+            structure_artifact = self._latest_structure_artifact(session_id)
+            if structure_artifact is None:
+                return
+
+            def create_emit(event_type: str, payload: dict[str, Any]) -> None:
+                events.append(_event(event_type, session_id, payload))
+
+            task = TaskBoardService(
+                self.repositories,
+                event_emitter=create_emit,
+            ).create_task(
+                session_id=session_id,
+                task_id=self._next_execution_task_id(session_id),
+                subject=f"Run fpocket on {structure_artifact.title or structure_artifact.artifact_id}",
+                description=(
+                    "Run the controlled execution pipeline against structure artifact "
+                    f"{structure_artifact.artifact_id}. Use artifacts.get('{structure_artifact.artifact_id}') "
+                    "and hpc.fpocket(structure_artifact_id=structure['artifact_id']). "
+                    "Include the artifact id in inputs.artifact_ids and publish results for the final report."
+                ),
+                priority=TaskPriority.HIGH,
+                kind="execution",
+                status=TaskStatus.TODO,
+                lane_id=lane_id,
+                blocked_by=tuple(source_task_ids),
+            )
+        if any(
+            agent.role == "executor" and agent.task_id == task.task_id
+            for agent in self.repositories.agents.list_by_session(session_id)
+        ):
+            return
+
+        def emit(event_type: str, payload: dict[str, Any]) -> None:
+            events.append(_event(event_type, session_id, payload))
+
+        protocol = ProtocolService(self.repositories, event_emitter=emit)
+        payload_ref = protocol.persist_payload(
+            session_id=session_id,
+            document_kind="delegation_request",
+            payload={
+                "task_id": task.task_id,
+                "instructions": task.description or task.subject,
+                "role": "executor",
+                "agent_id": "agent:executor",
+                "source": "host_service_execution_followup",
+            },
+        )
+        protocol.delegate(
+            session_id=session_id,
+            agent_id="agent:executor",
+            name="executor",
+            role="executor",
+            payload_ref=payload_ref,
+            task_id=task.task_id,
+            lane_id=task.lane_id,
+            correlation_id=_new_id("corr"),
+        )
+
+    def _completed_source_tasks_for_execution(
+        self, terminal: list[dict[str, Any]]
+    ) -> tuple[list[str], str | None]:
+        source_task_ids: list[str] = []
+        lane_id = None
+        for outcome in terminal:
+            task_payload = outcome.get("task")
+            if not isinstance(task_payload, dict):
+                continue
+            task_id = task_payload.get("task_id")
+            if task_id is None:
+                continue
+            task = self.repositories.tasks.get(str(task_id))
+            if task is None or task.kind == "execution":
+                continue
+            if task.status is not TaskStatus.COMPLETED:
+                continue
+            source_task_ids.append(task.task_id)
+            lane_id = lane_id or task.lane_id
+        return source_task_ids, lane_id
+
+    def _next_execution_task_id(self, session_id: str) -> str:
+        existing = {
+            task.task_id for task in self.repositories.tasks.list_by_session(session_id)
+        }
+        candidate = "task_execution_v3"
+        if candidate not in existing:
+            return candidate
+        while True:
+            candidate = _new_id("task_execution")
+            if candidate not in existing:
+                return candidate
+
+    def _latest_structure_artifact(self, session_id: str):
+        artifacts = [
+            artifact
+            for artifact in self.repositories.artifacts.list_by_session(session_id)
+            if artifact.kind is ArtifactKind.STRUCTURE
+        ]
+        if not artifacts:
+            return None
+        return sorted(artifacts, key=lambda item: (item.created_at, item.artifact_id))[-1]
+
+    def _next_reporting_task_id(self, session_id: str) -> str:
+        existing = {
+            task.task_id for task in self.repositories.tasks.list_by_session(session_id)
+        }
+        candidate = "task_report_v3"
+        if candidate not in existing:
+            return candidate
+        while True:
+            candidate = _new_id("task_report")
+            if candidate not in existing:
+                return candidate
+
+    def _session_requested_execution(self, session_id: str) -> bool:
+        needles = ("execution", "hpc", "fpocket", "run ")
+        session = self.repositories.sessions.get(session_id)
+        if session is not None:
+            session_text = f"{session.title}\n{session.objective}".lower()
+            if any(needle in session_text for needle in needles):
+                return True
+        for task in self.repositories.tasks.list_by_session(session_id):
+            text = f"{task.subject}\n{task.description}".lower()
+            if task.kind == "execution" or any(needle in text for needle in needles):
+                return True
+        return False
+
+    def _session_has_structure_artifact(self, session_id: str) -> bool:
+        return any(
+            artifact.kind is ArtifactKind.STRUCTURE
+            for artifact in self.repositories.artifacts.list_by_session(session_id)
+        )
+
+    def _session_requested_report(self, session_id: str) -> bool:
+        needles = ("report", "publish", "final", "报告")
+        session = self.repositories.sessions.get(session_id)
+        if session is not None:
+            session_text = f"{session.title}\n{session.objective}".lower()
+            if any(needle in session_text for needle in needles):
+                return True
+        for event in self.event_store.list(session_id):
+            payload = event.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            content = str(payload.get("content") or "")
+            lowered = content.lower()
+            if "report" in lowered or "报告" in content:
+                return True
+        for task in self.repositories.tasks.list_by_session(session_id):
+            text = f"{task.subject}\n{task.description}".lower()
+            if any(needle in text for needle in needles):
+                return True
+        for message in self.repositories.inbox.list_by_session(session_id):
+            if message.payload_ref is None:
+                continue
+            payload = self.repositories.engine_documents.get(message.payload_ref)
+            if payload is None:
+                continue
+            content = str(payload.payload.get("content") or payload.payload)
+            lowered = content.lower()
+            if "report" in lowered or "报告" in content:
+                return True
+        return False
 
     def post_message(
         self,

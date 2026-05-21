@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
-from dataclasses import dataclass
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -14,7 +13,13 @@ from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_domain import ArtifactKind
 from openzyme_domain import SessionArtifactRecord
-from openzyme_graph.supervisor import build_v2_supervisor_graph
+from openzyme_engines import EvidenceSynthesis
+from openzyme_engines import EvidenceSynthesisItem
+from openzyme_engines import ResearchBriefDraft as EngineResearchBriefDraft
+from openzyme_engines import ResearchSourceItem
+from openzyme_engines import ResearchSupervisorAction
+from openzyme_engines import ResearchUnitDraft
+from openzyme_engines import ResearchUnitPlan
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
 
@@ -23,36 +28,6 @@ from .app import create_app
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
 from .tracing import workflow_trace
-
-
-@dataclass(frozen=True, slots=True)
-class EvalScenario:
-    scenario_id: str
-    objective: str
-    decisions: tuple[str, ...]
-    expected_status: str
-    expect_report: bool
-    expected_phase: str
-
-
-SEEDED_SCENARIOS: tuple[EvalScenario, ...] = (
-    EvalScenario(
-        scenario_id="happy_path_report",
-        objective="Design a thermostable enzyme candidate with a final report",
-        decisions=("approved", "approved"),
-        expected_status="completed",
-        expect_report=True,
-        expected_phase="report_review",
-    ),
-    EvalScenario(
-        scenario_id="design_rejected",
-        objective="Design a candidate but reject the first approval gate",
-        decisions=("rejected",),
-        expected_status="interrupted",
-        expect_report=False,
-        expected_phase="execution",
-    ),
-)
 
 
 FoundationBuilder = Callable[[Path], RuntimeFoundation]
@@ -96,6 +71,23 @@ class V3LocalEvalInvoker:
     ) -> dict[str, object]:
         del tools
         self.calls += 1
+        if self.purpose == "deep_research_researcher":
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_eval_deep_research_search",
+                            "name": "web.search",
+                            "args": {
+                                "query": "thermostable glycoside hydrolase xylan substrate evidence",
+                                "topic": "enzyme design",
+                                "max_results": 3,
+                            },
+                        }
+                    ],
+                }
+            return {"content": "Source-backed enzyme design evidence collected.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:researcher":
             return self._researcher_response(system_prompt)
         if self.purpose == "v3_teammate_loop:executor":
@@ -387,10 +379,72 @@ class V3LocalEvalModelFactory:
     def __init__(self) -> None:
         self.invokers: dict[str, V3LocalEvalInvoker] = {}
 
+    def create_structured_invoker(self, *, purpose: str) -> "V3LocalEvalStructuredInvoker":
+        return V3LocalEvalStructuredInvoker(purpose)
+
     def create_tool_calling_invoker(self, *, purpose: str) -> V3LocalEvalInvoker:
         if purpose not in self.invokers:
             self.invokers[purpose] = V3LocalEvalInvoker(purpose)
         return self.invokers[purpose]
+
+
+class V3LocalEvalStructuredInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+
+    def invoke_structured(
+        self, *, schema: object, system_prompt: str, user_payload: dict[str, object]
+    ) -> object:
+        del system_prompt
+        if schema is EngineResearchBriefDraft:
+            return EngineResearchBriefDraft(
+                research_brief=(
+                    "Collect source-backed enzyme engineering evidence for thermostable "
+                    "glycoside hydrolase scaffolds and soluble xylan turnover."
+                )
+            )
+        if schema is ResearchSupervisorAction:
+            if user_payload.get("unit_results"):
+                return ResearchSupervisorAction(
+                    action_kind="complete",
+                    rationale="The eval research unit returned usable source-backed findings.",
+                )
+            return ResearchSupervisorAction(
+                action_kind="conduct_research",
+                rationale="Collect one focused source-backed evidence unit.",
+                unit_plan=ResearchUnitPlan(
+                    units=[
+                        ResearchUnitDraft(
+                            unit_id="eval_evidence",
+                            topic="enzyme design evidence",
+                            query="thermostable glycoside hydrolase xylan substrate evidence",
+                            rationale="Support downstream execution and reporting.",
+                        )
+                    ],
+                    synthesis_goal="Summarize evidence for the V3 eval design path.",
+                ),
+            )
+        if schema is EvidenceSynthesis:
+            return EvidenceSynthesis(
+                summary="Source-backed enzyme design evidence supports the V3 eval scaffold path.",
+                evidence_items=[
+                    EvidenceSynthesisItem(
+                        summary="Thermostable glycoside hydrolase evidence supports the scaffold direction.",
+                        query="thermostable glycoside hydrolase xylan substrate evidence",
+                        confidence_label="high",
+                        sources=[
+                            ResearchSourceItem(
+                                title="Deterministic enzyme design source",
+                                locator="https://example.org/eval-enzyme-design",
+                                kind="web_page",
+                                snippet="Thermostable scaffold evidence with xylan turnover context.",
+                            )
+                        ],
+                    )
+                ],
+                unresolved_gaps=["Wet-lab validation remains outside the local eval."],
+            )
+        raise AssertionError(f"Unhandled eval structured schema {schema!r}")
 
 
 def build_local_eval_runtime(sqlite_db_path: Path) -> RuntimeFoundation:
@@ -441,124 +495,6 @@ def seed_v3_eval_execution_artifact(
     )
 
 
-def _run_scenario(
-    scenario: EvalScenario,
-    *,
-    foundation_builder: FoundationBuilder,
-) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="openzyme-eval-") as temp_dir:
-        foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
-        app = create_app(
-            HostApiDependencies(
-                foundation=foundation,
-                graph_builder=build_v2_supervisor_graph,
-            )
-        )
-        with TestClient(app) as client:
-            created = client.post(
-                "/commands/create_episode",
-                json={"project_id": "proj_001", "objective": scenario.objective},
-            )
-            created.raise_for_status()
-            payload = created.json()
-            episode_id = payload["episode_id"]
-
-            for decision in scenario.decisions:
-                workspace_response = client.get(f"/episodes/{episode_id}/workspace")
-                workspace_response.raise_for_status()
-                workspace = workspace_response.json()
-                if workspace["workflow"]["status"] in {"completed", "failed"}:
-                    break
-                pending = client.get(f"/episodes/{episode_id}/pending-actions")
-                pending.raise_for_status()
-                pending_actions = pending.json()
-                if not pending_actions:
-                    break
-                resolved = client.post(
-                    "/commands/resolve_approval",
-                    json={
-                        "episode_id": episode_id,
-                        "approval_id": pending_actions[0]["approval_id"],
-                        "decision": decision,
-                    },
-                )
-                resolved.raise_for_status()
-
-            workspace_response = client.get(f"/episodes/{episode_id}/workspace")
-            workspace_response.raise_for_status()
-            reports_response = client.get(f"/episodes/{episode_id}/reports")
-            reports_response.raise_for_status()
-            workspace = workspace_response.json()
-            reports = reports_response.json()
-
-    workflow = workspace["workflow"]
-    summary = workflow["summary"]
-    checks = {
-        "workflow_status": workflow["status"] == scenario.expected_status,
-        "phase": workflow["current_phase"] == scenario.expected_phase,
-        "report_presence": (len(reports) > 0) is scenario.expect_report,
-        "report_summary": (not scenario.expect_report)
-        or bool(workspace["report"] and workspace["report"]["summary"]),
-        "artifact_workspace": summary["artifact_count"]
-        >= summary["focused_artifact_count"],
-    }
-    return {
-        "scenario_id": scenario.scenario_id,
-        "episode_id": workspace["episode_id"],
-        "workflow_status": workflow["status"],
-        "phase": workflow["current_phase"],
-        "report_count": len(reports),
-        "checks": checks,
-        "passed": all(checks.values()),
-    }
-
-
-def run_workflow_evals(
-    *,
-    foundation_builder: FoundationBuilder,
-    upload_results: bool = False,
-) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
-    for scenario in SEEDED_SCENARIOS:
-        with workflow_trace(
-            "openzyme.local_eval_scenario",
-            action="local_eval",
-            project_id="proj_001",
-            phase="evaluation",
-            inputs={
-                "scenario_id": scenario.scenario_id,
-                "objective": scenario.objective,
-            },
-            enabled=upload_results,
-        ) as run:
-            result = _run_scenario(scenario, foundation_builder=foundation_builder)
-            if run is not None:
-                run.end(outputs=result)
-            results.append(result)
-    passed = sum(1 for result in results if result["passed"])
-    return {
-        "scenario_count": len(results),
-        "passed": passed,
-        "failed": len(results) - passed,
-        "upload_results": upload_results,
-        "results": results,
-    }
-
-
-def run_local_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
-    return run_workflow_evals(
-        foundation_builder=build_local_eval_runtime,
-        upload_results=upload_results,
-    )
-
-
-def run_live_workflow_evals(*, upload_results: bool = False) -> dict[str, Any]:
-    return run_workflow_evals(
-        foundation_builder=build_live_eval_foundation,
-        upload_results=upload_results,
-    )
-
-
 def _run_v3_design_cutover_scenario(
     *,
     foundation_builder: FoundationBuilder,
@@ -578,7 +514,6 @@ def _run_v3_design_cutover_scenario(
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
-                graph_builder=build_v2_supervisor_graph,
                 v3_repositories=v3_repositories,
             )
         )
@@ -642,14 +577,6 @@ def _run_v3_design_cutover_scenario(
                     )
                     approval_drain.raise_for_status()
 
-                report_turn = client.post(
-                    "/v3/sessions/sess_eval_v3_cutover/messages",
-                    json={
-                        "message": "Create and publish the final V3 report draft.",
-                        "max_steps": 8,
-                    },
-                )
-                report_turn.raise_for_status()
                 report_drain = client.post(
                     "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
                     json={
@@ -738,7 +665,6 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
-                graph_builder=build_v2_supervisor_graph,
                 v3_repositories=build_v3_eval_repositories(),
             )
         )
@@ -820,12 +746,7 @@ def run_v3_live_evals(*, upload_results: bool = False) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run local OpenZyme routed workflow evals"
-    )
-    parser.add_argument(
-        "--v3",
-        action="store_true",
-        help="Run V3 cutover evals instead of the legacy V2 seeded workflow evals",
+        description="Run OpenZyme V3 workflow evals"
     )
     parser.add_argument(
         "--live",
@@ -838,18 +759,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Enable LangSmith trace upload for eval scenario runs",
     )
     args = parser.parse_args(argv)
-    if args.v3:
-        summary = (
-            run_v3_live_evals(upload_results=args.upload_results)
-            if args.live
-            else run_v3_local_evals(upload_results=args.upload_results)
-        )
-    else:
-        summary = (
-            run_live_workflow_evals(upload_results=args.upload_results)
-            if args.live
-            else run_local_workflow_evals(upload_results=args.upload_results)
-        )
+    summary = (
+        run_v3_live_evals(upload_results=args.upload_results)
+        if args.live
+        else run_v3_local_evals(upload_results=args.upload_results)
+    )
     print(summary)
     return 0 if summary["failed"] == 0 else 1
 

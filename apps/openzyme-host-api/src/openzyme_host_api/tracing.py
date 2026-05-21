@@ -22,7 +22,7 @@ def build_trace_tags(
     *,
     action: str,
     project_id: str | None = None,
-    episode_id: str | None = None,
+    session_id: str | None = None,
     phase: str | None = None,
     approval_id: str | None = None,
     report_id: str | None = None,
@@ -30,8 +30,8 @@ def build_trace_tags(
     tags = [f"action:{action}"]
     if project_id:
         tags.append(f"project:{project_id}")
-    if episode_id:
-        tags.append(f"episode:{episode_id}")
+    if session_id:
+        tags.append(f"session:{session_id}")
     if phase:
         tags.append(f"phase:{phase}")
     if approval_id:
@@ -45,7 +45,7 @@ def build_trace_metadata(
     *,
     action: str,
     project_id: str | None = None,
-    episode_id: str | None = None,
+    session_id: str | None = None,
     phase: str | None = None,
     approval_id: str | None = None,
     report_id: str | None = None,
@@ -55,8 +55,8 @@ def build_trace_metadata(
     metadata: dict[str, Any] = {"action": action}
     if project_id is not None:
         metadata["project_id"] = project_id
-    if episode_id is not None:
-        metadata["episode_id"] = episode_id
+    if session_id is not None:
+        metadata["session_id"] = session_id
     if phase is not None:
         metadata["phase"] = phase
     if approval_id is not None:
@@ -95,7 +95,7 @@ def workflow_trace(
     action: str,
     inputs: dict[str, Any] | None = None,
     project_id: str | None = None,
-    episode_id: str | None = None,
+    session_id: str | None = None,
     phase: str | None = None,
     approval_id: str | None = None,
     report_id: str | None = None,
@@ -114,7 +114,7 @@ def workflow_trace(
         tags=build_trace_tags(
             action=action,
             project_id=project_id,
-            episode_id=episode_id,
+            session_id=session_id,
             phase=phase,
             approval_id=approval_id,
             report_id=report_id,
@@ -122,7 +122,7 @@ def workflow_trace(
         metadata=build_trace_metadata(
             action=action,
             project_id=project_id,
-            episode_id=episode_id,
+            session_id=session_id,
             phase=phase,
             approval_id=approval_id,
             report_id=report_id,

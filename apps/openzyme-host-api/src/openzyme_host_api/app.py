@@ -16,17 +16,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from openzyme_graph.supervisor import build_v2_supervisor_graph
 from openzyme_runtime import MissingLlmConfigurationError
-from openzyme_runtime import GraphRuntimeFacade
 from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
 
-from .projections import HostProjectionLoader
-from .projections import WorkflowEventProjector
-from .service import HostApiService
 from .tracing import host_request_trace_context
 from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
@@ -44,25 +39,6 @@ from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
-
-
-GraphBuilder = Callable[[Any], Any]
-
-
-class CreateEpisodeRequest(BaseModel):
-    project_id: str
-    objective: str
-
-
-class ResumeEpisodeRequest(BaseModel):
-    episode_id: str
-    resume_payload: Any
-
-
-class ResolveApprovalRequest(BaseModel):
-    episode_id: str
-    approval_id: str
-    decision: str
 
 
 class CreateV3SessionRequest(BaseModel):
@@ -213,10 +189,14 @@ class V3ExecutionRunnerAdapter:
             )
         return V3ExecutionOutcome(
             run_id=run_id,
-            status=RunStatus.CANCELLED,
+            status=RunStatus.FAILED,
             execution_mode="unknown",
             remote_run_dir=remote_run_dir,
-            raw_result={"status": "cancelled"},
+            raw_result={
+                "status": "unsupported",
+                "error_code": "cancel_execution_unsupported",
+                "error": "execution adapter does not expose cancel",
+            },
             artifacts=(),
             job_id=job_id,
         )
@@ -252,31 +232,10 @@ class V3ExecutionRunnerAdapter:
 @dataclass(frozen=True, slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
-    graph_builder: GraphBuilder = build_v2_supervisor_graph
     v3_repositories: CoreRepositories = field(
         default_factory=_build_default_v3_repositories
     )
     v3_event_store: V3EventStore = field(default_factory=V3EventStore)
-
-    def build_runtime(self) -> GraphRuntimeFacade:
-        return GraphRuntimeFacade(self.foundation)
-
-    def build_projection_loader(self) -> HostProjectionLoader:
-        return HostProjectionLoader(
-            runtime=self.build_runtime(),
-            graph_builder=self.graph_builder,
-        )
-
-    def build_service(self) -> HostApiService:
-        runtime = self.build_runtime()
-        return HostApiService(
-            runtime=runtime,
-            projection_loader=HostProjectionLoader(
-                runtime=runtime, graph_builder=self.graph_builder
-            ),
-            event_projector=WorkflowEventProjector(),
-            graph_builder=self.graph_builder,
-        )
 
     def build_v3_service(self) -> V3HostApiService:
         return V3HostApiService(
@@ -341,143 +300,6 @@ def create_app(
     async def add_trace_context(request, call_next):  # type: ignore[no-untyped-def]
         with host_request_trace_context(method=request.method, path=request.url.path):
             return await call_next(request)
-
-    @app.get("/episodes/{episode_id}/workspace")
-    def get_episode_workspace(episode_id: str) -> dict[str, Any]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.load_episode_workspace(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/episodes/{episode_id}/workflow")
-    def get_episode_workflow(episode_id: str) -> dict[str, Any]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.load_workflow_projection(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/episodes/{episode_id}/pending-actions")
-    def get_pending_actions(episode_id: str) -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.load_pending_actions(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/episodes/{episode_id}/runs")
-    def get_runs(episode_id: str) -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.load_run_projection(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/episodes/{episode_id}/artifacts")
-    def get_artifacts(episode_id: str) -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.load_artifact_projection(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/episodes/{episode_id}/reports")
-    def get_reports(episode_id: str) -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            report = loader.load_report_projection(episode_id)
-            return [] if report is None else [report]
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/projects")
-    def get_projects() -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.list_projects()
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.get("/projects/{project_id}/episodes")
-    def get_project_episodes(project_id: str) -> list[dict[str, Any]]:
-        loader = dependencies.build_projection_loader()
-        try:
-            return loader.list_project_episodes(project_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-    @app.post("/commands/create_episode")
-    def create_episode(request: CreateEpisodeRequest) -> dict[str, Any]:
-        service = dependencies.build_service()
-        try:
-            with llm_debug_context(request_path="/commands/create_episode"):
-                result = service.create_episode(request.project_id, request.objective)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-        return {
-            "episode_id": result.workspace["episode_id"],
-            "workspace": result.workspace,
-            "events": result.events,
-        }
-
-    @app.post("/commands/resume_episode")
-    def resume_episode(request: ResumeEpisodeRequest) -> dict[str, Any]:
-        service = dependencies.build_service()
-        try:
-            with llm_debug_context(
-                request_path="/commands/resume_episode",
-                episode_id=request.episode_id,
-            ):
-                result = service.resume_episode(
-                    request.episode_id, request.resume_payload
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-        return {
-            "episode_id": result.workspace["episode_id"],
-            "workspace": result.workspace,
-            "events": result.events,
-        }
-
-    @app.post("/commands/resolve_approval")
-    def resolve_approval(request: ResolveApprovalRequest) -> dict[str, Any]:
-        service = dependencies.build_service()
-        try:
-            with llm_debug_context(
-                request_path="/commands/resolve_approval",
-                episode_id=request.episode_id,
-            ):
-                result = service.resolve_approval(
-                    request.episode_id,
-                    request.approval_id,
-                    request.decision,
-                )
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-        return {
-            "episode_id": result.workspace["episode_id"],
-            "workspace": result.workspace,
-            "events": result.events,
-        }
-
-    @app.get("/episodes/{episode_id}/stream")
-    def stream_episode_events(
-        episode_id: str, replay: bool = True
-    ) -> StreamingResponse:
-        loader = dependencies.build_projection_loader()
-        projector = WorkflowEventProjector()
-        try:
-            workspace = loader.load_episode_workspace(episode_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
-
-        def event_stream() -> Any:
-            if replay:
-                for event in projector.project_snapshot_events(workspace):
-                    yield _sse_encode(event)
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/v3/sessions")
     def create_v3_session(request: CreateV3SessionRequest) -> dict[str, Any]:
@@ -670,7 +492,6 @@ def create_app(
         kind: str | None = None,
         status: str | None = None,
         session_id: str | None = None,
-        episode_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return get_llm_debug_recorder().list_records(
             limit=limit,
@@ -678,7 +499,6 @@ def create_app(
             kind=kind,
             status=status,
             session_id=session_id,
-            episode_id=episode_id,
         )
 
     @app.get("/debug/llm-calls/{debug_id}")
