@@ -9,7 +9,6 @@ from openzyme_runtime import get_settings
 class HostCliConfig:
     base_url: str = DEFAULT_HOST_BASE_URL
     project_id: str | None = None
-    episode_id: str | None = None
     output_format: str = "text"
 
     @classmethod
@@ -18,6 +17,5 @@ class HostCliConfig:
         return cls(
             base_url=settings.host_cli.base_url,
             project_id=settings.host_cli.project_id,
-            episode_id=settings.host_cli.episode_id,
             output_format=settings.host_cli.output_format,
         )

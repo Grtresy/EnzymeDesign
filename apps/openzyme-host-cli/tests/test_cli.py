@@ -14,49 +14,18 @@ class FakeSession:
         self.calls.append(("GET", url, None))
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
             return FakeResponse(200, build_v3_workspace())
-        return FakeResponse(
-            200,
-            [{"project_id": "proj_001", "name": "Demo project"}] if url == "/projects" else [],
-        )
+        return FakeResponse(200, [])
 
     def post(self, url: str, **kwargs):
         self.calls.append(("POST", url, kwargs.get("json")))
-        if url.startswith("/v3/"):
-            return FakeResponse(
-                200,
-                {
-                    "session_id": "sess_001",
-                    "status": "completed",
-                    "outputs": ["Received: hello"],
-                    "workspace": build_v3_workspace(),
-                    "events": [{"event_type": "conversation.assistant_message"}],
-                },
-            )
         return FakeResponse(
             200,
             {
-                "episode_id": "ep_001",
-                "workspace": {
-                    "episode_id": "ep_001",
-                    "workflow": {
-                        "current_phase": "design",
-                        "status": "interrupted",
-                        "updated_at": "2026-04-12T00:00:00+00:00",
-                        "progress": {
-                            "active_node": "design_review_gate",
-                            "message": "Waiting for design workspace review approval",
-                        },
-                        "summary": {
-                            "evidence_count": 2,
-                            "artifact_count": 3,
-                            "focused_artifact_count": 2,
-                            "report_id": None,
-                            "report_status": None,
-                        },
-                    },
-                    "pending_actions": [],
-                },
-                "events": [],
+                "session_id": "sess_001",
+                "status": "completed",
+                "outputs": ["Received: hello"],
+                "workspace": build_v3_workspace(),
+                "events": [{"event_type": "conversation.assistant_message"}],
             },
         )
 
@@ -127,16 +96,7 @@ def build_v3_workspace() -> dict[str, object]:
     }
 
 
-def test_cli_lists_projects_in_text_mode() -> None:
-    stdout = StringIO()
-    exit_code = run_cli(["projects", "list"], session=FakeSession(), stdout=stdout, stderr=StringIO())
-
-    assert exit_code == 0
-    assert "Projects" in stdout.getvalue()
-    assert "proj_001: Demo project" in stdout.getvalue()
-
-
-def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
+def test_cli_uses_env_defaults_and_wires_session_create(monkeypatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENZYME_PROJECT_ID", "proj_001")
     stdout = StringIO()
@@ -144,7 +104,7 @@ def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
     session = FakeSession()
 
     exit_code = run_cli(
-        ["episodes", "create", "--objective", "Design an artifact workspace"],
+        ["sessions", "create", "--objective", "Design an artifact workspace"],
         session=session,
         stdout=stdout,
         stderr=stderr,
@@ -153,24 +113,33 @@ def test_cli_uses_env_defaults_and_wires_create_command(monkeypatch) -> None:
     assert exit_code == 0
     assert session.calls[-1] == (
         "POST",
-        "/commands/create_episode",
+        "/v3/sessions",
         {"project_id": "proj_001", "objective": "Design an artifact workspace"},
     )
-    assert "Episode ep_001" in stdout.getvalue()
+    assert "Session sess_001" in stdout.getvalue()
     reset_settings_cache()
 
 
 def test_cli_json_format_renders_raw_payload() -> None:
     stdout = StringIO()
     exit_code = run_cli(
-        ["--format", "json", "projects", "list"],
+        [
+            "--format",
+            "json",
+            "sessions",
+            "create",
+            "--project-id",
+            "proj_001",
+            "--objective",
+            "Plan with V3",
+        ],
         session=FakeSession(),
         stdout=stdout,
         stderr=StringIO(),
     )
 
     assert exit_code == 0
-    assert '"project_id": "proj_001"' in stdout.getvalue()
+    assert '"session_id": "sess_001"' in stdout.getvalue()
 
 
 def test_cli_v3_sessions_create_and_message() -> None:

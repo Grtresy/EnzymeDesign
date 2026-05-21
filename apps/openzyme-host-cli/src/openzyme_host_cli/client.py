@@ -70,52 +70,6 @@ class HostApiClient:
             raise HostApiError(response.status_code, _normalize_error_text(response))
         return response.json()
 
-    def list_projects(self) -> list[dict[str, Any]]:
-        return self._request_json("GET", "/projects")
-
-    def list_project_episodes(self, project_id: str) -> list[dict[str, Any]]:
-        return self._request_json("GET", f"/projects/{project_id}/episodes")
-
-    def get_workspace(self, episode_id: str) -> dict[str, Any]:
-        return self._request_json("GET", f"/episodes/{episode_id}/workspace")
-
-    def get_pending_actions(self, episode_id: str) -> list[dict[str, Any]]:
-        return self._request_json("GET", f"/episodes/{episode_id}/pending-actions")
-
-    def get_runs(self, episode_id: str) -> list[dict[str, Any]]:
-        return self._request_json("GET", f"/episodes/{episode_id}/runs")
-
-    def get_artifacts(self, episode_id: str) -> list[dict[str, Any]]:
-        return self._request_json("GET", f"/episodes/{episode_id}/artifacts")
-
-    def get_reports(self, episode_id: str) -> list[dict[str, Any]]:
-        return self._request_json("GET", f"/episodes/{episode_id}/reports")
-
-    def create_episode(self, project_id: str, objective: str) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            "/commands/create_episode",
-            json_body={"project_id": project_id, "objective": objective},
-        )
-
-    def resume_episode(self, episode_id: str, resume_payload: Any) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            "/commands/resume_episode",
-            json_body={"episode_id": episode_id, "resume_payload": resume_payload},
-        )
-
-    def resolve_approval(self, episode_id: str, approval_id: str, decision: str) -> dict[str, Any]:
-        return self._request_json(
-            "POST",
-            "/commands/resolve_approval",
-            json_body={
-                "episode_id": episode_id,
-                "approval_id": approval_id,
-                "decision": decision,
-            },
-        )
-
     def create_v3_session(
         self,
         *,

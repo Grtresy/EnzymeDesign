@@ -15,7 +15,6 @@ const state = {
     kind: "",
     status: "",
     session_id: "",
-    episode_id: "",
   },
 };
 
@@ -38,7 +37,6 @@ function formatMeta(record) {
     record.kind,
     record.status,
     context.session_id ? `session ${context.session_id}` : "",
-    context.episode_id ? `episode ${context.episode_id}` : "",
   ].filter(Boolean).join(" · ");
 }
 
@@ -128,7 +126,6 @@ function render() {
         </select>
       </label>
       <label>Session <input name="session_id" value="${escapeHtml(state.filters.session_id)}" /></label>
-      <label>Episode <input name="episode_id" value="${escapeHtml(state.filters.episode_id)}" /></label>
       <button type="submit">Refresh</button>
       <button type="button" id="debug-clear">Clear</button>
     </form>
@@ -183,7 +180,6 @@ app.addEventListener("submit", (event) => {
     kind: String(data.get("kind") ?? "").trim(),
     status: String(data.get("status") ?? "").trim(),
     session_id: String(data.get("session_id") ?? "").trim(),
-    episode_id: String(data.get("episode_id") ?? "").trim(),
   };
   void loadRecords();
 });

@@ -1,7 +1,7 @@
 [project]
 name = "openzyme-host-cli"
 version = "0.1.0"
-description = "Thin V2 CLI client for the OpenZyme Host API"
+description = "Thin V3 CLI client for the OpenZyme Host API"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
