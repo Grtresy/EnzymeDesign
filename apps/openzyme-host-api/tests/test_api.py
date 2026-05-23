@@ -1362,7 +1362,12 @@ def test_v3_post_message_request_has_no_max_steps_field() -> None:
 
 def test_v3_post_message_only_enqueues_master_signal() -> None:
     repositories = _build_v3_engine_repositories()
-    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    model_factory = FakeHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
     service.create_session(
         project_id="proj_001",
         objective="Queue the master.",
@@ -1376,6 +1381,7 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
 
     assert result.status == "completed"
     assert result.outputs == ()
+    assert model_factory.invokers == {}
     assert repositories.agents.get("sess_msg_enqueue", "agent:master") is not None
     messages = repositories.inbox.list_by_session("sess_msg_enqueue")
     assert [message.message_type for message in messages] == ["user_message"]
@@ -1722,7 +1728,12 @@ def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:
 
 def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     repositories = _build_v3_engine_repositories()
-    service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
+    model_factory = FakeHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
     service.create_session(
         project_id="proj_001",
         objective="Resolve generic approval.",
@@ -1748,6 +1759,8 @@ def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     )
 
     assert result.status == "completed"
+    assert result.outputs == ()
+    assert model_factory.invokers == {}
     signals = repositories.runtime_signals.list_by_session("sess_approval_master")
     assert len(signals) == 1
     assert signals[0].agent_id == "agent:master"

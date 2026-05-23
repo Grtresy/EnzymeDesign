@@ -4,14 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from openzyme_domain import EngineInvocationStatus
-
 from .engines import EngineRegistry
 from .harness import HarnessInput
 from .harness import HarnessStep
 from .harness import LlmTraceStep
 from .harness import LlmTraceToolCall
-from .harness import RestoreFocus
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolResult
@@ -344,28 +341,6 @@ class LlmConversationDriver:
                 )
         return None
 
-    def _resume_waiting_invocation(
-        self, context: SessionRuntimeContext, harness_input: HarnessInput
-    ) -> HarnessStep | None:
-        if harness_input.resume is None:
-            return None
-        waiting = [
-            invocation
-            for invocation in context.snapshot.active_invocations
-            if invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-            and invocation.engine_name == "execution"
-            and invocation.approval_id == harness_input.resume.approval_id
-        ]
-        if not waiting:
-            return None
-        invocation = waiting[0]
-        return HarnessStep(
-            assistant_message="Approval was resolved. The execution supervisor will continue the pipeline internally.",
-            next_focus=RestoreFocus(
-                task_id=invocation.task_id, lane_id=invocation.lane_id
-            ),
-        )
-
     def _trace_step(
         self,
         *,
@@ -398,10 +373,6 @@ class LlmConversationDriver:
         harness_input: HarnessInput,
         tool_results: tuple[ToolResult, ...],
     ) -> HarnessStep:
-        if harness_input.resume is not None and not tool_results:
-            resumed = self._resume_waiting_invocation(context, harness_input)
-            if resumed is not None:
-                return resumed
         if not self._initialized:
             self._messages = _build_seed_messages(context, harness_input)
             self._initialized = True

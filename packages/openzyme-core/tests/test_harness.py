@@ -1788,34 +1788,6 @@ class FakeModelFactory:
         return self.invokers[purpose]
 
 
-class ResumeAwareInvoker:
-    def __init__(self, purpose: str) -> None:
-        self.purpose = purpose
-        self.calls: list[dict[str, object]] = []
-
-    def invoke_with_tools(
-        self, *, system_prompt: str, messages: list[object], tools: list[object]
-    ) -> dict[str, object]:
-        del system_prompt, tools
-        self.calls.append({"messages": list(messages)})
-        if self.purpose == "v3_teammate_loop:executor":
-            return {"content": "", "tool_calls": []}
-        tool_payload = json.loads(_message_content(messages[-1]))
-        payload = tool_payload["payload"]
-        summary = payload["summary"]
-        return {"content": f"Execution finished: {summary}", "tool_calls": []}
-
-
-class ResumeAwareModelFactory:
-    def __init__(self) -> None:
-        self.invokers: dict[str, ResumeAwareInvoker] = {}
-
-    def create_tool_calling_invoker(self, *, purpose: str) -> ResumeAwareInvoker:
-        if purpose not in self.invokers:
-            self.invokers[purpose] = ResumeAwareInvoker(purpose)
-        return self.invokers[purpose]
-
-
 class FakeExecutionPipelineEngine:
     descriptor = EngineDescriptor(
         engine_name="execution",
@@ -2071,7 +2043,12 @@ def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
     )
     engine_registry = EngineRegistry()
     engine_registry.register(FakeExecutionPipelineEngine(repositories))
-    model_factory = ResumeAwareModelFactory()
+    model_factory = FakeModelFactory(
+        {
+            "content": "Approval resolution was recorded for scheduler follow-up.",
+            "tool_calls": [],
+        }
+    )
 
     result = run_agent_harness_loop(
         repositories,
@@ -2090,16 +2067,17 @@ def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
 
     assert result.status is HarnessStatus.COMPLETED
     assert result.outputs == (
-        "Approval was resolved. The execution supervisor will continue the pipeline internally.",
+        "Approval resolution was recorded for scheduler follow-up.",
     )
     assert result.tool_results == ()
+    assert model_factory.invokers["v3_harness_loop"].calls
     assert (
         repositories.approvals.get("appr_execution_resume").status
         is ApprovalRequestStatus.APPROVED
     )
 
 
-def test_resume_without_executor_tool_reports_internal_continuation() -> None:
+def test_resume_without_executor_tool_does_not_report_internal_continuation() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     repositories.approvals.save(
@@ -2135,6 +2113,7 @@ def test_resume_without_executor_tool_reports_internal_continuation() -> None:
     engine_registry = EngineRegistry()
     engine_registry.register(FakeExecutionPipelineEngine(repositories))
 
+    model_factory = FakeModelFactory({"content": "", "tool_calls": []})
     result = run_agent_harness_loop(
         repositories,
         HarnessInput(
@@ -2145,17 +2124,14 @@ def test_resume_without_executor_tool_reports_internal_continuation() -> None:
                 actor_ref="tester",
             ),
         ),
-        driver=LlmConversationDriver(
-            FakeModelFactory({"content": "", "tool_calls": []})
-        ),
+        driver=LlmConversationDriver(model_factory),
         engine_registry=engine_registry,
     )
 
     assert result.status is HarnessStatus.COMPLETED
-    assert result.outputs == (
-        "Approval was resolved. The execution supervisor will continue the pipeline internally.",
-    )
+    assert result.outputs == ()
     assert result.tool_results == ()
+    assert model_factory.invokers["v3_harness_loop"].calls
 
 
 def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
@@ -2279,6 +2255,45 @@ def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
     assert traces[0]["response_text"] == "I inspected the task."
     assert traces[0]["initial_prompt"]["identity"] == "agent:researcher"
     assert traces[0]["initial_prompt"]["instructions"] == "Inspect the literature plan."
+
+
+def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = FakeModelFactory(
+        {"content": "I inspected the execution task.", "tool_calls": []}
+    )
+    driver = TeammateConversationDriver(
+        model_factory=model_factory,
+        role="executor",
+        agent_id="agent:executor",
+        correlation_id="corr_001",
+        task_id="task_001",
+        instructions="Run the assigned computational execution.",
+    )
+
+    run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender="agent:executor",
+            sender_kind=InboxParticipantKind.AGENT,
+            persist_conversation=False,
+        ),
+        driver=driver,
+    )
+
+    prompt = str(
+        model_factory.invokers["v3_teammate_loop:executor"].calls[0][
+            "system_prompt"
+        ]
+    )
+    assert "when the assigned task asks for fpocket" not in prompt
+    assert "hpc.fpocket" not in prompt
+    assert "first use docs.search or docs.read" in prompt
+    assert "execution.pipeline.start" in prompt
+    assert "documented openzyme_pipeline SDK operations" in prompt
+    assert "dry_run does not run the requested operation" in prompt
 
 
 def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (
