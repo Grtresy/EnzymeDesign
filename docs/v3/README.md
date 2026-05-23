@@ -25,12 +25,6 @@ V3 的核心立场：
 
 - [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
 
-分 session 执行计划：
-
-- [sessions/A-unified-agent-scheduler.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/A-unified-agent-scheduler.md)
-- [sessions/B-background-runtime-service.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/B-background-runtime-service.md)
-- [sessions/C-product-e2e-and-failure-semantics.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/sessions/C-product-e2e-and-failure-semantics.md)
-
 Execution pipeline SDK docs:
 
 - [execution-pipeline-docs/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/execution-pipeline-docs/README.md)
