@@ -339,7 +339,7 @@ def register_memory_tools(registry: Any) -> None:
 
     def compact_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         service = MemoryService(context.repositories, event_emitter=lambda event_type, payload: context.emit(event_type, payload))
-        scope_kind = MemoryScopeKind(str(invocation.arguments.get("scope_kind", "session")))
+        scope_kind = MemoryScopeKind(str(invocation.arguments.get("scope_kind") or "session"))
         task_id = None if "task_id" not in invocation.arguments else str(invocation.arguments["task_id"])
         lane_id = None if "lane_id" not in invocation.arguments else str(invocation.arguments["lane_id"])
         if task_id is not None and lane_id is None:

@@ -155,29 +155,6 @@ class AgentRuntimeService:
                 signals.append(signal)
         return tuple(signals)
 
-    def drain_session(
-        self,
-        session_id: str,
-        *,
-        max_signals: int = 3,
-        max_steps_per_agent: int = 8,
-        signal_ids: set[str] | None = None,
-    ) -> tuple[AgentRuntimeOutcome, ...]:
-        if self.context.model_factory is None:
-            return ()
-        outcomes: list[AgentRuntimeOutcome] = []
-        for _ in range(max_signals):
-            signal = self.context.repositories.runtime_signals.claim_next(
-                session_id=session_id,
-                claimed_by="runtime:drain",
-                lease_seconds=300,
-                signal_ids=signal_ids,
-            )
-            if signal is None:
-                break
-            outcomes.append(self.wake_agent(signal, max_steps=max_steps_per_agent))
-        return tuple(outcomes)
-
     def wake_agent(self, signal: AgentRuntimeSignal, *, max_steps: int = 8) -> AgentRuntimeOutcome:
         now = utc_now_iso()
         if signal.status is AgentRuntimeSignalStatus.CLAIMED:

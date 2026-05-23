@@ -471,6 +471,17 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
         item["agent"]["agent_id"] == "agent:researcher"
         for item in workspace["delegation"]["agents"]
     )
+    researcher_projection = next(
+        item
+        for item in workspace["delegation"]["agents"]
+        if item["agent"]["agent_id"] == "agent:researcher"
+    )
+    assert researcher_projection["agent"]["runtime_state"] == "idle"
+    assert researcher_projection["agent"]["status"] == "idle"
+    assert researcher_projection["unread_inbox_count"] == 1
+    assert researcher_projection["pending_signal_count"] == 1
+    assert researcher_projection["latest_signal_reason"] == "inbox_unread"
+    assert researcher_projection["wakeup_reason"] == "delegation_assigned"
     assert workspace["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
     assert {report["report_id"] for report in workspace["reports"]} == {
         "report_inv_exec_001",

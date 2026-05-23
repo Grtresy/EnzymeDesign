@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
@@ -592,15 +594,11 @@ def _invoke_deep_research_graph(inputs: DeepResearchGraphInputs) -> dict:
     )
 
 
-def test_deep_research_graph_without_model_factory_returns_failed_dossier() -> None:
-    result = _invoke_deep_research_graph(
-        _build_graph_inputs(model_factory=None, research_adapter=MinimalWebResearchAdapter())
-    )
-
-    dossier = result["research_dossier"]
-    assert dossier["status"] == "failed"
-    assert dossier["completion_reason"] == "missing_model_factory"
-    assert "model factory" in dossier["summary"]
+def test_deep_research_graph_without_model_factory_propagates_runtime_failure() -> None:
+    with pytest.raises(RuntimeError, match="model factory"):
+        _invoke_deep_research_graph(
+            _build_graph_inputs(model_factory=None, research_adapter=MinimalWebResearchAdapter())
+        )
 
 
 def test_deep_research_graph_tool_validation_error_returns_observation() -> None:
@@ -612,7 +610,7 @@ def test_deep_research_graph_tool_validation_error_returns_observation() -> None
     )
 
     dossier = result["research_dossier"]
-    assert dossier["status"] == "failed"
+    assert dossier["status"] == "partial"
     assert "Tool web.search received invalid arguments." in dossier["unresolved_gaps"]
     assert any(
         turn["action_kind"] == "web.search" and turn["status"] == "failed"
@@ -620,21 +618,14 @@ def test_deep_research_graph_tool_validation_error_returns_observation() -> None
     )
 
 
-def test_deep_research_graph_provider_exception_returns_failed_dossier() -> None:
-    result = _invoke_deep_research_graph(
-        _build_graph_inputs(
-            model_factory=ValidToolCallModelFactory(),
-            research_adapter=RaisingWebResearchAdapter(),
+def test_deep_research_graph_provider_exception_propagates_runtime_failure() -> None:
+    with pytest.raises(RuntimeError, match="provider exploded"):
+        _invoke_deep_research_graph(
+            _build_graph_inputs(
+                model_factory=ValidToolCallModelFactory(),
+                research_adapter=RaisingWebResearchAdapter(),
+            )
         )
-    )
-
-    dossier = result["research_dossier"]
-    assert dossier["status"] == "failed"
-    assert any("provider exploded" in gap for gap in dossier["unresolved_gaps"])
-    assert any(
-        turn["action_kind"] == "web.search" and turn["status"] == "failed"
-        for turn in dossier["recent_turns"]
-    )
 
 
 def test_deep_research_graph_truncates_over_budget_calls_to_available_evidence_tool() -> None:
@@ -719,49 +710,43 @@ def test_deep_research_graph_supervisor_completes_when_findings_exist() -> None:
     )
 
 
-def test_deep_research_graph_synthesis_model_exception_returns_failed_dossier() -> None:
+def test_deep_research_graph_synthesis_model_exception_propagates_runtime_failure() -> None:
     graph = build_deep_research_subgraph(
         _build_graph_inputs(
             model_factory=FailingSynthesisModelFactory(),
             llm_synthesis_enabled=True,
         )
     )
-    result = graph.invoke(
-        {
-            "session_id": "sess_001",
-            "project_id": "proj_001",
-            "objective": "Investigate thermostability approaches with cited evidence.",
-            "design_brief": "Find enough evidence to support downstream enzyme design.",
-            "research_brief": "thermostability evidence",
-            "unit_results": [
-                {
-                    "summary": "Existing source supports the scaffold.",
-                    "findings": [
-                        {
-                            "summary": "Existing source supports the scaffold.",
-                            "query": "thermostability",
-                            "confidence_label": "high",
-                            "sources": [
-                                {
-                                    "title": "Existing source",
-                                    "locator": "https://example.org/existing",
-                                    "kind": "web_page",
-                                }
-                            ],
-                        }
-                    ],
-                    "status": "completed",
-                }
-            ],
-        }
-    )
-
-    dossier = result["research_dossier"]
-    assert dossier["status"] == "failed"
-    assert dossier["completion_reason"] == "synthesis_model_failed"
-    assert dossier["evidence_items"] == []
-    assert any("RuntimeError" in gap for gap in dossier["unresolved_gaps"])
-    assert any("synthesis provider exploded" in note for note in dossier["raw_notes"])
+    with pytest.raises(RuntimeError, match="synthesis provider exploded"):
+        graph.invoke(
+            {
+                "session_id": "sess_001",
+                "project_id": "proj_001",
+                "objective": "Investigate thermostability approaches with cited evidence.",
+                "design_brief": "Find enough evidence to support downstream enzyme design.",
+                "research_brief": "thermostability evidence",
+                "unit_results": [
+                    {
+                        "summary": "Existing source supports the scaffold.",
+                        "findings": [
+                            {
+                                "summary": "Existing source supports the scaffold.",
+                                "query": "thermostability",
+                                "confidence_label": "high",
+                                "sources": [
+                                    {
+                                        "title": "Existing source",
+                                        "locator": "https://example.org/existing",
+                                        "kind": "web_page",
+                                    }
+                                ],
+                            }
+                        ],
+                        "status": "completed",
+                    }
+                ],
+            }
+        )
 
 
 def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() -> None:
@@ -801,7 +786,7 @@ def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() ->
     ] == "deep_research"
 
 
-def test_native_deep_research_runner_fails_without_source_backed_evidence() -> None:
+def test_native_deep_research_runner_returns_partial_without_source_backed_evidence() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     engine = DeepResearchEngine(
@@ -823,10 +808,10 @@ def test_native_deep_research_runner_fails_without_source_backed_evidence() -> N
     summary = repositories.research_summaries.get_by_invocation(
         session.session_id, "inv_graph_no_evidence"
     )
-    assert started.invocation.status is EngineInvocationStatus.FAILED
-    assert started.dossier.status == "failed"
+    assert started.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert started.dossier.status == "partial"
     assert started.dossier.evidence_items == ()
-    assert summary.status is ResearchSummaryStatus.FAILED
+    assert summary.status is ResearchSummaryStatus.PARTIAL
 
 
 def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:

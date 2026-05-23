@@ -19,6 +19,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_core import CoreRepositories
+from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
 from openzyme_core import CorrelationStatus
 from openzyme_core import ProtocolService
@@ -599,9 +600,13 @@ def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> 
     assert content["runtime_outcomes"] == []
     assert model_factory.invokers == {}
 
-    outcomes = AgentRuntimeService(context).drain_session(
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync(
         session.session_id,
         max_signals=1,
+        max_steps_per_agent=8,
         signal_ids=signal_ids,
     )
     thread = ProtocolService(repositories).build_thread(session.session_id, "corr_diag_await").to_dict()

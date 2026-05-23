@@ -12,6 +12,7 @@ from openzyme_execution import ExecutionOutcome
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
+from openzyme_host_api.app import PostV3MessageRequest
 from openzyme_runtime import ConstraintItem
 from openzyme_runtime import ConstraintSet
 from openzyme_runtime import DesignBriefDraft
@@ -518,6 +519,7 @@ class FakeEngineHarnessInvoker:
         self.purpose = purpose
         self.calls = 0
         self.system_prompts: list[str] = []
+        self.report_delegated = False
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
@@ -754,7 +756,8 @@ class FakeEngineHarnessInvoker:
             }
 
         if focused_task == "task_report_v3":
-            if latest_tool_name is None:
+            if not self.report_delegated:
+                self.report_delegated = True
                 return {
                     "content": "",
                     "tool_calls": [
@@ -1063,6 +1066,103 @@ def _wait_for_background_runtime(
     return status
 
 
+def _wait_for_v3_background_workspace(
+    client: TestClient,
+    *,
+    session_id: str,
+    is_ready,
+    repositories: CoreRepositories | None = None,
+    timeout_seconds: float = 30.0,
+) -> tuple[dict[str, object], str, dict[str, object], list[str]]:
+    deadline = time.monotonic() + timeout_seconds
+    workspace: dict[str, object] = {}
+    event_text = ""
+    runtime_status: dict[str, object] = {}
+    resolved_approvals: list[str] = []
+    while time.monotonic() < deadline:
+        workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
+        if workspace_response.status_code != 200:
+            runtime_response = client.get("/debug/v3-runtime")
+            assert workspace_response.status_code == 200, {
+                "step": "get_v3_workspace",
+                "body": workspace_response.text,
+                "workspace": workspace,
+                "runtime_status": runtime_response.json()
+                if runtime_response.status_code == 200
+                else runtime_response.text,
+                "events": event_text[-1000:],
+                "signals": []
+                if repositories is None
+                else [
+                    signal.to_dict()
+                    for signal in repositories.runtime_signals.list_by_session(
+                        session_id
+                    )
+                ],
+            }
+        workspace = workspace_response.json()
+        runtime_response = client.get("/debug/v3-runtime")
+        assert runtime_response.status_code == 200
+        runtime_status = runtime_response.json()
+
+        pending_approvals = workspace.get("pending_approvals") or []
+        if pending_approvals:
+            approval_id = pending_approvals[0]["approval_id"]
+            resolved = client.post(
+                f"/v3/approvals/{approval_id}/resolve",
+                json={"decision": "approved", "actor_ref": "background_test"},
+            )
+            assert resolved.status_code == 200, resolved.text
+            resolved_approvals.append(approval_id)
+            time.sleep(0.2)
+            continue
+
+        if is_ready(workspace, event_text, runtime_status):
+            while time.monotonic() < deadline:
+                events_response = client.get(
+                    f"/v3/sessions/{session_id}/events?replay=1"
+                )
+                if events_response.status_code == 200:
+                    event_text = events_response.text
+                    return workspace, event_text, runtime_status, resolved_approvals
+                assert events_response.status_code == 200, {
+                    "step": "get_v3_events",
+                    "body": events_response.text,
+                    "workspace": workspace,
+                    "runtime_status": runtime_status,
+                    "signals": []
+                    if repositories is None
+                    else [
+                        signal.to_dict()
+                        for signal in repositories.runtime_signals.list_by_session(
+                            session_id
+                        )
+                    ],
+                }
+        time.sleep(0.2)
+    raise AssertionError(
+        {
+            "tasks": [
+                item["task"]
+                for item in (workspace.get("task_board") or {}).get("items", [])
+            ],
+            "pending_approvals": workspace.get("pending_approvals"),
+            "capabilities": {
+                key: [item.get("status") for item in value]
+                for key, value in (workspace.get("capabilities") or {}).items()
+            },
+            "runtime_status": runtime_status,
+            "resolved_approvals": resolved_approvals,
+            "signals": []
+            if repositories is None
+            else [
+                signal.to_dict()
+                for signal in repositories.runtime_signals.list_by_session(session_id)
+            ],
+        }
+    )
+
+
 def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     repositories = _build_v3_engine_repositories()
     repositories.sessions.save(
@@ -1255,6 +1355,11 @@ def test_v3_drain_runtime_request_defaults_disable_auto_claim() -> None:
     assert DrainV3RuntimeRequest().auto_enqueue_ready_tasks is False
 
 
+def test_v3_post_message_request_has_no_max_steps_field() -> None:
+    assert "max_steps" not in PostV3MessageRequest.model_fields
+    assert "max_steps" not in PostV3MessageRequest.model_json_schema()["properties"]
+
+
 def test_v3_post_message_only_enqueues_master_signal() -> None:
     repositories = _build_v3_engine_repositories()
     service = V3HostApiService(repositories=repositories, event_store=V3EventStore())
@@ -1328,6 +1433,198 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
         ]
         assert signals[0]["status"] == "completed"
         assert signals[0]["claimed_by"] == "host-api:background-runtime"
+
+
+def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_drain(
+    monkeypatch,
+) -> None:
+    client, foundation = _build_client(monkeypatch)
+    del client
+    v3_repositories = _build_v3_engine_repositories()
+    model_factory = FakeEngineHarnessModelFactory()
+    dependencies = HostApiDependencies(
+        foundation=replace(foundation, model_factory=model_factory),
+        v3_repositories=v3_repositories,
+        v3_background_runtime_enabled=True,
+    )
+    app = create_app(dependencies)
+    with TestClient(app) as background_client:
+        created = background_client.post(
+            "/v3/sessions",
+            json={
+                "session_id": "sess_bg_v3_engines",
+                "project_id": "proj_001",
+                "objective": "Evaluate a thermostability candidate and publish the final report",
+            },
+        )
+        assert created.status_code == 200
+        _seed_v3_execution_artifact(v3_repositories, "sess_bg_v3_engines")
+        lane = background_client.post(
+            "/v3/lanes",
+            json={
+                "session_id": "sess_bg_v3_engines",
+                "lane_id": "lane_bg_v3_engines",
+                "name": "background engine lane",
+                "cwd": "/tmp/openzyme-bg-v3-engines",
+            },
+        )
+        assert lane.status_code == 200
+
+        research_task = background_client.post(
+            "/v3/tasks",
+            json={
+                "session_id": "sess_bg_v3_engines",
+                "task_id": "task_research_v3",
+                "subject": "Collect evidence",
+                "description": "Collect papers for the scaffold family.",
+                "kind": "research",
+                "lane_id": "lane_bg_v3_engines",
+            },
+        )
+        assert research_task.status_code == 200
+        research = background_client.post(
+            "/v3/sessions/sess_bg_v3_engines/messages",
+            json={"message": "Run the research task.", "task_id": "task_research_v3"},
+        )
+        assert research.status_code == 200
+        assert research.json()["outputs"] == []
+        assert "v3_teammate_loop:researcher" not in model_factory.invokers
+
+        research_workspace, event_text, status, _ = _wait_for_v3_background_workspace(
+            background_client,
+            session_id="sess_bg_v3_engines",
+            repositories=v3_repositories,
+            is_ready=lambda workspace, _events, _status: (
+                "deep_research" in workspace["capabilities"]
+                and workspace["capabilities"]["deep_research"][0]["status"]
+                == "succeeded"
+                and any(
+                    item["task"]["task_id"] == "task_research_v3"
+                    and item["task"]["status"] == "completed"
+                    for item in workspace["task_board"]["items"]
+                )
+            ),
+        )
+        assert status["running"] is True
+        assert status["worker_id"] == "host-api:background-runtime"
+        assert "event: signal.claimed" in event_text
+        assert "event: signal.completed" in event_text
+        assert model_factory.invokers["v3_harness_loop"].calls >= 2
+        assert model_factory.invokers["v3_teammate_loop:researcher"].calls >= 2
+        assert any(
+            message["role"] == "assistant" and message["content"] == "Research complete."
+            for message in research_workspace["conversation"]
+        )
+
+        execution_task = background_client.post(
+            "/v3/tasks",
+            json={
+                "session_id": "sess_bg_v3_engines",
+                "task_id": "task_execution_v3",
+                "subject": "Run fpocket",
+                "description": "Run fpocket against the candidate structure.",
+                "kind": "execution",
+                "lane_id": "lane_bg_v3_engines",
+            },
+        )
+        assert execution_task.status_code == 200
+        master_calls_before_execution = model_factory.invokers["v3_harness_loop"].calls
+        execution = background_client.post(
+            "/v3/sessions/sess_bg_v3_engines/messages",
+            json={
+                "message": "Run the execution task.",
+                "task_id": "task_execution_v3",
+            },
+        )
+        assert execution.status_code == 200
+        assert execution.json()["outputs"] == []
+
+        execution_workspace, event_text, status, resolved_approvals = (
+            _wait_for_v3_background_workspace(
+                background_client,
+                session_id="sess_bg_v3_engines",
+                repositories=v3_repositories,
+                is_ready=lambda workspace, _events, _status: (
+                    "execution" in workspace["capabilities"]
+                    and workspace["capabilities"]["execution"][0]["status"]
+                    == "succeeded"
+                    and bool(workspace["artifacts"])
+                    and any(
+                        item["task"]["task_id"] == "task_execution_v3"
+                        and item["task"]["status"] == "completed"
+                        for item in workspace["task_board"]["items"]
+                    )
+                ),
+            )
+        )
+        assert resolved_approvals
+        assert all(
+            v3_repositories.approvals.get(approval_id).status.value == "approved"
+            for approval_id in resolved_approvals
+        )
+        assert sum(
+            signal.status.value == "completed"
+            and signal.claimed_by == "host-api:background-runtime"
+            for signal in v3_repositories.runtime_signals.list_by_session(
+                "sess_bg_v3_engines"
+            )
+        ) >= 3
+        assert model_factory.invokers["v3_harness_loop"].calls > master_calls_before_execution
+        assert model_factory.invokers["v3_teammate_loop:executor"].calls >= 3
+        executor_projection = next(
+            agent
+            for agent in execution_workspace["delegation"]["agents"]
+            if agent["agent"]["role"] == "executor"
+        )
+        assert executor_projection["latest_signal_reason"] is not None
+        assert isinstance(executor_projection["pending_signal_count"], int)
+
+        reporting_task = background_client.post(
+            "/v3/tasks",
+            json={
+                "session_id": "sess_bg_v3_engines",
+                "task_id": "task_report_v3",
+                "subject": "Publish report",
+                "description": "Publish the integrated workspace report.",
+                "kind": "reporting",
+                "lane_id": "lane_bg_v3_engines",
+            },
+        )
+        assert reporting_task.status_code == 200
+        reporting = background_client.post(
+            "/v3/sessions/sess_bg_v3_engines/messages",
+            json={
+                "message": "Publish the final report.",
+                "task_id": "task_report_v3",
+            },
+        )
+        assert reporting.status_code == 200, reporting.text
+        assert reporting.json()["outputs"] == []
+
+        final_workspace, event_text, status, _ = _wait_for_v3_background_workspace(
+            background_client,
+            session_id="sess_bg_v3_engines",
+            is_ready=lambda workspace, _events, _status: (
+                bool(workspace["reports"])
+                and workspace["reports"][0]["status"] == "ready"
+                and any(
+                    item["task"]["task_id"] == "task_report_v3"
+                    and item["task"]["status"] == "completed"
+                    for item in workspace["task_board"]["items"]
+                )
+            ),
+        )
+        assert status["running"] is True
+        assert "event: report.generated" in event_text
+        assert model_factory.invokers["v3_teammate_loop:reporter"].calls >= 3
+        assert {item["task"]["kind"] for item in final_workspace["task_board"]["items"]} >= {
+            "research",
+            "execution",
+            "reporting",
+        }
+        assert {"researcher", "executor", "reporter"} <= {
+            item["agent"]["role"] for item in final_workspace["delegation"]["agents"]
+        }
 
 
 def test_v3_background_runtime_debug_exposes_model_factory_disabled_reason(

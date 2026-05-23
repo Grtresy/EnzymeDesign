@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from typing import Callable
 
@@ -56,7 +57,6 @@ class PostV3MessageRequest(BaseModel):
     task_id: str | None = None
     lane_id: str | None = None
     skill_keys: list[str] = []
-    max_steps: int = 8
 
 
 class DrainV3RuntimeRequest(BaseModel):
@@ -241,6 +241,7 @@ class HostApiDependencies:
     v3_signal_notifier: RuntimeSignalNotifier = field(
         default_factory=RuntimeSignalNotifier
     )
+    v3_operation_lock: RLock = field(default_factory=RLock)
     v3_background_runtime_enabled: bool | None = None
 
     def build_v3_service(self) -> V3HostApiService:
@@ -252,6 +253,7 @@ class HostApiDependencies:
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
             signal_notifier=self.v3_signal_notifier,
+            operation_lock=self.v3_operation_lock,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
@@ -368,7 +370,6 @@ def create_app(
                     task_id=request.task_id,
                     lane_id=request.lane_id,
                     skill_keys=tuple(request.skill_keys),
-                    max_steps=request.max_steps,
                 ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc

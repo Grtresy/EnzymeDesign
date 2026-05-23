@@ -175,6 +175,7 @@ test("workspace controller resolves v3 approvals and refreshes summaries", async
 
 test("sendMessage is ignored while another request is already in flight", async () => {
   let postCalls = 0;
+  let postPayload = null;
   let releasePost;
   const postPromise = new Promise((resolve) => {
     releasePost = resolve;
@@ -193,8 +194,9 @@ test("sendMessage is ignored while another request is already in flight", async 
     streamV3Session() {
       return { close() {} };
     },
-    async postV3Message() {
+    async postV3Message(_sessionId, payload) {
       postCalls += 1;
+      postPayload = payload;
       await postPromise;
       return {
         session_id: "sess_001",
@@ -219,6 +221,7 @@ test("sendMessage is ignored while another request is already in flight", async 
   await pending;
 
   assert.equal(postCalls, 1);
+  assert.deepEqual(postPayload, { message: "hello" });
 });
 
 test("llm response stream events update traces while sendMessage is in flight", async () => {

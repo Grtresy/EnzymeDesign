@@ -1343,18 +1343,10 @@ class ExecutionEngine:
         context_ids = tuple(str(value) for value in pipeline_inputs.get("context_artifact_ids") or [])
         sandbox_inputs = self._resolve_artifacts(session.session_id, (*artifact_ids, *context_ids))
         if self.sandbox_runner is None:
-            return self._finalize_pipeline_sandbox_failure(
-                invocation=invocation,
-                message="pipeline sandbox runner is not configured",
-                code_digest=str(pipeline.get("code_digest") or ""),
-            )
+            raise RuntimeError("pipeline sandbox runner is not configured")
         preflight = self.sandbox_runner.preflight() if hasattr(self.sandbox_runner, "preflight") else None
         if preflight is not None and not preflight.ok:
-            return self._finalize_pipeline_sandbox_failure(
-                invocation=invocation,
-                message=preflight.message,
-                code_digest=str(pipeline.get("code_digest") or ""),
-            )
+            raise RuntimeError(f"pipeline sandbox preflight failed: {preflight.message}")
         try:
             outcome = self.sandbox_runner.run_pipeline(
                 session_id=session.session_id,
@@ -1375,22 +1367,13 @@ class ExecutionEngine:
         except PipelineSdkFailure as exc:
             return self._finalize_pipeline_sdk_failure(invocation=invocation, failure=exc)
         except Exception as exc:
-            return self._finalize_pipeline_sandbox_failure(
-                invocation=invocation,
-                message=f"pipeline sandbox raised {type(exc).__name__}: {exc}",
-                code_digest=str(pipeline.get("code_digest") or ""),
-            )
+            raise RuntimeError(
+                f"pipeline sandbox raised {type(exc).__name__}: {exc}"
+            ) from exc
         waiting = self.repositories.invocations.get(invocation.invocation_id)
         if waiting is not None and waiting.status is EngineInvocationStatus.WAITING_APPROVAL:
             return ExecutionStartResult(invocation=waiting, run=None, approval=self._load_approval(waiting))
-        try:
-            return self._finalize_pipeline_terminal(invocation=invocation, outcome=outcome)
-        except Exception as exc:
-            return self._finalize_pipeline_sandbox_failure(
-                invocation=invocation,
-                message=f"pipeline finalization raised {type(exc).__name__}: {exc}",
-                code_digest=str(pipeline.get("code_digest") or ""),
-            )
+        return self._finalize_pipeline_terminal(invocation=invocation, outcome=outcome)
 
     def _handle_pipeline_sdk_call(
         self,
@@ -1827,68 +1810,6 @@ class ExecutionEngine:
                 "hpc_run_ids": hpc_run_ids,
                 "sandbox_status": "running",
             },
-        )
-
-    def _finalize_pipeline_sandbox_failure(
-        self,
-        *,
-        invocation: EngineInvocation,
-        message: str,
-        code_digest: str,
-    ) -> ExecutionStartResult:
-        now = utc_now_iso()
-        output_id = _new_document_id("eng_out")
-        payload = {
-            "pipeline": {
-                "code_digest": code_digest,
-                "sandbox_status": "failed",
-                "error": {
-                    "message": message,
-                    "type": "sandbox_preflight_failed",
-                    "stage": "sandbox_preflight",
-                    "retryable": True,
-                    "hint": "Install rootless Podman and build the openzyme pipeline sandbox image.",
-                    "doc_keywords": ["podman", "execution.pipeline.start"],
-                },
-            }
-        }
-        self.repositories.engine_documents.save(
-            self._document_record(
-                document_id=output_id,
-                session_id=invocation.session_id,
-                invocation_id=invocation.invocation_id,
-                document_kind="execution_result",
-                payload=payload,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        failed = self._replace_invocation(invocation, status=EngineInvocationStatus.FAILED, finished_at=now)
-        failed = EngineInvocation(
-            invocation_id=failed.invocation_id,
-            session_id=failed.session_id,
-            task_id=failed.task_id,
-            lane_id=failed.lane_id,
-            engine_name=failed.engine_name,
-            status=failed.status,
-            input_ref=failed.input_ref,
-            output_ref=output_id,
-            approval_id=failed.approval_id,
-            idempotency_key=failed.idempotency_key,
-            started_at=failed.started_at,
-            finished_at=failed.finished_at,
-        )
-        self.repositories.invocations.save(failed)
-        self._update_pipeline_document(invocation, {"sandbox_status": "failed"})
-        self._emit("execution.pipeline.failed", {"invocation_id": invocation.invocation_id, "error": message})
-        return ExecutionStartResult(
-            invocation=failed,
-            run=None,
-            approval=None,
-            parsed_result=ExecutionParsedResult(
-                result_summary=f"Pipeline sandbox failed: {message}",
-                structured_findings=payload["pipeline"],
-            ),
         )
 
     def _finalize_pipeline_sdk_failure(

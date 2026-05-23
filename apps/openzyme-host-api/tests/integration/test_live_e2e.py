@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import time
 from typing import Any
 
 import pytest
@@ -42,25 +43,40 @@ def _build_v3_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
-def _drain_until_quiescent(
+def _poll_until_product_path_quiescent(
     client: TestClient,
     *,
     session_id: str,
-    max_cycles: int = 8,
-) -> dict[str, Any]:
-    latest: dict[str, Any] | None = None
-    for cycle in range(max_cycles):
-        log_live_phase(f"draining V3 runtime cycle {cycle + 1}/{max_cycles}")
-        drained = client.post(
-            f"/v3/sessions/{session_id}/runtime/drain",
-            json={
-                "max_signals": 10,
-                "max_steps_per_agent": 8,
-            },
-        )
-        _raise_for_status_with_body(drained, step="runtime_drain")
-        latest = drained.json()
-        workspace = latest["workspace"]
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    latest_workspace: dict[str, Any] | None = None
+    latest_events = ""
+    latest_runtime: dict[str, Any] = {}
+    cycle = 0
+    while time.monotonic() < deadline:
+        cycle += 1
+        log_live_phase(f"polling V3 background runtime cycle {cycle}")
+        workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
+        if workspace_response.status_code != 200:
+            runtime_response = client.get("/debug/v3-runtime")
+            assert workspace_response.status_code == 200, {
+                "step": "get_v3_workspace",
+                "body": workspace_response.text,
+                "workspace": latest_workspace,
+                "runtime_status": runtime_response.json()
+                if runtime_response.status_code == 200
+                else runtime_response.text,
+                "events": latest_events[-1000:],
+            }
+        workspace = workspace_response.json()
+        latest_workspace = workspace
+        events_response = client.get(f"/v3/sessions/{session_id}/events?replay=1")
+        _raise_for_status_with_body(events_response, step="get_v3_events")
+        latest_events = events_response.text
+        runtime_response = client.get("/debug/v3-runtime")
+        _raise_for_status_with_body(runtime_response, step="get_v3_runtime_debug")
+        latest_runtime = runtime_response.json()
 
         approvals = workspace["pending_approvals"]
         if approvals:
@@ -71,16 +87,18 @@ def _drain_until_quiescent(
                 json={"decision": "approved", "actor_ref": "live_e2e"},
             )
             _raise_for_status_with_body(resolved, step="resolve_v3_approval")
+            time.sleep(1.0)
             continue
 
         if workspace["reports"] and workspace["artifacts"] and any(
             item.get("status") == "succeeded"
             for item in workspace["capabilities"].get("execution", [])
         ):
-            return workspace
+            return workspace, latest_events, latest_runtime
+        time.sleep(1.0)
 
-    assert latest is not None
-    return latest["workspace"]
+    assert latest_workspace is not None
+    return latest_workspace, latest_events, latest_runtime
 
 
 def _workspace_failure_summary(workspace: dict[str, Any]) -> str:
@@ -146,17 +164,16 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         settings=tuned_settings,
     )
     v3_repositories = _build_v3_repositories()
-    client = TestClient(
+    session_id = "sess_live_v3_e2e"
+    with TestClient(
         create_app(
             HostApiDependencies(
                 foundation=foundation,
                 v3_repositories=v3_repositories,
+                v3_background_runtime_enabled=True,
             )
         )
-    )
-
-    session_id = "sess_live_v3_e2e"
-    try:
+    ) as client:
         with LiveStageTimeout(
             "running full V3 live E2E from one master message",
             e2e_timeout_seconds,
@@ -192,14 +209,14 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
                         "If web research or a valid execution artifact is missing, "
                         "surface the failure instead of writing a report."
                     ),
-                    "max_steps": 8,
                 },
             )
             _raise_for_status_with_body(first_turn, step="post_v3_message")
-            workspace = _drain_until_quiescent(client, session_id=session_id)
-    finally:
-        log_live_phase("closing FastAPI test client")
-        client.close()
+            workspace, event_text, runtime_status = _poll_until_product_path_quiescent(
+                client,
+                session_id=session_id,
+                timeout_seconds=e2e_timeout_seconds,
+            )
 
     assert workspace["reports"], _workspace_failure_summary(workspace)
     assert workspace["reports"][0]["status"] in {"ready", "published"}
@@ -225,3 +242,17 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         item["task"]["kind"] in {"reporting", "report"}
         for item in workspace["task_board"]["items"]
     ), _workspace_failure_summary(workspace)
+    assert runtime_status["enabled"] is True
+    assert runtime_status["running"] is True
+    assert runtime_status["worker_id"] == "host-api:background-runtime"
+    assert "event: signal.queued" in event_text
+    assert "event: signal.claimed" in event_text
+    assert "event: signal.completed" in event_text
+    assert {"master", "researcher", "executor", "reporter"} <= {
+        item["agent"]["role"] for item in workspace["delegation"]["agents"]
+    }
+    assert any(
+        item["agent"]["role"] != "master"
+        and item["agent"]["runtime_state"] in {"idle", "failed"}
+        for item in workspace["delegation"]["agents"]
+    )

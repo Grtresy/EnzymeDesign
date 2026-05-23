@@ -155,6 +155,7 @@ class V3HostApiService:
     research_adapter: Any | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
+    operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
@@ -166,6 +167,22 @@ class V3HostApiService:
         self.event_store.append(session_id, events)
 
     def create_session(
+        self,
+        *,
+        project_id: str,
+        objective: str,
+        title: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        with self.operation_lock:
+            return self._create_session_locked(
+                project_id=project_id,
+                objective=objective,
+                title=title,
+                session_id=session_id,
+            )
+
+    def _create_session_locked(
         self,
         *,
         project_id: str,
@@ -220,11 +237,12 @@ class V3HostApiService:
         return master
 
     def workspace(self, session_id: str) -> dict[str, Any]:
-        return (
-            SessionProjectionBuilder(self.repositories)
-            .build_session_workspace(session_id)
-            .to_dict()
-        )
+        with self.operation_lock:
+            return (
+                SessionProjectionBuilder(self.repositories)
+                .build_session_workspace(session_id)
+                .to_dict()
+            )
 
     def list_sessions(self, project_id: str) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
@@ -368,21 +386,22 @@ class V3HostApiService:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
     ) -> list[dict[str, Any]]:
-        if self.repositories.sessions.get(session_id) is None:
-            raise KeyError(f"session {session_id!r} does not exist")
-        context = self._build_runtime_context(session_id)
-        scheduler = self._build_scheduler(context, worker_id=worker_id)
-        outcomes = await scheduler.run_once(
-            session_id,
-            max_signals=max_signals,
-            max_steps_per_agent=max_steps_per_agent,
-        )
-        events = [event.to_dict() for event in context.event_sink.events]
-        self._touch_session(session_id)
-        self._extend_with_trace_events(session_id, events)
-        self._extend_with_activity_events(session_id, events)
-        self.event_store.append(session_id, events)
-        return [outcome.to_dict() for outcome in outcomes]
+        with self.operation_lock:
+            if self.repositories.sessions.get(session_id) is None:
+                raise KeyError(f"session {session_id!r} does not exist")
+            context = self._build_runtime_context(session_id)
+            scheduler = self._build_scheduler(context, worker_id=worker_id)
+            outcomes = await scheduler.run_once(
+                session_id,
+                max_signals=max_signals,
+                max_steps_per_agent=max_steps_per_agent,
+            )
+            events = [event.to_dict() for event in context.event_sink.events]
+            self._touch_session(session_id)
+            self._extend_with_trace_events(session_id, events)
+            self._extend_with_activity_events(session_id, events)
+            self.event_store.append(session_id, events)
+            return [outcome.to_dict() for outcome in outcomes]
 
     def _build_scheduler(
         self, context: SessionRuntimeContext, *, worker_id: str
@@ -419,6 +438,22 @@ class V3HostApiService:
         return [outcome.to_dict() for outcome in outcomes]
 
     def drain_runtime(
+        self,
+        *,
+        session_id: str,
+        max_signals: int = 3,
+        max_steps_per_agent: int = 8,
+        auto_enqueue_ready_tasks: bool = False,
+    ) -> V3CommandResult:
+        with self.operation_lock:
+            return self._drain_runtime_locked(
+                session_id=session_id,
+                max_signals=max_signals,
+                max_steps_per_agent=max_steps_per_agent,
+                auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+            )
+
+    def _drain_runtime_locked(
         self,
         *,
         session_id: str,
@@ -530,7 +565,24 @@ class V3HostApiService:
         task_id: str | None = None,
         lane_id: str | None = None,
         skill_keys: tuple[str, ...] = (),
-        max_steps: int = 8,
+    ) -> V3CommandResult:
+        with self.operation_lock:
+            return self._post_message_locked(
+                session_id=session_id,
+                message=message,
+                task_id=task_id,
+                lane_id=lane_id,
+                skill_keys=skill_keys,
+            )
+
+    def _post_message_locked(
+        self,
+        *,
+        session_id: str,
+        message: str | None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+        skill_keys: tuple[str, ...] = (),
     ) -> V3CommandResult:
         if self.repositories.sessions.get(session_id) is None:
             raise KeyError(f"session {session_id!r} does not exist")
@@ -603,6 +655,14 @@ class V3HostApiService:
         )
 
     def resolve_approval(
+        self, approval_id: str, *, decision: str, actor_ref: str = "user"
+    ) -> V3CommandResult:
+        with self.operation_lock:
+            return self._resolve_approval_locked(
+                approval_id, decision=decision, actor_ref=actor_ref
+            )
+
+    def _resolve_approval_locked(
         self, approval_id: str, *, decision: str, actor_ref: str = "user"
     ) -> V3CommandResult:
         approval = self.repositories.approvals.get(approval_id)

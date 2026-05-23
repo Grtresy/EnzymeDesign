@@ -88,7 +88,7 @@ def _seed_v3_structure_artifact(
     )
 
 
-def _drain_until_report(
+def _manual_debug_drain_until_report(
     client: TestClient,
     *,
     session_id: str,
@@ -96,7 +96,7 @@ def _drain_until_report(
 ) -> dict[str, Any]:
     latest: dict[str, Any] | None = None
     for cycle in range(max_cycles):
-        _log_phase(f"draining V3 runtime cycle {cycle + 1}/{max_cycles}")
+        _log_phase(f"manual/debug draining V3 runtime cycle {cycle + 1}/{max_cycles}")
         drained = client.post(
             f"/v3/sessions/{session_id}/runtime/drain",
             json={
@@ -104,7 +104,7 @@ def _drain_until_report(
                 "max_steps_per_agent": 8,
             },
         )
-        _raise_for_status_with_body(drained, step="runtime_drain")
+        _raise_for_status_with_body(drained, step="manual_debug_runtime_drain")
         latest = drained.json()
         workspace = latest["workspace"]
 
@@ -233,11 +233,10 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
                         "Delegate research first, run execution after approval if "
                         "required, and publish the final report."
                     ),
-                    "max_steps": 8,
                 },
             )
             _raise_for_status_with_body(first_turn, step="post_v3_message")
-            workspace = _drain_until_report(client, session_id=session_id)
+            workspace = _manual_debug_drain_until_report(client, session_id=session_id)
 
             _log_phase(
                 "final V3 workspace: "

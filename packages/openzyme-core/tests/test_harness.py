@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentRuntimeSignalReason
@@ -626,6 +628,27 @@ class ExplicitCompactionDriver:
         return HarnessStep(assistant_message="compacted")
 
 
+class NullScopeCompactionDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_compact_null_scope",
+                        tool_name="memory.compact",
+                        arguments={"scope_kind": None},
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="compacted")
+
+
 def test_harness_memory_compact_tool_writes_task_scope_summary() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -643,6 +666,23 @@ def test_harness_memory_compact_tool_writes_task_scope_summary() -> None:
         session.session_id, MemoryScopeKind.TASK, "task_001"
     )
     assert any(entry.kind is MemoryKind.COMPACTION for entry in task_memory)
+    assert result.outputs == ("compacted",)
+
+
+def test_harness_memory_compact_tool_defaults_null_scope_to_session() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id),
+        driver=NullScopeCompactionDriver(),
+    )
+
+    session_memory = repositories.memory.list_by_scope(
+        session.session_id, MemoryScopeKind.SESSION, session.session_id
+    )
+    assert any(entry.kind is MemoryKind.COMPACTION for entry in session_memory)
     assert result.outputs == ("compacted",)
 
 
@@ -907,9 +947,13 @@ def test_harness_returns_failed_result_when_driver_provider_is_rate_limited() ->
     assert result.status is HarnessStatus.FAILED
     assert "HTTP Error 429" in result.outputs[0]
     assert "harness.failed" in {event.event_type for event in result.events}
+    assert not any(
+        message.message_type == "assistant_message"
+        for message in repositories.inbox.list_by_session(session.session_id)
+    )
 
 
-def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
+def test_harness_fails_turn_when_tool_provider_raises_runtime_error() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
@@ -928,10 +972,12 @@ def test_harness_wraps_tool_provider_errors_as_tool_results() -> None:
         tool_registry=registry,
     )
 
-    assert result.status is HarnessStatus.COMPLETED
-    assert result.tool_results[0].ok is False
-    assert "HTTP Error 429" in result.tool_results[0].content
-    assert "Observed tool failure" in result.outputs[0]
+    assert result.status is HarnessStatus.FAILED
+    assert result.tool_results == ()
+    assert "HTTP Error 429" in result.outputs[0]
+    failed_events = [event for event in result.events if event.event_type == "harness.failed"]
+    assert failed_events
+    assert failed_events[-1].payload["tool_name"] == "semantic_scholar.search"
 
 
 def test_tool_registry_returns_standard_envelope_for_unknown_tool() -> None:
@@ -957,7 +1003,39 @@ def test_tool_registry_returns_standard_envelope_for_unknown_tool() -> None:
     assert envelope["summary"] == "Tool 'missing.tool' is not registered."
 
 
-def test_tool_registry_wraps_handler_exception_as_standard_envelope() -> None:
+def test_tool_registry_wraps_argument_errors_as_standard_envelope() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def reject_bad_arguments(
+        _context: SessionRuntimeContext, _invocation: ToolInvocation
+    ) -> ToolResult:
+        raise ValueError("missing task_id")
+
+    registry.register("reject_args", reject_bad_arguments)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(call_id="call_reject_args", tool_name="reject_args", arguments={}),
+    )
+
+    envelope = result.envelope()
+    assert result.ok is False
+    assert result.status == "invalid_tool_arguments"
+    assert envelope["error_code"] == "invalid_tool_arguments"
+    assert envelope["details"] == {"exception_type": "ValueError"}
+    assert "missing task_id" in envelope["summary"]
+
+
+def test_tool_registry_propagates_runtime_handler_exceptions() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = ToolRegistry()
@@ -976,17 +1054,11 @@ def test_tool_registry_wraps_handler_exception_as_standard_envelope() -> None:
         restore_focus=RestoreFocus(),
     )
 
-    result = registry.dispatch(
-        context,
-        ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
-    )
-
-    envelope = result.envelope()
-    assert result.ok is False
-    assert result.status == "handler_exception"
-    assert envelope["error_code"] == "handler_exception"
-    assert envelope["details"] == {"exception_type": "RuntimeError"}
-    assert "boom" in envelope["summary"]
+    with pytest.raises(RuntimeError, match="boom"):
+        registry.dispatch(
+            context,
+            ToolInvocation(call_id="call_explode", tool_name="explode", arguments={}),
+        )
 
 
 def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> None:
@@ -1585,9 +1657,7 @@ def test_research_teammate_web_fetch_rejects_rcsb_experimental_page() -> None:
     assert "rcsb_pdb.download_structure" in result.hint
 
 
-def test_research_teammate_direct_search_provider_429_returns_failed_observation() -> (
-    None
-):
+def test_research_teammate_direct_search_provider_429_propagates_runtime_failure() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = build_teammate_registry(
@@ -1601,31 +1671,18 @@ def test_research_teammate_direct_search_provider_429_returns_failed_observation
         restore_focus=RestoreFocus(task_id="task_001"),
     )
 
-    result = registry.dispatch(
-        context,
-        ToolInvocation(
-            call_id="call_semantic",
-            tool_name="semantic_scholar.search",
-            arguments={"query": "AI systems engineering", "limit": 3},
-            task_id="task_001",
-        ),
-    )
+    with pytest.raises(RuntimeError, match="HTTP Error 429"):
+        registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id="call_semantic",
+                tool_name="semantic_scholar.search",
+                arguments={"query": "AI systems engineering", "limit": 3},
+                task_id="task_001",
+            ),
+        )
 
-    payload = json.loads(result.content)
-    invocation = repositories.invocations.list_by_session(session.session_id)[0]
-    summary = repositories.research_summaries.get_by_invocation(
-        session.session_id, invocation.invocation_id
-    )
-    gaps = repositories.research_gaps.list_by_invocation(
-        session.session_id, invocation.invocation_id
-    )
-
-    assert result.ok is False
-    assert payload["status"] == "failed"
-    assert "HTTP Error 429" in payload["unresolved_gaps"][0]
-    assert invocation.status is EngineInvocationStatus.FAILED
-    assert summary.status.value == "failed"
-    assert "HTTP Error 429" in gaps[0].summary
+    assert repositories.invocations.list_by_session(session.session_id) == []
 
 
 def test_session_workspace_projection_exposes_delegation_threads() -> None:

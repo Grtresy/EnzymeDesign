@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,64 +22,128 @@ class LiveV3LlmTimeoutError(TimeoutError):
     """Raised when the live V3 LLM smoke test exceeds the local timeout budget."""
 
 
+def _poll_v3_background_workspace(
+    client: TestClient,
+    *,
+    session_id: str,
+    timeout_seconds: float,
+) -> tuple[dict[str, object], str, dict[str, object]]:
+    deadline = time.monotonic() + timeout_seconds
+    workspace: dict[str, object] = {}
+    event_text = ""
+    runtime_status: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
+        assert workspace_response.status_code == 200, {
+            "step": "get_v3_workspace",
+            "body": workspace_response.text,
+            "workspace": workspace,
+            "runtime_status": client.get("/debug/v3-runtime").json(),
+            "events": event_text[-1000:],
+        }
+        workspace = workspace_response.json()
+        runtime_response = client.get("/debug/v3-runtime")
+        assert runtime_response.status_code == 200, runtime_response.text
+        runtime_status = runtime_response.json()
+
+        task_items = workspace["task_board"]["items"]
+        assistant_messages = [
+            message
+            for message in workspace["conversation"]
+            if message["role"] == "assistant"
+        ]
+        if task_items and assistant_messages:
+            while time.monotonic() < deadline:
+                events_response = client.get(
+                    f"/v3/sessions/{session_id}/events?replay=1"
+                )
+                if events_response.status_code == 200:
+                    event_text = events_response.text
+                    return workspace, event_text, runtime_status
+                assert events_response.status_code == 200, {
+                    "step": "get_v3_events",
+                    "body": events_response.text,
+                    "workspace": workspace,
+                    "runtime_status": runtime_status,
+                    "events": event_text[-1000:],
+                }
+            return workspace, event_text, runtime_status
+        time.sleep(0.2)
+    raise AssertionError(
+        {
+            "workspace": workspace,
+            "runtime_status": runtime_status,
+            "events": event_text[-1000:],
+        }
+    )
+
+
 def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
     settings = apply_live_llm_test_budget(get_settings())
     foundation = build_configured_foundation(
         sqlite_db_path=tmp_path / "live-v3-llm.sqlite3",
         settings=settings,
     )
-    client = TestClient(
-        create_app(
-            HostApiDependencies(
-                foundation=foundation,
-            )
+    app = create_app(
+        HostApiDependencies(
+            foundation=foundation,
+            v3_background_runtime_enabled=True,
         )
     )
 
-    created = client.post(
-        "/v3/sessions",
-        json={
-            "session_id": "sess_live_v3_llm",
-            "project_id": "proj_001",
-            "objective": "Use the top-level LLM loop to capture user work as a task.",
-        },
-    )
-    assert created.status_code == 200
     message_timeout_seconds = derive_live_stage_timeout_seconds(
         provider_timeout_seconds=settings.llm.timeout,
         attempts=settings.llm.structured_output_max_attempts,
         buffer_seconds=45,
         minimum_seconds=90,
     )
-
-    with LiveStageTimeout(
-        "posting live V3 message through real LLM",
-        message_timeout_seconds,
-        timeout_type=LiveV3LlmTimeoutError,
-    ):
-        response = client.post(
-            "/v3/sessions/sess_live_v3_llm/messages",
+    with TestClient(app) as client:
+        created = client.post(
+            "/v3/sessions",
             json={
-                "message": (
-                    "Call task.create exactly once to create a task with subject "
-                    "'Capture design goals' and description 'Extract the user design goals into a tracked task.' "
-                    "Then reply with one short confirmation sentence."
-                )
+                "session_id": "sess_live_v3_llm",
+                "project_id": "proj_001",
+                "objective": "Use the top-level LLM loop to capture user work as a task.",
             },
         )
+        assert created.status_code == 200
 
-    assert response.status_code == 200
-    payload = response.json()
-    task_items = payload["workspace"]["task_board"]["items"]
-    assert task_items
+        with LiveStageTimeout(
+            "posting live V3 message through real LLM",
+            message_timeout_seconds,
+            timeout_type=LiveV3LlmTimeoutError,
+        ):
+            response = client.post(
+                "/v3/sessions/sess_live_v3_llm/messages",
+                json={
+                    "message": (
+                        "Call task.create exactly once to create a task with subject "
+                        "'Capture design goals' and description 'Extract the user design goals into a tracked task.' "
+                        "Then reply with one short confirmation sentence."
+                    )
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["outputs"] == []
+            workspace, event_text, runtime_status = _poll_v3_background_workspace(
+                client,
+                session_id="sess_live_v3_llm",
+                timeout_seconds=message_timeout_seconds,
+            )
+
+    task_items = workspace["task_board"]["items"]
     assert any(
         item["task"]["subject"] == "Capture design goals"
         and item["task"]["description"] == "Extract the user design goals into a tracked task."
         for item in task_items
     )
-    assert any(event["event_type"] == "tool.completed" for event in payload["events"])
-    assert payload["workspace"]["conversation"]
-    assert payload["outputs"]
+    assert "event: tool.completed" in event_text
+    assert "event: signal.claimed" in event_text
+    assert "event: signal.completed" in event_text
+    assert runtime_status["worker_id"] == "host-api:background-runtime"
+    assert any(
+        message["role"] == "assistant" for message in workspace["conversation"]
+    )
 
 
 def test_live_v3_eval_generates_design_task_plan() -> None:

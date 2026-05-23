@@ -341,51 +341,12 @@ class BioResearchToolRegistrar:
                 ),
             )
 
-        def _failed_observation_result(
-            context: SessionRuntimeContext,
-            invocation: ToolInvocation,
-            *,
-            provider: str,
-            summary: str,
-            error: Exception,
-            raw_ref: dict[str, object],
-        ) -> ToolResult:
-            observation = ResearchObservation(
-                status="failed",
-                summary=summary,
-                unresolved_gaps=(str(error).strip() or error.__class__.__name__,),
-                provider=provider,
-                raw_ref={
-                    **raw_ref,
-                    "error_type": error.__class__.__name__,
-                    "error": str(error),
-                },
-            )
-            engine_invocation = _start_research_tool_invocation(context, invocation)
-            return _payload_result(
-                invocation,
-                _finish_research_tool_invocation(
-                    context, invocation, engine_invocation, observation
-                ),
-                ok=False,
-            )
-
         def pubmed_search(
             context: SessionRuntimeContext, invocation: ToolInvocation
         ) -> ToolResult:
             query = str(invocation.arguments["query"])
             limit = int(invocation.arguments.get("limit", 5))
-            try:
-                hits = self.service.search_pubmed(query=query, limit=limit)
-            except Exception as exc:
-                return _failed_observation_result(
-                    context,
-                    invocation,
-                    provider="pubmed",
-                    summary=f"PubMed search failed for {query}.",
-                    error=exc,
-                    raw_ref={"query": query, "limit": limit},
-                )
+            hits = self.service.search_pubmed(query=query, limit=limit)
             return _observation_result(
                 context,
                 invocation,
@@ -402,17 +363,7 @@ class BioResearchToolRegistrar:
         ) -> ToolResult:
             query = str(invocation.arguments["query"])
             limit = int(invocation.arguments.get("limit", 5))
-            try:
-                hits = self.service.search_semantic_scholar(query=query, limit=limit)
-            except Exception as exc:
-                return _failed_observation_result(
-                    context,
-                    invocation,
-                    provider="semantic_scholar",
-                    summary=f"Semantic Scholar search failed for {query}.",
-                    error=exc,
-                    raw_ref={"query": query, "limit": limit},
-                )
+            hits = self.service.search_semantic_scholar(query=query, limit=limit)
             return _observation_result(
                 context,
                 invocation,
@@ -644,31 +595,6 @@ def register_web_research_tools(
             ok=ok,
         )
 
-    def _failed_result(
-        context: SessionRuntimeContext,
-        invocation: ToolInvocation,
-        *,
-        summary: str,
-        error: Exception,
-        raw_ref: dict[str, object],
-    ) -> ToolResult:
-        return _observation_result(
-            context,
-            invocation,
-            ResearchObservation(
-                status="failed",
-                summary=summary,
-                unresolved_gaps=(str(error).strip() or error.__class__.__name__,),
-                provider="web",
-                raw_ref={
-                    **raw_ref,
-                    "error_type": error.__class__.__name__,
-                    "error": str(error),
-                },
-            ),
-            ok=False,
-        )
-
     def web_search(
         context: SessionRuntimeContext, invocation: ToolInvocation
     ) -> ToolResult:
@@ -678,30 +604,21 @@ def register_web_research_tools(
         include_raw_content = bool(
             invocation.arguments.get("include_raw_content", True)
         )
-        try:
-            search = getattr(adapter, "web_search")
-            normalize = getattr(adapter, "normalize_search_response")
-            result = normalize(
-                unit=ResearchUnit(
-                    unit_id=f"web-search-{invocation.call_id}",
-                    topic=topic,
-                    query=query,
-                ),
-                response=search(
-                    query=query,
-                    max_results=max_results,
-                    topic=topic,
-                    include_raw_content=include_raw_content,
-                ),
-            )
-        except Exception as exc:
-            return _failed_result(
-                context,
-                invocation,
-                summary=f"Web search failed for {query}.",
-                error=exc,
-                raw_ref={"query": query, "max_results": max_results, "topic": topic},
-            )
+        search = getattr(adapter, "web_search")
+        normalize = getattr(adapter, "normalize_search_response")
+        result = normalize(
+            unit=ResearchUnit(
+                unit_id=f"web-search-{invocation.call_id}",
+                topic=topic,
+                query=query,
+            ),
+            response=search(
+                query=query,
+                max_results=max_results,
+                topic=topic,
+                include_raw_content=include_raw_content,
+            ),
+        )
         return _observation_result(
             context,
             invocation,
@@ -754,33 +671,19 @@ def register_web_research_tools(
         extract_depth = str(invocation.arguments.get("extract_depth", "basic"))
         output_format = str(invocation.arguments.get("format", "markdown"))
         include_images = bool(invocation.arguments.get("include_images", False))
-        try:
-            fetch = getattr(adapter, "fetch_url")
-            normalize = getattr(adapter, "normalize_fetch_response")
-            result = normalize(
+        fetch = getattr(adapter, "fetch_url")
+        normalize = getattr(adapter, "normalize_fetch_response")
+        result = normalize(
+            url=url,
+            query=query,
+            response=fetch(
                 url=url,
                 query=query,
-                response=fetch(
-                    url=url,
-                    query=query,
-                    extract_depth=extract_depth,
-                    format=output_format,
-                    include_images=include_images,
-                ),
-            )
-        except Exception as exc:
-            return _failed_result(
-                context,
-                invocation,
-                summary=f"Web fetch failed for {url}.",
-                error=exc,
-                raw_ref={
-                    "url": url,
-                    "query": query,
-                    "extract_depth": extract_depth,
-                    "format": output_format,
-                },
-            )
+                extract_depth=extract_depth,
+                format=output_format,
+                include_images=include_images,
+            ),
+        )
         return _observation_result(
             context,
             invocation,

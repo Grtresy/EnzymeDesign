@@ -166,6 +166,10 @@ class DeepResearchRunner(Protocol):
     ) -> Any: ...
 
 
+class DeepResearchRuntimeError(RuntimeError):
+    """Raised when deep research infrastructure/model/provider execution fails."""
+
+
 @dataclass(slots=True)
 class DirectDeepResearchRunner:
     repositories: Any
@@ -449,36 +453,41 @@ class DeepResearchEngine:
         input_payload = self._require_input_payload(invocation)
         research_brief = str(input_payload["brief"])
         resolution = None if input_payload.get("resolution") is None else str(input_payload["resolution"])
-        try:
-            runner_output = self.runner.run(
-                invocation_id=invocation.invocation_id,
-                objective=session.objective,
-                design_brief=task.description,
-                research_brief=research_brief,
-                resolution=resolution,
-            )
-            dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
-            if dossier.status == "failed":
-                return self._complete_failure(
-                    session=session,
-                    task=task,
-                    invocation=invocation,
-                    dossier=dossier,
-                )
-            return self._complete_success(
-                session=session,
-                task=task,
-                invocation=invocation,
-                dossier=dossier,
-            )
-        except Exception as exc:
-            dossier = self._build_failure_dossier(research_brief=research_brief, error=str(exc))
+        runner_output = self.runner.run(
+            invocation_id=invocation.invocation_id,
+            objective=session.objective,
+            design_brief=task.description,
+            research_brief=research_brief,
+            resolution=resolution,
+        )
+        dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
+        if dossier.status == "failed":
+            if not self._is_controlled_domain_failure(dossier):
+                message = dossier.summary or "deep research runner returned failed without controlled domain failure metadata"
+                raise DeepResearchRuntimeError(message)
             return self._complete_failure(
                 session=session,
                 task=task,
                 invocation=invocation,
                 dossier=dossier,
             )
+        return self._complete_success(
+            session=session,
+            task=task,
+            invocation=invocation,
+            dossier=dossier,
+        )
+
+    def _is_controlled_domain_failure(self, dossier: NormalizedResearchDossier) -> bool:
+        markers = {
+            dossier.completion_reason,
+            *dossier.raw_notes,
+        }
+        return any(
+            str(marker).startswith("controlled_domain_failure")
+            or str(marker).startswith("domain_failure")
+            for marker in markers
+        )
 
     def _complete_success(
         self,
@@ -839,20 +848,6 @@ class DeepResearchEngine:
             payload=payload,
             created_at=created_at,
             updated_at=updated_at,
-        )
-
-    def _build_failure_dossier(self, *, research_brief: str, error: str) -> NormalizedResearchDossier:
-        return NormalizedResearchDossier(
-            status="failed",
-            completion_reason="research_failed",
-            research_brief=research_brief,
-            summary=error,
-            evidence_items=(),
-            source_refs=(),
-            unresolved_gaps=(error,),
-            raw_notes=(error,),
-            clarification_question=None,
-            recent_turns=(),
         )
 
     def _dossier_from_payload(self, payload: dict[str, Any]) -> NormalizedResearchDossier:

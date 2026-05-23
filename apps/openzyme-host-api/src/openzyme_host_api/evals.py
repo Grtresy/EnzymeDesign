@@ -4,6 +4,7 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 import tempfile
+import time
 from typing import Any
 from typing import Callable
 
@@ -495,6 +496,72 @@ def seed_v3_eval_execution_artifact(
     )
 
 
+def _poll_v3_background_workspace(
+    client: TestClient,
+    *,
+    session_id: str,
+    is_ready: Callable[[dict[str, Any]], bool],
+    timeout_seconds: float = 15.0,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    workspace: dict[str, Any] = {}
+    event_text = ""
+    runtime_status: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        workspace_response = client.get(f"/v3/sessions/{session_id}/workspace")
+        if workspace_response.status_code != 200:
+            runtime_response = client.get("/debug/v3-runtime")
+            raise RuntimeError(
+                {
+                    "step": "get_v3_workspace",
+                    "status_code": workspace_response.status_code,
+                    "body": workspace_response.text,
+                    "workspace": workspace,
+                    "runtime_status": runtime_response.json()
+                    if runtime_response.status_code == 200
+                    else runtime_response.text,
+                    "events": event_text[-1000:],
+                }
+            )
+        workspace_response.raise_for_status()
+        workspace = workspace_response.json()
+        events_response = client.get(f"/v3/sessions/{session_id}/events?replay=1")
+        if events_response.status_code != 200:
+            runtime_response = client.get("/debug/v3-runtime")
+            raise RuntimeError(
+                {
+                    "step": "get_v3_events",
+                    "status_code": events_response.status_code,
+                    "body": events_response.text,
+                    "workspace": workspace,
+                    "runtime_status": runtime_response.json()
+                    if runtime_response.status_code == 200
+                    else runtime_response.text,
+                    "events": event_text[-1000:],
+                }
+            )
+        events_response.raise_for_status()
+        event_text = events_response.text
+        runtime_response = client.get("/debug/v3-runtime")
+        runtime_response.raise_for_status()
+        runtime_status = runtime_response.json()
+
+        approvals = workspace.get("pending_approvals") or []
+        if approvals:
+            resolved = client.post(
+                f"/v3/approvals/{approvals[0]['approval_id']}/resolve",
+                json={"decision": "approved", "actor_ref": "eval"},
+            )
+            resolved.raise_for_status()
+            time.sleep(0.2)
+            continue
+
+        if is_ready(workspace):
+            return workspace, event_text, runtime_status
+        time.sleep(0.2)
+    return workspace, event_text, runtime_status
+
+
 def _run_v3_design_cutover_scenario(
     *,
     foundation_builder: FoundationBuilder,
@@ -515,7 +582,7 @@ def _run_v3_design_cutover_scenario(
             HostApiDependencies(
                 foundation=foundation,
                 v3_repositories=v3_repositories,
-                v3_background_runtime_enabled=False,
+                v3_background_runtime_enabled=True,
             )
         )
         with TestClient(app) as client:
@@ -548,61 +615,38 @@ def _run_v3_design_cutover_scenario(
             ) as run:
                 first_turn = client.post(
                     "/v3/sessions/sess_eval_v3_cutover/messages",
-                    json={"message": prompt, "max_steps": 8},
+                    json={"message": prompt},
                 )
                 first_turn.raise_for_status()
-                first_drain = client.post(
-                    "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
-                    json={
-                        "max_signals": 10,
-                        "max_steps_per_agent": 8,
-                    },
+                _poll_v3_background_workspace(
+                    client,
+                    session_id="sess_eval_v3_cutover",
+                    is_ready=lambda workspace: (
+                        "deep_research" in workspace["capabilities"]
+                        and workspace["capabilities"]["deep_research"][0]["status"]
+                        == "succeeded"
+                        and "execution" in workspace["capabilities"]
+                        and workspace["capabilities"]["execution"][0]["status"]
+                        == "succeeded"
+                    ),
                 )
-                first_drain.raise_for_status()
-                first_payload = first_drain.json()
-                approvals = first_payload["workspace"]["pending_approvals"]
-                if approvals:
-                    resolved = client.post(
-                        f"/v3/approvals/{approvals[0]['approval_id']}/resolve",
-                        json={"decision": "approved", "actor_ref": "eval"},
-                    )
-                    resolved.raise_for_status()
-                    approval_drain = client.post(
-                        "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
-                        json={
-                            "max_signals": 10,
-                            "max_steps_per_agent": 8,
-                        },
-                    )
-                    approval_drain.raise_for_status()
 
                 report_turn = client.post(
                     "/v3/sessions/sess_eval_v3_cutover/messages",
                     json={
                         "message": "Publish the final report from the completed research and execution evidence.",
-                        "max_steps": 8,
                     },
                 )
                 report_turn.raise_for_status()
-                report_drain = client.post(
-                    "/v3/sessions/sess_eval_v3_cutover/runtime/drain",
-                    json={
-                        "max_signals": 10,
-                        "max_steps_per_agent": 8,
-                    },
+                workspace, event_text, runtime_status = _poll_v3_background_workspace(
+                    client,
+                    session_id="sess_eval_v3_cutover",
+                    is_ready=lambda workspace: (
+                        bool(workspace["reports"])
+                        and bool(workspace["report_drafts"])
+                        and workspace["report_drafts"][0]["status"] == "published"
+                    ),
                 )
-                report_drain.raise_for_status()
-                workspace_response = client.get(
-                    "/v3/sessions/sess_eval_v3_cutover/workspace"
-                )
-                workspace_response.raise_for_status()
-                workspace = workspace_response.json()
-                events_response = client.get(
-                    "/v3/sessions/sess_eval_v3_cutover/events?replay=1"
-                )
-                events_response.raise_for_status()
-
-                event_text = events_response.text
                 tasks = [item["task"] for item in workspace["task_board"]["items"]]
                 task_kinds = {task["kind"] for task in tasks}
                 agent_roles = {
@@ -617,6 +661,11 @@ def _run_v3_design_cutover_scenario(
                     "teammate_wakeup": bool(
                         agent_roles & {"researcher", "executor", "reporter"}
                     ),
+                    "background_runtime": runtime_status.get("worker_id")
+                    == "host-api:background-runtime"
+                    and int(runtime_status.get("processed_signal_count") or 0) > 0,
+                    "signal_lifecycle": "event: signal.claimed" in event_text
+                    and "event: signal.completed" in event_text,
                     "research_completed": "deep_research" in capability_keys
                     and workspace["capabilities"]["deep_research"][0]["status"]
                     == "succeeded",
@@ -672,6 +721,7 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
             HostApiDependencies(
                 foundation=foundation,
                 v3_repositories=build_v3_eval_repositories(),
+                v3_background_runtime_enabled=True,
             )
         )
         with TestClient(app) as client:
@@ -709,10 +759,22 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
             ) as run:
                 response = client.post(
                     "/v3/sessions/sess_eval_v3_live_plan/messages",
-                    json={"message": prompt, "max_steps": 6},
+                    json={"message": prompt},
                 )
                 response.raise_for_status()
-                workspace = response.json()["workspace"]
+                workspace, event_text, runtime_status = _poll_v3_background_workspace(
+                    client,
+                    session_id="sess_eval_v3_live_plan",
+                    timeout_seconds=240.0,
+                    is_ready=lambda current: len(
+                        (current.get("task_board") or {}).get("items", [])
+                    )
+                    >= 3
+                    and any(
+                        message.get("role") == "assistant"
+                        for message in current.get("conversation", [])
+                    ),
+                )
                 tasks = [item["task"] for item in workspace["task_board"]["items"]]
                 subjects = {task["subject"] for task in tasks}
                 task_kinds = {task["kind"] for task in tasks}
@@ -722,7 +784,14 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
                     "report_task": "Draft final report" in subjects,
                     "full_flow_kinds": {"research", "execution", "reporting"}
                     <= task_kinds,
-                    "assistant_output": bool(response.json()["outputs"]),
+                    "assistant_output": any(
+                        message["role"] == "assistant"
+                        for message in workspace["conversation"]
+                    ),
+                    "background_runtime": runtime_status.get("worker_id")
+                    == "host-api:background-runtime",
+                    "signal_lifecycle": "event: signal.claimed" in event_text
+                    and "event: signal.completed" in event_text,
                     "workspace_projection": len(tasks) >= 3,
                 }
                 result = {

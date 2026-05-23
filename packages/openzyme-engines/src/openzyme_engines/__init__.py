@@ -4,6 +4,7 @@ from openzyme_core import EngineRegistry
 
 from .deep_research import DeepResearchEngine
 from .deep_research import DeepResearchRunner
+from .deep_research import DeepResearchRuntimeError
 from .deep_research import DirectDeepResearchRunner
 from .deep_research import GraphBackedDeepResearchRunner
 from .deep_research import NativeDeepResearchRunner
@@ -51,6 +52,7 @@ __all__ = [
     "DefaultPreprocessAdapter",
     "DeepResearchEngine",
     "DeepResearchRunner",
+    "DeepResearchRuntimeError",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
     "ExecutionEngine",

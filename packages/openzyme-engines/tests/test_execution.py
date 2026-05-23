@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
@@ -901,7 +903,7 @@ def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None
     assert "art_001" in result.parsed_result.structured_findings["error"]["hint"]
 
 
-def test_pipeline_supervisor_fails_when_sandbox_preflight_fails() -> None:
+def test_pipeline_supervisor_propagates_sandbox_preflight_failure() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
     engine = ExecutionEngine(
@@ -910,16 +912,13 @@ def test_pipeline_supervisor_fails_when_sandbox_preflight_fails() -> None:
         sandbox_runner=HandlerSandboxRunner(preflight_ok=False),
     )
 
-    result = engine.start_pipeline(
-        session_id="sess_001",
-        task_id="task_001",
-        code="print('hello from sandbox')\n",
-        inputs={"artifact_ids": ["art_001"]},
-    )
-
-    assert result.invocation.status is EngineInvocationStatus.FAILED
-    assert result.parsed_result is not None
-    assert result.parsed_result.structured_findings["error"]["type"] == "sandbox_preflight_failed"
+    with pytest.raises(RuntimeError, match="sandbox preflight failed"):
+        engine.start_pipeline(
+            session_id="sess_001",
+            task_id="task_001",
+            code="print('hello from sandbox')\n",
+            inputs={"artifact_ids": ["art_001"]},
+        )
 
 
 def test_pipeline_rejects_toy_pdb_before_fpocket_approval() -> None:

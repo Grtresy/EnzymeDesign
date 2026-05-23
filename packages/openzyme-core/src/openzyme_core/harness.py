@@ -291,7 +291,7 @@ class ToolRegistry:
             )
         try:
             result = handler(context, invocation)
-        except Exception as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             message = f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}"
             return ToolResult(
                 call_id=invocation.call_id,
@@ -300,10 +300,10 @@ class ToolRegistry:
                 content=message,
                 task_id=invocation.task_id,
                 lane_id=invocation.lane_id,
-                status="handler_exception",
+                status="invalid_tool_arguments",
                 summary=message,
-                error_code="handler_exception",
-                hint="Inspect the error details before deciding whether to retry or use a different tool.",
+                error_code="invalid_tool_arguments",
+                hint="Fix the tool arguments or referenced task/lane/session state before retrying.",
                 details={"exception_type": exc.__class__.__name__},
             )
         if isinstance(result, ToolResult):
@@ -607,11 +607,6 @@ def _format_runtime_error(exc: Exception) -> str:
     return f"OpenZyme could not complete this turn: {message}"
 
 
-def _fallback_output_from_tool_results(tool_results: list[ToolResult]) -> str | None:
-    del tool_results
-    return None
-
-
 def _persist_llm_trace_step(
     context: SessionRuntimeContext, trace: LlmTraceStep
 ) -> dict[str, Any]:
@@ -708,28 +703,7 @@ def run_agent_harness_loop(
         try:
             step = driver.plan(context, harness_input, tool_results)
         except Exception as exc:
-            assistant_message = _format_runtime_error(exc)
-            message = _persist_message(
-                repositories,
-                session_id=harness_input.session_id,
-                sender="harness",
-                sender_kind=InboxParticipantKind.HARNESS,
-                recipient=harness_input.sender,
-                recipient_kind=harness_input.sender_kind,
-                message_type="assistant_message",
-                content=assistant_message
-                if harness_input.persist_conversation
-                else None,
-            )
-            outputs.append(assistant_message)
-            context.emit(
-                "message.sent",
-                {
-                    "message_id": message.message_id,
-                    "recipient": message.recipient,
-                    "recipient_kind": message.recipient_kind.value,
-                },
-            )
+            outputs.append(_format_runtime_error(exc))
             context.emit(
                 "harness.failed",
                 {"error": str(exc), "error_type": exc.__class__.__name__},
@@ -921,13 +895,31 @@ def run_agent_harness_loop(
                 try:
                     result = registry.dispatch(context, invocation)
                 except Exception as exc:
-                    result = ToolResult(
-                        call_id=invocation.call_id,
-                        tool_name=invocation.tool_name,
-                        ok=False,
-                        content=f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}",
-                        task_id=invocation.task_id,
-                        lane_id=invocation.lane_id,
+                    outputs.append(_format_runtime_error(exc))
+                    context.emit(
+                        "harness.failed",
+                        {
+                            "error": str(exc),
+                            "error_type": exc.__class__.__name__,
+                            "tool_name": invocation.tool_name,
+                            "call_id": invocation.call_id,
+                        },
+                    )
+                    _auto_compact_if_needed(
+                        context,
+                        activity_happened=True,
+                        outputs=outputs,
+                        all_tool_results=all_tool_results,
+                    )
+                    context.refresh()
+                    return HarnessResult(
+                        session_id=harness_input.session_id,
+                        status=HarnessStatus.FAILED,
+                        snapshot=context.snapshot,
+                        events=tuple(sink.events),
+                        outputs=tuple(outputs),
+                        tool_results=tuple(all_tool_results),
+                        pending_approval_id=pending_approval_id,
                     )
                 current_results.append(result)
                 all_tool_results.append(result)
@@ -989,32 +981,8 @@ def run_agent_harness_loop(
                 or outputs == ["No user-facing response was generated."]
             )
         ):
-            fallback_output = _fallback_output_from_tool_results(all_tool_results)
-            if fallback_output:
-                if outputs == ["No user-facing response was generated."]:
-                    outputs.clear()
-                message = _persist_message(
-                    repositories,
-                    session_id=harness_input.session_id,
-                    sender="harness",
-                    sender_kind=InboxParticipantKind.HARNESS,
-                    recipient=harness_input.sender,
-                    recipient_kind=harness_input.sender_kind,
-                    message_type="assistant_message",
-                    content=fallback_output
-                    if harness_input.persist_conversation
-                    else None,
-                )
-                outputs.append(fallback_output)
-                context.emit(
-                    "message.sent",
-                    {
-                        "message_id": message.message_id,
-                        "recipient": message.recipient,
-                        "recipient_kind": message.recipient_kind.value,
-                    },
-                )
-                context.refresh()
+            if outputs == ["No user-facing response was generated."]:
+                outputs.clear()
         return HarnessResult(
             session_id=harness_input.session_id,
             status=last_status,
