@@ -154,7 +154,11 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
 - `artifacts[].relative_path` 是 artifact browser 的 workspace-facing path；Web UI 默认按 `/` 分隔构造目录树，重复 path 仍保留为多个以 `artifact_id` 区分的文件叶子
 - `artifacts[].provenance` 是 projection-derived 展示对象，不是新的 canonical DB 字段。稳定输出字段为 `task_id`、`lane_id`、`invocation_id`、`run_id`、`produced_by`、`source`、`format`、`provider`、`external_id`、`source_locator`、`source_artifact_ids`、`input_artifact_ids`、`preprocess_artifact_ids`、`runner_run_id`、`pipeline_invocation_id`、`code_digest` 与 `tool_contract`
-- 普通 artifact browser 只展示 metadata/provenance 摘要；本接口语义不包含 artifact content preview、download 或 edit
+- 普通 artifact browser 只展示 metadata/provenance 摘要；内容读取由只读 agent tools 提供，不通过 workspace projection 直接返回文件内容，也不提供 delete/rename/move/edit 语义
+- `artifact.list` 返回当前 session 内的安全 artifact catalog，可按 task / invocation 过滤
+- `artifact.get` 返回单个 artifact 的安全 catalog record 及关联 invocation / output document 摘要；大字段通过 `path`、`offset`、`limit` 分页读取
+- `artifact.preview`、`artifact.read_text`、`artifact.range` 只读取 UTF-8 文本类 artifact，适合 FASTA、PDB、log、JSON、Markdown 等；二进制或不可读内容返回结构化 tool error
+- artifact tool results、workspace projection、events 与 capability projection 都不得返回 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、`source_storage_uri` 或 `intermediate_storage_uri`
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
 - 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage

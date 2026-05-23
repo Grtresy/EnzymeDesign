@@ -34,6 +34,7 @@ from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
 from .task_board import register_task_board_tools
+from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import ToolDescriptor
 
 
@@ -102,38 +103,7 @@ def teammate_tool_descriptors(
                 "additionalProperties": False,
             },
         ),
-        ToolDescriptor(
-            tool_name="artifact.list",
-            description="List available session artifacts or artifacts scoped to a task/invocation.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "invocation_id": {"type": "string"},
-                },
-                "additionalProperties": False,
-            },
-        ),
-        ToolDescriptor(
-            tool_name="artifact.get",
-            description=(
-                "Read one artifact record. Large linked output fields are summarized by default; "
-                "use path/offset/limit from read_hint to page fields such as output_payload.evidence_items. "
-                "When path targets a large dict, the result returns pageable keys with child paths to inspect."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "artifact_id": {"type": "string"},
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
-                    "include_full": {"type": "boolean"},
-                },
-                "required": ["artifact_id"],
-                "additionalProperties": False,
-            },
-        ),
+        *artifact_tool_descriptors(),
         ToolDescriptor(
             tool_name="protocol.thread",
             description="Read one team protocol thread by correlation id.",
@@ -674,7 +644,7 @@ class TeammateConversationDriver(HarnessDriver):
                 "You are not user-facing. Do not speak to the user directly.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
                 "Prefer tools over narration. Complete or advance the assigned task, then send a structured protocol update if useful.",
-                "You may read any session artifact through artifact tools. Stay focused on your assigned task and lane.",
+                "You may read any session artifact through artifact tools by artifact_id. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",

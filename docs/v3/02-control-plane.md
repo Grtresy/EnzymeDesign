@@ -330,7 +330,11 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 
 workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或恢复 CLI 后，调用方应能从 projection 重建 conversation timeline、task board、resident teammate roster、pending approvals、lane/artifact/report 状态与 capability invocation 摘要，而不依赖浏览器本地缓存、raw graph state 或临时 prompt 内容。
 
-`workspace.artifacts[]` 默认带 `artifact_id`、`kind`、`title`、`description`、`relative_path`、task/lane/invocation/run 关系字段、清洗后的 `metadata`，以及 projection-derived `provenance`。UI 默认按 `relative_path` 构造路径树；重复 `relative_path` 不合并，叶子身份始终是 `artifact_id`。`provenance` 固定展示 task、lane、invocation、run、producer/source、format、provider/external id/source locator、source/input/preprocess artifact ids、runner/pipeline id、code digest 与 tool contract 摘要。普通 workspace projection 不把 Host local path、runner staging path、`storage_uri` 或 private intermediate path 当作 artifact browser 字段。
+`artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它不是 workspace/API/agent read model 字段。
+
+`workspace.artifacts[]` 默认带 `artifact_id`、`kind`、`title`、`description`、`relative_path`、task/lane/invocation/run 关系字段、清洗后的 `metadata`，以及 projection-derived `provenance`。UI 默认按 `relative_path` 构造路径树；重复 `relative_path` 不合并，叶子身份始终是 `artifact_id`。`provenance` 固定展示 task、lane、invocation、run、producer/source、format、provider/external id/source locator、source/input/preprocess artifact ids、runner/pipeline id、code digest 与 tool contract 摘要。普通 workspace projection 不把 Host local path、runner staging path、`storage_uri`、`source_storage_uri`、`intermediate_storage_uri` 或 private path 当作 artifact browser 字段。
+
+Agent / public read model 只能通过 `artifact_id` 与安全 artifact 投影读取 catalog 和文本预览。agent 不得请求 Host 本地路径，也不得把 `storage_uri`、runner staging path 或 sandbox host path 作为 tool 参数、HPC 输入或用户可见输出。
 
 ## 4. Event Model
 

@@ -1021,6 +1021,12 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     assert status["output_artifact_ids"]
     assert status["runs"]
     assert status["artifacts"]
+    public_status = str(status)
+    assert "storage_uri" not in public_status
+    assert "local_path" not in public_status
+    assert "source_storage_uri" not in public_status
+    assert "intermediate_storage_uri" not in public_status
+    assert "storage_uri" not in str(resumed.parsed_result.structured_findings)
     assert len(runner.payloads) == 1
     assert sandbox.calls == 1
 

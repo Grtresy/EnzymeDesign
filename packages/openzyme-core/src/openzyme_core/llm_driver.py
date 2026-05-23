@@ -138,6 +138,7 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         f"If the user asks which teammates are available, answer only with {', '.join(TEAMMATE_ROLE_NAMES)} plus their role-level responsibilities.",
         "Do not describe provider tools or capability engines such as fpocket, AutoDock Vina, AlphaFold, PubMed, UniProt, or RCSB PDB as teammates.",
         "Use tools to create, inspect, update, and delegate tasks. Do not directly start capability engines.",
+        "Use artifact.list/get/preview/read_text/range to inspect session artifacts by artifact_id; never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",

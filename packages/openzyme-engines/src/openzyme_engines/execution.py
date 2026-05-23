@@ -16,6 +16,8 @@ from openzyme_core import EngineDescriptor
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import ToolResult
+from openzyme_core.artifact_projection import project_artifact_for_agent
+from openzyme_core.artifact_projection import sanitize_private_artifact_fields
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
@@ -563,7 +565,7 @@ class ExecutionStartResult:
             "invocation": self.invocation.to_dict(),
             "run": None if self.run is None else self.run.to_dict(),
             "approval": None if self.approval is None else self.approval.to_dict(),
-            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "artifacts": [project_artifact_for_agent(artifact) for artifact in self.artifacts],
             "parsed_result": None if self.parsed_result is None else self.parsed_result.to_dict(),
         }
 
@@ -702,7 +704,7 @@ class DefaultExecutionResultParser:
                 structured_findings={
                     "design_signal": "proceed" if pockets_found > 0 else "revise",
                     "pockets_found": pockets_found,
-                    "artifacts": [artifact.to_dict() for artifact in artifact_refs],
+                    "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
                 },
             )
         if handoff.catalog_tool_id == "vina":
@@ -716,14 +718,14 @@ class DefaultExecutionResultParser:
                 structured_findings={
                     "design_signal": "proceed" if affinity <= -6.0 else "revise",
                     "best_affinity": affinity,
-                    "artifacts": [artifact.to_dict() for artifact in artifact_refs],
+                    "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
                 },
             )
         return ExecutionParsedResult(
             result_summary=f"{handoff.catalog_tool_id} execution completed.",
             structured_findings={
                 "design_signal": "proceed",
-                "artifacts": [artifact.to_dict() for artifact in artifact_refs],
+                "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
             },
         )
 
@@ -1054,14 +1056,14 @@ class ExecutionEngine:
             output_document = self.repositories.engine_documents.get(invocation.output_ref)
             payload["run"] = run.to_dict()
             payload["artifacts"] = [
-                artifact.to_dict()
+                project_artifact_for_agent(artifact)
                 for artifact in self.repositories.artifacts.list_by_invocation(
                     invocation.session_id, invocation.invocation_id
                 )
             ]
             if output_document is not None:
-                payload["output_payload"] = output_document.payload
-                output_payload = dict(output_document.payload)
+                payload["output_payload"] = sanitize_private_artifact_fields(output_document.payload)
+                output_payload = dict(payload["output_payload"])
                 pipeline = output_payload.get("pipeline")
                 if isinstance(pipeline, dict):
                     payload["details"] = pipeline
@@ -1069,12 +1071,13 @@ class ExecutionEngine:
                     payload["output_artifact_ids"] = list(
                         pipeline.get("output_artifact_ids") or []
                     )
-                payload["runs"] = output_payload.get("runs") or [
+                runs_payload = output_payload.get("runs") or [
                     item.to_dict()
                     for item in self.repositories.runs.list_by_invocation(
                         invocation.session_id, invocation.invocation_id
                     )
                 ]
+                payload["runs"] = sanitize_private_artifact_fields(runs_payload)
             return payload
         reconciled = self.reconcile_execution(invocation_id)
         return reconciled.to_dict()
@@ -1395,7 +1398,10 @@ class ExecutionEngine:
                 raise ValueError(f"run {params['run_id']!r} does not exist")
             return run.to_dict()
         if method == "run.fetch_artifacts":
-            return [artifact.to_dict() for artifact in self.repositories.artifacts.list_by_run(str(params["run_id"]))]
+            return [
+                self._sandbox_safe_artifact(artifact)
+                for artifact in self.repositories.artifacts.list_by_run(str(params["run_id"]))
+            ]
         raise ValueError(f"unsupported SDK operation {method!r}")
 
     def _run_pipeline_hpc(
@@ -1614,7 +1620,7 @@ class ExecutionEngine:
                 "stderr": final_outcome.raw_result.get("stderr"),
                 "logs": final_outcome.raw_result.get("logs"),
             },
-            "artifacts": [artifact.to_dict() for artifact in artifact_records],
+            "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_records],
         }
 
     def _run_pipeline_preprocess(
@@ -2037,8 +2043,9 @@ class ExecutionEngine:
                     invocation.session_id, invocation.invocation_id
                 )
             ],
-            "artifacts": [artifact.to_dict() for artifact in all_artifacts],
+            "artifacts": [project_artifact_for_agent(artifact) for artifact in all_artifacts],
         }
+        output_payload = sanitize_private_artifact_fields(output_payload)
         self.repositories.engine_documents.save(
             self._document_record(
                 document_id=output_id,
@@ -2596,8 +2603,7 @@ class ExecutionEngine:
             )
 
     def _sandbox_safe_artifact(self, artifact: SessionArtifactRecord) -> dict[str, Any]:
-        payload = artifact.to_dict()
-        payload.pop("storage_uri", None)
+        payload = project_artifact_for_agent(artifact)
         payload["path"] = None
         return payload
 

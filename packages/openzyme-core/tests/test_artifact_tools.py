@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineDocumentRecord
@@ -162,12 +163,12 @@ def _build_context() -> tuple[CoreRepositories, SessionRuntimeContext]:
     return repositories, context
 
 
-def _dispatch(context: SessionRuntimeContext, arguments: dict[str, object]) -> dict[str, object]:
+def _dispatch(context: SessionRuntimeContext, arguments: dict[str, object], tool_name: str = "artifact.get") -> dict[str, object]:
     result = context.tool_registry.dispatch(
         context,
         ToolInvocation(
             call_id="call_artifact",
-            tool_name="artifact.get",
+            tool_name=tool_name,
             arguments=arguments,
         ),
     )
@@ -250,3 +251,189 @@ def test_artifact_get_reports_missing_path_with_top_level_options() -> None:
     assert result.ok is False
     assert "does not exist" in payload["error"]
     assert "output_payload" in payload["available_top_level_paths"]
+
+
+def _save_file_artifact(
+    repositories: CoreRepositories,
+    *,
+    path: Path,
+    artifact_id: str,
+    relative_path: str,
+    kind: ArtifactKind = ArtifactKind.RESULT,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=artifact_id,
+            session_id="sess_artifacts",
+            task_id="task_research",
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=kind,
+            storage_uri=str(path),
+            relative_path=relative_path,
+            title=relative_path,
+            description=None,
+            metadata=metadata or {},
+            created_at="2026-04-20T12:03:00+00:00",
+        )
+    )
+
+
+def test_artifact_catalog_tools_do_not_return_storage_uri(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    fasta = tmp_path / "protein.fasta"
+    fasta.write_text(">seq\nMSEQUENCE\n", encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=fasta,
+        artifact_id="art_fasta",
+        relative_path="inputs/protein.fasta",
+        kind=ArtifactKind.SEQUENCE,
+        metadata={"format": "fasta", "source_storage_uri": "/tmp/private/source.fasta"},
+    )
+
+    listed = _dispatch(context, {}, tool_name="artifact.list")
+    fetched = _dispatch(context, {"artifact_id": "art_fasta"})
+
+    assert "storage_uri" not in json.dumps(listed)
+    assert "source_storage_uri" not in json.dumps(listed)
+    assert "storage_uri" not in json.dumps(fetched)
+    assert "source_storage_uri" not in json.dumps(fetched)
+
+
+def test_artifact_tools_reject_cross_session_artifact(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    other_path = tmp_path / "other.md"
+    other_path.write_text("# other\n", encoding="utf-8")
+    repositories.sessions.save(
+        Session(
+            session_id="sess_other",
+            project_id="proj_001",
+            title="Other",
+            objective="Other session",
+            status=SessionStatus.ACTIVE,
+            created_at="2026-04-20T12:00:00+00:00",
+            updated_at="2026-04-20T12:00:00+00:00",
+        )
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_other",
+            session_id="sess_other",
+            task_id=None,
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.REPORT,
+            storage_uri=str(other_path),
+            relative_path="other.md",
+            title="other.md",
+            description=None,
+            metadata={"format": "markdown"},
+            created_at="2026-04-20T12:04:00+00:00",
+        )
+    )
+
+    for tool_name, arguments in (
+        ("artifact.get", {"artifact_id": "art_other"}),
+        ("artifact.preview", {"artifact_id": "art_other"}),
+        ("artifact.read_text", {"artifact_id": "art_other"}),
+        ("artifact.range", {"artifact_id": "art_other", "start_line": 1}),
+    ):
+        result = context.tool_registry.dispatch(
+            context,
+            ToolInvocation(call_id=f"call_{tool_name}", tool_name=tool_name, arguments=arguments),
+        )
+        assert result.ok is False
+        assert result.error_code == "artifact_not_found"
+        assert "current session" in result.content
+
+
+def test_artifact_text_preview_read_and_range_for_common_formats(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    samples = {
+        "art_fasta": ("protein.fasta", ">seq\nMSEQ\n", ArtifactKind.SEQUENCE, {"format": "fasta"}),
+        "art_pdb": ("protein.pdb", "ATOM      1  CA  ALA A   1       0.0 0.0 0.0\nEND\n", ArtifactKind.STRUCTURE, {"format": "pdb"}),
+        "art_log": ("run.log", "line 1\nline 2\nline 3\n", ArtifactKind.LOG, {"format": "log"}),
+        "art_json": ("result.json", "{\"ok\": true}\n", ArtifactKind.RESULT, {"format": "json"}),
+        "art_md": ("report.md", "# Report\nBody\n", ArtifactKind.REPORT, {"format": "markdown"}),
+    }
+    for artifact_id, (filename, content, kind, metadata) in samples.items():
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        _save_file_artifact(
+            repositories,
+            path=path,
+            artifact_id=artifact_id,
+            relative_path=filename,
+            kind=kind,
+            metadata=metadata,
+        )
+
+    preview = _dispatch(context, {"artifact_id": "art_fasta", "lines": 1}, tool_name="artifact.preview")
+    read_text = _dispatch(context, {"artifact_id": "art_json", "offset": 0, "limit": 20}, tool_name="artifact.read_text")
+    line_range = _dispatch(context, {"artifact_id": "art_log", "start_line": 2, "end_line": 3}, tool_name="artifact.range")
+    pdb_range = _dispatch(context, {"artifact_id": "art_pdb", "start_line": 1, "end_line": 1}, tool_name="artifact.range")
+    md_preview = _dispatch(context, {"artifact_id": "art_md"}, tool_name="artifact.preview")
+
+    assert preview["preview"] == ">seq"
+    assert read_text["content"] == "{\"ok\": true}\n"
+    assert line_range["lines"] == ["line 2", "line 3"]
+    assert pdb_range["lines"][0].startswith("ATOM")
+    assert md_preview["preview"].startswith("# Report")
+    assert "storage_uri" not in json.dumps([preview, read_text, line_range, pdb_range, md_preview])
+
+
+def test_artifact_read_text_truncates_large_file(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    large = tmp_path / "large.log"
+    large.write_text("0123456789" * 200, encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=large,
+        artifact_id="art_large_log",
+        relative_path="large.log",
+        kind=ArtifactKind.LOG,
+        metadata={"format": "log"},
+    )
+
+    payload = _dispatch(
+        context,
+        {"artifact_id": "art_large_log", "offset": 0, "limit": 25},
+        tool_name="artifact.read_text",
+    )
+
+    assert payload["returned_chars"] == 25
+    assert payload["next_offset"] == 25
+    assert payload["truncated"] is True
+
+
+def test_binary_artifact_returns_readable_error(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    binary = tmp_path / "array.npy"
+    binary.write_bytes(b"\x93NUMPY\x00\x01binary")
+    _save_file_artifact(
+        repositories,
+        path=binary,
+        artifact_id="art_binary",
+        relative_path="array.npy",
+        kind=ArtifactKind.RESULT,
+        metadata={"format": "npy"},
+    )
+
+    result = context.tool_registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_binary",
+            tool_name="artifact.preview",
+            arguments={"artifact_id": "art_binary"},
+        ),
+    )
+    payload = json.loads(result.content)
+
+    assert result.ok is False
+    assert result.error_code == "artifact_not_text"
+    assert payload["error_code"] == "artifact_not_text"
+    assert "storage_uri" not in json.dumps(payload)

@@ -1379,6 +1379,51 @@ def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> No
     assert "pageable keys" in descriptor.description
 
 
+def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:
+    expected = {
+        "artifact.list",
+        "artifact.get",
+        "artifact.preview",
+        "artifact.read_text",
+        "artifact.range",
+    }
+
+    master_names = {tool.tool_name for tool in top_level_tool_descriptors()}
+    teammate_names = {tool.tool_name for tool in teammate_tool_descriptors(role="reporter")}
+
+    assert expected <= master_names
+    assert expected <= teammate_names
+
+
+def test_master_and_teammate_prompts_do_not_request_host_paths() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+    context.refresh_restore_context()
+
+    from openzyme_core.llm_driver import _build_system_prompt
+
+    master_prompt = _build_system_prompt(context)
+    teammate_prompt = TeammateConversationDriver(
+        model_factory=None,
+        agent_id="agent_reporter",
+        role="reporter",
+        correlation_id="corr_001",
+        task_id="task_001",
+        instructions="Inspect artifacts.",
+    )._system_prompt(context)
+
+    assert "artifact.list/get/preview/read_text/range" in master_prompt
+    assert "Never request or use Host local paths" in teammate_prompt
+    assert "never request or use Host local paths" in master_prompt
+
+
 def test_executor_pipeline_start_descriptor_hides_dry_run_for_assigned_work() -> None:
     descriptor = next(
         item
@@ -1422,6 +1467,7 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
     assert artifact_records
     assert payload["status"] == "completed"
     assert payload["artifacts"][0]["artifact_id"] == artifact_records[0].artifact_id
+    assert "storage_uri" not in json.dumps(payload)
     assert artifact_records[0].kind is ArtifactKind.SEQUENCE
     assert artifact_records[0].invocation_id is not None
     assert artifact_records[0].metadata["provider"] == "uniprot"

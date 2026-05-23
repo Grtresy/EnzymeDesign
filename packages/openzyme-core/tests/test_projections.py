@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentMember
@@ -628,3 +630,56 @@ def test_workspace_artifact_projection_normalizes_direct_research_provenance() -
     assert provenance["input_artifact_ids"] == []
     assert provenance["preprocess_artifact_ids"] == []
     assert provenance["tool_contract"] == {}
+
+
+def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_research_private",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            engine_name="deep_research",
+            status=EngineInvocationStatus.SUCCEEDED,
+            input_ref=None,
+            output_ref="doc_research_private",
+            approval_id=None,
+            idempotency_key="research-private",
+            started_at="2026-04-17T13:01:00+00:00",
+            finished_at="2026-04-17T13:02:00+00:00",
+        )
+    )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="doc_research_private",
+            session_id=session.session_id,
+            invocation_id="inv_research_private",
+            document_kind="research_tool_observation",
+            payload={
+                "summary": "Downloaded artifact",
+                "artifacts": [
+                    {
+                        "artifact_id": "art_private",
+                        "storage_uri": "/tmp/host/private.fasta",
+                        "local_path": "/tmp/host/private.fasta",
+                        "metadata": {
+                            "source_storage_uri": "/tmp/host/source.fasta",
+                            "intermediate_storage_uri": "/tmp/host/intermediate.fasta",
+                        },
+                    }
+                ],
+            },
+            created_at="2026-04-17T13:02:00+00:00",
+            updated_at="2026-04-17T13:02:00+00:00",
+        )
+    )
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    payload_text = json.dumps(workspace["capabilities"]["deep_research"])
+
+    assert "storage_uri" not in payload_text
+    assert "local_path" not in payload_text
+    assert "source_storage_uri" not in payload_text
+    assert "intermediate_storage_uri" not in payload_text

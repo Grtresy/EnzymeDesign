@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
+from openzyme_domain import ArtifactKind
+
+from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import project_artifacts_for_agent
+from .artifact_projection import sanitize_private_artifact_fields
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -13,6 +19,57 @@ MAX_PAGE_LIMIT = 50
 LARGE_JSON_CHARS = 20_000
 FULL_JSON_CHARS = 100_000
 PREVIEW_JSON_CHARS = 1_200
+DEFAULT_TEXT_LIMIT = 12_000
+MAX_TEXT_LIMIT = 50_000
+DEFAULT_PREVIEW_LINES = 40
+MAX_PREVIEW_LINES = 200
+MAX_RANGE_LINES = 500
+MAX_TEXT_FILE_BYTES = 2_000_000
+
+TEXT_EXTENSIONS = {
+    ".csv",
+    ".fa",
+    ".faa",
+    ".fasta",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".pdb",
+    ".pdbqt",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+BINARY_EXTENSIONS = {
+    ".bin",
+    ".gz",
+    ".h5",
+    ".hdf5",
+    ".npy",
+    ".npz",
+    ".parquet",
+    ".pdf",
+    ".png",
+    ".zip",
+}
+TEXT_FORMATS = {
+    "csv",
+    "fa",
+    "faa",
+    "fasta",
+    "json",
+    "jsonl",
+    "log",
+    "markdown",
+    "md",
+    "pdb",
+    "pdbqt",
+    "text",
+    "txt",
+    "yaml",
+}
 
 
 def _json_chars(value: Any) -> int:
@@ -107,8 +164,42 @@ def _output_ref_from_artifact(artifact: Any) -> str | None:
     return None
 
 
+def _artifact_error(
+    invocation: ToolInvocation,
+    *,
+    content: str | dict[str, Any],
+    error_code: str,
+    hint: str | None = None,
+) -> ToolResult:
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(content, sort_keys=True) if isinstance(content, dict) else content,
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=error_code,
+        error_code=error_code,
+        hint=hint,
+    )
+
+
+def _load_scoped_artifact(context: SessionRuntimeContext, invocation: ToolInvocation) -> tuple[Any | None, ToolResult | None]:
+    artifact_id = str(invocation.arguments["artifact_id"])
+    artifact = context.repositories.artifacts.get(artifact_id)
+    session_id = context.snapshot.session.session_id
+    if artifact is None or artifact.session_id != session_id:
+        return None, _artifact_error(
+            invocation,
+            content=f"artifact {artifact_id!r} does not exist in the current session",
+            error_code="artifact_not_found",
+            hint="Use artifact.list to inspect artifact ids available in this session.",
+        )
+    return artifact, None
+
+
 def _artifact_resource(context: SessionRuntimeContext, artifact: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {"artifact": artifact.to_dict()}
+    payload: dict[str, Any] = {"artifact": project_artifact_for_agent(artifact)}
     invocation = None
     if artifact.invocation_id is not None:
         invocation = context.repositories.invocations.get(artifact.invocation_id)
@@ -131,10 +222,10 @@ def _artifact_resource(context: SessionRuntimeContext, artifact: Any) -> dict[st
                 "created_at": output_document.created_at,
                 "updated_at": output_document.updated_at,
             }
-            payload["output_payload"] = output_document.payload
+            payload["output_payload"] = sanitize_private_artifact_fields(output_document.payload)
     if artifact.invocation_id is not None:
         payload["documents"] = [
-            document.to_dict()
+            sanitize_private_artifact_fields(document.to_dict())
             for document in context.repositories.engine_documents.list_by_invocation(
                 artifact.session_id,
                 artifact.invocation_id,
@@ -253,8 +344,116 @@ def _path_payload(*, root: dict[str, Any], path: str, offset: int, limit: int, i
         "path": path,
         "type": _type_name(value),
         "json_chars": json_chars,
-        "value": value,
+        "value": sanitize_private_artifact_fields(value),
     }
+
+
+def _clamped_text_limit(arguments: dict[str, Any]) -> int:
+    limit = int(arguments.get("limit", DEFAULT_TEXT_LIMIT))
+    return max(0, min(MAX_TEXT_LIMIT, limit))
+
+
+def _artifact_format(artifact: Any) -> str | None:
+    metadata = dict(artifact.metadata or {})
+    value = metadata.get("format") or metadata.get("output_format")
+    return None if value is None else str(value).lower()
+
+
+def _artifact_suffix(artifact: Any) -> str:
+    relative = str(artifact.relative_path or "")
+    if relative:
+        return Path(relative).suffix.lower()
+    storage_uri = str(getattr(artifact, "storage_uri", "") or "")
+    if "://" in storage_uri:
+        return ""
+    return Path(storage_uri).suffix.lower()
+
+
+def _looks_binary_by_metadata(artifact: Any) -> bool:
+    fmt = _artifact_format(artifact)
+    if fmt is not None and fmt in TEXT_FORMATS:
+        return False
+    suffix = _artifact_suffix(artifact)
+    return suffix in BINARY_EXTENSIONS
+
+
+def _looks_text_by_metadata(artifact: Any) -> bool:
+    if artifact.kind in {ArtifactKind.LOG, ArtifactKind.RESEARCH_DOSSIER, ArtifactKind.STRUCTURE, ArtifactKind.RESULT}:
+        return True
+    fmt = _artifact_format(artifact)
+    if fmt is not None and fmt in TEXT_FORMATS:
+        return True
+    return _artifact_suffix(artifact) in TEXT_EXTENSIONS
+
+
+def _storage_path(artifact: Any) -> Path | None:
+    storage_uri = str(getattr(artifact, "storage_uri", "") or "")
+    if not storage_uri:
+        return None
+    if "://" in storage_uri:
+        return None
+    return Path(storage_uri)
+
+
+def _read_text_artifact(artifact: Any) -> tuple[str | None, dict[str, Any]]:
+    if _looks_binary_by_metadata(artifact):
+        return None, {
+            "error": "artifact is not a text artifact",
+            "error_code": "artifact_not_text",
+            "hint": "Use artifact.get for catalog metadata, or a dedicated parser for binary artifacts.",
+        }
+    path = _storage_path(artifact)
+    if path is None:
+        return None, {
+            "error": "artifact content is not stored as a readable Host file",
+            "error_code": "artifact_content_unavailable",
+            "hint": "Use artifact.get to inspect catalog metadata and linked engine output fields.",
+        }
+    if not path.is_file():
+        return None, {
+            "error": "artifact content file is missing",
+            "error_code": "artifact_content_missing",
+            "hint": "The catalog record exists, but the Host-private storage target is not readable.",
+        }
+    size_bytes = path.stat().st_size
+    read_size = min(size_bytes, MAX_TEXT_FILE_BYTES)
+    with path.open("rb") as handle:
+        data = handle.read(read_size)
+    if b"\x00" in data[:4096]:
+        return None, {
+            "error": "artifact appears to be binary",
+            "error_code": "artifact_not_text",
+            "size_bytes": size_bytes,
+            "hint": "Use artifact.get for metadata; binary artifacts need a specialized reader.",
+        }
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, {
+            "error": "artifact is not valid UTF-8 text",
+            "error_code": "artifact_not_text",
+            "size_bytes": size_bytes,
+            "hint": "Only UTF-8 text artifacts can be read by artifact.preview/read_text/range.",
+        }
+    return text, {
+        "size_bytes": size_bytes,
+        "bytes_read": read_size,
+        "file_truncated": read_size < size_bytes,
+        "text_hint_from_metadata": _looks_text_by_metadata(artifact),
+    }
+
+
+def _text_error_result(invocation: ToolInvocation, artifact: Any, meta: dict[str, Any]) -> ToolResult:
+    payload = {
+        "artifact": project_artifact_for_agent(artifact),
+        **meta,
+    }
+    return _artifact_error(
+        invocation,
+        content=payload,
+        error_code=str(meta.get("error_code") or "artifact_read_failed"),
+        hint=None if meta.get("hint") is None else str(meta["hint"]),
+    )
 
 
 def register_artifact_tools(registry: ToolRegistry) -> None:
@@ -272,23 +471,16 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps([artifact.to_dict() for artifact in artifacts], sort_keys=True),
+            content=json.dumps(project_artifacts_for_agent(artifacts), sort_keys=True),
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
         )
 
     def get_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
-        artifact_id = str(invocation.arguments["artifact_id"])
-        artifact = context.repositories.artifacts.get(artifact_id)
-        if artifact is None:
-            return ToolResult(
-                call_id=invocation.call_id,
-                tool_name=invocation.tool_name,
-                ok=False,
-                content=f"artifact {artifact_id!r} does not exist",
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-            )
+        artifact, error = _load_scoped_artifact(context, invocation)
+        if error is not None:
+            return error
+        assert artifact is not None
         root = _artifact_resource(context, artifact)
         path = invocation.arguments.get("path")
         if path is None:
@@ -314,8 +506,118 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             lane_id=artifact.lane_id,
         )
 
+    def preview_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        artifact, error = _load_scoped_artifact(context, invocation)
+        if error is not None:
+            return error
+        assert artifact is not None
+        text, meta = _read_text_artifact(artifact)
+        if text is None:
+            return _text_error_result(invocation, artifact, meta)
+        max_lines = max(1, min(MAX_PREVIEW_LINES, int(invocation.arguments.get("lines", DEFAULT_PREVIEW_LINES))))
+        limit = _clamped_text_limit(invocation.arguments)
+        lines = text.splitlines()
+        preview_lines = lines[:max_lines]
+        preview = "\n".join(preview_lines)
+        truncated_by_lines = len(lines) > len(preview_lines)
+        if len(preview) > limit:
+            preview = preview[:limit]
+            truncated_by_chars = True
+        else:
+            truncated_by_chars = False
+        payload = {
+            "artifact": project_artifact_for_agent(artifact),
+            "size_bytes": meta["size_bytes"],
+            "is_text": True,
+            "line_count": len(lines),
+            "returned_lines": len(preview_lines),
+            "preview": preview,
+            "truncated": bool(truncated_by_lines or truncated_by_chars or meta["file_truncated"]),
+            "next_offset": len(preview) if len(preview) < len(text) else None,
+            "range_hint": "artifact.range with start_line=1",
+            "read_hint": "artifact.read_text with offset=0",
+        }
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=artifact.task_id,
+            lane_id=artifact.lane_id,
+        )
+
+    def read_text_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        artifact, error = _load_scoped_artifact(context, invocation)
+        if error is not None:
+            return error
+        assert artifact is not None
+        text, meta = _read_text_artifact(artifact)
+        if text is None:
+            return _text_error_result(invocation, artifact, meta)
+        offset = max(0, int(invocation.arguments.get("offset", 0)))
+        limit = _clamped_text_limit(invocation.arguments)
+        page = text[offset : offset + limit]
+        next_offset = offset + len(page) if offset + len(page) < len(text) or meta["file_truncated"] else None
+        payload = {
+            "artifact": project_artifact_for_agent(artifact),
+            "size_bytes": meta["size_bytes"],
+            "offset": offset,
+            "limit": limit,
+            "content": page,
+            "returned_chars": len(page),
+            "next_offset": next_offset,
+            "truncated": next_offset is not None,
+        }
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=artifact.task_id,
+            lane_id=artifact.lane_id,
+        )
+
+    def range_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        artifact, error = _load_scoped_artifact(context, invocation)
+        if error is not None:
+            return error
+        assert artifact is not None
+        text, meta = _read_text_artifact(artifact)
+        if text is None:
+            return _text_error_result(invocation, artifact, meta)
+        start_line = max(1, int(invocation.arguments.get("start_line", 1)))
+        end_line_arg = invocation.arguments.get("end_line")
+        end_line = start_line + DEFAULT_PAGE_LIMIT - 1 if end_line_arg is None else int(end_line_arg)
+        end_line = max(start_line, min(end_line, start_line + MAX_RANGE_LINES - 1))
+        lines = text.splitlines()
+        selected = lines[start_line - 1 : end_line]
+        payload = {
+            "artifact": project_artifact_for_agent(artifact),
+            "size_bytes": meta["size_bytes"],
+            "start_line": start_line,
+            "end_line": start_line + len(selected) - 1 if selected else start_line - 1,
+            "requested_end_line": end_line,
+            "line_count": len(lines),
+            "content": "\n".join(selected),
+            "lines": selected,
+            "returned_line_count": len(selected),
+            "next_start_line": start_line + len(selected) if start_line + len(selected) <= len(lines) else None,
+            "truncated": bool(end_line < len(lines) or meta["file_truncated"]),
+        }
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=artifact.task_id,
+            lane_id=artifact.lane_id,
+        )
+
     registry.register("artifact.list", list_handler)
     registry.register("artifact.get", get_handler)
+    registry.register("artifact.preview", preview_handler)
+    registry.register("artifact.read_text", read_text_handler)
+    registry.register("artifact.range", range_handler)
 
 
 __all__ = ["register_artifact_tools"]

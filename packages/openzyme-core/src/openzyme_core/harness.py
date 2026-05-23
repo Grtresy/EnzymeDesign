@@ -532,6 +532,7 @@ def _resolve_default_focus(snapshot: SessionRuntimeSnapshot) -> RestoreFocus:
 def _register_builtin_tools(
     registry: ToolRegistry, *, engine_registry: EngineRegistry | None = None
 ) -> None:
+    from .artifact_tools import register_artifact_tools
     from .docs import register_docs_tools
     from .lane_manager import register_lane_tools
     from .memory import register_memory_tools
@@ -539,6 +540,7 @@ def _register_builtin_tools(
     from .subagents import register_subagent_tools
     from .task_board import register_task_board_tools
 
+    register_artifact_tools(registry)
     register_task_board_tools(registry)
     register_subagent_tools(registry)
     register_protocol_tools(registry)

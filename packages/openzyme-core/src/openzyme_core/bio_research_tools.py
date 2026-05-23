@@ -26,6 +26,7 @@ from openzyme_research import ResearchUnit
 from openzyme_research import literature_hits_to_findings
 from openzyme_research import structure_hits_to_findings
 
+from .artifact_projection import sanitize_private_artifact_fields
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -139,7 +140,7 @@ def _finish_research_tool_invocation(
     observation: ResearchObservation,
 ) -> dict[str, Any]:
     now = utc_now_iso()
-    observation_payload = observation.to_dict()
+    observation_payload = sanitize_private_artifact_fields(observation.to_dict())
     output_document_id = f"{engine_invocation.invocation_id}:output"
     terminal_status = (
         EngineInvocationStatus.FAILED

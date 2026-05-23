@@ -24,6 +24,89 @@ class ToolDescriptor:
         }
 
 
+def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    return (
+        ToolDescriptor(
+            tool_name="artifact.list",
+            description=(
+                "List safe session artifact records or artifacts scoped to a task/invocation. "
+                "Results never include Host storage_uri or local paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "invocation_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.get",
+            description=(
+                "Read one safe artifact catalog record and linked engine metadata by artifact_id. "
+                "Large linked output fields are summarized by default; use path/offset/limit from read_hint "
+                "to page fields such as output_payload.evidence_items. When path targets a large dict, "
+                "the result returns pageable keys with child paths to inspect. Results never include Host paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
+                    "include_full": {"type": "boolean"},
+                },
+                "required": ["artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.preview",
+            description="Preview a UTF-8 text artifact by artifact_id without exposing the Host storage path.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "lines": {"type": "integer", "minimum": 1, "maximum": 200},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 50000},
+                },
+                "required": ["artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.read_text",
+            description="Read a UTF-8 text artifact by character offset and bounded limit.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 50000},
+                },
+                "required": ["artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.range",
+            description="Read a UTF-8 text artifact by 1-based line range, suitable for logs, PDB, FASTA, JSON, and Markdown.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
+                },
+                "required": ["artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
 def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     return (
         ToolDescriptor(
@@ -184,6 +267,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             description="List lanes and their assigned work.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        *artifact_tool_descriptors(),
         ToolDescriptor(
             tool_name="memory.compact",
             description="Write a compact summary for session, lane, or task context.",
@@ -233,4 +317,9 @@ def top_level_tool_descriptors(engine_registry: EngineRegistry | None = None) ->
     return builtin_tool_descriptors()
 
 
-__all__ = ["ToolDescriptor", "builtin_tool_descriptors", "top_level_tool_descriptors"]
+__all__ = [
+    "ToolDescriptor",
+    "artifact_tool_descriptors",
+    "builtin_tool_descriptors",
+    "top_level_tool_descriptors",
+]

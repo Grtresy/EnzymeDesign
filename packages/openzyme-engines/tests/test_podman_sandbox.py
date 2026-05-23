@@ -41,6 +41,8 @@ def test_podman_pipeline_runs_container_and_registers_output(tmp_path: Path) -> 
             "from pathlib import Path\n"
             "from openzyme_pipeline import artifacts\n"
             "record = artifacts.get('art_input')\n"
+            "assert record['path'].startswith('/openzyme/input/')\n"
+            "assert 'storage_uri' not in record\n"
             "data = Path(record['path']).read_text(encoding='utf-8')\n"
             "Path('/openzyme/output/result.txt').write_text(data.upper(), encoding='utf-8')\n"
             "artifacts.register('/openzyme/output/result.txt', kind='result', format='txt')\n"

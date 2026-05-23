@@ -10,6 +10,9 @@ from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MemoryKind
 
+from .artifact_projection import PRIVATE_ARTIFACT_KEYS
+from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import sanitize_private_artifact_fields
 from .repositories import CoreRepositories
 from .task_board import TaskBoardService
 from .lane_manager import LaneManager
@@ -417,8 +420,6 @@ class SessionProjectionBuilder:
         if documents:
             projected["documents"] = [
                 self._sanitize_execution_projection(document.to_dict())
-                if invocation.engine_name == "execution"
-                else document.to_dict()
                 for document in documents
             ]
             output_document = next(
@@ -429,13 +430,9 @@ class SessionProjectionBuilder:
                 output_dict = output_document.to_dict()
                 projected["output_document"] = (
                     self._sanitize_execution_projection(output_dict)
-                    if invocation.engine_name == "execution"
-                    else output_dict
                 )
                 projected["output_payload"] = (
                     self._sanitize_execution_projection(output_document.payload)
-                    if invocation.engine_name == "execution"
-                    else output_document.payload
                 )
         summary = self.repositories.research_summaries.get_by_invocation(session_id, invocation.invocation_id)
         if summary is not None:
@@ -457,9 +454,7 @@ class SessionProjectionBuilder:
             artifact_payloads: list[dict[str, Any]] = []
             for run in runs:
                 for item in self.repositories.artifacts.list_by_run(run.run_id):
-                    artifact_payload = item.to_dict()
-                    if invocation.engine_name == "execution":
-                        artifact_payload.pop("storage_uri", None)
+                    artifact_payload = project_artifact_for_agent(item)
                     artifact_payloads.append(artifact_payload)
             projected["artifacts"] = artifact_payloads
             projected["output_artifact_ids"] = [artifact["artifact_id"] for artifact in artifact_payloads]
@@ -500,15 +495,13 @@ class SessionProjectionBuilder:
     def _sanitize_execution_projection(self, value: Any) -> Any:
         private_keys = {
             "pipeline_code",
-            "storage_uri",
-            "local_path",
-            "source_storage_uri",
-            "intermediate_storage_uri",
+            *PRIVATE_ARTIFACT_KEYS,
+            "remote_path",
         }
         if isinstance(value, dict):
             sanitized: dict[str, Any] = {}
             for key, item in value.items():
-                if key in private_keys:
+                if str(key).lower() in private_keys:
                     continue
                 sanitized[key] = self._sanitize_execution_projection(item)
             return sanitized
@@ -574,10 +567,10 @@ class SessionProjectionBuilder:
         }
 
     def _project_workspace_artifact(self, artifact: Any) -> dict[str, Any]:
-        payload = artifact.to_dict()
+        payload = project_artifact_for_agent(artifact)
         metadata = dict(payload.get("metadata") or {})
         payload["provenance"] = self._project_artifact_provenance(payload, metadata)
-        return self._sanitize_execution_projection(payload)
+        return sanitize_private_artifact_fields(payload)
 
     def _capability_key_for_engine(self, engine_name: str) -> str:
         return {

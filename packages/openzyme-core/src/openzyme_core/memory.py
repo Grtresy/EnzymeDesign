@@ -20,6 +20,7 @@ from openzyme_domain import SessionReportRecord
 from openzyme_domain import Task
 from openzyme_domain.control_plane import utc_now_iso
 
+from .artifact_projection import project_artifact_for_agent
 from .repositories import CoreRepositories
 from .skills import SkillDocument
 from .skills import SkillRegistry
@@ -81,7 +82,7 @@ class SessionRestoreContext:
             "inbox": [message.to_dict() for message in self.inbox],
             "agents": [agent.to_dict() for agent in self.agents],
             "active_invocations": [invocation.to_dict() for invocation in self.active_invocations],
-            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+            "artifacts": [project_artifact_for_agent(artifact) for artifact in self.artifacts],
             "report_drafts": [draft.to_dict() for draft in self.report_drafts],
             "reports": [report.to_dict() for report in self.reports],
             "protocol_threads": list(self.protocol_threads),
