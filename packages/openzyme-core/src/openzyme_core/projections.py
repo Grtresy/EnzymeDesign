@@ -516,12 +516,68 @@ class SessionProjectionBuilder:
             return [self._sanitize_execution_projection(item) for item in value]
         return value
 
+    def _string_or_none(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value or None
+        return str(value)
+
+    def _string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list | tuple):
+            return []
+        return [str(item) for item in value if item is not None]
+
+    def _source_artifact_ids(self, metadata: dict[str, Any]) -> list[str]:
+        artifact_ids: list[str] = []
+        source_artifact_id = self._string_or_none(metadata.get("source_artifact_id"))
+        if source_artifact_id is not None:
+            artifact_ids.append(source_artifact_id)
+        artifact_ids.extend(self._string_list(metadata.get("source_artifact_ids")))
+        return artifact_ids
+
+    def _infer_artifact_format(self, payload: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+        explicit = self._string_or_none(metadata.get("format")) or self._string_or_none(metadata.get("output_format"))
+        if explicit is not None:
+            return explicit
+        filename = str(payload.get("relative_path") or "").rsplit("/", maxsplit=1)[-1]
+        if "." not in filename or filename.endswith("."):
+            return None
+        return filename.rsplit(".", maxsplit=1)[-1].lower() or None
+
+    def _project_artifact_provenance(self, payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+        run = self.repositories.runs.get(payload["run_id"]) if payload.get("run_id") else None
+        produced_by = (
+            self._string_or_none(metadata.get("produced_by"))
+            or self._string_or_none(metadata.get("source"))
+            or ("execution_engine" if payload.get("run_id") else None)
+        )
+        return {
+            "task_id": payload.get("task_id"),
+            "lane_id": payload.get("lane_id"),
+            "invocation_id": payload.get("invocation_id"),
+            "run_id": payload.get("run_id"),
+            "produced_by": produced_by,
+            "source": self._string_or_none(metadata.get("source")),
+            "format": self._infer_artifact_format(payload, metadata),
+            "provider": self._string_or_none(metadata.get("provider")),
+            "external_id": self._string_or_none(metadata.get("external_id")),
+            "source_locator": self._string_or_none(metadata.get("source_locator")),
+            "source_artifact_ids": self._source_artifact_ids(metadata),
+            "input_artifact_ids": self._string_list(metadata.get("input_artifact_ids")),
+            "preprocess_artifact_ids": self._string_list(metadata.get("preprocess_artifact_ids")),
+            "runner_run_id": self._string_or_none(metadata.get("runner_run_id"))
+            or (run.runner_run_id if run is not None else None),
+            "pipeline_invocation_id": self._string_or_none(metadata.get("pipeline_invocation_id")),
+            "code_digest": self._string_or_none(metadata.get("code_digest")),
+            "tool_contract": dict(metadata.get("tool_contract")) if isinstance(metadata.get("tool_contract"), dict) else {},
+        }
+
     def _project_workspace_artifact(self, artifact: Any) -> dict[str, Any]:
         payload = artifact.to_dict()
         metadata = dict(payload.get("metadata") or {})
-        if metadata.get("source") in {"execution_engine", "preprocess"} or metadata.get("pipeline_invocation_id"):
-            return self._sanitize_execution_projection(payload)
-        return payload
+        payload["provenance"] = self._project_artifact_provenance(payload, metadata)
+        return self._sanitize_execution_projection(payload)
 
     def _capability_key_for_engine(self, engine_name: str) -> str:
         return {

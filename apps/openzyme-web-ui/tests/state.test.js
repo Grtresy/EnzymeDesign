@@ -240,6 +240,109 @@ test("report draft events are tracked in activity and rendered in outputs", () =
   assert.match(html, /Workspace draft/);
 });
 
+test("outputs render artifacts as a relative path tree with duplicate leaves", () => {
+  const workspace = {
+    ...buildV3Workspace(),
+    artifacts: [
+      {
+        artifact_id: "art_alpha",
+        title: "result.pdbqt",
+        kind: "result",
+        relative_path: "runs/run_001/results/result.pdbqt",
+        provenance: {
+          task_id: "task_001",
+          lane_id: "lane_001",
+          invocation_id: "inv_exec_001",
+          run_id: "run_exec_001",
+          format: "pdbqt",
+          code_digest: "sha256:alpha",
+        },
+      },
+      {
+        artifact_id: "art_beta",
+        title: "duplicate result",
+        kind: "result",
+        relative_path: "runs/run_001/results/result.pdbqt",
+        provenance: { format: "pdbqt", code_digest: "sha256:beta" },
+      },
+    ],
+  };
+
+  const html = renderApp({
+    ...buildInitialViewState(),
+    currentSessionId: "sess_001",
+    currentSection: "outputs",
+    selectedArtifactId: "art_alpha",
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+  });
+
+  assert.match(html, /<summary>runs<\/summary>/);
+  assert.match(html, /<summary>run_001<\/summary>/);
+  assert.match(html, /<summary>results<\/summary>/);
+  assert.equal(html.match(/data-action="select-artifact"/g)?.length, 2);
+  assert.match(html, /art_alpha/);
+  assert.match(html, /art_beta/);
+  assert.match(html, /sha256:alpha/);
+});
+
+test("outputs fall back to the first artifact detail and sanitize storage paths", () => {
+  const workspace = {
+    ...buildV3Workspace(),
+    artifacts: [
+      {
+        artifact_id: "art_first",
+        title: "summary.json",
+        kind: "report",
+        relative_path: "reports/summary.json",
+        storage_uri: "/tmp/host/summary.json",
+        metadata: {
+          storage_uri: "/tmp/host/metadata.json",
+          nested: { local_path: "/tmp/host/local.json", visible: "kept" },
+        },
+        provenance: {
+          task_id: "task_001",
+          invocation_id: "inv_report_001",
+          format: "json",
+          produced_by: "reporter",
+          input_artifact_ids: ["art_input"],
+          preprocess_artifact_ids: [],
+          tool_contract: { adapter_id: "report" },
+        },
+      },
+      {
+        artifact_id: "art_second",
+        title: "table.csv",
+        kind: "result",
+        relative_path: "reports/table.csv",
+        provenance: { code_digest: "sha256:second" },
+      },
+    ],
+  };
+
+  const html = renderApp({
+    ...buildInitialViewState(),
+    currentSessionId: "sess_001",
+    currentSection: "outputs",
+    selectedArtifactId: "missing_artifact",
+    sessionSummaries: [buildSessionSummaryFromWorkspace(workspace)],
+    workspace,
+  });
+
+  assert.match(html, /summary\.json/);
+  assert.match(html, /task_001/);
+  assert.match(html, /inv_report_001/);
+  assert.match(html, /json/);
+  assert.match(html, /reporter/);
+  assert.match(html, /art_input/);
+  assert.match(html, /adapter_id/);
+  assert.match(html, /kept/);
+  assert.doesNotMatch(html, /storage_uri/);
+  assert.doesNotMatch(html, /local_path/);
+  assert.doesNotMatch(html, /\/tmp\/host/);
+  assert.doesNotMatch(html, /sha256:second/);
+});
+
 test("team inspector renders delegated teammate status", () => {
   const workspace = buildV3Workspace();
   const html = renderApp({

@@ -35,6 +35,153 @@ function renderPanelError(message) {
   return `<p class="error-banner" role="alert">${escapeHtml(message)}</p>`;
 }
 
+const privateArtifactKeys = new Set(["storage_uri", "source_storage_uri", "intermediate_storage_uri", "local_path"]);
+
+function sanitizeArtifactMetadata(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeArtifactMetadata(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !privateArtifactKeys.has(key))
+        .map(([key, item]) => [key, sanitizeArtifactMetadata(item)]),
+    );
+  }
+  return value;
+}
+
+function buildArtifactTree(artifacts) {
+  const root = { directories: new Map(), files: [] };
+  for (const artifact of artifacts) {
+    const relativePath = String(artifact.relative_path || artifact.title || artifact.artifact_id || "artifact");
+    const segments = relativePath.split("/").filter(Boolean);
+    const fileName = segments.pop() || String(artifact.title || artifact.artifact_id || "artifact");
+    let cursor = root;
+    for (const segment of segments) {
+      if (!cursor.directories.has(segment)) {
+        cursor.directories.set(segment, { directories: new Map(), files: [] });
+      }
+      cursor = cursor.directories.get(segment);
+    }
+    cursor.files.push({ artifact, fileName });
+  }
+  return root;
+}
+
+function renderArtifactTreeNode(node, selectedArtifactId) {
+  const directoryHtml = Array.from(node.directories.entries())
+    .map(
+      ([name, child]) => `
+        <li class="artifact-directory">
+          <details open>
+            <summary>${escapeHtml(name)}</summary>
+            <ul class="artifact-tree">
+              ${renderArtifactTreeNode(child, selectedArtifactId)}
+            </ul>
+          </details>
+        </li>
+      `,
+    )
+    .join("");
+  const fileHtml = node.files
+    .map(({ artifact, fileName }) => {
+      const artifactId = artifact.artifact_id ?? "";
+      return `
+        <li>
+          <button
+            type="button"
+            class="artifact-file ${selectedArtifactId === artifactId ? "is-selected" : ""}"
+            data-action="select-artifact"
+            data-artifact-id="${escapeHtml(artifactId)}"
+          >
+            <strong>${escapeHtml(fileName)}</strong>
+            <span>${escapeHtml(artifact.kind ?? "artifact")} · ${escapeHtml(artifactId)}</span>
+          </button>
+        </li>
+      `;
+    })
+    .join("");
+  return `${directoryHtml}${fileHtml}`;
+}
+
+function renderArtifactValue(value) {
+  if (Array.isArray(value)) {
+    return value.length ? value.map((item) => String(item)).join(", ") : "none";
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    return keys.length ? keys.join(", ") : "none";
+  }
+  return value ?? "none";
+}
+
+function renderArtifactFacts(artifact) {
+  const provenance = artifact.provenance ?? {};
+  const facts = [
+    ["Artifact", artifact.artifact_id],
+    ["Kind", artifact.kind],
+    ["Path", artifact.relative_path],
+    ["Task", provenance.task_id ?? artifact.task_id],
+    ["Lane", provenance.lane_id ?? artifact.lane_id],
+    ["Invocation", provenance.invocation_id ?? artifact.invocation_id],
+    ["Run", provenance.run_id ?? artifact.run_id],
+    ["Format", provenance.format],
+    ["Produced By", provenance.produced_by],
+    ["Provider", provenance.provider],
+    ["External ID", provenance.external_id],
+    ["Source Locator", provenance.source_locator],
+    ["Source Artifacts", provenance.source_artifact_ids],
+    ["Input Artifacts", provenance.input_artifact_ids],
+    ["Preprocess Artifacts", provenance.preprocess_artifact_ids],
+    ["Runner Run", provenance.runner_run_id],
+    ["Pipeline Invocation", provenance.pipeline_invocation_id],
+    ["Code Digest", provenance.code_digest],
+    ["Tool Contract", provenance.tool_contract],
+  ];
+  return `
+    <dl class="facts compact-facts artifact-facts">
+      ${facts
+        .map(
+          ([label, value]) => `
+            <div>
+              <dt>${escapeHtml(label)}</dt>
+              <dd>${escapeHtml(renderArtifactValue(value))}</dd>
+            </div>
+          `,
+        )
+        .join("")}
+    </dl>
+  `;
+}
+
+function renderArtifactDetail(artifact) {
+  if (!artifact) {
+    return `<p class="empty-copy">No artifact selected.</p>`;
+  }
+  const metadata = sanitizeArtifactMetadata(artifact.metadata ?? {});
+  const provenance = sanitizeArtifactMetadata(artifact.provenance ?? {});
+  return `
+    <article class="artifact-detail" aria-label="Artifact details">
+      <header>
+        <p class="eyebrow">Artifact</p>
+        <h4>${escapeHtml(artifact.title ?? artifact.relative_path ?? artifact.artifact_id)}</h4>
+      </header>
+      ${renderArtifactFacts(artifact)}
+      <div class="artifact-json-stack">
+        <section>
+          <h5>Provenance</h5>
+          <pre>${escapeHtml(JSON.stringify(provenance, null, 2))}</pre>
+        </section>
+        <section>
+          <h5>Metadata</h5>
+          <pre>${escapeHtml(JSON.stringify(metadata, null, 2))}</pre>
+        </section>
+      </div>
+    </article>
+  `;
+}
+
 export function renderV3TaskBoard(workspace) {
   const items = workspace.task_board?.items ?? [];
   if (!items.length) {
@@ -259,10 +406,12 @@ export function renderV3Capabilities(workspace) {
   `;
 }
 
-export function renderV3Outputs(workspace) {
+export function renderV3Outputs(workspace, viewState = {}) {
   const artifacts = workspace.artifacts ?? [];
   const drafts = workspace.report_drafts ?? [];
   const reports = workspace.reports ?? [];
+  const selectedArtifact = artifacts.find((artifact) => artifact.artifact_id === viewState.selectedArtifactId) ?? artifacts[0] ?? null;
+  const selectedArtifactId = selectedArtifact?.artifact_id ?? "";
   if (!artifacts.length && !drafts.length && !reports.length) {
     return `<p class="empty-copy">No artifacts, drafts, or reports yet.</p>`;
   }
@@ -310,18 +459,14 @@ export function renderV3Outputs(workspace) {
         artifacts.length
           ? `<section>
               <h4>Artifacts</h4>
-              <ul class="record-list">
-                ${artifacts
-                  .map(
-                    (artifact) => `
-                      <li>
-                        <strong>${escapeHtml(artifact.title ?? artifact.relative_path ?? artifact.artifact_id)}</strong>
-                        <span>${escapeHtml(artifact.kind ?? "artifact")} · ${escapeHtml(artifact.artifact_id)}</span>
-                      </li>
-                    `,
-                  )
-                  .join("")}
-              </ul>
+              <div class="artifact-browser">
+                <nav aria-label="Artifact tree">
+                  <ul class="artifact-tree">
+                    ${renderArtifactTreeNode(buildArtifactTree(artifacts), selectedArtifactId)}
+                  </ul>
+                </nav>
+                ${renderArtifactDetail(selectedArtifact)}
+              </div>
             </section>`
           : ""
       }
@@ -370,7 +515,7 @@ export function renderInspectorContent(viewState) {
     case "lanes":
       return renderV3Lanes(workspace);
     case "outputs":
-      return renderV3Outputs(workspace);
+      return renderV3Outputs(workspace, viewState);
     case "capabilities":
       return renderV3Capabilities(workspace);
     case "activity":

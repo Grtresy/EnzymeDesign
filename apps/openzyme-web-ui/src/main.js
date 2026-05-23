@@ -213,6 +213,11 @@ async function onClick(event) {
     controller.selectTeammate(teammateSelect.dataset.agentId);
     return;
   }
+  const artifactSelect = target.closest("[data-action='select-artifact']");
+  if (artifactSelect instanceof HTMLElement) {
+    controller.selectArtifact(artifactSelect.dataset.artifactId);
+    return;
+  }
   const approvalButton = target.closest("[data-v3-approval-decision]");
   if (approvalButton instanceof HTMLElement) {
     await controller.resolveApproval(approvalButton.dataset.approvalId, approvalButton.dataset.v3ApprovalDecision);

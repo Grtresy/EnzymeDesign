@@ -271,6 +271,7 @@ export function buildInitialViewState() {
     currentSessionId: "",
     currentSection: "conversation",
     selectedTeammateAgentId: "",
+    selectedArtifactId: "",
     sidebarExpandedSessionIds: [],
     sessionSummaries: [],
     workspace: null,

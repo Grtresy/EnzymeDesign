@@ -455,6 +455,12 @@ button:disabled {
   color: var(--muted);
 }
 
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .action-row,
 .composer-actions {
   display: flex;
@@ -507,6 +513,96 @@ button:disabled {
 .record-list span,
 .activity-list span {
   color: var(--muted);
+}
+
+.artifact-browser {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.artifact-tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.artifact-tree .artifact-tree {
+  margin-top: 0.35rem;
+  margin-left: 0.85rem;
+}
+
+.artifact-directory summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.artifact-file {
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--ink);
+}
+
+.artifact-file.is-selected {
+  border-color: rgba(31, 107, 95, 0.36);
+  background: var(--accent-soft);
+}
+
+.artifact-file strong,
+.artifact-file span {
+  overflow-wrap: anywhere;
+}
+
+.artifact-file span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.artifact-detail {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.artifact-detail h4,
+.artifact-detail h5 {
+  margin: 0;
+}
+
+.artifact-facts {
+  margin-top: 0.65rem;
+}
+
+.artifact-json-stack {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+}
+
+.artifact-json-stack pre {
+  max-height: 13rem;
+  overflow: auto;
+  margin: 0.45rem 0 0;
+  padding: 0.65rem;
+  border-radius: 10px;
+  background: rgba(22, 32, 37, 0.06);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .debug-shell {
@@ -703,7 +799,8 @@ button:disabled {
   }
 
   .debug-filters,
-  .debug-layout {
+  .debug-layout,
+  .artifact-browser {
     grid-template-columns: 1fr;
   }
 }

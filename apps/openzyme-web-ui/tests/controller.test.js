@@ -127,6 +127,21 @@ test("selectSession loads a workspace and can switch inspector sections", async 
   assert.equal(controller.state.currentSection, "activity");
 });
 
+test("workspace controller selects artifact details in outputs", async () => {
+  const controller = new WorkspaceController({});
+  controller.state.workspace = {
+    ...buildV3Workspace(),
+    artifacts: [{ artifact_id: "art_001", relative_path: "runs/result.pdbqt", kind: "result" }],
+  };
+  controller.state.currentSessionId = "sess_001";
+
+  controller.selectArtifact("art_001");
+
+  assert.equal(controller.state.currentSection, "outputs");
+  assert.equal(controller.state.selectedTeammateAgentId, "");
+  assert.equal(controller.state.selectedArtifactId, "art_001");
+});
+
 test("workspace controller resolves v3 approvals and refreshes summaries", async () => {
   let resolveCall = null;
   const fakeClient = {

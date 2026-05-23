@@ -483,6 +483,10 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert researcher_projection["latest_signal_reason"] == "inbox_unread"
     assert researcher_projection["wakeup_reason"] == "delegation_assigned"
     assert workspace["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
+    assert "storage_uri" not in workspace["artifacts"][0]
+    assert workspace["artifacts"][0]["provenance"]["run_id"] == "run_exec_001"
+    assert workspace["artifacts"][0]["provenance"]["runner_run_id"] == "job_123"
+    assert workspace["artifacts"][0]["provenance"]["format"] == "log"
     assert {report["report_id"] for report in workspace["reports"]} == {
         "report_inv_exec_001",
         "report_inv_report_001",
@@ -509,3 +513,118 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert any(item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "report_draft.updated" for item in workspace["activity_feed"])
     assert any(item["event_type"] == "report.generated" for item in workspace["activity_feed"])
+
+
+def test_workspace_artifact_projection_normalizes_execution_provenance() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="run_exec_001:outputs/result.pdbqt",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_exec_001",
+            run_id="run_exec_001",
+            kind=ArtifactKind.RESULT,
+            storage_uri="/tmp/host/result.pdbqt",
+            relative_path="runs/run_exec_001/outputs/result.pdbqt",
+            title="result.pdbqt",
+            description=None,
+            metadata={
+                "source": "execution_engine",
+                "output_format": "pdbqt",
+                "input_artifact_ids": ["structure.pdb", 42, None],
+                "preprocess_artifact_ids": ["structure.pdbqt"],
+                "runner_run_id": "job_123",
+                "pipeline_invocation_id": "inv_exec_001",
+                "code_digest": "sha256:abc123",
+                "tool_contract": {"adapter_id": "fpocket"},
+                "storage_uri": "/tmp/host/metadata-result.pdbqt",
+                "source_storage_uri": "/tmp/host/source.pdb",
+                "intermediate_storage_uri": "/tmp/host/intermediate.pdbqt",
+                "local_path": "/tmp/host/local-result.pdbqt",
+            },
+            created_at="2026-04-17T13:00:08+00:00",
+        )
+    )
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "run_exec_001:outputs/result.pdbqt")
+    provenance = artifact["provenance"]
+
+    assert "storage_uri" not in artifact
+    assert provenance == {
+        "task_id": "task_001",
+        "lane_id": "lane_001",
+        "invocation_id": "inv_exec_001",
+        "run_id": "run_exec_001",
+        "produced_by": "execution_engine",
+        "source": "execution_engine",
+        "format": "pdbqt",
+        "provider": None,
+        "external_id": None,
+        "source_locator": None,
+        "source_artifact_ids": [],
+        "input_artifact_ids": ["structure.pdb", "42"],
+        "preprocess_artifact_ids": ["structure.pdbqt"],
+        "runner_run_id": "job_123",
+        "pipeline_invocation_id": "inv_exec_001",
+        "code_digest": "sha256:abc123",
+        "tool_contract": {"adapter_id": "fpocket"},
+    }
+    assert "storage_uri" not in provenance
+    assert "source_storage_uri" not in provenance
+    assert "intermediate_storage_uri" not in provenance
+    assert "local_path" not in provenance
+    assert "storage_uri" not in artifact["metadata"]
+    assert "source_storage_uri" not in artifact["metadata"]
+    assert "intermediate_storage_uri" not in artifact["metadata"]
+    assert "local_path" not in artifact["metadata"]
+
+
+def test_workspace_artifact_projection_normalizes_direct_research_provenance() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="research:uniprot:P12345",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.SEQUENCE,
+            storage_uri="/tmp/host/P12345.fasta",
+            relative_path="research/uniprot/P12345.fasta",
+            title="P12345.fasta",
+            description=None,
+            metadata={
+                "produced_by": "research_provider",
+                "source": "uniprot",
+                "provider": "uniprot",
+                "external_id": "P12345",
+                "source_locator": "https://www.uniprot.org/uniprotkb/P12345",
+                "source_artifact_id": "seed:query",
+                "source_artifact_ids": ["seed:alignment", 7],
+                "tool_contract": "not-a-dict",
+            },
+            created_at="2026-04-17T13:00:08+00:00",
+        )
+    )
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "research:uniprot:P12345")
+    provenance = artifact["provenance"]
+
+    assert "storage_uri" not in artifact
+    assert provenance["produced_by"] == "research_provider"
+    assert provenance["source"] == "uniprot"
+    assert provenance["provider"] == "uniprot"
+    assert provenance["external_id"] == "P12345"
+    assert provenance["source_locator"] == "https://www.uniprot.org/uniprotkb/P12345"
+    assert provenance["format"] == "fasta"
+    assert provenance["source_artifact_ids"] == ["seed:query", "seed:alignment", "7"]
+    assert provenance["input_artifact_ids"] == []
+    assert provenance["preprocess_artifact_ids"] == []
+    assert provenance["tool_contract"] == {}

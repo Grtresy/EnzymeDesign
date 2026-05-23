@@ -152,10 +152,13 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
 - `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread 与 last active time。默认用户 projection 不暴露 unread inbox count、pending signal count 或 raw wakeup reason；这些属于 diagnostic-only 信息
 - `artifacts` 默认是 session 共享工作面的只读投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面
+- `artifacts[].relative_path` 是 artifact browser 的 workspace-facing path；Web UI 默认按 `/` 分隔构造目录树，重复 path 仍保留为多个以 `artifact_id` 区分的文件叶子
+- `artifacts[].provenance` 是 projection-derived 展示对象，不是新的 canonical DB 字段。稳定输出字段为 `task_id`、`lane_id`、`invocation_id`、`run_id`、`produced_by`、`source`、`format`、`provider`、`external_id`、`source_locator`、`source_artifact_ids`、`input_artifact_ids`、`preprocess_artifact_ids`、`runner_run_id`、`pipeline_invocation_id`、`code_digest` 与 `tool_contract`
+- 普通 artifact browser 只展示 metadata/provenance 摘要；本接口语义不包含 artifact content preview、download 或 edit
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
 - 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage
-- execution 输入 artifact 必须通过 compiler 映射为 runner staging input；public workspace/read model 不暴露 Host repo path、sandbox host path、`storage_uri`、runner credentials、SSH/Slurm config
+- execution 输入 artifact 必须通过 compiler 映射为 runner staging input；public workspace/read model 和普通 artifact browser 不暴露 Host repo path、sandbox host path、`storage_uri`、runner credentials、SSH/Slurm config
 - execution 输出 artifact 必须来自 runner declared `expected_outputs` 的下载结果，并保留 output relative path
 - `capabilities.deep_research[]` 默认承载每个 research invocation 的 `canonical_summary`、`evidence`、`source_refs`、`gaps` 与 output document 投影
 - `capabilities.execution[]` 默认承载每个 execution pipeline invocation 的 `pipeline_invocation_id`、`code_digest`、`sandbox_status`、`hpc_run_ids`、`tool_contract`、`input_artifact_ids`、`preprocess_artifact_ids`、`output_artifact_ids` 与 terminal summary
