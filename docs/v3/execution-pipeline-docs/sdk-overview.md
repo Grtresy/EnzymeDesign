@@ -18,7 +18,9 @@ Core modules:
 
 The pipeline cannot directly use SSH, Slurm, runner config, database connections, arbitrary network clients, shell/subprocess, local bioinformatics binaries, or arbitrary host paths. Network database work must go through `bio.*`; sequence-mining CLI work must go through `bio_tools.*`; HPC work must go through `hpc.*` SDK calls.
 
-`hpc.*` calls are supervised operations. The Host supervisor applies SDK operation policy, quota, and approval gates. The default path is dry-run first: `execution.pipeline.start` builds an `ExecutionPlan`, Web UI approves the plan, then the sandbox executes. Runtime SDK calls can still trigger a secondary approval gate if the sandbox requests an unapproved or changed HPC operation. Pipeline code should not implement its own approval or resume protocol.
+`hpc.*` calls are supervised operations. The Host supervisor applies SDK operation policy, quota, and approval gates. The default path is dry-run first: `execution.pipeline.start` builds an `ExecutionPlan`, Web UI approves the plan, then the sandbox executes. AOX/HMM evals use `inputs.approval_policy="single_plan"` to require one plan approval across bio, bio_tools, and output-registration steps. Runtime SDK calls can still trigger a secondary approval gate if the sandbox requests an unapproved or changed operation. Pipeline code should not implement its own approval or resume protocol.
+
+When registering derived outputs, pass `format` and `metadata.required_columns` for key FASTA/HMM/CSV artifacts. The sandbox control server rejects empty files, invalid FASTA/HMM content, and CSV files missing required columns before they can enter the artifact catalog.
 
 Typical flow:
 

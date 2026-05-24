@@ -14,6 +14,7 @@ from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_domain import ArtifactKind
+from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
@@ -22,6 +23,8 @@ from openzyme_engines import ResearchSourceItem
 from openzyme_engines import ResearchSupervisorAction
 from openzyme_engines import ResearchUnitDraft
 from openzyme_engines import ResearchUnitPlan
+from openzyme_engines import ExecutionOutcome
+from openzyme_engines.execution import ExecutionArtifactRef
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
 
@@ -82,6 +85,34 @@ def _created_code_artifact_id(messages: list[object]) -> str | None:
         if isinstance(artifact, dict) and artifact.get("artifact_id"):
             return str(artifact["artifact_id"])
     return None
+
+
+def _latest_tool_payload(messages: list[object], tool_name: str) -> dict[str, object] | None:
+    for message in reversed(messages):
+        if _tool_message_name(message) == tool_name:
+            return _tool_message_payload(message)
+    return None
+
+
+def _source_artifact_ref_from_payload(payload: dict[str, object] | None) -> tuple[str, str] | None:
+    if payload is None:
+        return None
+    artifact = payload.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    artifact_id = artifact.get("artifact_id")
+    digest = payload.get("content_digest")
+    if artifact_id is None or digest is None:
+        return None
+    return str(artifact_id), str(digest)
+
+
+def _execution_start_payloads(messages: list[object]) -> list[dict[str, object]]:
+    return [
+        _tool_message_payload(message)
+        for message in messages
+        if _tool_message_name(message) == "execution.pipeline.start"
+    ]
 
 
 def _focused_task_from_prompt(system_prompt: str) -> str:
@@ -530,6 +561,627 @@ class V3LocalEvalStructuredInvoker:
         raise AssertionError(f"Unhandled eval structured schema {schema!r}")
 
 
+AOX_HMM_ACCESSIONS = (
+    "AAC72747.1",
+    "KDQ24956.1",
+    "9AVH_A",
+    "XP_014653549.1",
+    "KIS68002.1",
+    "XP_003660923.1",
+    "AMW87253.1",
+    "AFP17823.1",
+    "WP_190019735.1",
+    "WP_138089821.1",
+    "WP_176407597.1",
+    "CAQ19343.1",
+    "CAQ19344.1",
+)
+
+
+def _aox_hmm_draft_source() -> str:
+    return (
+        "from openzyme_pipeline import bio\n\n"
+        f"AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}\n\n"
+        "reference = bio.ncbi_fetch_proteins(accessions=AOX_ACCESSIONS, fields=['definition', 'organism'])\n"
+    )
+
+
+def _aox_hmm_final_source() -> str:
+    return f'''from pathlib import Path
+
+from openzyme_pipeline import artifacts, bio, bio_tools
+
+
+AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}
+OUTPUT = Path("/openzyme/output/aox_hmm")
+OUTPUT.mkdir(parents=True, exist_ok=True)
+
+
+def register_text(relative_path, content, *, kind="result", format=None, required_columns=None, metadata=None):
+    target = OUTPUT / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    artifact_metadata = dict(metadata or {{}})
+    if required_columns:
+        artifact_metadata["required_columns"] = list(required_columns)
+    return artifacts.register(str(target), kind=kind, format=format, metadata=artifact_metadata)
+
+
+def fasta_for(accessions):
+    return "".join(f">{{accession}} candidate\\nMSEQUENCE{{index}}AOX\\n" for index, accession in enumerate(accessions, start=1))
+
+
+reference = bio.ncbi_fetch_proteins(
+    accessions=AOX_ACCESSIONS,
+    fields=["definition", "organism", "length"],
+)
+reference_fasta_id = reference["artifact_ids"][0]
+reference_metadata_id = reference["artifact_ids"][1]
+
+reference_cdhit90 = bio_tools.cdhit(
+    input_fasta_artifact_id=reference_fasta_id,
+    identity=0.9,
+    mode="reference",
+)
+alignment = bio_tools.mafft(input_fasta_artifact_id=reference_cdhit90["artifact_ids"][0])
+hmm = bio_tools.hmmbuild(alignment_artifact_id=alignment["artifact_ids"][0])
+hmmalign = bio_tools.hmmalign(
+    hmm_artifact_id=hmm["artifact_ids"][0],
+    fasta_artifact_id=reference_fasta_id,
+)
+hmmer_cli = bio_tools.hmmer_search_cli(
+    hmm_artifact_id=hmm["artifact_ids"][0],
+    target_fasta_artifact_id=reference_fasta_id,
+    params={{"evalue": "1e-20"}},
+)
+hmmer_provider = bio.hmmer_search(
+    hmm_artifact_id=hmm["artifact_ids"][0],
+    database="uniprotkb",
+    params={{"evalue": "1e-20", "query": "aox"}},
+)
+candidate_cdhit85 = bio_tools.cdhit(
+    input_fasta_artifact_id=reference_fasta_id,
+    identity=0.85,
+    mode="candidate",
+)
+
+candidates = AOX_ACCESSIONS[:5]
+filtered_rows = ["accession,evalue,score,passed_filter"]
+scoring_rows = ["accession,score,active_site_score,cluster_id"]
+candidate_rows = ["accession,score,evalue,cluster_id"]
+nodes = ["node_id,label,score,cluster_id"]
+edges = ["source,target,similarity"]
+for index, accession in enumerate(candidates, start=1):
+    score = 120 - index
+    filtered_rows.append(f"{{accession}},1e-{{20 + index}},{{score}},true")
+    scoring_rows.append(f"{{accession}},{{score}},{{score - 10}},cluster_1")
+    candidate_rows.append(f"{{accession}},{{score}},1e-{{20 + index}},cluster_1")
+    nodes.append(f"{{accession}},candidate {{index}},{{score}},cluster_1")
+for left, right in zip(candidates, candidates[1:]):
+    edges.append(f"{{left}},{{right}},0.91")
+
+filtered_fasta = register_text(
+    "filtered.fasta",
+    fasta_for(candidates),
+    kind="sequence",
+    format="fasta",
+    metadata={{"validation_profile": "aox_filtered_fasta"}},
+)
+filtered_csv = register_text(
+    "filtered.csv",
+    "\\n".join(filtered_rows) + "\\n",
+    format="csv",
+    required_columns=["accession", "evalue", "score", "passed_filter"],
+)
+scoring_csv = register_text(
+    "scoring.csv",
+    "\\n".join(scoring_rows) + "\\n",
+    format="csv",
+    required_columns=["accession", "score", "active_site_score", "cluster_id"],
+)
+candidate_fasta = register_text(
+    "candidates.fasta",
+    fasta_for(candidates[:3]),
+    kind="sequence",
+    format="fasta",
+    metadata={{"validation_profile": "aox_candidate_fasta"}},
+)
+candidate_csv = register_text(
+    "candidates.csv",
+    "\\n".join(candidate_rows[:4]) + "\\n",
+    format="csv",
+    required_columns=["accession", "score", "evalue", "cluster_id"],
+)
+candidate_cdhit85_fasta = register_text(
+    "candidate_cdhit85.fasta",
+    fasta_for(candidates[:3]),
+    kind="sequence",
+    format="fasta",
+    metadata={{
+        "tool_name": "cd-hit",
+        "identity": 0.85,
+        "source_operation_artifact_ids": candidate_cdhit85["artifact_ids"],
+    }},
+)
+nodes_csv = register_text(
+    "nodes.csv",
+    "\\n".join(nodes) + "\\n",
+    format="csv",
+    required_columns=["node_id", "label", "score", "cluster_id"],
+)
+edges_csv = register_text(
+    "edges_similarity.csv",
+    "\\n".join(edges) + "\\n",
+    format="csv",
+    required_columns=["source", "target", "similarity"],
+)
+summary = {{
+    "candidate_count": len(candidates),
+    "filter": "evalue <= 1e-20 and score >= 100",
+    "reference_fasta_artifact_id": reference_fasta_id,
+    "reference_metadata_artifact_id": reference_metadata_id,
+    "cdhit90_artifact_ids": reference_cdhit90["artifact_ids"],
+    "alignment_artifact_ids": alignment["artifact_ids"],
+    "hmm_artifact_ids": hmm["artifact_ids"],
+    "hmmalign_artifact_ids": hmmalign["artifact_ids"],
+    "hmmer_cli_artifact_ids": hmmer_cli["artifact_ids"],
+    "hmmer_provider_artifact_ids": hmmer_provider["artifact_ids"],
+    "candidate_cdhit85_artifact_ids": candidate_cdhit85["artifact_ids"],
+    "derived_artifact_ids": [
+        filtered_fasta["artifact_id"],
+        filtered_csv["artifact_id"],
+        scoring_csv["artifact_id"],
+        candidate_fasta["artifact_id"],
+        candidate_csv["artifact_id"],
+        candidate_cdhit85_fasta["artifact_id"],
+        nodes_csv["artifact_id"],
+        edges_csv["artifact_id"],
+    ],
+}}
+register_text(
+    "execution_summary.json",
+    __import__("json").dumps(summary, sort_keys=True, indent=2) + "\\n",
+    format="json",
+    metadata={{"candidate_count": len(candidates), "filter": summary["filter"]}},
+)
+'''
+
+
+class V3AOXHMMEvalInvoker:
+    def __init__(self, purpose: str) -> None:
+        self.purpose = purpose
+        self.calls = 0
+        self.workflow_calls = 0
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del tools
+        self.calls += 1
+        if self.purpose == "v3_teammate_loop:executor":
+            return self._executor_response(system_prompt, messages)
+        return self._master_response(system_prompt, messages)
+
+    def _executor_response(self, system_prompt: str, messages: list[object]) -> dict[str, object]:
+        task_id = _focused_task_from_prompt(system_prompt) or "task_aox_hmm_execution"
+        if any(_tool_message_name(message) == "task.update" for message in messages):
+            return {
+                "content": "AOX/HMM execution completed with candidate artifacts and provenance.",
+                "tool_calls": [],
+            }
+        if any(_tool_message_name(message) == "execution.pipeline.status" for message in messages):
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_task_complete",
+                        "name": "task.update",
+                        "args": {"task_id": task_id, "status": "completed"},
+                    }
+                ],
+            }
+        if "Existing execution pipeline invocation:" in system_prompt:
+            invocation_id = (
+                system_prompt.split("Existing execution pipeline invocation:", 1)[1]
+                .split(".", 1)[0]
+                .strip()
+            )
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_execution_status",
+                        "name": "execution.pipeline.status",
+                        "args": {"invocation_id": invocation_id},
+                    }
+                ],
+            }
+
+        created_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.create_text"))
+        patched_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.patch_text"))
+        diffed = any(_tool_message_name(message) == "artifact.diff_text" for message in messages)
+        execution_payloads = _execution_start_payloads(messages)
+        dry_run_done = any(
+            ":dry_run:" in str((payload.get("invocation") or {}).get("idempotency_key") if isinstance(payload.get("invocation"), dict) else "")
+            for payload in execution_payloads
+        )
+        execute_started = any(
+            ":execute:" in str((payload.get("invocation") or {}).get("idempotency_key") if isinstance(payload.get("invocation"), dict) else "")
+            for payload in execution_payloads
+        )
+
+        if patched_ref is not None and dry_run_done and not execute_started:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_execute",
+                        "name": "execution.pipeline.start",
+                        "args": {
+                            "task_id": task_id,
+                            "code_artifact_id": patched_ref[0],
+                            "inputs": {"approval_policy": "single_plan"},
+                        },
+                    }
+                ],
+            }
+        if patched_ref is not None and diffed and not dry_run_done:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_dry_run",
+                        "name": "execution.pipeline.start",
+                        "args": {
+                            "task_id": task_id,
+                            "code_artifact_id": patched_ref[0],
+                            "inputs": {"approval_policy": "single_plan"},
+                            "dry_run": True,
+                        },
+                    }
+                ],
+            }
+        if patched_ref is not None and created_ref is not None and not diffed:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_diff",
+                        "name": "artifact.diff_text",
+                        "args": {
+                            "base_artifact_id": created_ref[0],
+                            "target_artifact_id": patched_ref[0],
+                        },
+                    }
+                ],
+            }
+        if created_ref is not None and patched_ref is None:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_patch_source",
+                        "name": "artifact.patch_text",
+                        "args": {
+                            "base_artifact_id": created_ref[0],
+                            "base_content_digest": created_ref[1],
+                            "content": _aox_hmm_final_source(),
+                        },
+                    }
+                ],
+            }
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_aox_create_source",
+                    "name": "artifact.create_text",
+                    "args": {
+                        "filename": "aox_hmm_pipeline.py",
+                        "title": "AOX/HMM mining pipeline",
+                        "content": _aox_hmm_draft_source(),
+                    },
+                }
+            ],
+        }
+
+    def _master_response(self, system_prompt: str, messages: list[object]) -> dict[str, object]:
+        del messages
+        focused_task = _focused_task_from_prompt(system_prompt)
+        if (
+            focused_task == "task_aox_hmm_execution"
+            and "completed task_id=task_aox_hmm_execution" in system_prompt
+        ):
+            return {
+                "content": (
+                    "AOX/HMM mining completed. The workspace contains reference FASTA and metadata, "
+                    "CD-HIT/MAFFT/HMMER outputs, filtered and scored candidates, nodes/edges CSV, "
+                    "and an execution summary with candidate_count=5."
+                ),
+                "tool_calls": [],
+            }
+        self.workflow_calls += 1
+        if self.workflow_calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_lane",
+                        "name": "lane.create",
+                        "args": {
+                            "lane_id": "lane_aox_hmm",
+                            "name": "aox-hmm-mining",
+                            "cwd": "/tmp/openzyme-aox-hmm",
+                            "branch_name": "eval/aox-hmm",
+                        },
+                    },
+                    {
+                        "id": "call_aox_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_aox_hmm_execution",
+                            "subject": "Run AOX/HMM mining pipeline",
+                            "description": "Create, review, approve, and execute the AOX/HMM mining pipeline from the fixed accession prompt.",
+                            "kind": "execution",
+                            "priority": "high",
+                        },
+                    },
+                    {
+                        "id": "call_aox_bind_task",
+                        "name": "lane.bind_task",
+                        "args": {
+                            "task_id": "task_aox_hmm_execution",
+                            "lane_id": "lane_aox_hmm",
+                        },
+                    },
+                ],
+            }
+        if self.workflow_calls == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_aox_delegate",
+                        "name": "task.delegate",
+                        "args": {
+                            "task_id": "task_aox_hmm_execution",
+                            "agent_role": "executor",
+                            "instructions": (
+                                "Use the execution SDK docs to author an AOX/HMM pipeline from the fixed 13 accessions. "
+                                "Create a source artifact, patch it, diff it, run dry-run, then request single-plan approval before execution."
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {"content": "AOX/HMM execution is waiting for the executor workflow.", "tool_calls": []}
+
+
+class V3AOXHMMEvalModelFactory:
+    def __init__(self) -> None:
+        self.invokers: dict[str, V3AOXHMMEvalInvoker] = {}
+
+    def create_structured_invoker(self, *, purpose: str) -> V3LocalEvalStructuredInvoker:
+        return V3LocalEvalStructuredInvoker(purpose)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> V3AOXHMMEvalInvoker:
+        if purpose not in self.invokers:
+            self.invokers[purpose] = V3AOXHMMEvalInvoker(purpose)
+        return self.invokers[purpose]
+
+
+class _AoxHmmFixturePreflight:
+    ok = True
+    message = "fixture sandbox ready"
+
+
+class AoxHmmFixtureSandboxRunner:
+    def preflight(self) -> _AoxHmmFixturePreflight:
+        return _AoxHmmFixturePreflight()
+
+    def run_pipeline(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+        code: str,
+        inputs: tuple[SessionArtifactRecord, ...] = (),
+        control_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> ExecutionOutcome:
+        del session_id, code, inputs
+        if control_handler is None:
+            raise RuntimeError("AOX/HMM fixture sandbox requires a control handler")
+        reference = control_handler(
+            "bio.ncbi_fetch_proteins",
+            {
+                "accessions": list(AOX_HMM_ACCESSIONS),
+                "fields": ["definition", "organism", "length"],
+            },
+        )
+        reference_fasta_id = str(reference["artifact_ids"][0])
+        cdhit90 = control_handler(
+            "bio_tools.cdhit",
+            {
+                "input_fasta_artifact_id": reference_fasta_id,
+                "identity": 0.9,
+                "mode": "reference",
+            },
+        )
+        alignment = control_handler(
+            "bio_tools.mafft",
+            {"input_fasta_artifact_id": cdhit90["artifact_ids"][0], "params": {}},
+        )
+        hmm = control_handler(
+            "bio_tools.hmmbuild",
+            {"alignment_artifact_id": alignment["artifact_ids"][0], "params": {}},
+        )
+        control_handler(
+            "bio_tools.hmmalign",
+            {
+                "hmm_artifact_id": hmm["artifact_ids"][0],
+                "fasta_artifact_id": reference_fasta_id,
+                "params": {},
+            },
+        )
+        control_handler(
+            "bio_tools.hmmer_search_cli",
+            {
+                "hmm_artifact_id": hmm["artifact_ids"][0],
+                "target_fasta_artifact_id": reference_fasta_id,
+                "params": {"evalue": "1e-20"},
+            },
+        )
+        control_handler(
+            "bio.hmmer_search",
+            {
+                "hmm_artifact_id": hmm["artifact_ids"][0],
+                "database": "uniprotkb",
+                "params": {"evalue": "1e-20", "query": "aox"},
+            },
+        )
+        cdhit85 = control_handler(
+            "bio_tools.cdhit",
+            {
+                "input_fasta_artifact_id": reference_fasta_id,
+                "identity": 0.85,
+                "mode": "candidate",
+            },
+        )
+
+        output_dir = Path(tempfile.gettempdir()) / "openzyme-aox-hmm-fixture" / invocation_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        candidates = AOX_HMM_ACCESSIONS[:5]
+
+        def fasta_for(accessions: tuple[str, ...]) -> str:
+            return "".join(
+                f">{accession} candidate\nMSEQUENCE{index}AOX\n"
+                for index, accession in enumerate(accessions, start=1)
+            )
+
+        def write_artifact(
+            relative_path: str,
+            content: str,
+            *,
+            kind: ArtifactKind = ArtifactKind.RESULT,
+            metadata: dict[str, Any] | None = None,
+        ) -> ExecutionArtifactRef:
+            metadata_payload = dict(metadata or {})
+            self._validate_output_content(relative_path, content, metadata_payload)
+            path = output_dir / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return ExecutionArtifactRef(
+                storage_uri=str(path),
+                relative_path=f"aox_hmm/{relative_path}",
+                kind=kind,
+                metadata=metadata_payload,
+            )
+
+        filtered_rows = ["accession,evalue,score,passed_filter"]
+        scoring_rows = ["accession,score,active_site_score,cluster_id"]
+        candidate_rows = ["accession,score,evalue,cluster_id"]
+        nodes = ["node_id,label,score,cluster_id"]
+        edges = ["source,target,similarity"]
+        for index, accession in enumerate(candidates, start=1):
+            score = 120 - index
+            filtered_rows.append(f"{accession},1e-{20 + index},{score},true")
+            scoring_rows.append(f"{accession},{score},{score - 10},cluster_1")
+            candidate_rows.append(f"{accession},{score},1e-{20 + index},cluster_1")
+            nodes.append(f"{accession},candidate {index},{score},cluster_1")
+        for left, right in zip(candidates, candidates[1:]):
+            edges.append(f"{left},{right},0.91")
+        artifacts = (
+            write_artifact(
+                "filtered.fasta",
+                fasta_for(candidates),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={"format": "fasta"},
+            ),
+            write_artifact(
+                "filtered.csv",
+                "\n".join(filtered_rows) + "\n",
+                metadata={"format": "csv", "required_columns": ["accession", "evalue", "score", "passed_filter"]},
+            ),
+            write_artifact(
+                "scoring.csv",
+                "\n".join(scoring_rows) + "\n",
+                metadata={"format": "csv", "required_columns": ["accession", "score", "active_site_score", "cluster_id"]},
+            ),
+            write_artifact(
+                "candidates.fasta",
+                fasta_for(candidates[:3]),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={"format": "fasta"},
+            ),
+            write_artifact(
+                "candidates.csv",
+                "\n".join(candidate_rows[:4]) + "\n",
+                metadata={"format": "csv", "required_columns": ["accession", "score", "evalue", "cluster_id"]},
+            ),
+            write_artifact(
+                "candidate_cdhit85.fasta",
+                fasta_for(candidates[:3]),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={
+                    "format": "fasta",
+                    "tool_name": "cd-hit",
+                    "identity": 0.85,
+                    "source_operation_artifact_ids": list(cdhit85["artifact_ids"]),
+                },
+            ),
+            write_artifact(
+                "nodes.csv",
+                "\n".join(nodes) + "\n",
+                metadata={"format": "csv", "required_columns": ["node_id", "label", "score", "cluster_id"]},
+            ),
+            write_artifact(
+                "edges_similarity.csv",
+                "\n".join(edges) + "\n",
+                metadata={"format": "csv", "required_columns": ["source", "target", "similarity"]},
+            ),
+            write_artifact(
+                "execution_summary.json",
+                json.dumps(
+                    {
+                        "candidate_count": len(candidates),
+                        "filter": "evalue <= 1e-20 and score >= 100",
+                        "reference_artifact_ids": list(reference["artifact_ids"]),
+                        "cdhit90_artifact_ids": list(cdhit90["artifact_ids"]),
+                        "candidate_cdhit85_artifact_ids": list(cdhit85["artifact_ids"]),
+                    },
+                    sort_keys=True,
+                    indent=2,
+                )
+                + "\n",
+                metadata={"format": "json", "candidate_count": len(candidates)},
+            ),
+        )
+        return ExecutionOutcome(
+            run_id=f"fixture_{invocation_id}",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="fixture",
+            remote_run_dir=f"fixture://{invocation_id}",
+            raw_result={"registered_artifact_count": len(artifacts)},
+            artifacts=artifacts,
+            exit_code=0,
+        )
+
+    def _validate_output_content(self, relative_path: str, content: str, metadata: dict[str, Any]) -> None:
+        output_format = str(metadata.get("format") or "").lower()
+        required_columns = [str(column) for column in list(metadata.get("required_columns") or [])]
+        if not content.strip():
+            raise ValueError(f"fixture output is empty: {relative_path}")
+        if output_format in {"fasta", "fa", "faa"} and not content.lstrip().startswith(">"):
+            raise ValueError(f"fixture FASTA output is invalid: {relative_path}")
+        if output_format == "hmm" and not content.startswith("HMMER"):
+            raise ValueError(f"fixture HMM output is invalid: {relative_path}")
+        if output_format == "csv" or required_columns:
+            header = content.splitlines()[0].split(",") if content.splitlines() else []
+            missing = [column for column in required_columns if column not in header]
+            if missing:
+                raise ValueError(f"fixture CSV output {relative_path} is missing required columns: {missing}")
+
+
 def build_local_eval_runtime(sqlite_db_path: Path) -> RuntimeFoundation:
     settings = get_settings()
     return build_local_eval_foundation(
@@ -777,18 +1429,224 @@ def _run_v3_design_cutover_scenario(
                 return result
 
 
+def _run_v3_aox_hmm_prompt_scenario(
+    *,
+    foundation_builder: FoundationBuilder,
+    model_factory: Any | None,
+    upload_results: bool = False,
+    scenario_id: str = "v3_aox_hmm_prompt_e2e",
+) -> dict[str, Any]:
+    objective = (
+        "Run AOX/HMM mining from a natural language prompt using V3 task delegation, "
+        "versioned source artifacts, dry-run approval, sandbox execution, and workspace artifacts."
+    )
+    session_id = "sess_eval_aox_hmm"
+    with tempfile.TemporaryDirectory(prefix="openzyme-v3-aox-hmm-eval-") as temp_dir:
+        foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
+        if model_factory is not None:
+            foundation = replace(foundation, model_factory=model_factory)
+        v3_repositories = build_v3_eval_repositories()
+        app = create_app(
+            HostApiDependencies(
+                foundation=foundation,
+                v3_repositories=v3_repositories,
+                v3_background_runtime_enabled=True,
+                v3_pipeline_sandbox_runner=AoxHmmFixtureSandboxRunner(),
+            )
+        )
+        with TestClient(app) as client:
+            created = client.post(
+                "/v3/sessions",
+                json={
+                    "session_id": session_id,
+                    "project_id": "proj_001",
+                    "objective": objective,
+                    "title": "AOX/HMM prompt E2E",
+                },
+            )
+            created.raise_for_status()
+            prompt = (
+                "Run AOX/HMM mining from only this prompt. Use these 13 AOX accessions: "
+                + ", ".join(AOX_HMM_ACCESSIONS)
+                + ". Build a reference HMM, search a target protein library, filter candidates, "
+                "export candidate FASTA/CSV, scoring CSV, candidate clusters, nodes.csv, "
+                "edges_similarity.csv, and summarize candidate count and warnings."
+            )
+            with workflow_trace(
+                "openzyme.v3_aox_hmm_prompt_eval",
+                action="v3_local_eval" if model_factory is not None else "v3_live_eval",
+                project_id="proj_001",
+                phase="evaluation",
+                inputs={"scenario_id": scenario_id, "objective": objective},
+                enabled=upload_results,
+            ) as run:
+                first_turn = client.post(
+                    f"/v3/sessions/{session_id}/messages",
+                    json={"message": prompt},
+                )
+                first_turn.raise_for_status()
+                workspace, event_text, runtime_status = _poll_v3_background_workspace(
+                    client,
+                    session_id=session_id,
+                    timeout_seconds=45.0,
+                    is_ready=lambda workspace: (
+                        not workspace.get("pending_approvals")
+                        and any(
+                            item["task"]["task_id"] == "task_aox_hmm_execution"
+                            and item["task"]["status"] == "completed"
+                            for item in workspace["task_board"]["items"]
+                        )
+                        and "execution" in workspace["capabilities"]
+                        and any(
+                            item.get("status") == "succeeded"
+                            for item in workspace["capabilities"]["execution"]
+                        )
+                        and any(
+                            message.get("role") == "assistant"
+                            and "AOX/HMM mining completed" in str(message.get("content") or "")
+                            for message in workspace["conversation"]
+                        )
+                    ),
+                )
+
+                artifacts = v3_repositories.artifacts.list_by_session(session_id)
+                artifact_paths = {artifact.relative_path for artifact in artifacts}
+                code_artifacts = [
+                    artifact
+                    for artifact in artifacts
+                    if artifact.kind is ArtifactKind.CODE
+                    and (artifact.metadata or {}).get("semantic_type") == "pipeline_source"
+                ]
+                execution_invocations = [
+                    invocation
+                    for invocation in v3_repositories.invocations.list_by_session(session_id)
+                    if invocation.engine_name == "execution"
+                ]
+                dry_run_invocations = []
+                plan_payloads = []
+                for invocation in execution_invocations:
+                    document = v3_repositories.engine_documents.get(invocation.input_ref)
+                    if document is None:
+                        continue
+                    pipeline = document.payload.get("pipeline")
+                    if not isinstance(pipeline, dict):
+                        continue
+                    if pipeline.get("dry_run"):
+                        dry_run_invocations.append(invocation)
+                        plan_payloads.append(pipeline.get("execution_plan"))
+                terminal_invocations = [
+                    invocation
+                    for invocation in execution_invocations
+                    if invocation.output_ref is not None
+                ]
+                output_artifacts = [
+                    artifact
+                    for artifact in artifacts
+                    if artifact.invocation_id
+                    and artifact.kind is not ArtifactKind.CODE
+                    and artifact.relative_path != "logs/stdout.log"
+                    and artifact.relative_path != "logs/stderr.log"
+                ]
+                projected_text = json.dumps(workspace, sort_keys=True)
+                required_paths = {
+                    "bio/ncbi/proteins.fasta",
+                    "bio/ncbi/proteins.metadata.json",
+                    "bio_tools/cdhit/clustered.fasta",
+                    "bio_tools/mafft/alignment.fasta",
+                    "bio_tools/hmmbuild/model.hmm",
+                    "bio/hmmer/raw_hits.json",
+                    "bio/hmmer/parsed_hits.csv",
+                    "aox_hmm/filtered.fasta",
+                    "aox_hmm/filtered.csv",
+                    "aox_hmm/scoring.csv",
+                    "aox_hmm/candidates.fasta",
+                    "aox_hmm/candidates.csv",
+                    "aox_hmm/candidate_cdhit85.fasta",
+                    "aox_hmm/nodes.csv",
+                    "aox_hmm/edges_similarity.csv",
+                    "aox_hmm/execution_summary.json",
+                }
+                plan = next((payload for payload in plan_payloads if isinstance(payload, dict)), {})
+                checks = {
+                    "single_user_prompt": sum(1 for item in workspace["conversation"] if item["role"] == "user") == 1,
+                    "delegated_executor": any(
+                        item["agent"]["role"] == "executor"
+                        for item in workspace["delegation"]["agents"]
+                    )
+                    and "task.delegate" in event_text,
+                    "source_artifact_versions": sorted(
+                        int((artifact.metadata or {}).get("version") or 0)
+                        for artifact in code_artifacts
+                    )
+                    == [1, 2],
+                    "source_diff_recorded": "artifact.diff_text" in event_text,
+                    "dry_run_plan": bool(dry_run_invocations)
+                    and bool(plan.get("bio_operations"))
+                    and bool(plan.get("bio_tool_operations"))
+                    and bool(plan.get("approval_requirements")),
+                    "approval_resolved": "event: approval.requested" in event_text
+                    and "event: approval.resolved" in event_text,
+                    "execution_completed": bool(terminal_invocations)
+                    and any(
+                        item.get("status") == "succeeded"
+                        for item in workspace["capabilities"].get("execution", [])
+                    ),
+                    "required_artifacts": required_paths <= artifact_paths,
+                    "candidate85_artifact": any(
+                        artifact.relative_path == "aox_hmm/candidate_cdhit85.fasta"
+                        and (artifact.metadata or {}).get("identity") == 0.85
+                        for artifact in artifacts
+                    ),
+                    "output_provenance": bool(output_artifacts)
+                    and all(
+                        (artifact.metadata or {}).get("source_code_artifact_id")
+                        and (artifact.metadata or {}).get("source_code_digest")
+                        for artifact in output_artifacts
+                    ),
+                    "safe_projection": "storage_uri" not in projected_text
+                    and str(Path(temp_dir)) not in projected_text,
+                    "final_answer": any(
+                        message.get("role") == "assistant"
+                        and "candidate_count=5" in str(message.get("content") or "")
+                        for message in workspace["conversation"]
+                    ),
+                    "background_runtime": runtime_status.get("worker_id") == "host-api:background-runtime"
+                    and int(runtime_status.get("processed_signal_count") or 0) > 0,
+                }
+                result = {
+                    "scenario_id": scenario_id,
+                    "session_id": session_id,
+                    "task_count": len(workspace["task_board"]["items"]),
+                    "artifact_count": len(artifacts),
+                    "required_artifact_count": len(required_paths),
+                    "candidate_count": 5,
+                    "checks": checks,
+                    "passed": all(checks.values()),
+                }
+                if run is not None:
+                    run.end(outputs=result)
+                return result
+
+
 def run_v3_local_evals(*, upload_results: bool = False) -> dict[str, Any]:
-    result = _run_v3_design_cutover_scenario(
+    design_result = _run_v3_design_cutover_scenario(
         foundation_builder=build_local_eval_runtime,
         model_factory=V3LocalEvalModelFactory(),
         upload_results=upload_results,
     )
+    aox_result = _run_v3_aox_hmm_prompt_scenario(
+        foundation_builder=build_local_eval_runtime,
+        model_factory=V3AOXHMMEvalModelFactory(),
+        upload_results=upload_results,
+    )
+    results = [design_result, aox_result]
+    passed = sum(1 for result in results if result["passed"])
     return {
-        "scenario_count": 1,
-        "passed": 1 if result["passed"] else 0,
-        "failed": 0 if result["passed"] else 1,
+        "scenario_count": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
         "upload_results": upload_results,
-        "results": [result],
+        "results": results,
     }
 
 

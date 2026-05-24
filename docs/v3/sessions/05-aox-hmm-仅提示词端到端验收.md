@@ -55,6 +55,14 @@
 - fixture/unit tests 必须覆盖完整控制流和 artifact/provenance contract。
 - opt-in `live_e2e` 必须覆盖真实 NCBI、UniProt、EBI HMMER 与 HPC 配置；缺配置时只能报告 `prerequisite missing`，不能记为通过。
 
+## 实现锚点
+
+- 本地 fixture gate 位于 `apps/openzyme-host-api/src/openzyme_host_api/evals.py` 的 `v3_aox_hmm_prompt_e2e` scenario，并由 `apps/openzyme-host-api/tests/test_evals.py` 验证。
+- 该 gate 只从 `POST /v3/sessions/{session_id}/messages` 的单条自然语言 prompt 进入；fixture model 只负责确定性地模拟 master/executor 决策，不预先构造 execution invocation。
+- executor 先创建 pipeline source artifact，再 patch 生成 v2 source，调用 `artifact.diff_text` 留下 diff，随后执行 `execution.pipeline.start(..., dry_run=true)` 与 `execution.pipeline.start(..., inputs={"approval_policy": "single_plan"})`。
+- approval 仍通过正式 `POST /v3/approvals/{approval_id}/resolve` 路径完成；approval resolved 后由 runtime/scheduler 唤醒 executor 读取 `execution.pipeline.status` 并显式 `task.update(status="completed")`。
+- fixture sandbox 通过 Host supervisor control handler 调用 `bio.*` 与 `bio_tools.*`，并返回 filtered/candidate/scoring/nodes/edges 等派生 artifacts；派生输出携带 `format` 与 `required_columns`，由 sandbox registration 校验覆盖。
+
 ## 测试/验收
 
 端到端验收必须从用户提示词开始，不能手工预先创建 execution invocation 来绕过 master/executor 流程。最小验收路径：

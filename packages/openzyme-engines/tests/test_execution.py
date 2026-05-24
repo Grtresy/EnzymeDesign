@@ -1232,6 +1232,39 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
     ]
 
 
+def test_pipeline_single_plan_approval_policy_gates_bio_tool_execution() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_single_plan_bio_tools",
+        "from openzyme_pipeline import bio, bio_tools\n"
+        "refs = bio.ncbi_fetch_proteins(accessions=['AAC72747.1'])\n"
+        "bio_tools.cdhit(input_fasta_artifact_id=refs['artifact_ids'][0], identity=0.9)\n",
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=BioSandboxRunner(()),
+    )
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=code_artifact_id,
+        inputs={"approval_policy": "single_plan"},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+    assert result.approval is not None
+    assert result.approval.kind == "execution_pipeline_plan"
+    assert result.parsed_result is not None
+    plan = result.parsed_result.structured_findings["plan"]
+    assert plan["approval_requirements"][0]["kind"] == "pipeline_plan"
+    assert plan["bio_operations"][0]["approval_required"] is True
+    assert plan["bio_tool_operations"][0]["approval_required"] is True
+
+
 def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)

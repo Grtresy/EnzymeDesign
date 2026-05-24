@@ -71,3 +71,27 @@ def test_podman_pipeline_rejects_output_escape(tmp_path: Path) -> None:
     assert outcome.status is RunStatus.FAILED
     stderr = next(artifact for artifact in outcome.artifacts if artifact.relative_path == "logs/stderr.log")
     assert "artifacts.register only accepts files under /openzyme/output" in Path(stderr.storage_uri).read_text(encoding="utf-8")
+
+
+def test_podman_pipeline_validates_registered_csv_columns(tmp_path: Path) -> None:
+    runner = PodmanPipelineSandboxRunner(workspace_root=tmp_path / "runs", timeout_seconds=30)
+
+    outcome = runner.run_pipeline(
+        session_id="sess_001",
+        invocation_id="inv_csv",
+        code=(
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "Path('/openzyme/output/nodes.csv').write_text('node_id,label\\nn1,AOX\\n', encoding='utf-8')\n"
+            "artifacts.register(\n"
+            "    '/openzyme/output/nodes.csv',\n"
+            "    kind='result',\n"
+            "    format='csv',\n"
+            "    metadata={'required_columns': ['node_id', 'label', 'score']},\n"
+            ")\n"
+        ),
+    )
+
+    assert outcome.status is RunStatus.FAILED
+    stderr = next(artifact for artifact in outcome.artifacts if artifact.relative_path == "logs/stderr.log")
+    assert "missing required columns" in Path(stderr.storage_uri).read_text(encoding="utf-8")

@@ -10,6 +10,7 @@ Useful search keywords:
 - `artifact read register`
 - `bio ncbi uniprot hmmer`
 - `bio_tools mafft cdhit hmmbuild hmmalign hmmsearch`
+- `aox hmm prompt e2e single_plan approval`
 - `preprocess prepare_receptor prepare_ligand`
 - `hpc.vina`
 - `hpc.fpocket`

@@ -157,11 +157,11 @@ deep research 对 harness 至少提供：
 
 - 对 harness 至少提供 `execution.pipeline.start(invocation_id, task_id, code_artifact_id, inputs)`、`execution.pipeline.status(invocation_id)`；`code_artifact_id` 必须引用当前 session artifact catalog 中 `kind=code`、`format=python`、`semantic_type=pipeline_source` 的版本化源码 artifact；inline `code` 会被拒绝为 tool failure；恢复等待中的 pipeline 是 harness / supervisor 内部调度语义，不是 executor 或 master 需要显式编排的用户级 tool contract
 - executor 不得直接调用 runner tool、SSH、Slurm 或 runner config；它只能先通过 `artifact.create_text` / `artifact.patch_text` 创建或修订 pipeline source artifact，再提交 `code_artifact_id`，并通过 sandbox 内注入的 SDK 间接请求 HPC
-- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交 HPC job 或高 quota 消耗的 `hpc.*` operation 必须标记为 approval-gated
+- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交 HPC job 或高 quota 消耗的 `hpc.*` operation 必须标记为 approval-gated；AOX/HMM fixture gate 使用 `inputs.approval_policy="single_plan"` 验证单一 plan approval 语义
 - `execution.pipeline.start` 的默认主路径是 dry-run / validation first：Host supervisor 先构建 `ExecutionPlan`，再让用户批准该 plan；批准前不得提交 HPC job，也不得启动会触发 HPC 的正式执行
 - dry run 是校验过程，`ExecutionPlan` 是结果；plan 至少绑定 `plan_digest`、artifact reads、preprocess operations、HPC operation list、expected outputs、resource / quota estimate、doc hints 与 approval requirements
 - plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须记录 `source_code_artifact_id`、`source_code_digest` 与 `source_code_version`；正式执行前 Host 重新读取源码 artifact 并校验 digest，防止批准后源码漂移
-- approval 绑定 `plan_digest` 和 HPC operation list；用户 approve 后，Host supervisor 才启动正式 sandbox 执行
+- approval 绑定 `plan_digest`、operation list、artifact reads、expected outputs 与 resource/quota 摘要；用户 approve 后，Host supervisor 才启动正式 sandbox 执行
 - runtime SDK call approval gate 只作为兜底：正式执行时若出现未被 approved plan 覆盖的 `hpc.*` operation、artifact id 或参数 / quota 范围，Host supervisor 必须再次创建 `ApprovalRequest` 并进入 `waiting_approval`，不得提交该 HPC operation
 - approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
 - execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续

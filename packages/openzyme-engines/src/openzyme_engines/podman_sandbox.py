@@ -143,6 +143,7 @@ class PodmanPipelineSandboxRunner:
                 storage_uri=str(record.host_path),
                 relative_path=record.relative_path,
                 kind=record.kind,
+                metadata=record.metadata,
             )
             for record in server.registered
         )
@@ -191,6 +192,7 @@ class _RegisteredOutput:
     host_path: Path
     relative_path: str
     kind: ArtifactKind
+    metadata: dict[str, Any]
 
 
 @dataclass(slots=True)
@@ -310,13 +312,37 @@ class _ControlSocketServer:
         if not host_path.is_file():
             raise ValueError(f"registered artifact does not exist: {sandbox_path}")
         kind = ArtifactKind(str(params.get("kind") or "result"))
-        self.registered.append(_RegisteredOutput(host_path=host_path, relative_path=relative_path, kind=kind))
+        metadata = dict(params.get("metadata") or {})
+        output_format = params.get("format")
+        if output_format is not None:
+            metadata["format"] = str(output_format)
+        self._validate_registered_output(host_path, relative_path=relative_path, metadata=metadata)
+        self.registered.append(_RegisteredOutput(host_path=host_path, relative_path=relative_path, kind=kind, metadata=metadata))
         return {
             "artifact_id": f"pipeline:{len(self.registered)}:{relative_path}",
             "path": str(sandbox_path),
             "relative_path": relative_path,
             "kind": kind.value,
+            "metadata": metadata,
         }
+
+    def _validate_registered_output(self, path: Path, *, relative_path: str, metadata: dict[str, Any]) -> None:
+        output_format = str(metadata.get("format") or "").lower()
+        required_columns = [str(column) for column in list(metadata.get("required_columns") or [])]
+        if not output_format and not required_columns:
+            return
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if not content.strip():
+            raise ValueError(f"registered artifact is empty: {relative_path}")
+        if output_format in {"fasta", "fa", "faa"} and not content.lstrip().startswith(">"):
+            raise ValueError(f"registered FASTA artifact is invalid: {relative_path}")
+        if output_format == "hmm" and not content.startswith("HMMER"):
+            raise ValueError(f"registered HMM artifact is invalid: {relative_path}")
+        if output_format == "csv" or required_columns:
+            header = content.splitlines()[0].split(",") if content.splitlines() else []
+            missing = [column for column in required_columns if column not in header]
+            if missing:
+                raise ValueError(f"registered CSV artifact {relative_path} is missing required columns: {missing}")
 
 
 __all__ = ["DEFAULT_SANDBOX_IMAGE", "PodmanPipelineSandboxRunner", "PodmanSandboxPreflight"]

@@ -275,8 +275,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `code_artifact_id` 是必填入口，必须引用当前 session artifact catalog 中的 Python pipeline source artifact；inline `code` 不再是公开 contract，传入时返回 `unsupported_inline_pipeline_code` tool failure
 - 默认执行 dry-run / validation 并持久化 `ExecutionPlan`；该阶段不提交 HPC，也不把 Host `storage_uri` 交给 sandbox code
 - `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、HPC operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
-- `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated `hpc.*` operation，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
-- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 `hpc.*` call，则进入 secondary approval gate
+- `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated `hpc.*` operation，或调用方通过 `inputs.approval_policy="single_plan"` 要求单一 plan approval，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
+- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 `hpc.*` call，或 operation/参数摘要超出 approved plan policy，则进入 secondary approval gate
 - plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须携带 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；Host 在正式执行前重新读取 code artifact 并校验 digest
 
 事件语义：
@@ -288,6 +288,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `execution.pipeline.completed` / `execution.pipeline.failed` 表示 pipeline terminal state，不能替代每个 run / artifact 的 canonical record
 - `bio.*` SDK step 的成功、warning 和失败通过 `execution.pipeline.step.completed`、`execution.pipeline.failed`、engine invocation output payload 与 artifact provenance 投影；大型 FASTA/metadata/raw hits/parsed hits 不进入 RPC 全文
 - `bio_tools.*` SDK step 的成功、warning 和失败使用同一投影路径；MAFFT/CD-HIT/HMMER 输出必须先通过 declared output 与最小格式校验，stdout/stderr 或 oversized log 以 artifact ref 暴露
+- `artifacts.register` / `artifacts.register_many` 可携带 `format` 与 `metadata.required_columns`；sandbox control server 必须先做非空、FASTA/HMM/CSV 必需列轻量校验，再允许 output artifact 进入 catalog
 - `execution.preprocess.completed` 表示 pipeline 内格式转换或输入准备已生成新的可信 workspace artifact
 - `execution.artifacts.fetched` 表示 runner 已按 declared `expected_outputs` 下载远端结果，随后应产生对应 `artifact.recorded`
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型

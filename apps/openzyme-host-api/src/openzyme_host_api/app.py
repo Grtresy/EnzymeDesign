@@ -243,6 +243,7 @@ class HostApiDependencies:
     )
     v3_operation_lock: RLock = field(default_factory=RLock)
     v3_background_runtime_enabled: bool | None = None
+    v3_pipeline_sandbox_runner: Any | None = None
 
     def build_v3_service(self) -> V3HostApiService:
         return V3HostApiService(
@@ -278,7 +279,8 @@ class HostApiDependencies:
                     self.foundation.execution_adapter,
                     self.foundation.limiter_registry,
                 ),
-                sandbox_runner=PodmanPipelineSandboxRunner(),
+                sandbox_runner=self.v3_pipeline_sandbox_runner
+                or PodmanPipelineSandboxRunner(),
             ),
         )
 

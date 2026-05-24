@@ -222,13 +222,17 @@ class ExecutionArtifactRef:
     storage_uri: str
     relative_path: str
     kind: ArtifactKind
+    metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "storage_uri": self.storage_uri,
             "relative_path": self.relative_path,
             "kind": self.kind.value,
         }
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1865,6 +1869,15 @@ class ExecutionEngine:
             )
         return source
 
+    def _is_pipeline_dry_run_invocation(self, invocation: EngineInvocation) -> bool:
+        if invocation.input_ref is None:
+            return False
+        document = self.repositories.engine_documents.get(invocation.input_ref)
+        if document is None:
+            return False
+        pipeline = document.payload.get("pipeline")
+        return isinstance(pipeline, dict) and bool(pipeline.get("dry_run"))
+
     def start_pipeline(
         self,
         *,
@@ -2484,7 +2497,7 @@ class ExecutionEngine:
             kind="execution_pipeline_plan",
             requested_action=(
                 f"Approve execution pipeline plan {plan.get('plan_digest')} for task {task.subject}. "
-                f"HPC operations: {[item.get('method') for item in plan.get('hpc_operations', [])]}"
+                f"Operations: {[item.get('operation') for item in plan.get('operations', [])]}"
             ),
             status=ApprovalRequestStatus.PENDING,
             request_ref=f"artifact://approvals/{approval_id}.json",
@@ -3857,6 +3870,7 @@ class ExecutionEngine:
                 title=PurePosixPath(artifact.relative_path).name,
                 description=None,
                 metadata={
+                    **dict(artifact.metadata or {}),
                     "source": "execution_engine",
                     "runner_run_id": runner_run_id,
                     "remote_path": artifact.relative_path,
@@ -4322,6 +4336,12 @@ class ExecutionEngine:
         source_metadata: dict[str, Any],
     ) -> dict[str, Any]:
         operations = self._dry_run_operation_log(code)
+        approval_policy = str(inputs.get("approval_policy") or "").lower()
+        single_plan_approval_required = bool(inputs.get("require_plan_approval")) or approval_policy in {
+            "single_plan",
+            "always",
+            "required",
+        }
         artifact_ids = [str(value) for value in list(inputs.get("artifact_ids") or [])]
         context_artifact_ids = [str(value) for value in list(inputs.get("context_artifact_ids") or [])]
         artifact_reads = [
@@ -4344,7 +4364,7 @@ class ExecutionEngine:
             {
                 "method": str(item["operation"]),
                 "provider": self._planned_bio_provider(str(item["operation"])),
-                "approval_required": False,
+                "approval_required": single_plan_approval_required,
                 "expected_outputs": self._planned_bio_expected_outputs(str(item["operation"])),
                 "quota_estimate": self._planned_bio_quota_estimate(str(item["operation"])),
                 "doc_keyword": item.get("doc_keyword"),
@@ -4356,7 +4376,7 @@ class ExecutionEngine:
         bio_tool_operations = [
             {
                 "method": str(item["operation"]),
-                "approval_required": False,
+                "approval_required": single_plan_approval_required,
                 "expected_outputs": self._planned_bio_tool_expected_outputs(str(item["operation"])),
                 "resource_estimate": self._planned_bio_tool_resource_estimate(str(item["operation"])),
                 "quota_estimate": {"local_tool_invocations": 1, "operation": str(item["operation"])},
@@ -4387,18 +4407,30 @@ class ExecutionEngine:
                     "doc_id": item.get("doc_id"),
                 }
             )
-        approval_requirements = [
-            {
-                "kind": "hpc_operation",
-                "method": operation["method"],
-                "operation_key": operation["operation_key"],
-                "reason": "HPC execution is approval-gated by policy.",
-            }
-            for operation in hpc_operations
-        ]
+        if single_plan_approval_required and operations:
+            approval_requirements = [
+                {
+                    "kind": "pipeline_plan",
+                    "method": "execution.pipeline.start",
+                    "operation_key": f"pipeline_plan:{code_digest[:16]}",
+                    "reason": "A single execution plan approval is required by pipeline input policy.",
+                    "operation_methods": [str(operation.get("operation")) for operation in operations],
+                }
+            ]
+        else:
+            approval_requirements = [
+                {
+                    "kind": "hpc_operation",
+                    "method": operation["method"],
+                    "operation_key": operation["operation_key"],
+                    "reason": "HPC execution is approval-gated by policy.",
+                }
+                for operation in hpc_operations
+            ]
         plan_without_digest = {
             "code_digest": code_digest,
             **source_metadata,
+            "approval_policy": approval_policy or None,
             "artifact_reads": artifact_reads,
             "bio_operations": bio_operations,
             "bio_tool_operations": bio_tool_operations,
@@ -4820,6 +4852,7 @@ def register_execution_tools(registry: ToolRegistry, engine: ExecutionEngine) ->
                 if candidate.engine_name == engine.descriptor.engine_name
                 and candidate.status
                 not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED}
+                and not engine._is_pipeline_dry_run_invocation(candidate)
             ),
             None,
         )
