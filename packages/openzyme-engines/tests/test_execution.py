@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,33 @@ class HandlerSandboxRunner:
         self.calls += 1
         if control_handler is not None:
             control_handler("hpc.fpocket", {"structure_artifact_id": "art_001", "params": {}})
+        return ExecutionOutcome(
+            run_id=f"sandbox_{invocation_id}",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="podman",
+            remote_run_dir=f"podman://{invocation_id}",
+            raw_result={"registered_artifact_count": 0},
+            artifacts=(),
+        )
+
+
+class BioSandboxRunner:
+    def __init__(self, operations: tuple[tuple[str, dict[str, object]], ...]) -> None:
+        self.operations = operations
+        self.results: list[dict[str, object]] = []
+        self.calls = 0
+
+    def preflight(self) -> SandboxPreflight:
+        return SandboxPreflight(True)
+
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        del session_id, code, inputs
+        self.calls += 1
+        if control_handler is not None:
+            for method, params in self.operations:
+                self.results.append(dict(control_handler(method, params)))
         return ExecutionOutcome(
             run_id=f"sandbox_{invocation_id}",
             status=RunStatus.SUCCEEDED,
@@ -473,6 +501,29 @@ def _save_pipeline_source(
 
 def _pipeline_source_id(repositories: CoreRepositories, artifact_id: str, code: str) -> str:
     return _save_pipeline_source(repositories, artifact_id=artifact_id, code=code)
+
+
+def _save_hmm_artifact(repositories: CoreRepositories, artifact_id: str = "art_hmm_001") -> str:
+    hmm_path = Path(f"/tmp/{artifact_id}.hmm")
+    hmm_path.write_text("HMMER3/f [fixture]\nNAME fixture\n//\n", encoding="utf-8")
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=artifact_id,
+            session_id="sess_001",
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="seed_invocation",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri=str(hmm_path),
+            relative_path=f"hmms/{artifact_id}.hmm",
+            title=f"{artifact_id}.hmm",
+            description=None,
+            metadata={"source": "seed", "format": "hmm"},
+            created_at="2026-04-20T12:00:04+00:00",
+        )
+    )
+    return artifact_id
 
 
 def test_execution_engine_waits_for_approval_before_submitting() -> None:
@@ -999,6 +1050,54 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
     assert plan["approval_requirements"][0]["kind"] == "hpc_operation"
 
 
+def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    bio_code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_dry_run",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'])\n"
+        "bio.uniprot_fetch(accessions=['Q8XYZ1'], batch_size=50)\n"
+        "bio.hmmer_search(hmm_artifact_id='art_hmm_001', database='uniprotkb')\n",
+    )
+    network_code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_direct_network",
+        "import requests\nrequests.get('https://example.org')\n",
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+
+    dry_run = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=bio_code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+    rejected = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=network_code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+
+    assert dry_run.parsed_result is not None
+    plan = dry_run.parsed_result.structured_findings["plan"]
+    assert [operation["method"] for operation in plan["bio_operations"]] == [
+        "bio.ncbi_fetch_proteins",
+        "bio.uniprot_fetch",
+        "bio.hmmer_search",
+    ]
+    assert plan["resource_quota_estimate"]["bio_operation_count"] == 3
+    assert plan["resource_quota_estimate"]["provider_requests"] == 3
+    assert plan["expected_outputs"][0]["path"] == "bio/ncbi/proteins.fasta"
+    assert rejected.invocation.status is EngineInvocationStatus.FAILED
+    assert rejected.parsed_result is not None
+    assert rejected.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_network_call"
+
+
 def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_approval() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
@@ -1042,6 +1141,244 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
     assert [approval.approval_id for approval in approvals] == [
         execute.approval.approval_id
     ]
+
+
+def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_fetch",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'])\n"
+        "bio.uniprot_fetch(accessions=['Q8XYZ1', 'MISSING999'], batch_size=1)\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            ("bio.ncbi_fetch_proteins", {"accessions": ["P12345"], "fields": ["taxonomy"]}),
+            (
+                "bio.uniprot_fetch",
+                {
+                    "accessions": ["Q8XYZ1", "MISSING999"],
+                    "fields": ["length", "taxonomy", "reviewed"],
+                    "batch_size": 1,
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_fetch",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert len(sandbox.results) == 2
+    assert sandbox.results[0]["artifact_count"] == 2
+    assert sandbox.results[1]["warnings"][0]["warning_code"] == "partial_accession_missing"
+    assert "sequence" not in sandbox.results[0]["artifacts"][0]["metadata"]
+    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_fetch")
+    bio_artifacts = [
+        artifact
+        for artifact in artifacts
+        if artifact.metadata and artifact.metadata.get("source") == "host_supervised_bio_sdk"
+    ]
+    assert {artifact.relative_path for artifact in bio_artifacts} == {
+        "bio/ncbi/proteins.fasta",
+        "bio/ncbi/proteins.metadata.json",
+        "bio/uniprot/sequences.fasta",
+        "bio/uniprot/metadata.json",
+    }
+    fasta_artifact = next(artifact for artifact in bio_artifacts if artifact.relative_path == "bio/ncbi/proteins.fasta")
+    assert fasta_artifact.kind is ArtifactKind.SEQUENCE
+    assert fasta_artifact.metadata is not None
+    assert fasta_artifact.metadata["provider"] == "ncbi"
+    assert fasta_artifact.metadata["response_digest"].startswith("sha256:")
+    assert fasta_artifact.metadata["source_code_artifact_id"] == code_artifact_id
+    assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">P12345")
+    metadata_artifact = next(artifact for artifact in bio_artifacts if artifact.relative_path == "bio/uniprot/metadata.json")
+    metadata_payload = json.loads(Path(metadata_artifact.storage_uri).read_text(encoding="utf-8"))
+    assert "sequence" not in metadata_payload["records"][0]
+    status = engine.get_pipeline_status("inv_pipeline_bio_fetch")
+    assert status["details"]["bio_artifact_ids"]
+    assert "P12345" not in str(status.get("sandbox_outcome", {}))
+
+
+def test_pipeline_bio_hmmer_search_persists_raw_and_parsed_hits() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact_id = _save_hmm_artifact(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_hmmer",
+        "from openzyme_pipeline import bio\n"
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.hmmer_search",
+                {"hmm_artifact_id": hmm_artifact_id, "database": "uniprotkb", "params": {"E": 1e-5}},
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_hmmer",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [hmm_artifact_id]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert sandbox.results[0]["summary"]["hit_count"] == 1
+    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_hmmer")
+    paths = {artifact.relative_path for artifact in artifacts}
+    assert "bio/hmmer/raw_hits.json" in paths
+    assert "bio/hmmer/parsed_hits.csv" in paths
+    parsed = next(artifact for artifact in artifacts if artifact.relative_path == "bio/hmmer/parsed_hits.csv")
+    assert parsed.metadata is not None
+    assert parsed.metadata["provider"] == "ebi_hmmer"
+    assert parsed.metadata["query_hmm_artifact_id"] == hmm_artifact_id
+    assert "fixture_hit_001" in Path(parsed.storage_uri).read_text(encoding="utf-8")
+
+
+def test_pipeline_bio_hmmer_empty_results_returns_warning() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_empty")
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_hmmer_empty",
+        "from openzyme_pipeline import bio\n"
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='empty')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.hmmer_search",
+                {"hmm_artifact_id": hmm_artifact_id, "database": "empty", "params": {}},
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_empty",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [hmm_artifact_id]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert sandbox.results[0]["summary"]["hit_count"] == 0
+    assert sandbox.results[0]["warnings"][0]["warning_code"] == "empty_results"
+    parsed = next(
+        artifact
+        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_empty")
+        if artifact.relative_path == "bio/hmmer/parsed_hits.csv"
+    )
+    assert Path(parsed.storage_uri).read_text(encoding="utf-8") == "target,accession,evalue,score\n"
+
+
+def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_timeout")
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_timeout",
+        "from openzyme_pipeline import bio\n"
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb', params={{'simulate': 'timeout'}})\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.hmmer_search",
+                {
+                    "hmm_artifact_id": hmm_artifact_id,
+                    "database": "uniprotkb",
+                    "params": {"simulate": "timeout"},
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_timeout",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [hmm_artifact_id]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "bio_provider_timeout"
+    assert error["stage"] == "bio_provider_request"
+    assert error["retryable"] is True
+    assert error["details"]["provider"] == "ebi_hmmer"
+
+
+@pytest.mark.parametrize(
+    ("simulation", "error_type", "stage", "retryable"),
+    [
+        ("schema_drift", "bio_schema_drift", "bio_result_parse", False),
+        ("pagination_failure", "bio_pagination_failure", "bio_provider_pagination", True),
+    ],
+)
+def test_pipeline_bio_schema_and_pagination_failures_are_structured(
+    simulation: str,
+    error_type: str,
+    stage: str,
+    retryable: bool,
+) -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact_id = _save_hmm_artifact(repositories, f"art_hmm_{simulation}")
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        f"code_bio_{simulation}",
+        "from openzyme_pipeline import bio\n"
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb', params={{'simulate': '{simulation}'}})\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.hmmer_search",
+                {
+                    "hmm_artifact_id": hmm_artifact_id,
+                    "database": "uniprotkb",
+                    "params": {"simulate": simulation},
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id=f"inv_pipeline_bio_{simulation}",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [hmm_artifact_id]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == error_type
+    assert error["stage"] == stage
+    assert error["retryable"] is retryable
 
 
 def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None:

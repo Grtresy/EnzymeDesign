@@ -8,6 +8,7 @@ Useful search keywords:
 
 - `pipeline`
 - `artifact read register`
+- `bio ncbi uniprot hmmer`
 - `preprocess prepare_receptor prepare_ligand`
 - `hpc.vina`
 - `hpc.fpocket`
@@ -19,6 +20,7 @@ Recommended reading paths:
 
 - New pipeline authoring: `sdk-overview.md`, then `sandbox-rules.md`
 - Registering files: `artifacts.md`
+- Bio database fetch/search: `bio.md`
 - Vina docking: `hpc-vina.md`, then `preprocess.md`
 - Pocket detection: `hpc-fpocket.md`
 - Many ligands or repeated jobs: `batch-patterns.md`
@@ -28,4 +30,3 @@ Examples:
 - `examples/vina_single_ligand.py`
 - `examples/vina_batch_ligands.py`
 - `examples/fpocket.py`
-

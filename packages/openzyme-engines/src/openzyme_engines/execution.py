@@ -332,6 +332,7 @@ class PipelineSdkFailure(RuntimeError):
         retryable: bool,
         sdk_method: str | None = None,
         hpc_failure: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.error_type = error_type
@@ -341,6 +342,7 @@ class PipelineSdkFailure(RuntimeError):
         self.retryable = retryable
         self.sdk_method = sdk_method
         self.hpc_failure = hpc_failure
+        self.details = {} if details is None else dict(details)
 
 
 class PipelineSourceError(RuntimeError):
@@ -377,6 +379,453 @@ class PipelineSource:
             "source_code_digest": self.source_code_digest,
             "source_code_version": self.source_code_version,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class BioArtifactDraft:
+    relative_path: str
+    kind: ArtifactKind
+    title: str
+    content: str
+    format: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class BioSdkResult:
+    provider: str
+    operation: str
+    summary: dict[str, Any]
+    artifacts: tuple[BioArtifactDraft, ...]
+    warnings: tuple[dict[str, Any], ...] = ()
+
+
+class BioDatabaseAdapter(Protocol):
+    def ncbi_fetch_proteins(
+        self,
+        *,
+        accessions: tuple[str, ...],
+        fields: tuple[str, ...],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def uniprot_fetch(
+        self,
+        *,
+        accessions: tuple[str, ...],
+        fields: tuple[str, ...],
+        batch_size: int | None,
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+
+class DeterministicBioDatabaseAdapter:
+    tool_version = "openzyme-fixture-bio-v1"
+
+    def ncbi_fetch_proteins(
+        self,
+        *,
+        accessions: tuple[str, ...],
+        fields: tuple[str, ...],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        accessions, warnings = self._normalize_accessions(
+            accessions,
+            provider="ncbi",
+            sdk_method="bio.ncbi_fetch_proteins",
+        )
+        records = [self._protein_record(accession, provider="ncbi", reviewed=None) for accession in accessions]
+        metadata_records = [self._metadata_record(record) for record in records]
+        fasta = self._fasta(records)
+        metadata_payload = {
+            "provider": "ncbi",
+            "database": "protein",
+            "fields": list(fields),
+            "records": metadata_records,
+            "warnings": list(warnings),
+            "retrieved_at": retrieved_at,
+            "tool_version": self.tool_version,
+            "api_version": "fixture",
+        }
+        summary = {
+            "provider": "ncbi",
+            "database": "protein",
+            "accession_count": len(accessions),
+            "record_count": len(records),
+            "warning_count": len(warnings),
+            "request_window": {"start": 0, "size": len(accessions)},
+        }
+        return BioSdkResult(
+            provider="ncbi",
+            operation="bio.ncbi_fetch_proteins",
+            summary=summary,
+            warnings=warnings,
+            artifacts=(
+                self._draft(
+                    provider="ncbi",
+                    relative_path="bio/ncbi/proteins.fasta",
+                    kind=ArtifactKind.SEQUENCE,
+                    title="ncbi_proteins.fasta",
+                    content=fasta,
+                    format="fasta",
+                    metadata={
+                        "database": "protein",
+                        "accessions": list(accessions),
+                        "retrieved_at": retrieved_at,
+                    },
+                ),
+                self._draft(
+                    provider="ncbi",
+                    relative_path="bio/ncbi/proteins.metadata.json",
+                    kind=ArtifactKind.RESULT,
+                    title="ncbi_proteins.metadata.json",
+                    content=json.dumps(metadata_payload, sort_keys=True, indent=2) + "\n",
+                    format="json",
+                    metadata={
+                        "database": "protein",
+                        "accessions": list(accessions),
+                        "retrieved_at": retrieved_at,
+                    },
+                ),
+            ),
+        )
+
+    def uniprot_fetch(
+        self,
+        *,
+        accessions: tuple[str, ...],
+        fields: tuple[str, ...],
+        batch_size: int | None,
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        accessions, warnings = self._normalize_accessions(
+            accessions,
+            provider="uniprot",
+            sdk_method="bio.uniprot_fetch",
+        )
+        if batch_size is not None and batch_size <= 0:
+            raise PipelineSdkFailure(
+                error_type="invalid_batch_size",
+                message="bio.uniprot_fetch batch_size must be positive.",
+                hint="Retry with batch_size omitted or set to a positive integer.",
+                stage="bio_input_validation",
+                retryable=False,
+                sdk_method="bio.uniprot_fetch",
+                details={"batch_size": batch_size},
+            )
+        effective_batch_size = batch_size or min(max(len(accessions), 1), 100)
+        records = [self._protein_record(accession, provider="uniprot", reviewed=True) for accession in accessions]
+        metadata_records = [self._metadata_record(record) for record in records]
+        metadata_payload = {
+            "provider": "uniprot",
+            "database": "uniprotkb",
+            "fields": list(fields),
+            "batch_size": effective_batch_size,
+            "records": metadata_records,
+            "warnings": list(warnings),
+            "retrieved_at": retrieved_at,
+            "tool_version": self.tool_version,
+            "api_version": "fixture",
+        }
+        summary = {
+            "provider": "uniprot",
+            "database": "uniprotkb",
+            "accession_count": len(accessions),
+            "record_count": len(records),
+            "warning_count": len(warnings),
+            "request_window": {"start": 0, "size": effective_batch_size},
+            "pagination": {"page_count": max(1, (len(accessions) + effective_batch_size - 1) // effective_batch_size)},
+        }
+        return BioSdkResult(
+            provider="uniprot",
+            operation="bio.uniprot_fetch",
+            summary=summary,
+            warnings=warnings,
+            artifacts=(
+                self._draft(
+                    provider="uniprot",
+                    relative_path="bio/uniprot/sequences.fasta",
+                    kind=ArtifactKind.SEQUENCE,
+                    title="uniprot_sequences.fasta",
+                    content=self._fasta(records),
+                    format="fasta",
+                    metadata={
+                        "database": "uniprotkb",
+                        "accessions": list(accessions),
+                        "retrieved_at": retrieved_at,
+                        "request_window": {"start": 0, "size": effective_batch_size},
+                    },
+                ),
+                self._draft(
+                    provider="uniprot",
+                    relative_path="bio/uniprot/metadata.json",
+                    kind=ArtifactKind.RESULT,
+                    title="uniprot_metadata.json",
+                    content=json.dumps(metadata_payload, sort_keys=True, indent=2) + "\n",
+                    format="json",
+                    metadata={
+                        "database": "uniprotkb",
+                        "accessions": list(accessions),
+                        "retrieved_at": retrieved_at,
+                        "request_window": {"start": 0, "size": effective_batch_size},
+                    },
+                ),
+            ),
+        )
+
+    def hmmer_search(
+        self,
+        *,
+        hmm_artifact: SessionArtifactRecord,
+        database: str,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        normalized_database = database.strip().lower()
+        if not normalized_database:
+            raise PipelineSdkFailure(
+                error_type="missing_hmmer_database",
+                message="bio.hmmer_search requires a database.",
+                hint="Pass a target database name such as uniprotkb or reference_proteomes.",
+                stage="bio_input_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+            )
+        if params.get("simulate") == "timeout":
+            raise PipelineSdkFailure(
+                error_type="bio_provider_timeout",
+                message="EBI HMMER request timed out before completion.",
+                hint="Retry with a smaller database or wait for provider recovery.",
+                stage="bio_provider_request",
+                retryable=True,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", "database": normalized_database},
+            )
+        if params.get("simulate") == "schema_drift":
+            raise PipelineSdkFailure(
+                error_type="bio_schema_drift",
+                message="EBI HMMER response schema did not match the expected hits shape.",
+                hint="Inspect provider response compatibility before treating this as an empty hit set.",
+                stage="bio_result_parse",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", "database": normalized_database},
+            )
+        if params.get("simulate") == "pagination_failure":
+            raise PipelineSdkFailure(
+                error_type="bio_pagination_failure",
+                message="EBI HMMER pagination failed before all pages were retrieved.",
+                hint="Retry the request or reduce the search scope; do not treat partial pages as complete.",
+                stage="bio_provider_pagination",
+                retryable=True,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", "database": normalized_database, "cursor": "fixture-page-2"},
+            )
+        hit_count = 0 if normalized_database == "empty" else 1
+        warnings: tuple[dict[str, Any], ...] = ()
+        if hit_count == 0:
+            warnings = (
+                {
+                    "warning_code": "empty_results",
+                    "stage": "bio_result_parse",
+                    "hint": "The HMMER provider returned no hits for this query/database.",
+                    "affected_range": {"start": 0, "end": 0},
+                },
+            )
+        raw_payload = {
+            "provider": "ebi_hmmer",
+            "database": normalized_database,
+            "query_hmm_artifact_id": hmm_artifact.artifact_id,
+            "params": params,
+            "hits": []
+            if hit_count == 0
+            else [
+                {
+                    "target": "fixture_hit_001",
+                    "accession": "FIXTURE001",
+                    "evalue": 1e-42,
+                    "score": 187.2,
+                }
+            ],
+            "retrieved_at": retrieved_at,
+            "tool_version": self.tool_version,
+            "api_version": "fixture",
+        }
+        parsed_csv = "target,accession,evalue,score\n"
+        if hit_count:
+            parsed_csv += "fixture_hit_001,FIXTURE001,1e-42,187.2\n"
+        summary = {
+            "provider": "ebi_hmmer",
+            "database": normalized_database,
+            "query_hmm_artifact_id": hmm_artifact.artifact_id,
+            "hit_count": hit_count,
+            "warning_count": len(warnings),
+            "request_window": {"start": 0, "size": hit_count},
+            "pagination": {"page_count": 1, "cursor": None},
+        }
+        return BioSdkResult(
+            provider="ebi_hmmer",
+            operation="bio.hmmer_search",
+            summary=summary,
+            warnings=warnings,
+            artifacts=(
+                self._draft(
+                    provider="ebi_hmmer",
+                    relative_path="bio/hmmer/raw_hits.json",
+                    kind=ArtifactKind.RESULT,
+                    title="hmmer_raw_hits.json",
+                    content=json.dumps(raw_payload, sort_keys=True, indent=2) + "\n",
+                    format="json",
+                    metadata={
+                        "database": normalized_database,
+                        "query_hmm_artifact_id": hmm_artifact.artifact_id,
+                        "retrieved_at": retrieved_at,
+                    },
+                ),
+                self._draft(
+                    provider="ebi_hmmer",
+                    relative_path="bio/hmmer/parsed_hits.csv",
+                    kind=ArtifactKind.RESULT,
+                    title="hmmer_parsed_hits.csv",
+                    content=parsed_csv,
+                    format="csv",
+                    metadata={
+                        "database": normalized_database,
+                        "query_hmm_artifact_id": hmm_artifact.artifact_id,
+                        "retrieved_at": retrieved_at,
+                    },
+                ),
+            ),
+        )
+
+    def _normalize_accessions(
+        self,
+        accessions: tuple[str, ...],
+        *,
+        provider: str,
+        sdk_method: str,
+    ) -> tuple[tuple[str, ...], tuple[dict[str, Any], ...]]:
+        if not accessions:
+            raise PipelineSdkFailure(
+                error_type="missing_accessions",
+                message=f"bio {provider} fetch requires at least one accession.",
+                hint="Pass one or more accession strings.",
+                stage="bio_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+            )
+        if len(accessions) > 100:
+            raise PipelineSdkFailure(
+                error_type="bio_quota_exceeded",
+                message="Bio SDK fixture batch size is capped at 100 accessions per operation.",
+                hint="Split the request into smaller batches.",
+                stage="bio_quota_check",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"accession_count": len(accessions), "limit": 100},
+            )
+        normalized: list[str] = []
+        warnings: list[dict[str, Any]] = []
+        for index, accession in enumerate(accessions):
+            value = accession.strip()
+            if not value or not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+                raise PipelineSdkFailure(
+                    error_type="invalid_accession",
+                    message=f"Invalid accession at index {index}: {accession!r}.",
+                    hint="Use provider accession identifiers without whitespace or punctuation.",
+                    stage="bio_input_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"accession": accession, "index": index},
+                )
+            if value.upper().startswith("MISSING"):
+                warnings.append(
+                    {
+                        "warning_code": "partial_accession_missing",
+                        "stage": "bio_provider_response",
+                        "hint": "Provider did not return this accession; remaining records were artifactized.",
+                        "accession": value,
+                        "affected_range": {"start": index, "end": index + 1},
+                    }
+                )
+                continue
+            normalized.append(value)
+        if not normalized:
+            warnings.append(
+                {
+                    "warning_code": "empty_results",
+                    "stage": "bio_provider_response",
+                    "hint": "No requested accessions returned records.",
+                    "affected_range": {"start": 0, "end": len(accessions)},
+                }
+            )
+        return tuple(normalized), tuple(warnings)
+
+    def _protein_record(self, accession: str, *, provider: str, reviewed: bool | None) -> dict[str, Any]:
+        sequence = self._sequence_for(accession)
+        record = {
+            "accession": accession,
+            "description": f"{provider} fixture protein {accession}",
+            "length": len(sequence),
+            "taxonomy": "synthetic fixture",
+            "sequence": sequence,
+        }
+        if reviewed is not None:
+            record["reviewed"] = reviewed
+        return record
+
+    def _metadata_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in record.items() if key != "sequence"}
+
+    def _sequence_for(self, accession: str) -> str:
+        alphabet = "ACDEFGHIKLMNPQRSTVWY"
+        seed = sum(ord(char) for char in accession)
+        return "M" + "".join(alphabet[(seed + index) % len(alphabet)] for index in range(59))
+
+    def _fasta(self, records: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for record in records:
+            lines.append(f">{record['accession']} {record['description']}")
+            lines.append(str(record["sequence"]))
+        return "\n".join(lines) + ("\n" if lines else "")
+
+    def _draft(
+        self,
+        *,
+        provider: str,
+        relative_path: str,
+        kind: ArtifactKind,
+        title: str,
+        content: str,
+        format: str,
+        metadata: dict[str, Any],
+    ) -> BioArtifactDraft:
+        response_digest = f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+        return BioArtifactDraft(
+            relative_path=relative_path,
+            kind=kind,
+            title=title,
+            content=content,
+            format=format,
+            metadata={
+                "source": "host_supervised_bio_sdk",
+                "provider": provider,
+                "format": format,
+                "response_digest": response_digest,
+                "tool_version": self.tool_version,
+                "api_version": "fixture",
+                **metadata,
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -773,6 +1222,7 @@ class ExecutionEngine:
     compiler: ExecutionRequestCompiler | None = None
     parser: ExecutionResultParser | None = None
     preprocess_adapter: PreprocessAdapter | None = None
+    bio_adapter: BioDatabaseAdapter | None = None
     event_emitter: Any | None = None
     sandbox_runner: Any | None = None
 
@@ -973,6 +1423,27 @@ class ExecutionEngine:
         code = source.code
         code_digest = source.code_digest
         source_metadata = source.metadata()
+        forbidden_network = self._forbidden_pipeline_network_usage(code)
+        if forbidden_network:
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest=code_digest,
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code="unsupported_sandbox_network_call",
+                message="Pipeline code cannot perform direct network or provider SDK calls inside the sandbox.",
+                hint=(
+                    "Use openzyme_pipeline.bio for NCBI, UniProt, or EBI HMMER requests. "
+                    f"Rejected import(s): {forbidden_network}"
+                ),
+                error_type="unsupported_sandbox_network_call",
+                stage="pipeline_static_policy",
+                retryable=False,
+                source_metadata=source_metadata,
+            )
         if "handoff" in pipeline_inputs:
             return self._fail_pipeline_start(
                 session_id=session_id,
@@ -1610,6 +2081,8 @@ class ExecutionEngine:
         invocation = self._require_invocation(invocation_id)
         if method in {"preprocess.convert_format", "preprocess.prepare_receptor", "preprocess.prepare_ligand", "preprocess.smiles_to_3d"}:
             return self._run_pipeline_preprocess(session=session, invocation=invocation, method=method, params=params)
+        if method in {"bio.ncbi_fetch_proteins", "bio.uniprot_fetch", "bio.hmmer_search"}:
+            return self._run_pipeline_bio(session=session, invocation=invocation, method=method, params=params)
         if method in {"hpc.fpocket", "hpc.vina"}:
             return self._run_pipeline_hpc(session=session, task=task, invocation=invocation, method=method, params=params)
         if method == "run.wait":
@@ -1623,6 +2096,123 @@ class ExecutionEngine:
                 for artifact in self.repositories.artifacts.list_by_run(str(params["run_id"]))
             ]
         raise ValueError(f"unsupported SDK operation {method!r}")
+
+    def _run_pipeline_bio(
+        self,
+        *,
+        session: Any,
+        invocation: EngineInvocation,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        operation_key = self._pipeline_operation_key(method, params)
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        completed = dict(pipeline.get("completed_operations") or {})
+        if operation_key in completed:
+            return dict(completed[operation_key])
+        adapter = self.bio_adapter or DeterministicBioDatabaseAdapter()
+        retrieved_at = utc_now_iso()
+        if method == "bio.ncbi_fetch_proteins":
+            result = adapter.ncbi_fetch_proteins(
+                accessions=tuple(str(value) for value in list(params.get("accessions") or [])),
+                fields=tuple(str(value) for value in list(params.get("fields") or [])),
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio.uniprot_fetch":
+            batch_size_value = params.get("batch_size")
+            try:
+                batch_size = None if batch_size_value is None else int(batch_size_value)
+            except (TypeError, ValueError) as exc:
+                raise PipelineSdkFailure(
+                    error_type="invalid_batch_size",
+                    message="bio.uniprot_fetch batch_size must be an integer.",
+                    hint="Retry with batch_size omitted or set to a positive integer.",
+                    stage="bio_input_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"batch_size": batch_size_value},
+                ) from exc
+            result = adapter.uniprot_fetch(
+                accessions=tuple(str(value) for value in list(params.get("accessions") or [])),
+                fields=tuple(str(value) for value in list(params.get("fields") or [])),
+                batch_size=batch_size,
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio.hmmer_search":
+            hmm_artifact_id = str(params.get("hmm_artifact_id") or "")
+            hmm_artifact = self.repositories.artifacts.get(hmm_artifact_id)
+            if hmm_artifact is None or hmm_artifact.session_id != session.session_id:
+                raise PipelineSdkFailure(
+                    error_type="invalid_hmm_artifact",
+                    message=f"HMM artifact {hmm_artifact_id!r} is not available in this session.",
+                    hint="Pass an existing HMM artifact id produced or uploaded in this session.",
+                    stage="bio_input_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"hmm_artifact_id": hmm_artifact_id},
+                )
+            hmm_format = str((hmm_artifact.metadata or {}).get("format") or "").lower()
+            if hmm_format != "hmm" and not hmm_artifact.relative_path.lower().endswith(".hmm"):
+                raise PipelineSdkFailure(
+                    error_type="invalid_hmm_artifact",
+                    message=f"HMM artifact {hmm_artifact_id!r} must declare format=hmm or use a .hmm relative path.",
+                    hint="Pass an HMM artifact produced by bio_tools.hmmbuild or an uploaded HMM file.",
+                    stage="bio_input_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"hmm_artifact_id": hmm_artifact_id, "format": hmm_format},
+                )
+            result = adapter.hmmer_search(
+                hmm_artifact=hmm_artifact,
+                database=str(params.get("database") or ""),
+                params=dict(params.get("params") or {}),
+                retrieved_at=retrieved_at,
+            )
+        else:
+            raise ValueError(f"unsupported bio SDK operation {method!r}")
+        records = self._persist_bio_artifacts(
+            session_id=session.session_id,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            invocation_id=invocation.invocation_id,
+            operation_key=operation_key,
+            drafts=result.artifacts,
+            request_metadata={
+                "pipeline_invocation_id": invocation.invocation_id,
+                "sdk_method": method,
+                "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
+                "pipeline_step_id": operation_key,
+                "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
+                "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+            },
+        )
+        payload = {
+            "tool_id": method,
+            "provider": result.provider,
+            "status": RunStatus.SUCCEEDED.value,
+            "operation_key": operation_key,
+            "summary": result.summary,
+            "warnings": list(result.warnings),
+            "artifact_count": len(records),
+            "artifact_ids": [record.artifact_id for record in records],
+            "artifacts": [project_artifact_for_agent(record) for record in records],
+        }
+        self._record_pipeline_completed_operation(invocation, operation_key, payload)
+        self._append_pipeline_list(invocation, "bio_artifact_ids", [record.artifact_id for record in records])
+        self._emit(
+            "execution.pipeline.step.completed",
+            {
+                "invocation_id": invocation.invocation_id,
+                "operation": method,
+                "operation_key": operation_key,
+                "artifact_ids": [record.artifact_id for record in records],
+                "warning_count": len(result.warnings),
+            },
+        )
+        return payload
 
     def _run_pipeline_hpc(
         self,
@@ -2057,6 +2647,7 @@ class ExecutionEngine:
             "message": failure.message,
             "hint": failure.hint,
             "sdk_method": failure.sdk_method,
+            "details": failure.details,
         }
         if failure.hpc_failure is not None:
             error_payload["hpc_failure"] = failure.hpc_failure
@@ -2155,6 +2746,7 @@ class ExecutionEngine:
                 "source_code_version": pipeline.get("source_code_version"),
                 "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
                 "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+                "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
                 "tool_contract": {},
             },
         )
@@ -2255,6 +2847,7 @@ class ExecutionEngine:
                 "hpc_run_ids": list(pipeline.get("hpc_run_ids") or []),
                 "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
                 "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+                "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
                 "completed_operations": completed_operations,
                 "output_artifact_ids": [artifact.artifact_id for artifact in all_artifacts],
                 "terminal_summary": summary,
@@ -2581,6 +3174,7 @@ class ExecutionEngine:
         persisted: list[SessionArtifactRecord] = []
         input_artifact_ids = list(request_metadata.get("input_artifact_ids") or request_metadata.get("required_artifact_ids") or [])
         preprocess_artifact_ids = list(request_metadata.get("preprocess_artifact_ids") or [])
+        bio_artifact_ids = list(request_metadata.get("bio_artifact_ids") or [])
         tool_contract = dict(request_metadata.get("tool_contract") or {})
         declared_paths = {str(item.get("path")) for item in expected_outputs}
         for artifact in artifacts:
@@ -2613,6 +3207,7 @@ class ExecutionEngine:
                     "pipeline_step_id": request_metadata.get("pipeline_step_id"),
                     "input_artifact_ids": input_artifact_ids,
                     "preprocess_artifact_ids": preprocess_artifact_ids,
+                    "bio_artifact_ids": bio_artifact_ids,
                 },
                 created_at=created_at,
             )
@@ -2667,6 +3262,75 @@ class ExecutionEngine:
                 created_at=now,
             )
             self.repositories.artifacts.save(record)
+            persisted.append(record)
+        return tuple(persisted)
+
+    def _persist_bio_artifacts(
+        self,
+        *,
+        session_id: str,
+        task_id: str | None,
+        lane_id: str | None,
+        invocation_id: str,
+        operation_key: str,
+        drafts: tuple[BioArtifactDraft, ...],
+        request_metadata: dict[str, Any],
+    ) -> tuple[SessionArtifactRecord, ...]:
+        persisted: list[SessionArtifactRecord] = []
+        now = utc_now_iso()
+        base_dir = Path(tempfile.gettempdir()) / "openzyme-bio" / _safe_ref(session_id) / _safe_ref(invocation_id)
+        for draft in drafts:
+            relative = PurePosixPath(draft.relative_path)
+            relative_path = relative.as_posix()
+            if relative.is_absolute() or not relative_path or any(part in {"", ".", ".."} for part in relative.parts):
+                raise PipelineSdkFailure(
+                    error_type="invalid_bio_artifact_path",
+                    message=f"Bio SDK generated invalid artifact path {draft.relative_path!r}.",
+                    hint="Retry after fixing the Host bio provider adapter.",
+                    stage="bio_artifact_registration",
+                    retryable=False,
+                    sdk_method=request_metadata.get("sdk_method"),
+                )
+            storage_path = base_dir / relative_path
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
+            storage_path.write_text(draft.content, encoding="utf-8")
+            record = SessionArtifactRecord(
+                artifact_id=f"{invocation_id}:{operation_key}:{_safe_ref(relative_path)}",
+                session_id=session_id,
+                task_id=task_id,
+                lane_id=lane_id,
+                invocation_id=invocation_id,
+                run_id=None,
+                kind=draft.kind,
+                storage_uri=str(storage_path),
+                relative_path=relative_path,
+                title=draft.title,
+                description=f"Host-supervised bio SDK output for {operation_key}",
+                metadata={
+                    **draft.metadata,
+                    "pipeline_invocation_id": invocation_id,
+                    "sdk_method": request_metadata.get("sdk_method"),
+                    "code_digest": request_metadata.get("code_digest"),
+                    "source_code_artifact_id": request_metadata.get("source_code_artifact_id"),
+                    "source_code_digest": request_metadata.get("source_code_digest"),
+                    "source_code_version": request_metadata.get("source_code_version"),
+                    "pipeline_step_id": operation_key,
+                    "input_artifact_ids": list(request_metadata.get("input_artifact_ids") or []),
+                    "preprocess_artifact_ids": list(request_metadata.get("preprocess_artifact_ids") or []),
+                    "content_digest": f"sha256:{hashlib.sha256(draft.content.encode('utf-8')).hexdigest()}",
+                },
+                created_at=now,
+            )
+            self.repositories.artifacts.save(record)
+            self._emit(
+                "artifact.recorded",
+                {
+                    "artifact_id": record.artifact_id,
+                    "session_id": record.session_id,
+                    "relative_path": record.relative_path,
+                    "source": "host_supervised_bio_sdk",
+                },
+            )
             persisted.append(record)
         return tuple(persisted)
 
@@ -2893,6 +3557,9 @@ class ExecutionEngine:
 
     def _dry_run_operation_log(self, code: str) -> list[dict[str, Any]]:
         doc_hints = {
+            "bio.ncbi_fetch_proteins": ("bio.ncbi_fetch_proteins", "bio.md"),
+            "bio.uniprot_fetch": ("bio.uniprot_fetch", "bio.md"),
+            "bio.hmmer_search": ("bio.hmmer_search", "bio.md"),
             "preprocess.convert_format": ("preprocess.convert_format", None),
             "preprocess.prepare_receptor": ("preprocess.prepare_receptor", None),
             "preprocess.prepare_ligand": ("preprocess.prepare_ligand", None),
@@ -2928,6 +3595,9 @@ class ExecutionEngine:
                 "artifacts.get",
                 "artifacts.register",
                 "artifacts.register_many",
+                "bio.ncbi_fetch_proteins",
+                "bio.uniprot_fetch",
+                "bio.hmmer_search",
                 "preprocess.convert_format",
                 "preprocess.prepare_receptor",
                 "preprocess.prepare_ligand",
@@ -2977,6 +3647,19 @@ class ExecutionEngine:
             for item in operations
             if str(item.get("operation", "")).startswith("preprocess.")
         ]
+        bio_operations = [
+            {
+                "method": str(item["operation"]),
+                "provider": self._planned_bio_provider(str(item["operation"])),
+                "approval_required": False,
+                "expected_outputs": self._planned_bio_expected_outputs(str(item["operation"])),
+                "quota_estimate": self._planned_bio_quota_estimate(str(item["operation"])),
+                "doc_keyword": item.get("doc_keyword"),
+                "doc_id": item.get("doc_id"),
+            }
+            for item in operations
+            if str(item.get("operation", "")).startswith("bio.")
+        ]
         hpc_operations: list[dict[str, Any]] = []
         all_input_ids = [*artifact_ids, *context_artifact_ids]
         for item in operations:
@@ -3011,14 +3694,21 @@ class ExecutionEngine:
             "code_digest": code_digest,
             **source_metadata,
             "artifact_reads": artifact_reads,
+            "bio_operations": bio_operations,
             "preprocess_operations": preprocess_operations,
             "hpc_operations": hpc_operations,
             "approval_requirements": approval_requirements,
-            "expected_outputs": [output for operation in hpc_operations for output in operation["expected_outputs"]],
+            "expected_outputs": [
+                output
+                for operation in [*bio_operations, *hpc_operations]
+                for output in operation["expected_outputs"]
+            ],
             "resource_quota_estimate": {
                 "hpc_operation_count": len(hpc_operations),
+                "bio_operation_count": len(bio_operations),
                 "preprocess_operation_count": len(preprocess_operations),
                 "max_runtime_minutes": sum(int(operation["resource_estimate"]["max_runtime_minutes"]) for operation in hpc_operations),
+                "provider_requests": sum(int(operation["quota_estimate"]["provider_requests"]) for operation in bio_operations),
             },
             "doc_hints": self._plan_doc_hints(operations),
             "operations": operations,
@@ -3048,6 +3738,28 @@ class ExecutionEngine:
                 artifact_ids.append(artifact_id)
         return artifact_ids
 
+    def _forbidden_pipeline_network_usage(self, code: str) -> list[str]:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return []
+        forbidden: list[str] = []
+        blocked_roots = {"requests", "httpx", "urllib"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", maxsplit=1)[0]
+                    if root in blocked_roots or alias.name == "Bio.Entrez":
+                        forbidden.append(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                root = module.split(".", maxsplit=1)[0]
+                if root in blocked_roots or module == "Bio.Entrez":
+                    forbidden.append(module)
+                elif module == "Bio":
+                    forbidden.extend(f"Bio.{alias.name}" for alias in node.names if alias.name == "Entrez")
+        return sorted(set(forbidden))
+
     def _planned_pipeline_operation_key(self, method: str, artifact_ids: list[str]) -> str:
         canonical = json.dumps({"method": method, "artifact_ids": artifact_ids}, sort_keys=True, separators=(",", ":"))
         return f"{method}:plan:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
@@ -3058,6 +3770,34 @@ class ExecutionEngine:
         if method == "hpc.vina":
             return [{"path": "vina.log", "kind": "log"}, {"path": "poses/vina_out.pdbqt", "kind": "structure"}]
         return []
+
+    def _planned_bio_provider(self, method: str) -> str:
+        return {
+            "bio.ncbi_fetch_proteins": "ncbi",
+            "bio.uniprot_fetch": "uniprot",
+            "bio.hmmer_search": "ebi_hmmer",
+        }.get(method, "unknown")
+
+    def _planned_bio_expected_outputs(self, method: str) -> list[dict[str, Any]]:
+        if method == "bio.ncbi_fetch_proteins":
+            return [
+                {"path": "bio/ncbi/proteins.fasta", "kind": "sequence"},
+                {"path": "bio/ncbi/proteins.metadata.json", "kind": "result"},
+            ]
+        if method == "bio.uniprot_fetch":
+            return [
+                {"path": "bio/uniprot/sequences.fasta", "kind": "sequence"},
+                {"path": "bio/uniprot/metadata.json", "kind": "result"},
+            ]
+        if method == "bio.hmmer_search":
+            return [
+                {"path": "bio/hmmer/raw_hits.json", "kind": "result"},
+                {"path": "bio/hmmer/parsed_hits.csv", "kind": "result"},
+            ]
+        return []
+
+    def _planned_bio_quota_estimate(self, method: str) -> dict[str, Any]:
+        return {"provider_requests": 1, "operation": method, "pagination_pages": 1}
 
     def _planned_resource_estimate(self, method: str) -> dict[str, Any]:
         if method == "hpc.vina":
@@ -3392,9 +4132,13 @@ def register_execution_tools(registry: ToolRegistry, engine: ExecutionEngine) ->
 
 
 __all__ = [
+    "BioArtifactDraft",
+    "BioDatabaseAdapter",
+    "BioSdkResult",
     "DefaultExecutionRequestCompiler",
     "DefaultExecutionResultParser",
     "DefaultPreprocessAdapter",
+    "DeterministicBioDatabaseAdapter",
     "ExecutionArtifactRef",
     "ExecutionEngine",
     "ExecutionHandoff",

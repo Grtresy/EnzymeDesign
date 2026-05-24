@@ -9,7 +9,22 @@ from uuid import uuid4
 
 
 class PipelineSdkError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        stage: str | None = None,
+        retryable: bool | None = None,
+        hint: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.stage = stage
+        self.retryable = retryable
+        self.hint = hint
+        self.details = {} if details is None else dict(details)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +53,17 @@ class ControlClient:
         if "error" in response:
             error = response["error"]
             if isinstance(error, dict):
-                raise PipelineSdkError(str(error.get("message") or error))
+                details = error.get("details")
+                if not isinstance(details, dict):
+                    details = {} if details is None else {"value": details}
+                raise PipelineSdkError(
+                    str(error.get("message") or error),
+                    error_code=None if error.get("error_code") is None else str(error.get("error_code")),
+                    stage=None if error.get("stage") is None else str(error.get("stage")),
+                    retryable=None if error.get("retryable") is None else bool(error.get("retryable")),
+                    hint=None if error.get("hint") is None else str(error.get("hint")),
+                    details=details,
+                )
             raise PipelineSdkError(str(error))
         return response.get("result")
 

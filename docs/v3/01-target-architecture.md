@@ -295,9 +295,10 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
 - `execution` 默认入口是 `execution.pipeline.*`，executor 只能提交或恢复受控 pipeline，不能直接 tool call `exec.run` / runner
-- `execution` pipeline 默认运行在 rootless Podman sandbox 中，通过注入的 `openzyme_pipeline` SDK 访问 `artifacts`、`preprocess` 与 `hpc`
+- `execution` pipeline 默认运行在 rootless Podman sandbox 中，通过注入的 `openzyme_pipeline` SDK 访问 `artifacts`、`bio`、`preprocess` 与 `hpc`
 - execution teammate 默认通过 `docs.search` / `docs.read` 按需读取 `docs/v3/execution-pipeline-docs/`，而不是依赖 prompt 内嵌完整 SDK reference
 - `hpc.*` SDK 调用默认由 Host supervisor 执行 approval、quota、artifact 权限校验、tool contract 编译和 runner 调用
+- `bio.*` SDK 调用默认由 Host supervisor 执行 provider 配置、网络访问、分页、quota、artifact 登记和 provenance；sandbox 不直接联网
 - `execution` 默认仍以 tool contract 编译 `command / inputs / expected_outputs / checks`，并通过 runner staging 传输 artifact
 - preprocess 默认作为 pipeline SDK 能力存在，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`

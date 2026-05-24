@@ -189,13 +189,16 @@ adapter。executor 可以写 Python pipeline 表达判断、循环、批处理�
 - `/openzyme/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
 - `/openzyme/work` 与 `/openzyme/output` 可写；只有 SDK 明确登记的 `/openzyme/output` 文件可进入 artifact catalog
 - Host repo、用户 home、`.ssh`、数据库、runner config 和 HPC credentials 不得挂载进 sandbox
-- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；HPC 请求只能通过 `openzyme_pipeline.hpc` 走 Unix domain socket 到 Host supervisor
+- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER 请求只能通过 `openzyme_pipeline.bio` 走 Unix domain socket 到 Host supervisor，HPC 请求只能通过 `openzyme_pipeline.hpc`
 
 `openzyme_pipeline` SDK 至少提供概念能力：
 
 - `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图
 - `execution.pipeline.start.inputs.artifact_ids` / `context_artifact_ids` 必须显式列出 pipeline source 将读取的 artifact；Host dry-run 发现未声明的字面量 `artifacts.get("...")` 时返回可修复 tool failure，让 executor 重新调用
 - `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact
+- `bio.ncbi_fetch_proteins(accessions=[...], fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
+- `bio.uniprot_fetch(accessions=[...], fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
+- `bio.hmmer_search(hmm_artifact_id=..., database=..., params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
 - `preprocess.convert_format(...)`
 - `preprocess.prepare_receptor(...)`
 - `preprocess.prepare_ligand(...)`
@@ -208,11 +211,11 @@ Host supervisor 负责：
 
 - 校验 pipeline 是否只能读取当前 session/task/lane 授权 artifact
 - 执行 dry-run / plan，列出预计 artifact 读写、HPC jobs、资源与输出
-- 执行 SDK operation policy、approval gate、quota、timeout、输出大小限制和失败分类
+- 执行 SDK operation policy、approval gate、provider quota、timeout、输出大小限制和失败分类
 - 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
 - 把每个 `hpc.*` 调用转换为 tool contract compiler 输入
 - 调用 `apps/mcp-hpc-runner`，并把 fetched outputs 登记为 session artifacts
-- 记录 pipeline code digest、SDK operation log、RunSpec、run id、artifact lineage 与 provenance
+- 记录 pipeline code digest、SDK operation log、provider request summary、RunSpec、run id、artifact lineage 与 provenance；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version
 
 ### 3.2 Pipeline SDK Docs
 

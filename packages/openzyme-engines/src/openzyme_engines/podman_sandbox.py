@@ -283,7 +283,19 @@ class _ControlSocketServer:
                 raise ValueError(f"unsupported SDK operation {method!r}")
             return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
         except Exception as exc:
-            return {"jsonrpc": "2.0", "id": request.get("id"), "error": {"message": str(exc), "type": exc.__class__.__name__}}
+            return {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {
+                    "message": str(exc),
+                    "type": exc.__class__.__name__,
+                    "error_code": getattr(exc, "error_type", None),
+                    "stage": getattr(exc, "stage", None),
+                    "retryable": getattr(exc, "retryable", None),
+                    "hint": getattr(exc, "hint", None),
+                    "details": getattr(exc, "details", None),
+                },
+            }
 
     def _register(self, params: dict[str, Any]) -> dict[str, Any]:
         sandbox_path = Path(str(params["path"]))

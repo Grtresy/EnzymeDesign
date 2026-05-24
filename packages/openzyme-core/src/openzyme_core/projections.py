@@ -470,6 +470,7 @@ class SessionProjectionBuilder:
             projected["tool_contract"] = dict(metadata.get("tool_contract") or {})
             projected["input_artifact_ids"] = list(metadata.get("input_artifact_ids") or [])
             projected["preprocess_artifact_ids"] = list(metadata.get("preprocess_artifact_ids") or [])
+            projected["bio_artifact_ids"] = list(metadata.get("bio_artifact_ids") or [])
             projected["pipeline_invocation_id"] = metadata.get("pipeline_invocation_id") or invocation.invocation_id
             projected["code_digest"] = metadata.get("code_digest")
             projected["sandbox_status"] = metadata.get("sandbox_status", "completed" if invocation.status.is_terminal else "running")
@@ -487,6 +488,7 @@ class SessionProjectionBuilder:
                 projected["hpc_run_ids"] = []
                 projected["input_artifact_ids"] = list((pipeline.get("inputs") or {}).get("artifact_ids") or [])
                 projected["preprocess_artifact_ids"] = []
+                projected["bio_artifact_ids"] = list(pipeline.get("bio_artifact_ids") or [])
         report = self.repositories.reports.get_by_invocation(session_id, invocation.invocation_id)
         if report is not None:
             projected["report"] = report.to_dict()
@@ -559,6 +561,7 @@ class SessionProjectionBuilder:
             "source_artifact_ids": self._source_artifact_ids(metadata),
             "input_artifact_ids": self._string_list(metadata.get("input_artifact_ids")),
             "preprocess_artifact_ids": self._string_list(metadata.get("preprocess_artifact_ids")),
+            "bio_artifact_ids": self._string_list(metadata.get("bio_artifact_ids")),
             "runner_run_id": self._string_or_none(metadata.get("runner_run_id"))
             or (run.runner_run_id if run is not None else None),
             "pipeline_invocation_id": self._string_or_none(metadata.get("pipeline_invocation_id")),
