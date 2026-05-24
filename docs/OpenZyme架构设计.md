@@ -362,7 +362,7 @@ Research 输出应归一化为 evidence、source refs、gaps 和必要的 worksp
 
 ### 8.2 Execution Pipeline
 
-V3 execution 的主路径是 executor-authored pipeline code，而不是 executor 直接调用 runner、SSH、Slurm 或 runner config。
+V3 execution 的主路径是 executor-authored pipeline source artifact，而不是 executor 直接调用 runner、SSH、Slurm 或 runner config。executor 必须先用 artifact tools 创建或修订 Python pipeline source artifact，再把 `code_artifact_id` 交给 `execution.pipeline.start`；inline code 不是公开执行入口。
 
 关键接口：
 
@@ -378,6 +378,7 @@ V3 execution 的主路径是 executor-authored pipeline code，而不是 executo
 - Host repo、用户 home、`.ssh`、数据库、runner config、HPC credentials 不得挂载进 sandbox
 - HPC 请求只能通过 `openzyme_pipeline.hpc` 进入 Host supervisor，再编译为 runner `RunSpec`
 - dry-run / validation 先生成 `ExecutionPlan`；需要 approval 的 HPC operation 在用户 approve 前不得提交
+- plan、approval、execution invocation、output artifact provenance 与 workspace projection 记录 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；正式执行前 Host 重新读取 source artifact 并校验 digest
 - approval 绑定 plan digest、artifact reads、HPC operation list、expected outputs 和资源估计
 - runner/HPC 不得直接使用 Host 本地 artifact path；输入必须通过 artifact catalog 授权并 staged 到远端工作目录
 - 远端输出只有在 declared `expected_outputs` 中声明后才会下载并登记为 artifact

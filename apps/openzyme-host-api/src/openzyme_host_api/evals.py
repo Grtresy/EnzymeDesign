@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -53,6 +54,36 @@ def _message_content(message: object) -> str:
     return str(getattr(message, "content", "") or "")
 
 
+def _tool_message_name(message: object) -> str | None:
+    if isinstance(message, dict):
+        return None if message.get("name") is None else str(message["name"])
+    return (
+        None
+        if getattr(message, "name", None) is None
+        else str(getattr(message, "name"))
+    )
+
+
+def _tool_message_payload(message: object) -> dict[str, object]:
+    try:
+        envelope = json.loads(_message_content(message))
+    except json.JSONDecodeError:
+        return {}
+    payload = envelope.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _created_code_artifact_id(messages: list[object]) -> str | None:
+    for message in reversed(messages):
+        if _tool_message_name(message) != "artifact.create_text":
+            continue
+        payload = _tool_message_payload(message)
+        artifact = payload.get("artifact")
+        if isinstance(artifact, dict) and artifact.get("artifact_id"):
+            return str(artifact["artifact_id"])
+    return None
+
+
 def _focused_task_from_prompt(system_prompt: str) -> str:
     for line in system_prompt.splitlines():
         if line.startswith("Focused task: "):
@@ -92,7 +123,7 @@ class V3LocalEvalInvoker:
         if self.purpose == "v3_teammate_loop:researcher":
             return self._researcher_response(system_prompt)
         if self.purpose == "v3_teammate_loop:executor":
-            return self._executor_response(system_prompt)
+            return self._executor_response(system_prompt, messages)
         if self.purpose == "v3_teammate_loop:reporter":
             return self._reporter_response(system_prompt)
         return self._master_response(system_prompt, messages)
@@ -126,9 +157,37 @@ class V3LocalEvalInvoker:
             }
         return {"content": "Research evidence collected.", "tool_calls": []}
 
-    def _executor_response(self, system_prompt: str) -> dict[str, object]:
+    def _executor_response(
+        self, system_prompt: str, messages: list[object]
+    ) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_eval_execution"
-        if self.calls == 1:
+        if any(_tool_message_name(message) == "task.update" for message in messages):
+            return {
+                "content": "Execution approval resolved and artifacts captured.",
+                "tool_calls": [],
+            }
+        if any(
+            _tool_message_name(message) == "execution.pipeline.status"
+            for message in messages
+        ):
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_eval_execution_task_complete",
+                        "name": "task.update",
+                        "args": {
+                            "task_id": task_id,
+                            "status": "completed",
+                        },
+                    }
+                ],
+            }
+        code_artifact_id = _created_code_artifact_id(messages)
+        if code_artifact_id is not None and not any(
+            _tool_message_name(message) == "execution.pipeline.start"
+            for message in messages
+        ):
             return {
                 "content": "",
                 "tool_calls": [
@@ -137,7 +196,7 @@ class V3LocalEvalInvoker:
                         "name": "execution.pipeline.start",
                         "args": {
                             "task_id": task_id,
-                            "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_eval_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                            "code_artifact_id": code_artifact_id,
                             "inputs": {
                                 "artifact_ids": ["art_eval_structure"],
                             },
@@ -145,19 +204,42 @@ class V3LocalEvalInvoker:
                     }
                 ],
             }
-        if self.calls == 2:
+        if self.calls == 1:
             return {
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "call_eval_execution_task_complete",
-                        "name": "task.update",
-                        "args": {"task_id": task_id, "status": "completed"},
+                        "id": "call_eval_execution_source",
+                        "name": "artifact.create_text",
+                        "args": {
+                            "filename": "fpocket_pipeline.py",
+                            "content": (
+                                "from openzyme_pipeline import artifacts, hpc\n"
+                                "structure = artifacts.get('art_eval_structure')\n"
+                                "hpc.fpocket(structure_artifact_id=structure['artifact_id'])\n"
+                            ),
+                        },
+                    }
+                ],
+            }
+        if "Existing execution pipeline invocation:" in system_prompt:
+            invocation_id = (
+                system_prompt.split("Existing execution pipeline invocation:", 1)[1]
+                .split(".", 1)[0]
+                .strip()
+            )
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_eval_execution_status",
+                        "name": "execution.pipeline.status",
+                        "args": {"invocation_id": invocation_id},
                     }
                 ],
             }
         return {
-            "content": "Execution approval resolved and artifacts captured.",
+            "content": "Execution started and is waiting for approval.",
             "tool_calls": [],
         }
 

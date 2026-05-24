@@ -409,17 +409,18 @@ def teammate_tool_descriptors(
                 ToolDescriptor(
                     tool_name="execution.pipeline.start",
                     description=(
-                        "Submit Python pipeline code for the assigned task to the controlled execution sandbox. "
-                        "This runs the pipeline; dry-run previews are not exposed to teammate execution tasks."
+                        "Submit a versioned Python pipeline source artifact for the assigned task to the controlled execution sandbox. "
+                        "Inline code is not accepted; create or patch source with artifact.create_text / artifact.patch_text first."
                     ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "task_id": {"type": "string"},
-                            "code": {"type": "string"},
+                            "code_artifact_id": {"type": "string"},
                             "inputs": {"type": "object"},
+                            "dry_run": {"type": "boolean"},
                         },
-                        "required": ["task_id", "code"],
+                        "required": ["task_id", "code_artifact_id"],
                         "additionalProperties": False,
                     },
                 ),
@@ -649,7 +650,7 @@ class TeammateConversationDriver(HarnessDriver):
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",
                 "Researcher contract: when the assigned objective requires execution against a real structure, use RCSB/UniProt tools to persist a workspace artifact such as rcsb_pdb.download_structure; fetching a web page is not a structure artifact.",
-                "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then submit execution.pipeline.start with Python code that uses the documented openzyme_pipeline SDK operations and declares all artifact ids it reads in inputs.artifact_ids. Do not use dry_run for assigned execution work unless the user explicitly asked only for a plan preview; dry_run does not run the requested operation and does not satisfy execution or reporting gates.",
+                "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then create or patch a Python pipeline source artifact and submit execution.pipeline.start with code_artifact_id. The source must use the documented openzyme_pipeline SDK operations and declare all artifact ids it reads in inputs.artifact_ids. Inline code is not accepted. Use dry_run only for an explicit plan preview; dry_run does not run the requested operation and does not satisfy execution or reporting gates.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
                 f"Instructions: {self.instructions}",

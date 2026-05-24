@@ -573,6 +573,9 @@ def test_workspace_artifact_projection_normalizes_execution_provenance() -> None
         "runner_run_id": "job_123",
         "pipeline_invocation_id": "inv_exec_001",
         "code_digest": "sha256:abc123",
+        "source_code_artifact_id": None,
+        "source_code_digest": None,
+        "source_code_version": None,
         "tool_contract": {"adapter_id": "fpocket"},
     }
     assert "storage_uri" not in provenance
@@ -629,6 +632,9 @@ def test_workspace_artifact_projection_normalizes_direct_research_provenance() -
     assert provenance["source_artifact_ids"] == ["seed:query", "seed:alignment", "7"]
     assert provenance["input_artifact_ids"] == []
     assert provenance["preprocess_artifact_ids"] == []
+    assert provenance["source_code_artifact_id"] is None
+    assert provenance["source_code_digest"] is None
+    assert provenance["source_code_version"] is None
     assert provenance["tool_contract"] == {}
 
 

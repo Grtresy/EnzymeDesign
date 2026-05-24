@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import replace
@@ -514,6 +515,26 @@ def _tool_message_name(message: object) -> str | None:
     )
 
 
+def _tool_message_payload(message: object) -> dict[str, object]:
+    try:
+        envelope = json.loads(_message_content(message))
+    except json.JSONDecodeError:
+        return {}
+    payload = envelope.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _created_code_artifact_id(messages: list[object]) -> str | None:
+    for message in reversed(messages):
+        if _tool_message_name(message) != "artifact.create_text":
+            continue
+        payload = _tool_message_payload(message)
+        artifact = payload.get("artifact")
+        if isinstance(artifact, dict) and artifact.get("artifact_id"):
+            return str(artifact["artifact_id"])
+    return None
+
+
 class FakeEngineHarnessInvoker:
     def __init__(self, purpose: str) -> None:
         self.purpose = purpose
@@ -580,7 +601,11 @@ class FakeEngineHarnessInvoker:
                         }
                     ],
                 }
-            if self.calls == 1:
+            code_artifact_id = _created_code_artifact_id(messages)
+            if code_artifact_id is not None and not any(
+                _tool_message_name(message) == "execution.pipeline.start"
+                for message in messages
+            ):
                 return {
                     "content": "",
                     "tool_calls": [
@@ -589,10 +614,24 @@ class FakeEngineHarnessInvoker:
                             "name": "execution.pipeline.start",
                             "args": {
                                 "task_id": "task_execution_v3",
-                                "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_v3_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                                "code_artifact_id": code_artifact_id,
                                 "inputs": {
                                     "artifact_ids": ["art_v3_structure"],
                                 },
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_execution_source",
+                            "name": "artifact.create_text",
+                            "args": {
+                                "filename": "fpocket_pipeline.py",
+                                "content": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_v3_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
                             },
                         }
                     ],

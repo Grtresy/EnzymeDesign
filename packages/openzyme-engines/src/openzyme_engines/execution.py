@@ -343,6 +343,42 @@ class PipelineSdkFailure(RuntimeError):
         self.hpc_failure = hpc_failure
 
 
+class PipelineSourceError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        error_code: str,
+        message: str,
+        hint: str,
+        stage: str = "source_code_artifact_validation",
+        retryable: bool = False,
+        source_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
+        self.hint = hint
+        self.stage = stage
+        self.retryable = retryable
+        self.source_metadata = {} if source_metadata is None else dict(source_metadata)
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineSource:
+    artifact: SessionArtifactRecord
+    code: str
+    code_digest: str
+    source_code_digest: str
+    source_code_version: int | None
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "source_code_artifact_id": self.artifact.artifact_id,
+            "source_code_digest": self.source_code_digest,
+            "source_code_version": self.source_code_version,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class PreprocessArtifactDraft:
     source_artifact_id: str
@@ -748,7 +784,7 @@ class ExecutionEngine:
                 "execution.pipeline.start",
                 "execution.pipeline.status",
             ),
-            input_schema={"type": "object", "required": ["task_id", "code"]},
+            input_schema={"type": "object", "required": ["task_id", "code_artifact_id"]},
             output_schema={
                 "type": "object",
                 "required": ["invocation"],
@@ -763,20 +799,180 @@ class ExecutionEngine:
     def register_tools(self, registry: ToolRegistry) -> None:
         register_execution_tools(registry, self)
 
+    def _load_pipeline_source(self, *, session_id: str, code_artifact_id: str) -> PipelineSource:
+        artifact = self.repositories.artifacts.get(code_artifact_id)
+        source_metadata = {"source_code_artifact_id": code_artifact_id}
+        if artifact is None or artifact.session_id != session_id:
+            raise PipelineSourceError(
+                error_code="code_artifact_not_found",
+                message=f"code artifact {code_artifact_id!r} does not exist in the current session.",
+                hint="Create a pipeline source artifact with artifact.create_text and pass its artifact_id as code_artifact_id.",
+                source_metadata=source_metadata,
+            )
+        metadata = dict(artifact.metadata or {})
+        source_metadata = {
+            "source_code_artifact_id": artifact.artifact_id,
+            "source_code_digest": metadata.get("content_digest"),
+            "source_code_version": metadata.get("version"),
+        }
+        if (
+            artifact.kind is not ArtifactKind.CODE
+            or str(metadata.get("format") or "").lower() != "python"
+            or metadata.get("semantic_type") != "pipeline_source"
+        ):
+            raise PipelineSourceError(
+                error_code="invalid_code_artifact",
+                message="code_artifact_id must reference a Python pipeline source artifact.",
+                hint="Use artifact.create_text to create kind=code, format=python, semantic_type=pipeline_source.",
+                source_metadata=source_metadata,
+            )
+        storage_path = Path(str(artifact.storage_uri or ""))
+        if not storage_path.is_file():
+            raise PipelineSourceError(
+                error_code="code_artifact_content_missing",
+                message="code artifact content file is not readable.",
+                hint="Create a fresh pipeline source artifact and retry execution.pipeline.start.",
+                source_metadata=source_metadata,
+            )
+        try:
+            raw = storage_path.read_bytes()
+            code = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PipelineSourceError(
+                error_code="code_artifact_not_utf8",
+                message="code artifact content is not valid UTF-8.",
+                hint="Patch the pipeline source artifact with valid UTF-8 Python source.",
+                source_metadata=source_metadata,
+            ) from exc
+        except OSError as exc:
+            raise PipelineSourceError(
+                error_code="code_artifact_content_unreadable",
+                message=f"code artifact content could not be read: {exc}",
+                hint="Create a fresh pipeline source artifact and retry execution.pipeline.start.",
+                source_metadata=source_metadata,
+            ) from exc
+        code_digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        source_code_digest = f"sha256:{code_digest}"
+        expected_digest = metadata.get("content_digest")
+        if expected_digest is None:
+            raise PipelineSourceError(
+                error_code="source_code_digest_missing",
+                message="code artifact metadata is missing content_digest.",
+                hint="Create a fresh pipeline source artifact with artifact.create_text.",
+                source_metadata={**source_metadata, "source_code_digest": source_code_digest},
+            )
+        if str(expected_digest) != source_code_digest:
+            raise PipelineSourceError(
+                error_code="source_code_digest_mismatch",
+                message="code artifact metadata content_digest does not match the stored source content.",
+                hint="Do not execute this source artifact; create or patch a fresh pipeline source artifact.",
+                source_metadata={
+                    **source_metadata,
+                    "source_code_digest": str(expected_digest),
+                    "actual_source_code_digest": source_code_digest,
+                },
+            )
+        version_value = metadata.get("version")
+        try:
+            version = None if version_value is None else int(version_value)
+        except (TypeError, ValueError):
+            version = None
+        return PipelineSource(
+            artifact=artifact,
+            code=code,
+            code_digest=code_digest,
+            source_code_digest=source_code_digest,
+            source_code_version=version,
+        )
+
+    def _reload_pipeline_source(self, invocation: EngineInvocation, pipeline: dict[str, Any]) -> PipelineSource:
+        code_artifact_id = pipeline.get("source_code_artifact_id")
+        if code_artifact_id is None:
+            raise PipelineSourceError(
+                error_code="missing_code_artifact_id",
+                message="persisted execution pipeline input is missing source_code_artifact_id.",
+                hint="Retry execution.pipeline.start with code_artifact_id.",
+            )
+        source = self._load_pipeline_source(
+            session_id=invocation.session_id,
+            code_artifact_id=str(code_artifact_id),
+        )
+        approved_digest = pipeline.get("source_code_digest")
+        if approved_digest is not None and str(approved_digest) != source.source_code_digest:
+            raise PipelineSourceError(
+                error_code="source_code_digest_mismatch",
+                message="current code artifact digest does not match the approved pipeline source digest.",
+                hint="Create a new dry-run plan for the updated source artifact before executing.",
+                source_metadata={
+                    **source.metadata(),
+                    "approved_source_code_digest": approved_digest,
+                },
+            )
+        return source
+
     def start_pipeline(
         self,
         *,
         session_id: str,
         task_id: str,
-        code: str,
+        code_artifact_id: str | None = None,
+        code: str | None = None,
         inputs: dict[str, Any] | None = None,
         dry_run: bool = False,
         invocation_id: str | None = None,
         lane_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> ExecutionStartResult:
-        code_digest = hashlib.sha256(code.encode("utf-8")).hexdigest()
         pipeline_inputs = dict(inputs or {})
+        if code is not None:
+            code_digest = hashlib.sha256(str(code).encode("utf-8")).hexdigest()
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest=code_digest,
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code="unsupported_inline_pipeline_code",
+                message="execution.pipeline.start does not accept inline code.",
+                hint="Create a pipeline source artifact with artifact.create_text or artifact.patch_text and pass code_artifact_id.",
+            )
+        if code_artifact_id is None:
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest="missing_code_artifact_id",
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code="missing_code_artifact_id",
+                message="execution.pipeline.start requires code_artifact_id.",
+                hint="Create a pipeline source artifact with artifact.create_text and pass its artifact_id.",
+            )
+        try:
+            source = self._load_pipeline_source(session_id=session_id, code_artifact_id=str(code_artifact_id))
+        except PipelineSourceError as exc:
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest=str(exc.source_metadata.get("actual_source_code_digest") or exc.source_metadata.get("source_code_digest") or exc.error_code),
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code=exc.error_code,
+                message=exc.message,
+                hint=exc.hint,
+                error_type=exc.error_code,
+                stage=exc.stage,
+                retryable=exc.retryable,
+                source_metadata=exc.source_metadata,
+            )
+        code = source.code
+        code_digest = source.code_digest
+        source_metadata = source.metadata()
         if "handoff" in pipeline_inputs:
             return self._fail_pipeline_start(
                 session_id=session_id,
@@ -789,6 +985,7 @@ class ExecutionEngine:
                 error_code="unsupported_pipeline_handoff",
                 message="execution.pipeline.start no longer accepts legacy execution handoff input.",
                 hint="Use executor-authored pipeline code and consult docs.search for execution pipeline SDK docs.",
+                source_metadata=source_metadata,
             )
         declared_artifact_ids = {
             str(value)
@@ -817,11 +1014,13 @@ class ExecutionEngine:
                     "Add inputs={'artifact_ids': [...] } to execution.pipeline.start for required artifact reads. "
                     f"Missing artifact ids: {missing_artifact_ids}"
                 ),
+                source_metadata=source_metadata,
             )
         execution_plan = self._build_execution_plan(
             code=code,
             code_digest=code_digest,
             inputs=pipeline_inputs,
+            source_metadata=source_metadata,
         )
         plan_validation_error = self._validate_pipeline_plan_inputs(
             session_id=session_id,
@@ -843,10 +1042,11 @@ class ExecutionEngine:
                 stage=str(plan_validation_error["stage"]),
                 retryable=bool(plan_validation_error["retryable"]),
                 sdk_method=plan_validation_error.get("sdk_method"),
+                source_metadata=source_metadata,
             )
         pipeline_metadata = {
-            "pipeline_code": code,
             "code_digest": code_digest,
+            **source_metadata,
             "inputs": pipeline_inputs,
             "dry_run": dry_run,
             "execution_plan": execution_plan,
@@ -1000,11 +1200,24 @@ class ExecutionEngine:
                 refreshed = self._require_invocation(invocation.invocation_id)
                 running = self._replace_invocation(refreshed, status=EngineInvocationStatus.RUNNING, finished_at=None)
                 self.repositories.invocations.save(running)
+                try:
+                    source = self._reload_pipeline_source(running, pipeline_payload)
+                except PipelineSourceError as exc:
+                    return self._finalize_pipeline_sdk_failure(
+                        invocation=running,
+                        failure=PipelineSdkFailure(
+                            error_type=exc.error_code,
+                            message=exc.message,
+                            hint=exc.hint,
+                            stage=exc.stage,
+                            retryable=exc.retryable,
+                        ),
+                    )
                 return self._run_pipeline_supervisor(
                     session=session,
                     task=task,
                     invocation=running,
-                    code=str(pipeline_payload.get("pipeline_code") or ""),
+                    code=source.code,
                 )
             if approval is not None and approval.status is ApprovalRequestStatus.PENDING:
                 return ExecutionStartResult(invocation=invocation, run=None, approval=approval)
@@ -1212,7 +1425,14 @@ class ExecutionEngine:
         )
         self._emit(
             "execution.pipeline.started",
-            {"invocation_id": invocation_id, "task_id": task_id, "code_digest": code_digest},
+            {
+                "invocation_id": invocation_id,
+                "task_id": task_id,
+                "code_digest": code_digest,
+                "source_code_artifact_id": pipeline_metadata.get("source_code_artifact_id"),
+                "source_code_digest": pipeline_metadata.get("source_code_digest"),
+                "source_code_version": pipeline_metadata.get("source_code_version"),
+            },
         )
         self._emit(
             "engine.invocation.started",
@@ -1514,6 +1734,9 @@ class ExecutionEngine:
             {
                 "pipeline_invocation_id": invocation.invocation_id,
                 "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
                 "pipeline_step_id": operation_key,
                 "sandbox_status": "running",
             }
@@ -1840,6 +2063,9 @@ class ExecutionEngine:
         payload = {
             "pipeline": {
                 "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
                 "sandbox_status": "failed",
                 "terminal_summary": failure.message,
                 "error": error_payload,
@@ -1924,6 +2150,9 @@ class ExecutionEngine:
             request_metadata={
                 "pipeline_invocation_id": invocation.invocation_id,
                 "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
                 "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
                 "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
                 "tool_contract": {},
@@ -2019,6 +2248,9 @@ class ExecutionEngine:
         output_payload = {
             "pipeline": {
                 "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
                 "sandbox_status": outcome.status.value,
                 "hpc_run_ids": list(pipeline.get("hpc_run_ids") or []),
                 "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
@@ -2375,6 +2607,9 @@ class ExecutionEngine:
                     "tool_contract": tool_contract,
                     "pipeline_invocation_id": invocation_id,
                     "code_digest": request_metadata.get("code_digest"),
+                    "source_code_artifact_id": request_metadata.get("source_code_artifact_id"),
+                    "source_code_digest": request_metadata.get("source_code_digest"),
+                    "source_code_version": request_metadata.get("source_code_version"),
                     "pipeline_step_id": request_metadata.get("pipeline_step_id"),
                     "input_artifact_ids": input_artifact_ids,
                     "preprocess_artifact_ids": preprocess_artifact_ids,
@@ -2715,7 +2950,14 @@ class ExecutionEngine:
             operations.append(item)
         return operations
 
-    def _build_execution_plan(self, *, code: str, code_digest: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    def _build_execution_plan(
+        self,
+        *,
+        code: str,
+        code_digest: str,
+        inputs: dict[str, Any],
+        source_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
         operations = self._dry_run_operation_log(code)
         artifact_ids = [str(value) for value in list(inputs.get("artifact_ids") or [])]
         context_artifact_ids = [str(value) for value in list(inputs.get("context_artifact_ids") or [])]
@@ -2767,6 +3009,7 @@ class ExecutionEngine:
         ]
         plan_without_digest = {
             "code_digest": code_digest,
+            **source_metadata,
             "artifact_reads": artifact_reads,
             "preprocess_operations": preprocess_operations,
             "hpc_operations": hpc_operations,
@@ -2904,6 +3147,7 @@ class ExecutionEngine:
         stage: str = "pipeline_start_validation",
         retryable: bool = False,
         sdk_method: str | None = None,
+        source_metadata: dict[str, Any] | None = None,
     ) -> ExecutionStartResult:
         self._require_session(session_id)
         task = self._require_task(session_id, task_id)
@@ -2935,6 +3179,7 @@ class ExecutionEngine:
         payload = {
             "pipeline": {
                 "code_digest": code_digest,
+                **({} if source_metadata is None else dict(source_metadata)),
                 "inputs": inputs,
                 "sandbox_status": "not_started",
                 "error": {
@@ -3041,6 +3286,9 @@ class ExecutionEngine:
                 payload={
                     "dry_run": True,
                     "code_digest": code_digest,
+                    "source_code_artifact_id": pipeline_metadata.get("source_code_artifact_id"),
+                    "source_code_digest": pipeline_metadata.get("source_code_digest"),
+                    "source_code_version": pipeline_metadata.get("source_code_version"),
                     "plan": {
                         "sandbox_status": "not_started",
                         **dict(pipeline_metadata["execution_plan"]),
@@ -3058,6 +3306,9 @@ class ExecutionEngine:
                 result_summary="Pipeline dry-run completed.",
                 structured_findings={
                     "code_digest": code_digest,
+                    "source_code_artifact_id": pipeline_metadata.get("source_code_artifact_id"),
+                    "source_code_digest": pipeline_metadata.get("source_code_digest"),
+                    "source_code_version": pipeline_metadata.get("source_code_version"),
                     "plan": pipeline_metadata["execution_plan"],
                 },
             ),
@@ -3108,7 +3359,10 @@ def register_execution_tools(registry: ToolRegistry, engine: ExecutionEngine) ->
         result = engine.start_pipeline(
             session_id=session_id,
             task_id=task_id,
-            code=str(invocation.arguments["code"]),
+            code_artifact_id=None
+            if invocation.arguments.get("code_artifact_id") is None
+            else str(invocation.arguments["code_artifact_id"]),
+            code=None if invocation.arguments.get("code") is None else str(invocation.arguments["code"]),
             inputs=None if invocation.arguments.get("inputs") is None else dict(invocation.arguments["inputs"]),
             dry_run=bool(invocation.arguments.get("dry_run", False)),
             invocation_id=None if invocation.arguments.get("invocation_id") is None else str(invocation.arguments["invocation_id"]),

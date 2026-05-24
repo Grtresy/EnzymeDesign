@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -432,6 +433,48 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     return session
 
 
+def _save_pipeline_source(
+    repositories: CoreRepositories,
+    *,
+    artifact_id: str,
+    code: str,
+    session_id: str = "sess_001",
+    task_id: str = "task_001",
+    lane_id: str = "lane_001",
+) -> str:
+    source_path = Path(f"/tmp/{artifact_id}.py")
+    source_path.write_text(code, encoding="utf-8")
+    source_digest = f"sha256:{hashlib.sha256(code.encode('utf-8')).hexdigest()}"
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=artifact_id,
+            session_id=session_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.CODE,
+            storage_uri=str(source_path),
+            relative_path=f"code/{artifact_id}/v1/{artifact_id}/pipeline.py",
+            title="pipeline.py",
+            description=None,
+            metadata={
+                "format": "python",
+                "semantic_type": "pipeline_source",
+                "content_digest": source_digest,
+                "lineage_root_artifact_id": artifact_id,
+                "version": 1,
+            },
+            created_at="2026-04-20T12:00:04+00:00",
+        )
+    )
+    return artifact_id
+
+
+def _pipeline_source_id(repositories: CoreRepositories, artifact_id: str, code: str) -> str:
+    return _save_pipeline_source(repositories, artifact_id=artifact_id, code=code)
+
+
 def test_execution_engine_waits_for_approval_before_submitting() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -729,6 +772,11 @@ def test_execution_engine_reconcile_closes_background_completion_without_protoco
 def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_legacy_handoff_rejected",
+        "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_001')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+    )
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
     registry = ToolRegistry()
     register_execution_tools(registry, engine)
@@ -747,7 +795,7 @@ def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
             tool_name="execution.pipeline.start",
             arguments={
                 "task_id": "task_001",
-                "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_001')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                "code_artifact_id": code_artifact_id,
                 "inputs": {
                     "handoff": {
                         "execution_goal": "Run fpocket on the selected structure",
@@ -766,9 +814,114 @@ def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
     assert "unsupported_pipeline_handoff" in result.content
 
 
+def test_pipeline_start_requires_code_artifact_id_and_rejects_inline_code() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+
+    missing = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    inline = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code="print('inline is unsupported')\n",
+        inputs={"artifact_ids": ["art_001"]},
+    )
+
+    assert missing.invocation.status is EngineInvocationStatus.FAILED
+    assert missing.parsed_result is not None
+    assert missing.parsed_result.structured_findings["error"]["error_code"] == "missing_code_artifact_id"
+    assert inline.invocation.status is EngineInvocationStatus.FAILED
+    assert inline.parsed_result is not None
+    assert inline.parsed_result.structured_findings["error"]["error_code"] == "unsupported_inline_pipeline_code"
+
+
+def test_pipeline_start_validates_code_artifact_scope_type_and_digest() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_digest_mismatch",
+        "print('digest mismatch')\n",
+    )
+    artifact = repositories.artifacts.get(code_artifact_id)
+    assert artifact is not None
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=artifact.artifact_id,
+            session_id=artifact.session_id,
+            task_id=artifact.task_id,
+            lane_id=artifact.lane_id,
+            invocation_id=artifact.invocation_id,
+            run_id=artifact.run_id,
+            kind=artifact.kind,
+            storage_uri=artifact.storage_uri,
+            relative_path=artifact.relative_path,
+            title=artifact.title,
+            description=artifact.description,
+            metadata={**dict(artifact.metadata or {}), "content_digest": "sha256:stale"},
+            created_at=artifact.created_at,
+        )
+    )
+    repositories.sessions.save(
+        Session(
+            session_id="sess_other",
+            project_id="proj_001",
+            title="Other",
+            objective="Other",
+            status=SessionStatus.ACTIVE,
+            created_at="2026-04-20T12:00:00+00:00",
+            updated_at="2026-04-20T12:00:00+00:00",
+        )
+    )
+    _save_pipeline_source(
+        repositories,
+        artifact_id="code_other_session",
+        session_id="sess_other",
+        task_id=None,
+        lane_id=None,
+        code="print('other')\n",
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+
+    non_code = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id="art_001",
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    cross_session = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id="code_other_session",
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    digest_mismatch = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+
+    assert non_code.parsed_result is not None
+    assert non_code.parsed_result.structured_findings["error"]["error_code"] == "invalid_code_artifact"
+    assert cross_session.parsed_result is not None
+    assert cross_session.parsed_result.structured_findings["error"]["error_code"] == "code_artifact_not_found"
+    assert digest_mismatch.parsed_result is not None
+    assert digest_mismatch.parsed_result.structured_findings["error"]["error_code"] == "source_code_digest_mismatch"
+
+
 def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_duplicate_pipeline_start",
+        "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_001')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+    )
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
     registry = ToolRegistry()
     register_execution_tools(registry, engine)
@@ -781,7 +934,7 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
     )
     arguments = {
         "task_id": "task_001",
-        "code": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_001')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+        "code_artifact_id": code_artifact_id,
         "inputs": {"artifact_ids": ["art_001"]},
     }
 
@@ -816,6 +969,11 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
 def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_dry_run",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
     runner = CapturingSuccessRunner()
     engine = ExecutionEngine(repositories, runner)
 
@@ -823,7 +981,7 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_dry_run",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
         dry_run=True,
     )
@@ -834,6 +992,9 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
     assert result.parsed_result is not None
     plan = result.parsed_result.structured_findings["plan"]
     assert plan["plan_digest"]
+    assert plan["source_code_artifact_id"] == code_artifact_id
+    assert plan["source_code_digest"]
+    assert plan["source_code_version"] == 1
     assert plan["hpc_operations"][0]["method"] == "hpc.fpocket"
     assert plan["approval_requirements"][0]["kind"] == "hpc_operation"
 
@@ -852,19 +1013,20 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
         "structure = artifacts.get('art_001')\n"
         "hpc.fpocket(structure_artifact_id=structure['artifact_id'])\n"
     )
+    code_artifact_id = _pipeline_source_id(repositories, "code_execute_after_dry_run", code)
     inputs = {"artifact_ids": ["art_001"]}
 
     dry_run = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
-        code=code,
+        code_artifact_id=code_artifact_id,
         inputs=inputs,
         dry_run=True,
     )
     execute = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
-        code=code,
+        code_artifact_id=code_artifact_id,
         inputs=inputs,
         dry_run=False,
     )
@@ -873,6 +1035,8 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
     assert execute.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
     assert execute.approval is not None
     assert execute.invocation.approval_id == execute.approval.approval_id
+    assert execute.parsed_result is not None
+    assert execute.parsed_result.structured_findings["plan"]["source_code_artifact_id"] == code_artifact_id
     assert dry_run.invocation.idempotency_key != execute.invocation.idempotency_key
     approvals = repositories.approvals.list_by_session("sess_001")
     assert [approval.approval_id for approval in approvals] == [
@@ -884,16 +1048,19 @@ def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None
     repositories = _build_repositories()
     _seed_session(repositories)
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=HandlerSandboxRunner())
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_missing_inputs",
+        "from openzyme_pipeline import artifacts, hpc\n"
+        "structure = artifacts.get('art_001')\n"
+        "hpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_infer_artifact",
-        code=(
-            "from openzyme_pipeline import artifacts, hpc\n"
-            "structure = artifacts.get('art_001')\n"
-            "hpc.fpocket(structure_artifact_id=structure['artifact_id'])\n"
-        ),
+        code_artifact_id=code_artifact_id,
         inputs={},
     )
 
@@ -911,12 +1078,17 @@ def test_pipeline_supervisor_propagates_sandbox_preflight_failure() -> None:
         ImmediateSuccessRunner(),
         sandbox_runner=HandlerSandboxRunner(preflight_ok=False),
     )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_preflight_failure",
+        "print('hello from sandbox')\n",
+    )
 
     with pytest.raises(RuntimeError, match="sandbox preflight failed"):
         engine.start_pipeline(
             session_id="sess_001",
             task_id="task_001",
-            code="print('hello from sandbox')\n",
+            code_artifact_id=code_artifact_id,
             inputs={"artifact_ids": ["art_001"]},
         )
 
@@ -949,12 +1121,17 @@ def test_pipeline_rejects_toy_pdb_before_fpocket_approval() -> None:
     )
     runner = CapturingSuccessRunner()
     engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_invalid_fpocket",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_invalid_fpocket",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
     )
 
@@ -973,12 +1150,17 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     runner = CapturingSuccessRunner()
     sandbox = HandlerSandboxRunner()
     engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_hpc_approval",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_approval",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
     )
 
@@ -1018,9 +1200,18 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
         == "fpocket found 2 pocket(s) for the selected artifact set."
     )
     assert status["parsed_result"]["result_summary"] == "fpocket found 2 pocket(s) for the selected artifact set."
+    assert status["details"]["source_code_artifact_id"] == code_artifact_id
     assert status["output_artifact_ids"]
     assert status["runs"]
     assert status["artifacts"]
+    provenance_artifact = next(
+        artifact
+        for artifact in resumed.artifacts
+        if artifact.metadata and artifact.metadata.get("source_code_artifact_id") == code_artifact_id
+    )
+    assert provenance_artifact.metadata is not None
+    assert provenance_artifact.metadata["source_code_digest"]
+    assert provenance_artifact.metadata["source_code_version"] == 1
     public_status = str(status)
     assert "storage_uri" not in public_status
     assert "local_path" not in public_status
@@ -1037,12 +1228,17 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
     runner = CapturingFailedRunner()
     sandbox = FailedHpcSandboxRunner(tmp_path / "stderr.log")
     engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_hpc_failed",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_hpc_failed",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
     )
     assert first.approval is not None
@@ -1079,12 +1275,17 @@ def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(tmp_path: 
     runner = CapturingTimeoutRunner()
     sandbox = FailedHpcSandboxRunner(tmp_path / "stderr.log")
     engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_hpc_timeout",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_hpc_timeout",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
     )
     assert first.approval is not None
@@ -1119,12 +1320,17 @@ def test_pipeline_runtime_unplanned_hpc_operation_requests_secondary_approval() 
     runner = CapturingSuccessRunner()
     sandbox = UnplannedHpcSandboxRunner()
     engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_unplanned_hpc",
+        "from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_unplanned",
-        code="from openzyme_pipeline import hpc\nhpc.fpocket(structure_artifact_id='art_001')\n",
+        code_artifact_id=code_artifact_id,
         inputs={"artifact_ids": ["art_001"]},
     )
     assert first.approval is not None

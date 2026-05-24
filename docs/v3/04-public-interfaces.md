@@ -272,16 +272,18 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 `execution.pipeline.start` 语义：
 
+- `code_artifact_id` 是必填入口，必须引用当前 session artifact catalog 中的 Python pipeline source artifact；inline `code` 不再是公开 contract，传入时返回 `unsupported_inline_pipeline_code` tool failure
 - 默认执行 dry-run / validation 并持久化 `ExecutionPlan`；该阶段不提交 HPC，也不把 Host `storage_uri` 交给 sandbox code
 - `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、HPC operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
 - `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated `hpc.*` operation，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
 - approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 `hpc.*` call，则进入 secondary approval gate
+- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须携带 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；Host 在正式执行前重新读取 code artifact 并校验 digest
 
 事件语义：
 
 - `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
 - `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
-- `execution.pipeline.started` 表示受控 pipeline sandbox 已创建并开始运行；plan approval 阶段以 `approval.requested` 和 `engine.invocation.updated(waiting_approval)` 表达，runtime SDK secondary approval gate 也使用同一等待态
+- `execution.pipeline.started` 表示受控 pipeline sandbox 已创建并开始运行；payload 应包含 source code artifact provenance；plan approval 阶段以 `approval.requested` 和 `engine.invocation.updated(waiting_approval)` 表达，runtime SDK secondary approval gate 也使用同一等待态
 - `execution.pipeline.step.completed` 表示 pipeline 内一个 SDK step 完成；payload 必须能回链到 pipeline invocation 与 step id
 - `execution.pipeline.completed` / `execution.pipeline.failed` 表示 pipeline terminal state，不能替代每个 run / artifact 的 canonical record
 - `execution.preprocess.completed` 表示 pipeline 内格式转换或输入准备已生成新的可信 workspace artifact

@@ -1434,26 +1434,39 @@ def test_public_tool_args_redact_pipeline_source_content() -> None:
     sanitized = _sanitize_public_args(
         {
             "filename": "pipeline.py",
+            "code": "def legacy_inline():\n    pass\n",
+            "code_artifact_id": "art_code_001",
+            "source_code": "def current_source():\n    pass\n",
+            "source_code_artifact_id": "art_code_002",
+            "source_code_digest": "sha256:def456",
             "content": "def main():\n    return 'secret source'\n",
             "base_content_digest": "sha256:abc123",
         }
     )
 
     assert sanitized["filename"] == "pipeline.py"
+    assert sanitized["code"] == "[redacted]"
+    assert sanitized["code_artifact_id"] == "art_code_001"
+    assert sanitized["source_code"] == "[redacted]"
+    assert sanitized["source_code_artifact_id"] == "art_code_002"
+    assert sanitized["source_code_digest"] == "sha256:def456"
     assert sanitized["content"] == "[redacted]"
     assert sanitized["base_content_digest"] == "sha256:abc123"
     assert "secret source" not in json.dumps(sanitized)
 
 
-def test_executor_pipeline_start_descriptor_hides_dry_run_for_assigned_work() -> None:
+def test_executor_pipeline_start_descriptor_uses_code_artifact_id() -> None:
     descriptor = next(
         item
         for item in teammate_tool_descriptors(role="executor")
         if item.tool_name == "execution.pipeline.start"
     )
 
-    assert "dry_run" not in descriptor.input_schema["properties"]
-    assert "dry-run previews are not exposed" in descriptor.description
+    assert "code_artifact_id" in descriptor.input_schema["properties"]
+    assert "code" not in descriptor.input_schema["properties"]
+    assert "dry_run" in descriptor.input_schema["properties"]
+    assert descriptor.input_schema["required"] == ["task_id", "code_artifact_id"]
+    assert "Inline code is not accepted" in descriptor.description
 
 
 def test_research_teammate_direct_download_persists_workspace_artifact() -> None:

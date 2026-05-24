@@ -62,11 +62,8 @@ _PRIVATE_KEY_FRAGMENTS = (
     "runner_config",
     "ssh",
     "config",
-    "pipeline_code",
-    "source_code",
-    "code",
 )
-_PRIVATE_EXACT_KEYS = {"content"}
+_PRIVATE_EXACT_KEYS = {"code", "content", "pipeline_code", "source_code"}
 
 
 def _sanitize_public_args(value: Any, *, key: str = "") -> Any:

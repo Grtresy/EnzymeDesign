@@ -563,6 +563,9 @@ class SessionProjectionBuilder:
             or (run.runner_run_id if run is not None else None),
             "pipeline_invocation_id": self._string_or_none(metadata.get("pipeline_invocation_id")),
             "code_digest": self._string_or_none(metadata.get("code_digest")),
+            "source_code_artifact_id": self._string_or_none(metadata.get("source_code_artifact_id")),
+            "source_code_digest": self._string_or_none(metadata.get("source_code_digest")),
+            "source_code_version": metadata.get("source_code_version"),
             "tool_contract": dict(metadata.get("tool_contract")) if isinstance(metadata.get("tool_contract"), dict) else {},
         }
 
