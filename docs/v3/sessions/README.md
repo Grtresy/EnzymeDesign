@@ -2,7 +2,7 @@
 
 本目录定义五个连续 session，用来把 `reference/enz_miner_hmm_aox.ipynb` 代表的 AOX/HMM 挖掘流程迁移成 OpenZyme V3 的对话驱动工作流。
 
-当前阶段只定义计划和验收口径，不实现功能、不修改 SDK、不改 execution engine、不新增测试。
+当前实现已按本目录的五个 session 顺序落地。本文仍作为实施索引和验收口径入口；具体实现锚点、测试和架构约束以各 session 文档、`docs/v3/` 稳定文档和当前代码为准。
 
 ## 总目标
 
@@ -18,7 +18,7 @@
 4. [04-生信工具链与-hpc-sdk.md](04-生信工具链与-hpc-sdk.md)
 5. [05-aox-hmm-仅提示词端到端验收.md](05-aox-hmm-仅提示词端到端验收.md)
 
-这五个 session 是后续实现顺序，不是可自由重排的备选方案。顺序不能颠倒：先让 pipeline 源码成为可版本化 artifact，再让 execution 从源码 artifact 启动，再补 Host 托管的网络数据库 SDK，再补确定性生信工具链，最后做仅提示词端到端验收。
+这五个 session 是实施顺序，不是可自由重排的备选方案。顺序不能颠倒：先让 pipeline 源码成为可版本化 artifact，再让 execution 从源码 artifact 启动，再补 Host 托管的网络数据库 SDK，再补确定性生信工具链，最后做仅提示词端到端验收。
 
 ## 已锁定决策
 
