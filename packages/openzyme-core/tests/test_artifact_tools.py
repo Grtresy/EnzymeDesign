@@ -176,6 +176,18 @@ def _dispatch(context: SessionRuntimeContext, arguments: dict[str, object], tool
     return json.loads(result.content)
 
 
+def _dispatch_result(context: SessionRuntimeContext, arguments: dict[str, object], tool_name: str) -> tuple[object, dict[str, object]]:
+    result = context.tool_registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id=f"call_{tool_name}",
+            tool_name=tool_name,
+            arguments=arguments,
+        ),
+    )
+    return result, json.loads(result.content)
+
+
 def test_artifact_get_summarizes_large_research_dossier_by_default() -> None:
     _repositories, context = _build_context()
 
@@ -437,3 +449,193 @@ def test_binary_artifact_returns_readable_error(tmp_path: Path) -> None:
     assert result.error_code == "artifact_not_text"
     assert payload["error_code"] == "artifact_not_text"
     assert "storage_uri" not in json.dumps(payload)
+
+
+def test_artifact_create_text_creates_versioned_pipeline_source() -> None:
+    repositories, context = _build_context()
+
+    payload = _dispatch(
+        context,
+        {
+            "filename": "aox_hmm_pipeline.py",
+            "content": "def main():\n    return 1\n",
+            "title": "AOX/HMM pipeline",
+        },
+        tool_name="artifact.create_text",
+    )
+
+    artifact_id = str(payload["artifact"]["artifact_id"])
+    artifact = repositories.artifacts.get(artifact_id)
+    assert artifact is not None
+    assert artifact.kind is ArtifactKind.CODE
+    assert artifact.title == "AOX/HMM pipeline"
+    assert f"/v1/{artifact_id}/aox_hmm_pipeline.py" in artifact.relative_path
+    assert artifact.metadata is not None
+    assert artifact.metadata["format"] == "python"
+    assert artifact.metadata["semantic_type"] == "pipeline_source"
+    assert artifact.metadata["version"] == 1
+    assert artifact.metadata["lineage_root_artifact_id"] == artifact_id
+    assert str(artifact.metadata["content_digest"]).startswith("sha256:")
+    assert "storage_uri" not in json.dumps(payload)
+
+    read_back = _dispatch(context, {"artifact_id": artifact_id}, tool_name="artifact.read_text")
+    assert read_back["content"] == "def main():\n    return 1\n"
+    assert any(event.event_type == "artifact.recorded" for event in context.event_sink.events)
+
+
+def test_artifact_patch_text_creates_new_version_and_preserves_base() -> None:
+    repositories, context = _build_context()
+    created = _dispatch(
+        context,
+        {"filename": "pipeline.py", "content": "def main():\n    return 1\n"},
+        tool_name="artifact.create_text",
+    )
+    base_id = str(created["artifact"]["artifact_id"])
+    base_digest = str(created["content_digest"])
+
+    patched = _dispatch(
+        context,
+        {
+            "base_artifact_id": base_id,
+            "base_content_digest": base_digest,
+            "content": "def main():\n    return 2\n",
+        },
+        tool_name="artifact.patch_text",
+    )
+
+    new_id = str(patched["artifact"]["artifact_id"])
+    assert new_id != base_id
+    new_artifact = repositories.artifacts.get(new_id)
+    assert new_artifact is not None
+    assert new_artifact.metadata is not None
+    assert new_artifact.metadata["version"] == 2
+    assert new_artifact.metadata["parent_artifact_id"] == base_id
+    assert new_artifact.metadata["lineage_root_artifact_id"] == base_id
+    assert new_artifact.metadata["content_digest"] != base_digest
+
+    base_read = _dispatch(context, {"artifact_id": base_id}, tool_name="artifact.read_text")
+    new_read = _dispatch(context, {"artifact_id": new_id}, tool_name="artifact.read_text")
+    assert base_read["content"] == "def main():\n    return 1\n"
+    assert new_read["content"] == "def main():\n    return 2\n"
+
+    diff = _dispatch(
+        context,
+        {"base_artifact_id": base_id, "target_artifact_id": new_id},
+        tool_name="artifact.diff_text",
+    )
+    assert "-    return 1" in diff["diff"]
+    assert "+    return 2" in diff["diff"]
+    assert "storage_uri" not in json.dumps([patched, diff])
+
+
+def test_artifact_patch_text_uses_unique_storage_for_sibling_versions() -> None:
+    repositories, context = _build_context()
+    created = _dispatch(
+        context,
+        {"filename": "pipeline.py", "content": "def main():\n    return 1\n"},
+        tool_name="artifact.create_text",
+    )
+    base_id = str(created["artifact"]["artifact_id"])
+    base_digest = str(created["content_digest"])
+
+    first = _dispatch(
+        context,
+        {
+            "base_artifact_id": base_id,
+            "base_content_digest": base_digest,
+            "content": "def main():\n    return 2\n",
+        },
+        tool_name="artifact.patch_text",
+    )
+    second = _dispatch(
+        context,
+        {
+            "base_artifact_id": base_id,
+            "base_content_digest": base_digest,
+            "content": "def main():\n    return 3\n",
+        },
+        tool_name="artifact.patch_text",
+    )
+
+    first_artifact = repositories.artifacts.get(str(first["artifact"]["artifact_id"]))
+    second_artifact = repositories.artifacts.get(str(second["artifact"]["artifact_id"]))
+    assert first_artifact is not None
+    assert second_artifact is not None
+    assert first_artifact.storage_uri != second_artifact.storage_uri
+    assert _dispatch(context, {"artifact_id": first_artifact.artifact_id}, tool_name="artifact.read_text")["content"].endswith("2\n")
+    assert _dispatch(context, {"artifact_id": second_artifact.artifact_id}, tool_name="artifact.read_text")["content"].endswith("3\n")
+
+
+def test_artifact_patch_text_rejects_stale_digest() -> None:
+    _repositories, context = _build_context()
+    created = _dispatch(
+        context,
+        {"filename": "pipeline.py", "content": "def main():\n    return 1\n"},
+        tool_name="artifact.create_text",
+    )
+
+    result, payload = _dispatch_result(
+        context,
+        {
+            "base_artifact_id": str(created["artifact"]["artifact_id"]),
+            "base_content_digest": "sha256:stale",
+            "content": "def main():\n    return 2\n",
+        },
+        tool_name="artifact.patch_text",
+    )
+
+    assert result.ok is False
+    assert result.error_code == "stale_artifact_digest"
+    assert payload["error_code"] == "stale_artifact_digest"
+    assert payload["expected_content_digest"] == created["content_digest"]
+
+
+def test_artifact_source_tools_reject_invalid_source_inputs(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    bad_filename_result, bad_filename_payload = _dispatch_result(
+        context,
+        {"filename": "../pipeline.txt", "content": "print('bad')\n"},
+        tool_name="artifact.create_text",
+    )
+    bad_utf8_result, bad_utf8_payload = _dispatch_result(
+        context,
+        {"filename": "pipeline.py", "content": "\udcff"},
+        tool_name="artifact.create_text",
+    )
+    result_path = tmp_path / "result.txt"
+    result_path.write_text("plain text\n", encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=result_path,
+        artifact_id="art_result",
+        relative_path="result.txt",
+        kind=ArtifactKind.RESULT,
+        metadata={"format": "text"},
+    )
+    non_code_result, non_code_payload = _dispatch_result(
+        context,
+        {
+            "base_artifact_id": "art_result",
+            "base_content_digest": "sha256:any",
+            "content": "print('patch')\n",
+        },
+        tool_name="artifact.patch_text",
+    )
+    missing_digest_result, missing_digest_payload = _dispatch_result(
+        context,
+        {"base_artifact_id": "art_result", "content": "print('patch')\n"},
+        tool_name="artifact.patch_text",
+    )
+
+    assert bad_filename_result.ok is False
+    assert bad_filename_result.error_code == "invalid_pipeline_source_filename"
+    assert bad_filename_payload["error_code"] == "invalid_pipeline_source_filename"
+    assert bad_utf8_result.ok is False
+    assert bad_utf8_result.error_code == "artifact_not_utf8"
+    assert bad_utf8_payload["error_code"] == "artifact_not_utf8"
+    assert non_code_result.ok is False
+    assert non_code_result.error_code == "artifact_not_pipeline_source"
+    assert non_code_payload["error_code"] == "artifact_not_pipeline_source"
+    assert missing_digest_result.ok is False
+    assert missing_digest_result.error_code == "missing_required_argument"
+    assert missing_digest_payload["argument"] == "base_content_digest"

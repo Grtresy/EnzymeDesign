@@ -42,6 +42,75 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             },
         ),
         ToolDescriptor(
+            tool_name="artifact.create_text",
+            description=(
+                "Create a new immutable Python pipeline source artifact in the current session. "
+                "The artifact is stored as kind=code, format=python, semantic_type=pipeline_source, "
+                "with SHA-256 content_digest and version metadata. Results never include Host paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Safe basename ending in .py, for example aox_hmm_pipeline.py.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete UTF-8 Python source text for the artifact.",
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["filename", "content"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.patch_text",
+            description=(
+                "Create a new immutable version of a Python pipeline source artifact from complete patched "
+                "UTF-8 source text. Requires base_artifact_id and matching base_content_digest for concurrency "
+                "control; the old artifact is not overwritten."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "base_artifact_id": {"type": "string"},
+                    "base_content_digest": {"type": "string"},
+                    "content": {
+                        "type": "string",
+                        "description": "Complete patched UTF-8 Python source text.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional safe .py basename; defaults to the base artifact filename.",
+                    },
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["base_artifact_id", "base_content_digest", "content"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifact.diff_text",
+            description=(
+                "Return a bounded unified diff between two Python pipeline source artifacts or versions. "
+                "Results include safe artifact metadata and content digests, never Host paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "base_artifact_id": {"type": "string"},
+                    "target_artifact_id": {"type": "string"},
+                    "context_lines": {"type": "integer", "minimum": 0, "maximum": 20},
+                },
+                "required": ["base_artifact_id", "target_artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
             tool_name="artifact.get",
             description=(
                 "Read one safe artifact catalog record and linked engine metadata by artifact_id. "

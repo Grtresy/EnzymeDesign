@@ -66,10 +66,13 @@ _PRIVATE_KEY_FRAGMENTS = (
     "source_code",
     "code",
 )
+_PRIVATE_EXACT_KEYS = {"content"}
 
 
 def _sanitize_public_args(value: Any, *, key: str = "") -> Any:
     key_lower = key.lower()
+    if key_lower in _PRIVATE_EXACT_KEYS:
+        return _REDACTED
     if any(fragment in key_lower for fragment in _SENSITIVE_KEY_FRAGMENTS):
         return _REDACTED
     if any(fragment in key_lower for fragment in _PRIVATE_KEY_FRAGMENTS):
@@ -138,7 +141,7 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         f"If the user asks which teammates are available, answer only with {', '.join(TEAMMATE_ROLE_NAMES)} plus their role-level responsibilities.",
         "Do not describe provider tools or capability engines such as fpocket, AutoDock Vina, AlphaFold, PubMed, UniProt, or RCSB PDB as teammates.",
         "Use tools to create, inspect, update, and delegate tasks. Do not directly start capability engines.",
-        "Use artifact.list/get/preview/read_text/range to inspect session artifacts by artifact_id; never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
+        "Use artifact.list/get/preview/read_text/range/create_text/patch_text/diff_text to inspect or version session artifacts by artifact_id; never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
         "Prefer a small number of tool calls. Never request more than 3 tool calls in one response.",
         "If the user asks for new research, execution, or reporting work and no suitable task exists yet, create a task first.",
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",

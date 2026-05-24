@@ -632,6 +632,47 @@ def test_workspace_artifact_projection_normalizes_direct_research_provenance() -
     assert provenance["tool_contract"] == {}
 
 
+def test_workspace_artifact_projection_exposes_code_artifact_lineage_without_private_paths() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_code_v2",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.CODE,
+            storage_uri="/tmp/private/code/art_code_v2.py",
+            relative_path="code/art_code_v1/v2/aox_hmm_pipeline.py",
+            title="aox_hmm_pipeline.py",
+            description=None,
+            metadata={
+                "format": "python",
+                "semantic_type": "pipeline_source",
+                "content_digest": "sha256:abc123",
+                "parent_artifact_id": "art_code_v1",
+                "lineage_root_artifact_id": "art_code_v1",
+                "version": 2,
+                "storage_uri": "/tmp/private/metadata-code.py",
+            },
+            created_at="2026-04-17T13:00:08+00:00",
+        )
+    )
+
+    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "art_code_v2")
+
+    assert artifact["kind"] == "code"
+    assert artifact["metadata"]["semantic_type"] == "pipeline_source"
+    assert artifact["metadata"]["content_digest"] == "sha256:abc123"
+    assert artifact["metadata"]["parent_artifact_id"] == "art_code_v1"
+    assert artifact["metadata"]["lineage_root_artifact_id"] == "art_code_v1"
+    assert artifact["metadata"]["version"] == 2
+    assert "storage_uri" not in json.dumps(artifact)
+
+
 def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

@@ -1382,6 +1382,9 @@ def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> No
 def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:
     expected = {
         "artifact.list",
+        "artifact.create_text",
+        "artifact.patch_text",
+        "artifact.diff_text",
         "artifact.get",
         "artifact.preview",
         "artifact.read_text",
@@ -1419,9 +1422,27 @@ def test_master_and_teammate_prompts_do_not_request_host_paths() -> None:
         instructions="Inspect artifacts.",
     )._system_prompt(context)
 
-    assert "artifact.list/get/preview/read_text/range" in master_prompt
+    assert "artifact.list/get/preview/read_text/range/create_text/patch_text/diff_text" in master_prompt
+    assert "artifact.create_text" in teammate_prompt
     assert "Never request or use Host local paths" in teammate_prompt
     assert "never request or use Host local paths" in master_prompt
+
+
+def test_public_tool_args_redact_pipeline_source_content() -> None:
+    from openzyme_core.llm_driver import _sanitize_public_args
+
+    sanitized = _sanitize_public_args(
+        {
+            "filename": "pipeline.py",
+            "content": "def main():\n    return 'secret source'\n",
+            "base_content_digest": "sha256:abc123",
+        }
+    )
+
+    assert sanitized["filename"] == "pipeline.py"
+    assert sanitized["content"] == "[redacted]"
+    assert sanitized["base_content_digest"] == "sha256:abc123"
+    assert "secret source" not in json.dumps(sanitized)
 
 
 def test_executor_pipeline_start_descriptor_hides_dry_run_for_assigned_work() -> None:

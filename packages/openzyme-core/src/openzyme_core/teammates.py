@@ -644,7 +644,7 @@ class TeammateConversationDriver(HarnessDriver):
                 "You are not user-facing. Do not speak to the user directly.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
                 "Prefer tools over narration. Complete or advance the assigned task, then send a structured protocol update if useful.",
-                "You may read any session artifact through artifact tools by artifact_id. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
+                "You may read any session artifact through artifact tools by artifact_id. When you need to author pipeline source, create and revise it with artifact.create_text, artifact.patch_text, and artifact.diff_text. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",

@@ -22,6 +22,7 @@ class RunStatus(StrEnum):
 
 
 class ArtifactKind(StrEnum):
+    CODE = "code"
     LOG = "log"
     SEQUENCE = "sequence"
     STRUCTURE = "structure"

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import difflib
+import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
+from uuid import uuid4
 
 from openzyme_domain import ArtifactKind
+from openzyme_domain import SessionArtifactRecord
+from openzyme_domain.control_plane import utc_now_iso
 
 from .artifact_projection import project_artifact_for_agent
 from .artifact_projection import project_artifacts_for_agent
@@ -25,6 +31,8 @@ DEFAULT_PREVIEW_LINES = 40
 MAX_PREVIEW_LINES = 200
 MAX_RANGE_LINES = 500
 MAX_TEXT_FILE_BYTES = 2_000_000
+MAX_CREATE_TEXT_BYTES = 500_000
+MAX_DIFF_CHARS = 50_000
 
 TEXT_EXTENSIONS = {
     ".csv",
@@ -37,6 +45,7 @@ TEXT_EXTENSIONS = {
     ".md",
     ".pdb",
     ".pdbqt",
+    ".py",
     ".txt",
     ".xml",
     ".yaml",
@@ -66,10 +75,28 @@ TEXT_FORMATS = {
     "md",
     "pdb",
     "pdbqt",
+    "python",
+    "py",
     "text",
     "txt",
     "yaml",
 }
+
+SAFE_TEXT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _new_artifact_id() -> str:
+    return f"art_{uuid4().hex[:12]}"
+
+
+def _artifact_text_root() -> Path:
+    root = Path("/tmp/openzyme-session-artifacts")
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _sha256_digest(content: str) -> str:
+    return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
 
 
 def _json_chars(value: Any) -> int:
@@ -181,6 +208,182 @@ def _artifact_error(
         status=error_code,
         error_code=error_code,
         hint=hint,
+    )
+
+
+def _validate_pipeline_source_filename(filename: str) -> str | None:
+    candidate = Path(filename).name
+    if candidate != filename or not SAFE_TEXT_FILENAME_PATTERN.fullmatch(candidate):
+        return None
+    if Path(candidate).suffix.lower() != ".py":
+        return None
+    return candidate
+
+
+def _validate_text_content(content: Any) -> tuple[str | None, dict[str, Any] | None]:
+    if not isinstance(content, str):
+        return None, {
+            "error": "content must be a UTF-8 string",
+            "error_code": "invalid_text_content",
+            "hint": "Pass the complete patched source text as a JSON string.",
+        }
+    try:
+        encoded = content.encode("utf-8")
+    except UnicodeEncodeError:
+        return None, {
+            "error": "content is not valid UTF-8 text",
+            "error_code": "artifact_not_utf8",
+            "hint": "Use valid UTF-8 source text.",
+        }
+    if len(encoded) > MAX_CREATE_TEXT_BYTES:
+        return None, {
+            "error": "text artifact content exceeds the write limit",
+            "error_code": "artifact_content_too_large",
+            "size_bytes": len(encoded),
+            "max_size_bytes": MAX_CREATE_TEXT_BYTES,
+            "hint": "Create a smaller source artifact or split generated data into result artifacts.",
+        }
+    return content, None
+
+
+def _is_pipeline_source_artifact(artifact: Any) -> bool:
+    metadata = dict(artifact.metadata or {})
+    return (
+        artifact.kind is ArtifactKind.CODE
+        and _artifact_format(artifact) == "python"
+        and metadata.get("semantic_type") == "pipeline_source"
+    )
+
+
+def _pipeline_source_error(invocation: ToolInvocation, artifact: Any) -> ToolResult:
+    return _artifact_error(
+        invocation,
+        content={
+            "artifact": project_artifact_for_agent(artifact),
+            "error": "artifact is not a Python pipeline source artifact",
+            "error_code": "artifact_not_pipeline_source",
+            "required": {
+                "kind": ArtifactKind.CODE.value,
+                "format": "python",
+                "metadata.semantic_type": "pipeline_source",
+            },
+        },
+        error_code="artifact_not_pipeline_source",
+        hint="Create pipeline source with artifact.create_text before patching or diffing it.",
+    )
+
+
+def _text_artifact_path(
+    session_id: str,
+    lineage_root: str,
+    version: int,
+    artifact_id: str,
+    filename: str,
+) -> tuple[Path, str]:
+    relative_path = f"code/{lineage_root}/v{version}/{artifact_id}/{filename}"
+    storage_path = _artifact_text_root() / session_id / relative_path
+    storage_path.parent.mkdir(parents=True, exist_ok=True)
+    return storage_path, relative_path
+
+
+def _record_artifact_event(context: SessionRuntimeContext, artifact: SessionArtifactRecord) -> None:
+    metadata = dict(artifact.metadata or {})
+    context.emit(
+        "artifact.recorded",
+        {
+            "artifact_id": artifact.artifact_id,
+            "task_id": artifact.task_id,
+            "lane_id": artifact.lane_id,
+            "kind": artifact.kind.value,
+            "format": metadata.get("format"),
+            "semantic_type": metadata.get("semantic_type"),
+            "version": metadata.get("version"),
+            "parent_artifact_id": metadata.get("parent_artifact_id"),
+            "lineage_root_artifact_id": metadata.get("lineage_root_artifact_id"),
+        },
+    )
+
+
+def _create_pipeline_source_artifact(
+    context: SessionRuntimeContext,
+    invocation: ToolInvocation,
+    *,
+    filename: str,
+    content: str,
+    title: str | None = None,
+    description: str | None = None,
+    parent_artifact_id: str | None = None,
+    lineage_root_artifact_id: str | None = None,
+    version: int = 1,
+    extra_metadata: dict[str, Any] | None = None,
+) -> SessionArtifactRecord:
+    artifact_id = _new_artifact_id()
+    root_artifact_id = lineage_root_artifact_id or artifact_id
+    digest = _sha256_digest(content)
+    storage_path, relative_path = _text_artifact_path(
+        context.snapshot.session.session_id,
+        root_artifact_id,
+        version,
+        artifact_id,
+        filename,
+    )
+    storage_path.write_text(content, encoding="utf-8")
+    metadata = {
+        **({} if extra_metadata is None else dict(extra_metadata)),
+        "semantic_type": "pipeline_source",
+        "format": "python",
+        "content_digest": digest,
+        "lineage_root_artifact_id": root_artifact_id,
+        "version": version,
+        "produced_by": invocation.tool_name,
+    }
+    if parent_artifact_id is not None:
+        metadata["parent_artifact_id"] = parent_artifact_id
+    artifact = SessionArtifactRecord(
+        artifact_id=artifact_id,
+        session_id=context.snapshot.session.session_id,
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        invocation_id=None,
+        run_id=None,
+        kind=ArtifactKind.CODE,
+        storage_uri=str(storage_path),
+        relative_path=relative_path,
+        title=title or filename,
+        description=description,
+        metadata=metadata,
+        created_at=utc_now_iso(),
+    )
+    context.repositories.artifacts.save(artifact)
+    _record_artifact_event(context, artifact)
+    return artifact
+
+
+def _source_artifact_payload(artifact: SessionArtifactRecord) -> dict[str, Any]:
+    metadata = dict(artifact.metadata or {})
+    return {
+        "artifact": project_artifact_for_agent(artifact),
+        "content_digest": metadata.get("content_digest"),
+        "lineage_root_artifact_id": metadata.get("lineage_root_artifact_id"),
+        "parent_artifact_id": metadata.get("parent_artifact_id"),
+        "version": metadata.get("version"),
+        "read_hint": f'artifact.read_text with artifact_id="{artifact.artifact_id}", offset=0',
+        "diff_hint": f'artifact.diff_text with target_artifact_id="{artifact.artifact_id}"',
+    }
+
+
+def _get_required_argument(invocation: ToolInvocation, key: str) -> tuple[Any | None, ToolResult | None]:
+    if key in invocation.arguments:
+        return invocation.arguments[key], None
+    return None, _artifact_error(
+        invocation,
+        content={
+            "error": f"missing required argument {key!r}",
+            "error_code": "missing_required_argument",
+            "argument": key,
+        },
+        error_code="missing_required_argument",
+        hint=f"Pass {key} when calling {invocation.tool_name}.",
     )
 
 
@@ -457,6 +660,263 @@ def _text_error_result(invocation: ToolInvocation, artifact: Any, meta: dict[str
 
 
 def register_artifact_tools(registry: ToolRegistry) -> None:
+    def create_text_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        filename_raw, error = _get_required_argument(invocation, "filename")
+        if error is not None:
+            return error
+        content_raw, error = _get_required_argument(invocation, "content")
+        if error is not None:
+            return error
+        filename = _validate_pipeline_source_filename(str(filename_raw))
+        if filename is None:
+            return _artifact_error(
+                invocation,
+                content={
+                    "error": "filename must be a safe Python filename ending in .py",
+                    "error_code": "invalid_pipeline_source_filename",
+                    "filename": str(filename_raw),
+                },
+                error_code="invalid_pipeline_source_filename",
+                hint="Use a basename such as aox_hmm_pipeline.py; do not pass directories or Host paths.",
+            )
+        content, content_error = _validate_text_content(content_raw)
+        if content_error is not None:
+            return _artifact_error(
+                invocation,
+                content=content_error,
+                error_code=str(content_error["error_code"]),
+                hint=str(content_error.get("hint") or ""),
+            )
+        assert content is not None
+        artifact = _create_pipeline_source_artifact(
+            context,
+            invocation,
+            filename=filename,
+            content=content,
+            title=None if invocation.arguments.get("title") is None else str(invocation.arguments["title"]),
+            description=None
+            if invocation.arguments.get("description") is None
+            else str(invocation.arguments["description"]),
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(_source_artifact_payload(artifact), sort_keys=True),
+            task_id=artifact.task_id,
+            lane_id=artifact.lane_id,
+            status="artifact_created",
+            summary=f"Created pipeline source artifact {artifact.artifact_id}.",
+        )
+
+    def patch_text_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        base_artifact_id_raw, error = _get_required_argument(invocation, "base_artifact_id")
+        if error is not None:
+            return error
+        base_digest_raw, error = _get_required_argument(invocation, "base_content_digest")
+        if error is not None:
+            return error
+        content_raw, error = _get_required_argument(invocation, "content")
+        if error is not None:
+            return error
+        base_artifact_id = str(base_artifact_id_raw)
+        artifact = context.repositories.artifacts.get(base_artifact_id)
+        session_id = context.snapshot.session.session_id
+        if artifact is None or artifact.session_id != session_id:
+            return _artifact_error(
+                invocation,
+                content=f"artifact {base_artifact_id!r} does not exist in the current session",
+                error_code="artifact_not_found",
+                hint="Use artifact.list to inspect artifact ids available in this session.",
+            )
+        if not _is_pipeline_source_artifact(artifact):
+            return _pipeline_source_error(invocation, artifact)
+        metadata = dict(artifact.metadata or {})
+        current_digest = metadata.get("content_digest")
+        if current_digest is None:
+            return _artifact_error(
+                invocation,
+                content={
+                    "artifact": project_artifact_for_agent(artifact),
+                    "error": "source artifact is missing metadata.content_digest",
+                    "error_code": "artifact_digest_missing",
+                },
+                error_code="artifact_digest_missing",
+                hint="Create a fresh pipeline source artifact with artifact.create_text.",
+            )
+        if str(base_digest_raw) != str(current_digest):
+            return _artifact_error(
+                invocation,
+                content={
+                    "artifact": project_artifact_for_agent(artifact),
+                    "error": "base_content_digest does not match the current artifact digest",
+                    "error_code": "stale_artifact_digest",
+                    "expected_content_digest": current_digest,
+                    "provided_content_digest": str(base_digest_raw),
+                },
+                error_code="stale_artifact_digest",
+                hint="Read the current artifact metadata and retry the patch with the latest content_digest.",
+            )
+        base_text, read_meta = _read_text_artifact(artifact)
+        if base_text is None:
+            return _text_error_result(invocation, artifact, read_meta)
+        actual_digest = _sha256_digest(base_text)
+        if actual_digest != str(current_digest):
+            return _artifact_error(
+                invocation,
+                content={
+                    "artifact": project_artifact_for_agent(artifact),
+                    "error": "catalog digest does not match stored artifact content",
+                    "error_code": "artifact_digest_mismatch",
+                    "metadata_content_digest": current_digest,
+                    "actual_content_digest": actual_digest,
+                },
+                error_code="artifact_digest_mismatch",
+                hint="The catalog record and stored content disagree; do not create a derived version.",
+            )
+        content, content_error = _validate_text_content(content_raw)
+        if content_error is not None:
+            return _artifact_error(
+                invocation,
+                content=content_error,
+                error_code=str(content_error["error_code"]),
+                hint=str(content_error.get("hint") or ""),
+            )
+        assert content is not None
+        filename_arg = invocation.arguments.get("filename")
+        default_filename = Path(str(artifact.relative_path)).name
+        filename = _validate_pipeline_source_filename(str(filename_arg or default_filename))
+        if filename is None:
+            return _artifact_error(
+                invocation,
+                content={
+                    "error": "filename must be a safe Python filename ending in .py",
+                    "error_code": "invalid_pipeline_source_filename",
+                    "filename": str(filename_arg or default_filename),
+                },
+                error_code="invalid_pipeline_source_filename",
+                hint="Use a basename such as aox_hmm_pipeline.py; do not pass directories or Host paths.",
+            )
+        version = int(metadata.get("version") or 1) + 1
+        lineage_root = str(metadata.get("lineage_root_artifact_id") or artifact.artifact_id)
+        extra_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key
+            not in {
+                "content_digest",
+                "parent_artifact_id",
+                "lineage_root_artifact_id",
+                "version",
+                "produced_by",
+            }
+        }
+        new_artifact = _create_pipeline_source_artifact(
+            context,
+            invocation,
+            filename=filename,
+            content=content,
+            title=None if invocation.arguments.get("title") is None else str(invocation.arguments["title"]),
+            description=artifact.description
+            if invocation.arguments.get("description") is None
+            else str(invocation.arguments["description"]),
+            parent_artifact_id=artifact.artifact_id,
+            lineage_root_artifact_id=lineage_root,
+            version=version,
+            extra_metadata=extra_metadata,
+        )
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(
+                {
+                    **_source_artifact_payload(new_artifact),
+                    "base_artifact": project_artifact_for_agent(artifact),
+                    "base_content_digest": current_digest,
+                    "base_version": metadata.get("version"),
+                },
+                sort_keys=True,
+            ),
+            task_id=new_artifact.task_id,
+            lane_id=new_artifact.lane_id,
+            status="artifact_version_created",
+            summary=(
+                f"Created pipeline source artifact {new_artifact.artifact_id} "
+                f"as version {version} from {artifact.artifact_id}."
+            ),
+        )
+
+    def diff_text_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        base_artifact_id_raw, error = _get_required_argument(invocation, "base_artifact_id")
+        if error is not None:
+            return error
+        target_artifact_id_raw, error = _get_required_argument(invocation, "target_artifact_id")
+        if error is not None:
+            return error
+        base_artifact = context.repositories.artifacts.get(str(base_artifact_id_raw))
+        target_artifact = context.repositories.artifacts.get(str(target_artifact_id_raw))
+        session_id = context.snapshot.session.session_id
+        if base_artifact is None or base_artifact.session_id != session_id:
+            return _artifact_error(
+                invocation,
+                content=f"artifact {str(base_artifact_id_raw)!r} does not exist in the current session",
+                error_code="artifact_not_found",
+                hint="Use artifact.list to inspect artifact ids available in this session.",
+            )
+        if target_artifact is None or target_artifact.session_id != session_id:
+            return _artifact_error(
+                invocation,
+                content=f"artifact {str(target_artifact_id_raw)!r} does not exist in the current session",
+                error_code="artifact_not_found",
+                hint="Use artifact.list to inspect artifact ids available in this session.",
+            )
+        if not _is_pipeline_source_artifact(base_artifact):
+            return _pipeline_source_error(invocation, base_artifact)
+        if not _is_pipeline_source_artifact(target_artifact):
+            return _pipeline_source_error(invocation, target_artifact)
+        base_text, base_meta = _read_text_artifact(base_artifact)
+        if base_text is None:
+            return _text_error_result(invocation, base_artifact, base_meta)
+        target_text, target_meta = _read_text_artifact(target_artifact)
+        if target_text is None:
+            return _text_error_result(invocation, target_artifact, target_meta)
+        context_lines = max(0, min(20, int(invocation.arguments.get("context_lines", 3))))
+        diff_lines = list(
+            difflib.unified_diff(
+                base_text.splitlines(),
+                target_text.splitlines(),
+                fromfile=f"{base_artifact.artifact_id}:{Path(str(base_artifact.relative_path)).name}",
+                tofile=f"{target_artifact.artifact_id}:{Path(str(target_artifact.relative_path)).name}",
+                lineterm="",
+                n=context_lines,
+            )
+        )
+        diff_text = "\n".join(diff_lines)
+        truncated = len(diff_text) > MAX_DIFF_CHARS
+        if truncated:
+            diff_text = diff_text[:MAX_DIFF_CHARS]
+        payload = {
+            "base_artifact": project_artifact_for_agent(base_artifact),
+            "target_artifact": project_artifact_for_agent(target_artifact),
+            "base_content_digest": dict(base_artifact.metadata or {}).get("content_digest"),
+            "target_content_digest": dict(target_artifact.metadata or {}).get("content_digest"),
+            "context_lines": context_lines,
+            "diff": diff_text,
+            "diff_line_count": len(diff_lines),
+            "truncated": truncated,
+        }
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=json.dumps(payload, sort_keys=True),
+            task_id=target_artifact.task_id,
+            lane_id=target_artifact.lane_id,
+            status="ok",
+            summary=f"Diffed {base_artifact.artifact_id} against {target_artifact.artifact_id}.",
+        )
+
     def list_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         session_id = context.snapshot.session.session_id
         task_id = invocation.arguments.get("task_id")
@@ -613,6 +1073,9 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             lane_id=artifact.lane_id,
         )
 
+    registry.register("artifact.create_text", create_text_handler)
+    registry.register("artifact.patch_text", patch_text_handler)
+    registry.register("artifact.diff_text", diff_text_handler)
     registry.register("artifact.list", list_handler)
     registry.register("artifact.get", get_handler)
     registry.register("artifact.preview", preview_handler)

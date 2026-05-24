@@ -279,6 +279,7 @@ Projection 约束：
 - teammate 输出、工具调用、trace 和 protocol thread 通过 `agent_traces`、`delegation`、`activity_feed`、`inbox` 等 read model 表达
 - `delegation.agents` 表达 resident team roster，而不是最近一次 `task.delegate` 的临时返回
 - `artifacts` 是 session 共享工作面；`storage_uri` 只属于 Host-private catalog record，workspace/API/agent tool result 只能暴露安全 artifact 投影，不能暴露 Host repo path、Host artifact path、sandbox host path、runner private path、SSH/Slurm config 或 runner credentials
+- pipeline 源码必须进入 artifact catalog：Python source 使用 `ArtifactKind.CODE`、`metadata.semantic_type="pipeline_source"`、SHA-256 `content_digest` 与 version/lineage metadata；源码修改通过 `artifact.patch_text` 生成新的不可变 artifact，不能覆盖旧版本或藏在 prompt/浏览器状态/Host 本地路径中
 - `report_drafts` 是 reporter 的中间交付面，不是一次 invocation 的临时字符串
 - `capabilities` 按 capability key 承载 research/execution 等投影，避免把 engine 内部状态固化成顶层 contract
 
