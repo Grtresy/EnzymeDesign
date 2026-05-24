@@ -828,6 +828,510 @@ class DeterministicBioDatabaseAdapter:
         )
 
 
+class BioToolsAdapter(Protocol):
+    def cdhit(
+        self,
+        *,
+        input_fasta: SessionArtifactRecord,
+        identity: float,
+        mode: str,
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def mafft(
+        self,
+        *,
+        input_fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def hmmbuild(
+        self,
+        *,
+        alignment: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def hmmalign(
+        self,
+        *,
+        hmm: SessionArtifactRecord,
+        fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+    def hmmer_search_cli(
+        self,
+        *,
+        hmm: SessionArtifactRecord,
+        target_fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
+
+class DeterministicBioToolsAdapter:
+    tool_version = "openzyme-fixture-bio-tools-v1"
+
+    def cdhit(
+        self,
+        *,
+        input_fasta: SessionArtifactRecord,
+        identity: float,
+        mode: str,
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        self._ensure_tool_available("bio_tools.cdhit", params={"mode": mode})
+        if identity <= 0 or identity > 1:
+            raise self._failure(
+                "bio_tools.cdhit",
+                "invalid_tool_parameter",
+                "cd-hit identity must be in the range (0, 1].",
+                "Retry with an identity threshold such as 0.9.",
+                "bio_tools_input_validation",
+                details={"identity": identity},
+            )
+        sequences = self._read_fasta(input_fasta, sdk_method="bio_tools.cdhit")
+        content = self._fasta(sequences[: max(1, len(sequences))])
+        summary = {
+            "tool_name": "cd-hit",
+            "input_artifact_ids": [input_fasta.artifact_id],
+            "sequence_count": len(sequences),
+            "cluster_count": len(sequences),
+            "identity": identity,
+            "mode": mode,
+        }
+        return self._result(
+            operation="bio_tools.cdhit",
+            summary=summary,
+            artifacts=(
+                self._draft(
+                    relative_path="bio_tools/cdhit/clustered.fasta",
+                    kind=ArtifactKind.SEQUENCE,
+                    title="cdhit_clustered.fasta",
+                    content=content,
+                    format="fasta",
+                    metadata={
+                        "tool_name": "cd-hit",
+                        "input_artifact_ids": [input_fasta.artifact_id],
+                        "parameters": {"identity": identity, "mode": mode},
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="fasta",
+                ),
+                self._draft(
+                    relative_path="bio_tools/cdhit/clusters.csv",
+                    kind=ArtifactKind.RESULT,
+                    title="cdhit_clusters.csv",
+                    content="cluster_id,representative,member_count\ncluster_1," + sequences[0][0] + f",{len(sequences)}\n",
+                    format="csv",
+                    metadata={
+                        "tool_name": "cd-hit",
+                        "input_artifact_ids": [input_fasta.artifact_id],
+                        "parameters": {"identity": identity, "mode": mode},
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="csv",
+                    required_columns=("cluster_id", "representative", "member_count"),
+                ),
+            ),
+        )
+
+    def mafft(
+        self,
+        *,
+        input_fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        self._ensure_tool_available("bio_tools.mafft", params=params)
+        sequences = self._read_fasta(input_fasta, sdk_method="bio_tools.mafft")
+        content = self._fasta([(name, sequence + "-" * (index % 2)) for index, (name, sequence) in enumerate(sequences)])
+        summary = {
+            "tool_name": "mafft",
+            "input_artifact_ids": [input_fasta.artifact_id],
+            "sequence_count": len(sequences),
+            "alignment_length": max(len(sequence) for _, sequence in sequences),
+        }
+        return self._result(
+            operation="bio_tools.mafft",
+            summary=summary,
+            artifacts=(
+                self._draft(
+                    relative_path="bio_tools/mafft/alignment.fasta",
+                    kind=ArtifactKind.SEQUENCE,
+                    title="mafft_alignment.fasta",
+                    content=content,
+                    format="fasta",
+                    metadata={
+                        "tool_name": "mafft",
+                        "input_artifact_ids": [input_fasta.artifact_id],
+                        "parameters": params,
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="fasta",
+                ),
+            ),
+        )
+
+    def hmmbuild(
+        self,
+        *,
+        alignment: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        self._ensure_tool_available("bio_tools.hmmbuild", params=params)
+        sequences = self._read_fasta(alignment, sdk_method="bio_tools.hmmbuild")
+        hmm = "HMMER3/f [OpenZyme fixture]\nNAME openzyme_fixture\nLENG " + str(max(len(item[1]) for item in sequences)) + "\n//\n"
+        summary = {
+            "tool_name": "hmmbuild",
+            "input_artifact_ids": [alignment.artifact_id],
+            "sequence_count": len(sequences),
+        }
+        return self._result(
+            operation="bio_tools.hmmbuild",
+            summary=summary,
+            artifacts=(
+                self._draft(
+                    relative_path="bio_tools/hmmbuild/model.hmm",
+                    kind=ArtifactKind.RESULT,
+                    title="hmmbuild_model.hmm",
+                    content=hmm,
+                    format="hmm",
+                    metadata={
+                        "tool_name": "hmmbuild",
+                        "input_artifact_ids": [alignment.artifact_id],
+                        "parameters": params,
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="hmm",
+                ),
+            ),
+        )
+
+    def hmmalign(
+        self,
+        *,
+        hmm: SessionArtifactRecord,
+        fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        self._ensure_tool_available("bio_tools.hmmalign", params=params)
+        self._read_hmm(hmm, sdk_method="bio_tools.hmmalign")
+        sequences = self._read_fasta(fasta, sdk_method="bio_tools.hmmalign")
+        content = self._fasta([(name, sequence + ".") for name, sequence in sequences])
+        summary = {
+            "tool_name": "hmmalign",
+            "input_artifact_ids": [hmm.artifact_id, fasta.artifact_id],
+            "aligned_sequence_count": len(sequences),
+        }
+        return self._result(
+            operation="bio_tools.hmmalign",
+            summary=summary,
+            artifacts=(
+                self._draft(
+                    relative_path="bio_tools/hmmalign/aligned.fasta",
+                    kind=ArtifactKind.SEQUENCE,
+                    title="hmmalign_aligned.fasta",
+                    content=content,
+                    format="fasta",
+                    metadata={
+                        "tool_name": "hmmalign",
+                        "input_artifact_ids": [hmm.artifact_id, fasta.artifact_id],
+                        "parameters": params,
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="fasta",
+                ),
+            ),
+        )
+
+    def hmmer_search_cli(
+        self,
+        *,
+        hmm: SessionArtifactRecord,
+        target_fasta: SessionArtifactRecord,
+        params: dict[str, Any],
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        self._ensure_tool_available("bio_tools.hmmer_search_cli", params=params)
+        self._read_hmm(hmm, sdk_method="bio_tools.hmmer_search_cli")
+        sequences = self._read_fasta(target_fasta, sdk_method="bio_tools.hmmer_search_cli")
+        if params.get("simulate") == "declared_output_missing":
+            raise self._failure(
+                "bio_tools.hmmer_search_cli",
+                "declared_output_missing",
+                "Declared HMMER tblout output was not produced.",
+                "Inspect tool logs and rerun with corrected inputs.",
+                "bio_tools_output_validation",
+                retryable=False,
+            )
+        if params.get("simulate") == "invalid_output":
+            raise self._failure(
+                "bio_tools.hmmer_search_cli",
+                "invalid_hmmer_tblout",
+                "Declared HMMER tblout output is missing required columns.",
+                "Do not register malformed HMMER output as a successful artifact.",
+                "bio_tools_output_validation",
+                retryable=False,
+            )
+        rows = "target,accession,evalue,score\n" + "\n".join(
+            f"{name},{name},1e-20,{100 + index}.0" for index, (name, _) in enumerate(sequences)
+        ) + "\n"
+        log = "hmmer_search_cli completed\n" + ("x" * 512 if params.get("simulate") == "oversized_log" else "")
+        summary = {
+            "tool_name": "hmmsearch",
+            "input_artifact_ids": [hmm.artifact_id, target_fasta.artifact_id],
+            "hit_count": len(sequences),
+            "log_truncated": bool(params.get("simulate") == "oversized_log"),
+        }
+        warnings: tuple[dict[str, Any], ...] = ()
+        if params.get("simulate") == "oversized_log":
+            warnings = (
+                {
+                    "warning_code": "log_truncated",
+                    "stage": "bio_tools_log_capture",
+                    "hint": "Full tool log was persisted as an artifact; RPC summary is truncated.",
+                    "affected_range": {"start": 0, "end": len(log)},
+                },
+            )
+        return self._result(
+            operation="bio_tools.hmmer_search_cli",
+            summary=summary,
+            warnings=warnings,
+            artifacts=(
+                self._draft(
+                    relative_path="bio_tools/hmmer_search_cli/hits.csv",
+                    kind=ArtifactKind.RESULT,
+                    title="hmmer_hits.csv",
+                    content=rows,
+                    format="csv",
+                    metadata={
+                        "tool_name": "hmmsearch",
+                        "input_artifact_ids": [hmm.artifact_id, target_fasta.artifact_id],
+                        "parameters": params,
+                        "retrieved_at": retrieved_at,
+                    },
+                    required_format="csv",
+                    required_columns=("target", "accession", "evalue", "score"),
+                ),
+                self._draft(
+                    relative_path="bio_tools/hmmer_search_cli/tool.log",
+                    kind=ArtifactKind.LOG,
+                    title="hmmer_search_cli.log",
+                    content=log,
+                    format="log",
+                    metadata={
+                        "tool_name": "hmmsearch",
+                        "input_artifact_ids": [hmm.artifact_id, target_fasta.artifact_id],
+                        "parameters": params,
+                        "retrieved_at": retrieved_at,
+                        "log_truncated": bool(params.get("simulate") == "oversized_log"),
+                    },
+                    required_format="log",
+                ),
+            ),
+        )
+
+    def _ensure_tool_available(self, sdk_method: str, *, params: dict[str, Any]) -> None:
+        if params.get("simulate") == "tool_missing":
+            raise self._failure(
+                sdk_method,
+                "tool_missing",
+                f"Required tool for {sdk_method} is not available in the configured Host toolchain.",
+                "Install/configure the requested bio tool; do not silently substitute another command.",
+                "bio_tools_preflight",
+                retryable=False,
+            )
+        if params.get("simulate") == "resource_limit_exceeded":
+            raise self._failure(
+                sdk_method,
+                "resource_limit_exceeded",
+                f"Requested resources exceed the configured local bio tool limit for {sdk_method}.",
+                "Reduce input size or route through an explicitly approved HPC-backed operation.",
+                "bio_tools_resource_check",
+                retryable=False,
+            )
+
+    def _read_fasta(self, artifact: SessionArtifactRecord, *, sdk_method: str) -> list[tuple[str, str]]:
+        metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
+        if metadata_format not in {"fasta", "fa", "faa"} and not artifact.relative_path.lower().endswith((".fasta", ".fa", ".faa")):
+            raise self._failure(
+                sdk_method,
+                "invalid_fasta",
+                f"Artifact {artifact.artifact_id!r} must be a FASTA sequence artifact.",
+                "Provide a FASTA artifact generated by bio.* or bio_tools.*.",
+                "bio_tools_input_validation",
+                details={"artifact_id": artifact.artifact_id, "format": metadata_format},
+            )
+        content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+        records: list[tuple[str, str]] = []
+        current_name: str | None = None
+        current_sequence: list[str] = []
+        for line in content.splitlines():
+            if line.startswith(">"):
+                if current_name is not None:
+                    records.append((current_name, "".join(current_sequence)))
+                current_name = line[1:].split(maxsplit=1)[0] or f"seq{len(records) + 1}"
+                current_sequence = []
+            elif line.strip():
+                current_sequence.append(line.strip())
+        if current_name is not None:
+            records.append((current_name, "".join(current_sequence)))
+        if not records or any(not sequence for _, sequence in records):
+            raise self._failure(
+                sdk_method,
+                "invalid_fasta",
+                f"Artifact {artifact.artifact_id!r} is empty or not valid FASTA.",
+                "Provide a non-empty FASTA with at least one sequence.",
+                "bio_tools_input_validation",
+                details={"artifact_id": artifact.artifact_id},
+            )
+        return records
+
+    def _read_hmm(self, artifact: SessionArtifactRecord, *, sdk_method: str) -> str:
+        metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
+        if metadata_format != "hmm" and not artifact.relative_path.lower().endswith(".hmm"):
+            raise self._failure(
+                sdk_method,
+                "invalid_hmm",
+                f"Artifact {artifact.artifact_id!r} must be an HMM artifact.",
+                "Provide an HMM artifact generated by bio_tools.hmmbuild.",
+                "bio_tools_input_validation",
+                details={"artifact_id": artifact.artifact_id, "format": metadata_format},
+            )
+        content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+        if not content.startswith("HMMER"):
+            raise self._failure(
+                sdk_method,
+                "invalid_hmm",
+                f"Artifact {artifact.artifact_id!r} does not look like HMMER output.",
+                "Regenerate the HMM with bio_tools.hmmbuild.",
+                "bio_tools_input_validation",
+                details={"artifact_id": artifact.artifact_id},
+            )
+        return content
+
+    def _fasta(self, records: list[tuple[str, str]]) -> str:
+        return "".join(f">{name}\n{sequence}\n" for name, sequence in records)
+
+    def _draft(
+        self,
+        *,
+        relative_path: str,
+        kind: ArtifactKind,
+        title: str,
+        content: str,
+        format: str,
+        metadata: dict[str, Any],
+        required_format: str,
+        required_columns: tuple[str, ...] = (),
+    ) -> BioArtifactDraft:
+        self._validate_output(
+            relative_path=relative_path,
+            content=content,
+            required_format=required_format,
+            required_columns=required_columns,
+        )
+        parameter_digest = f"sha256:{hashlib.sha256(json.dumps(metadata.get('parameters') or {}, sort_keys=True, default=str).encode('utf-8')).hexdigest()}"
+        return BioArtifactDraft(
+            relative_path=relative_path,
+            kind=kind,
+            title=title,
+            content=content,
+            format=format,
+            metadata={
+                "source": "host_supervised_bio_tools_sdk",
+                "format": format,
+                "tool_version": self.tool_version,
+                "command_template": metadata.get("tool_name"),
+                "sanitized_args": dict(metadata.get("parameters") or {}),
+                "parameter_digest": parameter_digest,
+                "resource_estimate": {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 30},
+                **metadata,
+            },
+        )
+
+    def _validate_output(
+        self,
+        *,
+        relative_path: str,
+        content: str,
+        required_format: str,
+        required_columns: tuple[str, ...],
+    ) -> None:
+        if not content.strip():
+            raise self._failure(
+                "bio_tools.output",
+                "declared_output_missing",
+                f"Declared output {relative_path!r} is empty.",
+                "Inspect tool logs and rerun with corrected inputs.",
+                "bio_tools_output_validation",
+            )
+        if required_format == "fasta" and not content.lstrip().startswith(">"):
+            raise self._failure("bio_tools.output", "invalid_fasta", f"Output {relative_path!r} is not FASTA.", "Regenerate the output.", "bio_tools_output_validation")
+        if required_format == "hmm" and not content.startswith("HMMER"):
+            raise self._failure("bio_tools.output", "invalid_hmm", f"Output {relative_path!r} is not HMMER format.", "Regenerate the output.", "bio_tools_output_validation")
+        if required_format == "csv" and required_columns:
+            header = content.splitlines()[0].split(",") if content.splitlines() else []
+            missing = [column for column in required_columns if column not in header]
+            if missing:
+                raise self._failure(
+                    "bio_tools.output",
+                    "invalid_csv",
+                    f"Output {relative_path!r} is missing required column(s): {missing}.",
+                    "Do not register malformed CSV output as successful.",
+                    "bio_tools_output_validation",
+                    details={"missing_columns": missing},
+                )
+
+    def _result(
+        self,
+        *,
+        operation: str,
+        summary: dict[str, Any],
+        artifacts: tuple[BioArtifactDraft, ...],
+        warnings: tuple[dict[str, Any], ...] = (),
+    ) -> BioSdkResult:
+        return BioSdkResult(
+            provider="bio_tools",
+            operation=operation,
+            summary={
+                **summary,
+                "expected_outputs": [artifact.relative_path for artifact in artifacts],
+                "warning_count": len(warnings),
+            },
+            warnings=warnings,
+            artifacts=artifacts,
+        )
+
+    def _failure(
+        self,
+        sdk_method: str,
+        error_type: str,
+        message: str,
+        hint: str,
+        stage: str,
+        *,
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> PipelineSdkFailure:
+        return PipelineSdkFailure(
+            error_type=error_type,
+            message=message,
+            hint=hint,
+            stage=stage,
+            retryable=retryable,
+            sdk_method=sdk_method,
+            details={} if details is None else details,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PreprocessArtifactDraft:
     source_artifact_id: str
@@ -1223,6 +1727,7 @@ class ExecutionEngine:
     parser: ExecutionResultParser | None = None
     preprocess_adapter: PreprocessAdapter | None = None
     bio_adapter: BioDatabaseAdapter | None = None
+    bio_tools_adapter: BioToolsAdapter | None = None
     event_emitter: Any | None = None
     sandbox_runner: Any | None = None
 
@@ -1440,6 +1945,27 @@ class ExecutionEngine:
                     f"Rejected import(s): {forbidden_network}"
                 ),
                 error_type="unsupported_sandbox_network_call",
+                stage="pipeline_static_policy",
+                retryable=False,
+                source_metadata=source_metadata,
+            )
+        forbidden_process = self._forbidden_pipeline_process_usage(code)
+        if forbidden_process:
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest=code_digest,
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code="unsupported_sandbox_process_call",
+                message="Pipeline code cannot call subprocess, shell, or bioinformatics binaries directly.",
+                hint=(
+                    "Use openzyme_pipeline.bio_tools for MAFFT, CD-HIT, and HMMER CLI operations. "
+                    f"Rejected usage: {forbidden_process}"
+                ),
+                error_type="unsupported_sandbox_process_call",
                 stage="pipeline_static_policy",
                 retryable=False,
                 source_metadata=source_metadata,
@@ -2083,6 +2609,8 @@ class ExecutionEngine:
             return self._run_pipeline_preprocess(session=session, invocation=invocation, method=method, params=params)
         if method in {"bio.ncbi_fetch_proteins", "bio.uniprot_fetch", "bio.hmmer_search"}:
             return self._run_pipeline_bio(session=session, invocation=invocation, method=method, params=params)
+        if method in {"bio_tools.cdhit", "bio_tools.mafft", "bio_tools.hmmbuild", "bio_tools.hmmalign", "bio_tools.hmmer_search_cli"}:
+            return self._run_pipeline_bio_tool(session=session, invocation=invocation, method=method, params=params)
         if method in {"hpc.fpocket", "hpc.vina"}:
             return self._run_pipeline_hpc(session=session, task=task, invocation=invocation, method=method, params=params)
         if method == "run.wait":
@@ -2187,6 +2715,141 @@ class ExecutionEngine:
                 "pipeline_step_id": operation_key,
                 "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
                 "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+            },
+        )
+        payload = {
+            "tool_id": method,
+            "provider": result.provider,
+            "status": RunStatus.SUCCEEDED.value,
+            "operation_key": operation_key,
+            "summary": result.summary,
+            "warnings": list(result.warnings),
+            "artifact_count": len(records),
+            "artifact_ids": [record.artifact_id for record in records],
+            "artifacts": [project_artifact_for_agent(record) for record in records],
+        }
+        self._record_pipeline_completed_operation(invocation, operation_key, payload)
+        self._append_pipeline_list(invocation, "bio_artifact_ids", [record.artifact_id for record in records])
+        self._emit(
+            "execution.pipeline.step.completed",
+            {
+                "invocation_id": invocation.invocation_id,
+                "operation": method,
+                "operation_key": operation_key,
+                "artifact_ids": [record.artifact_id for record in records],
+                "warning_count": len(result.warnings),
+            },
+        )
+        return payload
+
+    def _run_pipeline_bio_tool(
+        self,
+        *,
+        session: Any,
+        invocation: EngineInvocation,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        operation_key = self._pipeline_operation_key(method, params)
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        completed = dict(pipeline.get("completed_operations") or {})
+        if operation_key in completed:
+            return dict(completed[operation_key])
+        adapter = self.bio_tools_adapter or DeterministicBioToolsAdapter()
+        retrieved_at = utc_now_iso()
+        if method == "bio_tools.cdhit":
+            try:
+                identity = float(params.get("identity") or 0)
+            except (TypeError, ValueError) as exc:
+                raise PipelineSdkFailure(
+                    error_type="invalid_tool_parameter",
+                    message="bio_tools.cdhit identity must be numeric.",
+                    hint="Retry with an identity threshold such as 0.9.",
+                    stage="bio_tools_input_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"identity": params.get("identity")},
+                ) from exc
+            result = adapter.cdhit(
+                input_fasta=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("input_fasta_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                identity=identity,
+                mode=str(params.get("mode") or "protein"),
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio_tools.mafft":
+            result = adapter.mafft(
+                input_fasta=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("input_fasta_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                params=dict(params.get("params") or {}),
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio_tools.hmmbuild":
+            result = adapter.hmmbuild(
+                alignment=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("alignment_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                params=dict(params.get("params") or {}),
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio_tools.hmmalign":
+            result = adapter.hmmalign(
+                hmm=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("hmm_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                fasta=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("fasta_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                params=dict(params.get("params") or {}),
+                retrieved_at=retrieved_at,
+            )
+        elif method == "bio_tools.hmmer_search_cli":
+            result = adapter.hmmer_search_cli(
+                hmm=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("hmm_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                target_fasta=self._require_pipeline_artifact(
+                    session_id=session.session_id,
+                    artifact_id=str(params.get("target_fasta_artifact_id") or ""),
+                    sdk_method=method,
+                ),
+                params=dict(params.get("params") or {}),
+                retrieved_at=retrieved_at,
+            )
+        else:
+            raise ValueError(f"unsupported bio tools SDK operation {method!r}")
+        records = self._persist_bio_artifacts(
+            session_id=session.session_id,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            invocation_id=invocation.invocation_id,
+            operation_key=operation_key,
+            drafts=result.artifacts,
+            request_metadata={
+                "pipeline_invocation_id": invocation.invocation_id,
+                "sdk_method": method,
+                "code_digest": pipeline.get("code_digest"),
+                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+                "source_code_digest": pipeline.get("source_code_digest"),
+                "source_code_version": pipeline.get("source_code_version"),
+                "pipeline_step_id": operation_key,
+                "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
+                "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+                "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
             },
         )
         payload = {
@@ -3345,6 +4008,26 @@ class ExecutionEngine:
             resolved.append(artifact)
         return tuple(resolved)
 
+    def _require_pipeline_artifact(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str,
+        sdk_method: str,
+    ) -> SessionArtifactRecord:
+        artifact = self.repositories.artifacts.get(artifact_id)
+        if artifact is None or artifact.session_id != session_id:
+            raise PipelineSdkFailure(
+                error_type="artifact_not_available",
+                message=f"Artifact {artifact_id!r} is not available in this session.",
+                hint="Pass an artifact id from the current session artifact catalog.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact_id},
+            )
+        return artifact
+
     def _require_run(self, invocation: EngineInvocation) -> RunRecord:
         run = self.repositories.runs.get_by_invocation(invocation.session_id, invocation.invocation_id)
         if run is None:
@@ -3560,6 +4243,11 @@ class ExecutionEngine:
             "bio.ncbi_fetch_proteins": ("bio.ncbi_fetch_proteins", "bio.md"),
             "bio.uniprot_fetch": ("bio.uniprot_fetch", "bio.md"),
             "bio.hmmer_search": ("bio.hmmer_search", "bio.md"),
+            "bio_tools.cdhit": ("bio_tools.cdhit", "bio-tools.md"),
+            "bio_tools.mafft": ("bio_tools.mafft", "bio-tools.md"),
+            "bio_tools.hmmbuild": ("bio_tools.hmmbuild", "bio-tools.md"),
+            "bio_tools.hmmalign": ("bio_tools.hmmalign", "bio-tools.md"),
+            "bio_tools.hmmer_search_cli": ("bio_tools.hmmer_search_cli", "bio-tools.md"),
             "preprocess.convert_format": ("preprocess.convert_format", None),
             "preprocess.prepare_receptor": ("preprocess.prepare_receptor", None),
             "preprocess.prepare_ligand": ("preprocess.prepare_ligand", None),
@@ -3598,6 +4286,11 @@ class ExecutionEngine:
                 "bio.ncbi_fetch_proteins",
                 "bio.uniprot_fetch",
                 "bio.hmmer_search",
+                "bio_tools.cdhit",
+                "bio_tools.mafft",
+                "bio_tools.hmmbuild",
+                "bio_tools.hmmalign",
+                "bio_tools.hmmer_search_cli",
                 "preprocess.convert_format",
                 "preprocess.prepare_receptor",
                 "preprocess.prepare_ligand",
@@ -3660,6 +4353,19 @@ class ExecutionEngine:
             for item in operations
             if str(item.get("operation", "")).startswith("bio.")
         ]
+        bio_tool_operations = [
+            {
+                "method": str(item["operation"]),
+                "approval_required": False,
+                "expected_outputs": self._planned_bio_tool_expected_outputs(str(item["operation"])),
+                "resource_estimate": self._planned_bio_tool_resource_estimate(str(item["operation"])),
+                "quota_estimate": {"local_tool_invocations": 1, "operation": str(item["operation"])},
+                "doc_keyword": item.get("doc_keyword"),
+                "doc_id": item.get("doc_id"),
+            }
+            for item in operations
+            if str(item.get("operation", "")).startswith("bio_tools.")
+        ]
         hpc_operations: list[dict[str, Any]] = []
         all_input_ids = [*artifact_ids, *context_artifact_ids]
         for item in operations:
@@ -3695,20 +4401,23 @@ class ExecutionEngine:
             **source_metadata,
             "artifact_reads": artifact_reads,
             "bio_operations": bio_operations,
+            "bio_tool_operations": bio_tool_operations,
             "preprocess_operations": preprocess_operations,
             "hpc_operations": hpc_operations,
             "approval_requirements": approval_requirements,
             "expected_outputs": [
                 output
-                for operation in [*bio_operations, *hpc_operations]
+                for operation in [*bio_operations, *bio_tool_operations, *hpc_operations]
                 for output in operation["expected_outputs"]
             ],
             "resource_quota_estimate": {
                 "hpc_operation_count": len(hpc_operations),
                 "bio_operation_count": len(bio_operations),
+                "bio_tool_operation_count": len(bio_tool_operations),
                 "preprocess_operation_count": len(preprocess_operations),
                 "max_runtime_minutes": sum(int(operation["resource_estimate"]["max_runtime_minutes"]) for operation in hpc_operations),
                 "provider_requests": sum(int(operation["quota_estimate"]["provider_requests"]) for operation in bio_operations),
+                "local_tool_invocations": sum(int(operation["quota_estimate"]["local_tool_invocations"]) for operation in bio_tool_operations),
             },
             "doc_hints": self._plan_doc_hints(operations),
             "operations": operations,
@@ -3760,6 +4469,29 @@ class ExecutionEngine:
                     forbidden.extend(f"Bio.{alias.name}" for alias in node.names if alias.name == "Entrez")
         return sorted(set(forbidden))
 
+    def _forbidden_pipeline_process_usage(self, code: str) -> list[str]:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return []
+        forbidden: list[str] = []
+        forbidden_os_calls = {"system", "popen", "spawnv", "spawnvp", "spawnve", "execv", "execve", "execl", "execle", "execlp", "execlpe"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "subprocess":
+                        forbidden.append(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "subprocess":
+                    forbidden.append("subprocess")
+                elif node.module == "os":
+                    forbidden.extend(f"os.{alias.name}" for alias in node.names if alias.name in forbidden_os_calls)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                owner = node.func.value
+                if isinstance(owner, ast.Name) and owner.id == "os" and node.func.attr in forbidden_os_calls:
+                    forbidden.append(f"os.{node.func.attr}")
+        return sorted(set(forbidden))
+
     def _planned_pipeline_operation_key(self, method: str, artifact_ids: list[str]) -> str:
         canonical = json.dumps({"method": method, "artifact_ids": artifact_ids}, sort_keys=True, separators=(",", ":"))
         return f"{method}:plan:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
@@ -3798,6 +4530,26 @@ class ExecutionEngine:
 
     def _planned_bio_quota_estimate(self, method: str) -> dict[str, Any]:
         return {"provider_requests": 1, "operation": method, "pagination_pages": 1}
+
+    def _planned_bio_tool_expected_outputs(self, method: str) -> list[dict[str, Any]]:
+        return {
+            "bio_tools.cdhit": [
+                {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence"},
+                {"path": "bio_tools/cdhit/clusters.csv", "kind": "result"},
+            ],
+            "bio_tools.mafft": [{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}],
+            "bio_tools.hmmbuild": [{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}],
+            "bio_tools.hmmalign": [{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}],
+            "bio_tools.hmmer_search_cli": [
+                {"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result"},
+                {"path": "bio_tools/hmmer_search_cli/tool.log", "kind": "log"},
+            ],
+        }.get(method, [])
+
+    def _planned_bio_tool_resource_estimate(self, method: str) -> dict[str, Any]:
+        if method in {"bio_tools.hmmer_search_cli", "bio_tools.mafft"}:
+            return {"cpu": 4, "memory_gb": 8, "max_runtime_minutes": 60}
+        return {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 30}
 
     def _planned_resource_estimate(self, method: str) -> dict[str, Any]:
         if method == "hpc.vina":
@@ -4135,10 +4887,12 @@ __all__ = [
     "BioArtifactDraft",
     "BioDatabaseAdapter",
     "BioSdkResult",
+    "BioToolsAdapter",
     "DefaultExecutionRequestCompiler",
     "DefaultExecutionResultParser",
     "DefaultPreprocessAdapter",
     "DeterministicBioDatabaseAdapter",
+    "DeterministicBioToolsAdapter",
     "ExecutionArtifactRef",
     "ExecutionEngine",
     "ExecutionHandoff",

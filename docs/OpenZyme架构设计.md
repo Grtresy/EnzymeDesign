@@ -377,9 +377,11 @@ V3 execution 的主路径是 executor-authored pipeline source artifact，而不
 - sandbox 默认无网络、非 root、资源受限
 - Host repo、用户 home、`.ssh`、数据库、runner config、HPC credentials 不得挂载进 sandbox
 - NCBI、UniProt、EBI HMMER 等网络数据库请求只能通过 `openzyme_pipeline.bio` 由 Host supervisor 托管执行；sandbox 不直接联网，也不保存 provider credential 或 Host cache path
+- MAFFT、CD-HIT、HMMER CLI 等 AOX/HMM 生信工具只能通过 `openzyme_pipeline.bio_tools` 由 Host supervisor 托管执行；pipeline 不直接 shell/subprocess 调本地 binary
 - HPC 请求只能通过 `openzyme_pipeline.hpc` 进入 Host supervisor，再编译为 runner `RunSpec`
 - dry-run / validation 先生成 `ExecutionPlan`；需要 approval 的 HPC operation 在用户 approve 前不得提交
 - dry-run 必须列出 bio SDK operations、预计 provider requests、分页/配额估计和 expected database artifacts；大型 FASTA、metadata、raw hits、parsed hits 均登记为 artifact，RPC 只返回 bounded summary
+- dry-run 必须列出 bio_tools operations、资源估计、expected outputs 和 approval/route 需求；declared output 缺失、格式非法、资源超限、tool_missing 或 oversized log 均返回结构化状态
 - plan、approval、execution invocation、output artifact provenance 与 workspace projection 记录 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；正式执行前 Host 重新读取 source artifact 并校验 digest
 - approval 绑定 plan digest、artifact reads、HPC operation list、expected outputs 和资源估计
 - runner/HPC 不得直接使用 Host 本地 artifact path；输入必须通过 artifact catalog 授权并 staged 到远端工作目录

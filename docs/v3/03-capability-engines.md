@@ -199,6 +199,7 @@ adapter。executor 可以写 Python pipeline 表达判断、循环、批处理�
 - `bio.ncbi_fetch_proteins(accessions=[...], fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
 - `bio.uniprot_fetch(accessions=[...], fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
 - `bio.hmmer_search(hmm_artifact_id=..., database=..., params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
+- `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary
 - `preprocess.convert_format(...)`
 - `preprocess.prepare_receptor(...)`
 - `preprocess.prepare_ligand(...)`
@@ -211,11 +212,11 @@ Host supervisor 负责：
 
 - 校验 pipeline 是否只能读取当前 session/task/lane 授权 artifact
 - 执行 dry-run / plan，列出预计 artifact 读写、HPC jobs、资源与输出
-- 执行 SDK operation policy、approval gate、provider quota、timeout、输出大小限制和失败分类
+- 执行 SDK operation policy、approval gate、provider/tool quota、timeout、输出大小限制、declared output 校验和失败分类
 - 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
 - 把每个 `hpc.*` 调用转换为 tool contract compiler 输入
 - 调用 `apps/mcp-hpc-runner`，并把 fetched outputs 登记为 session artifacts
-- 记录 pipeline code digest、SDK operation log、provider request summary、RunSpec、run id、artifact lineage 与 provenance；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version
+- 记录 pipeline code digest、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
 
 ### 3.2 Pipeline SDK Docs
 

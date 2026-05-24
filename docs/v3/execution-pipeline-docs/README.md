@@ -9,6 +9,7 @@ Useful search keywords:
 - `pipeline`
 - `artifact read register`
 - `bio ncbi uniprot hmmer`
+- `bio_tools mafft cdhit hmmbuild hmmalign hmmsearch`
 - `preprocess prepare_receptor prepare_ligand`
 - `hpc.vina`
 - `hpc.fpocket`
@@ -21,6 +22,7 @@ Recommended reading paths:
 - New pipeline authoring: `sdk-overview.md`, then `sandbox-rules.md`
 - Registering files: `artifacts.md`
 - Bio database fetch/search: `bio.md`
+- Sequence-mining toolchain: `bio-tools.md`
 - Vina docking: `hpc-vina.md`, then `preprocess.md`
 - Pocket detection: `hpc-fpocket.md`
 - Many ligands or repeated jobs: `batch-patterns.md`

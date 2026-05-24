@@ -287,6 +287,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `execution.pipeline.step.completed` 表示 pipeline 内一个 SDK step 完成；payload 必须能回链到 pipeline invocation 与 step id
 - `execution.pipeline.completed` / `execution.pipeline.failed` 表示 pipeline terminal state，不能替代每个 run / artifact 的 canonical record
 - `bio.*` SDK step 的成功、warning 和失败通过 `execution.pipeline.step.completed`、`execution.pipeline.failed`、engine invocation output payload 与 artifact provenance 投影；大型 FASTA/metadata/raw hits/parsed hits 不进入 RPC 全文
+- `bio_tools.*` SDK step 的成功、warning 和失败使用同一投影路径；MAFFT/CD-HIT/HMMER 输出必须先通过 declared output 与最小格式校验，stdout/stderr 或 oversized log 以 artifact ref 暴露
 - `execution.preprocess.completed` 表示 pipeline 内格式转换或输入准备已生成新的可信 workspace artifact
 - `execution.artifacts.fetched` 表示 runner 已按 declared `expected_outputs` 下载远端结果，随后应产生对应 `artifact.recorded`
 - 同一次 research observation 可以同时产生 evidence 与 artifact，但二者不应混用同一个记录类型
