@@ -1,8 +1,8 @@
 # V3 AOX/HMM Session 实施索引
 
-本目录定义五个连续 session，用来把 `reference/enz_miner_hmm_aox.ipynb` 代表的 AOX/HMM 挖掘流程迁移成 OpenZyme V3 的对话驱动工作流。
+本目录曾定义五个连续 session，用来把 `reference/enz_miner_hmm_aox.ipynb` 代表的 AOX/HMM 挖掘流程迁移成 OpenZyme V3 的对话驱动工作流。
 
-当前实现已按本目录的五个 session 顺序落地。本文仍作为实施索引和验收口径入口；具体实现锚点、测试和架构约束以各 session 文档、`docs/v3/` 稳定文档和当前代码为准。
+当前实现已按原 01-05 session 顺序落地。原任务型 session 文档已从本目录移除，不再作为未来实施队列维护；相关稳定 contract 以 `docs/OpenZyme架构设计.md`、`docs/v3/` 稳定文档和当前代码为准。
 
 ## 总目标
 
@@ -10,15 +10,17 @@
 
 `reference/enz_miner_hmm_aox.ipynb` 是流程基准，用来界定需要覆盖的生信步骤和输出形态。它不是执行对象，不能要求 OpenZyme 直接运行 notebook，也不能把 notebook 本地路径、conda 环境或临时目录作为产品接口。
 
-## Session 顺序
+## 已完成的 01-05 session
 
-1. [01-可版本化-pipeline-源码-artifact.md](01-可版本化-pipeline-源码-artifact.md)
-2. [02-code-artifact-驱动-execution.md](02-code-artifact-驱动-execution.md)
-3. [03-host-托管的生物数据库-sdk.md](03-host-托管的生物数据库-sdk.md)
-4. [04-生信工具链与-hpc-sdk.md](04-生信工具链与-hpc-sdk.md)
-5. [05-aox-hmm-仅提示词端到端验收.md](05-aox-hmm-仅提示词端到端验收.md)
+原 01-05 session 文档已删除，对应已完成的历史实施序列如下：
 
-这五个 session 是实施顺序，不是可自由重排的备选方案。顺序不能颠倒：先让 pipeline 源码成为可版本化 artifact，再让 execution 从源码 artifact 启动，再补 Host 托管的网络数据库 SDK，再补确定性生信工具链，最后做仅提示词端到端验收。
+1. 可版本化 Pipeline 源码 Artifact。
+2. Code Artifact 驱动 Execution。
+3. Host 托管的生物数据库 SDK。
+4. 生信工具链与 HPC SDK。
+5. AOX/HMM 仅提示词端到端验收。
+
+这些条目不再作为可继续推进的 session 文档入口。若需追溯逐 session 验收口径，请查看 git 历史；当前验收与架构约束以本索引下方稳定口径、`docs/v3/` 稳定文档和当前代码为准。
 
 ## 已锁定决策
 
@@ -72,4 +74,4 @@
 - opt-in `live_e2e` 是否覆盖真实 NCBI、UniProt、EBI HMMER 与 HPC 配置；缺配置时只能报告 `prerequisite missing`，不能记为通过。
 - end-to-end gate 是否从用户提示词进入，且没有手工构造 execution invocation 绕过 master、executor、approval 或 scheduler。
 
-最终端到端验收以 Session 05 为准。Cytoscape GUI 不纳入硬验收，只要求产出可导入的节点/边表。
+原 Session 05 的端到端验收口径已沉淀为当前 AOX/HMM fixture/live gate 约束。Cytoscape GUI 不纳入硬验收，只要求产出可导入的节点/边表。
