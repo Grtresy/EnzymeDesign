@@ -19,6 +19,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "012_v3_session_scoped_agent_members",
     "013_v3_sandbox_workspace_foundation",
     "014_v3_sandbox_artifact_boundary",
+    "015_v3_sandbox_file_command_runtime",
 )
 
 

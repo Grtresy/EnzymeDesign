@@ -1464,6 +1464,14 @@ def test_executor_descriptor_exposes_sandbox_workspace_status() -> None:
 
     tool_names = {item.tool_name for item in teammate_tool_descriptors(role="executor")}
     assert "sandbox_workspace_id" in descriptor.input_schema["properties"]
+    assert {
+        "sandbox.file.list",
+        "sandbox.file.read",
+        "sandbox.file.write",
+        "sandbox.file.patch",
+        "sandbox.file.delete",
+        "sandbox.exec",
+    }.issubset(tool_names)
     assert "execution.pipeline.start" not in tool_names
     assert "execution.pipeline.status" not in tool_names
     assert "persistent sandbox workspace" in descriptor.description

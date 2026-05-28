@@ -57,6 +57,9 @@ from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_workspace import sandbox_image_record
+from .sandbox_runtime import SandboxRuntimeError
+from .sandbox_runtime import SandboxRuntimeService
+from .sandbox_runtime import register_sandbox_runtime_tools
 from .artifact_boundary import ArtifactBoundaryError
 from .artifact_boundary import ArtifactBoundaryService
 from .artifact_boundary import register_artifact_boundary_tools
@@ -67,10 +70,12 @@ from .repositories import AgentMemberRepository
 from .repositories import AgentRuntimeSignalRepository
 from .repositories import ArtifactBlobGcRepository
 from .repositories import ArtifactMaterializationRepository
+from .repositories import CommandLogArtifactRepository
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
 from .repositories import EngineInvocationRepository
+from .repositories import FileAuditEntryRepository
 from .repositories import InboxMessageRepository
 from .repositories import LaneLifecycleEventRecord
 from .repositories import LaneLifecycleEventRepository
@@ -82,6 +87,7 @@ from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
 from .repositories import SandboxImageRecordRepository
+from .repositories import SandboxRunRecordRepository
 from .repositories import SandboxWorkspaceRecordRepository
 from .repositories import SessionReportDraftRepository
 from .repositories import SessionReportRepository
@@ -131,6 +137,7 @@ __all__ = [
     "ApprovalRequestRepository",
     "BackgroundCompletion",
     "build_teammate_registry",
+    "CommandLogArtifactRepository",
     "register_bio_research_tools",
     "CapabilityEngine",
     "CorrelationStatus",
@@ -148,6 +155,7 @@ __all__ = [
     "EngineDocumentRepository",
     "EngineRegistry",
     "EngineInvocationRepository",
+    "FileAuditEntryRepository",
     "HarnessDriver",
     "HarnessEvent",
     "HarnessInput",
@@ -181,6 +189,10 @@ __all__ = [
     "ResearchSummaryRepository",
     "RunRecordRepository",
     "SandboxImageRecordRepository",
+    "SandboxRuntimeError",
+    "SandboxRuntimeService",
+    "register_sandbox_runtime_tools",
+    "SandboxRunRecordRepository",
     "SandboxWorkspaceRecordRepository",
     "SandboxWorkspaceService",
     "SessionReportDraftRepository",

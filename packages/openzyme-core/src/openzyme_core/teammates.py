@@ -35,8 +35,10 @@ from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
 from .sandbox_workspace import register_sandbox_workspace_tools
+from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
 from .tool_catalog import artifact_tool_descriptors
+from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import ToolDescriptor
 
 
@@ -422,6 +424,7 @@ def teammate_tool_descriptors(
                         "additionalProperties": False,
                     },
                 ),
+                *sandbox_tool_descriptors(),
             )
         )
     if role == "reporter":
@@ -510,6 +513,7 @@ def build_teammate_registry(
     register_artifact_tools(registry)
     register_artifact_boundary_tools(registry)
     register_sandbox_workspace_tools(registry, agent_id=agent_id)
+    register_sandbox_runtime_tools(registry, agent_id=agent_id)
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
     return registry

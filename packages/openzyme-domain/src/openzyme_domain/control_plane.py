@@ -36,6 +36,9 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "ResearchGap",
     "SandboxImageRecord",
     "SandboxWorkspaceRecord",
+    "SandboxRunRecord",
+    "FileAuditEntry",
+    "CommandLogArtifactRecord",
 )
 
 
@@ -171,6 +174,26 @@ class SandboxWorkspaceStatus(StrEnum):
     QUOTA_EXCEEDED = "quota_exceeded"
     MISSING_IMAGE = "missing_image"
     IMAGE_INCOMPATIBLE = "image_incompatible"
+
+
+class SandboxRunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    RESOURCE_EXCEEDED = "resource_exceeded"
+    CANCELLED = "cancelled"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {
+            self.COMPLETED,
+            self.FAILED,
+            self.TIMEOUT,
+            self.RESOURCE_EXCEEDED,
+            self.CANCELLED,
+        }
 
 
 class SandboxImageCompatibility(StrEnum):
@@ -512,6 +535,79 @@ class SandboxWorkspaceRecord:
         data["registered_artifact_ids"] = list(self.registered_artifact_ids)
         data["source_code_artifact_ids"] = list(self.source_code_artifact_ids)
         return data
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxRunRecord:
+    sandbox_run_id: str
+    session_id: str
+    sandbox_workspace_id: str
+    agent_id: str
+    argv: tuple[str, ...]
+    argv_digest: str
+    cwd: str
+    env_digest: str
+    status: SandboxRunStatus
+    created_at: str
+    updated_at: str
+    task_id: str | None = None
+    lane_id: str | None = None
+    resource_policy: dict[str, Any] | None = None
+    source_snapshot_artifact_id: str | None = None
+    source_tree_digest: str | None = None
+    stdout_summary: str | None = None
+    stderr_summary: str | None = None
+    exit_code: int | None = None
+    duration_ms: int | None = None
+    changed_files_summary: dict[str, Any] | None = None
+    log_artifact_ref: str | None = None
+    error_code: str | None = None
+    compatibility: dict[str, Any] | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["argv"] = list(self.argv)
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class FileAuditEntry:
+    audit_id: str
+    session_id: str
+    sandbox_workspace_id: str
+    actor_ref: str
+    operation: str
+    path: str
+    created_at: str
+    task_id: str | None = None
+    lane_id: str | None = None
+    old_digest: str | None = None
+    new_digest: str | None = None
+    sandbox_run_id: str | None = None
+    details: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class CommandLogArtifactRecord:
+    command_log_id: str
+    session_id: str
+    sandbox_run_id: str
+    sandbox_workspace_id: str
+    stream: str
+    artifact_ref: str
+    size_bytes: int
+    content_digest: str
+    truncated: bool
+    created_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)

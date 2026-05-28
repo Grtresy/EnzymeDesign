@@ -16,8 +16,10 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import CommandLogArtifactRecord
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import FileAuditEntry
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
@@ -34,6 +36,8 @@ from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxImageRecord
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
@@ -1348,6 +1352,333 @@ class SandboxWorkspaceRecordRepository:
             last_error=_json_loads_object(row["last_error_json"]),
             created_at=row["created_at"],
             last_attached_at=row["last_attached_at"],
+        )
+
+
+@dataclass(slots=True)
+class SandboxRunRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: SandboxRunRecord) -> None:
+        _require_session_exists(self.connection, record.session_id)
+        workspace = self.connection.execute(
+            "SELECT session_id FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
+            (record.sandbox_workspace_id,),
+        ).fetchone()
+        if workspace is None:
+            raise OwnershipError(f"sandbox_workspace_records.sandbox_workspace_id={record.sandbox_workspace_id!r} does not exist")
+        if workspace["session_id"] != record.session_id:
+            raise OwnershipError(
+                f"sandbox workspace {record.sandbox_workspace_id!r} belongs to session {workspace['session_id']!r}, not {record.session_id!r}"
+            )
+        _require_agent_member_exists(
+            self.connection,
+            session_id=record.session_id,
+            agent_id=record.agent_id,
+        )
+        if record.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=record.task_id,
+                expected_session_id=record.session_id,
+            )
+        if record.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=record.lane_id,
+                expected_session_id=record.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO sandbox_run_records (
+                sandbox_run_id, session_id, sandbox_workspace_id, agent_id,
+                task_id, lane_id, argv_json, argv_digest, cwd, env_digest,
+                resource_policy_json, source_snapshot_artifact_id, source_tree_digest,
+                status, stdout_summary, stderr_summary, exit_code, duration_ms,
+                changed_files_summary_json, log_artifact_ref, error_code,
+                compatibility_json, created_at, started_at, ended_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sandbox_run_id) DO UPDATE SET
+                status = excluded.status,
+                stdout_summary = excluded.stdout_summary,
+                stderr_summary = excluded.stderr_summary,
+                exit_code = excluded.exit_code,
+                duration_ms = excluded.duration_ms,
+                changed_files_summary_json = excluded.changed_files_summary_json,
+                log_artifact_ref = excluded.log_artifact_ref,
+                error_code = excluded.error_code,
+                compatibility_json = excluded.compatibility_json,
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.sandbox_run_id,
+                record.session_id,
+                record.sandbox_workspace_id,
+                record.agent_id,
+                record.task_id,
+                record.lane_id,
+                _json_dumps(list(record.argv)),
+                record.argv_digest,
+                record.cwd,
+                record.env_digest,
+                _json_dumps(record.resource_policy or {}),
+                record.source_snapshot_artifact_id,
+                record.source_tree_digest,
+                record.status.value,
+                record.stdout_summary,
+                record.stderr_summary,
+                record.exit_code,
+                record.duration_ms,
+                _json_dumps(record.changed_files_summary or {}),
+                record.log_artifact_ref,
+                record.error_code,
+                _json_dumps(record.compatibility or {}),
+                record.created_at,
+                record.started_at,
+                record.ended_at,
+                record.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, sandbox_run_id: str) -> SandboxRunRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM sandbox_run_records WHERE sandbox_run_id = ?",
+            (sandbox_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def get_active_by_workspace(self, sandbox_workspace_id: str) -> SandboxRunRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM sandbox_run_records
+            WHERE sandbox_workspace_id = ? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (sandbox_workspace_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def list_by_workspace(self, sandbox_workspace_id: str, *, limit: int | None = None) -> list[SandboxRunRecord]:
+        sql = """
+            SELECT * FROM sandbox_run_records
+            WHERE sandbox_workspace_id = ?
+            ORDER BY created_at DESC, sandbox_run_id DESC
+        """
+        params: tuple[Any, ...] = (sandbox_workspace_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (sandbox_workspace_id, int(limit))
+        rows = self.connection.execute(sql, params).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def list_by_session(self, session_id: str, *, limit: int | None = None) -> list[SandboxRunRecord]:
+        sql = """
+            SELECT * FROM sandbox_run_records
+            WHERE session_id = ?
+            ORDER BY created_at DESC, sandbox_run_id DESC
+        """
+        params: tuple[Any, ...] = (session_id,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (session_id, int(limit))
+        rows = self.connection.execute(sql, params).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def _row_to_record(self, row: sqlite3.Row) -> SandboxRunRecord:
+        return SandboxRunRecord(
+            sandbox_run_id=row["sandbox_run_id"],
+            session_id=row["session_id"],
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            agent_id=row["agent_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            argv=_json_loads_list(row["argv_json"]),
+            argv_digest=row["argv_digest"],
+            cwd=row["cwd"],
+            env_digest=row["env_digest"],
+            resource_policy=_json_loads_object(row["resource_policy_json"]) or {},
+            source_snapshot_artifact_id=row["source_snapshot_artifact_id"],
+            source_tree_digest=row["source_tree_digest"],
+            status=SandboxRunStatus(row["status"]),
+            stdout_summary=row["stdout_summary"],
+            stderr_summary=row["stderr_summary"],
+            exit_code=row["exit_code"],
+            duration_ms=row["duration_ms"],
+            changed_files_summary=_json_loads_object(row["changed_files_summary_json"]) or {},
+            log_artifact_ref=row["log_artifact_ref"],
+            error_code=row["error_code"],
+            compatibility=_json_loads_object(row["compatibility_json"]) or {},
+            created_at=row["created_at"],
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class FileAuditEntryRepository:
+    connection: sqlite3.Connection
+
+    def save(self, entry: FileAuditEntry) -> None:
+        _require_session_exists(self.connection, entry.session_id)
+        workspace = self.connection.execute(
+            "SELECT session_id FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
+            (entry.sandbox_workspace_id,),
+        ).fetchone()
+        if workspace is None:
+            raise OwnershipError(f"sandbox_workspace_records.sandbox_workspace_id={entry.sandbox_workspace_id!r} does not exist")
+        if workspace["session_id"] != entry.session_id:
+            raise OwnershipError(
+                f"sandbox workspace {entry.sandbox_workspace_id!r} belongs to session {workspace['session_id']!r}, not {entry.session_id!r}"
+            )
+        if entry.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=entry.task_id,
+                expected_session_id=entry.session_id,
+            )
+        if entry.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=entry.lane_id,
+                expected_session_id=entry.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO sandbox_file_audit_entries (
+                audit_id, session_id, sandbox_workspace_id, actor_ref, task_id,
+                lane_id, operation, path, old_digest, new_digest, sandbox_run_id,
+                details_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.audit_id,
+                entry.session_id,
+                entry.sandbox_workspace_id,
+                entry.actor_ref,
+                entry.task_id,
+                entry.lane_id,
+                entry.operation,
+                entry.path,
+                entry.old_digest,
+                entry.new_digest,
+                entry.sandbox_run_id,
+                _json_dumps(entry.details or {}),
+                entry.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_workspace(self, sandbox_workspace_id: str) -> list[FileAuditEntry]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM sandbox_file_audit_entries
+            WHERE sandbox_workspace_id = ?
+            ORDER BY created_at, rowid
+            """,
+            (sandbox_workspace_id,),
+        ).fetchall()
+        return [self._row_to_entry(row) for row in rows]
+
+    def _row_to_entry(self, row: sqlite3.Row) -> FileAuditEntry:
+        return FileAuditEntry(
+            audit_id=row["audit_id"],
+            session_id=row["session_id"],
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            actor_ref=row["actor_ref"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            operation=row["operation"],
+            path=row["path"],
+            old_digest=row["old_digest"],
+            new_digest=row["new_digest"],
+            sandbox_run_id=row["sandbox_run_id"],
+            details=_json_loads_object(row["details_json"]) or {},
+            created_at=row["created_at"],
+        )
+
+
+@dataclass(slots=True)
+class CommandLogArtifactRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: CommandLogArtifactRecord) -> None:
+        _require_session_exists(self.connection, record.session_id)
+        run = self.connection.execute(
+            """
+            SELECT session_id, sandbox_workspace_id FROM sandbox_run_records
+            WHERE sandbox_run_id = ?
+            """,
+            (record.sandbox_run_id,),
+        ).fetchone()
+        if run is None:
+            raise OwnershipError(f"sandbox_run_records.sandbox_run_id={record.sandbox_run_id!r} does not exist")
+        if run["session_id"] != record.session_id or run["sandbox_workspace_id"] != record.sandbox_workspace_id:
+            raise OwnershipError("command log artifact does not belong to the sandbox run session/workspace")
+        self.connection.execute(
+            """
+            INSERT INTO sandbox_command_log_artifacts (
+                command_log_id, session_id, sandbox_run_id, sandbox_workspace_id,
+                stream, artifact_ref, size_bytes, content_digest, truncated, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.command_log_id,
+                record.session_id,
+                record.sandbox_run_id,
+                record.sandbox_workspace_id,
+                record.stream,
+                record.artifact_ref,
+                record.size_bytes,
+                record.content_digest,
+                int(record.truncated),
+                record.created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def list_by_run(self, sandbox_run_id: str) -> list[CommandLogArtifactRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM sandbox_command_log_artifacts
+            WHERE sandbox_run_id = ?
+            ORDER BY created_at, stream
+            """,
+            (sandbox_run_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def _row_to_record(self, row: sqlite3.Row) -> CommandLogArtifactRecord:
+        return CommandLogArtifactRecord(
+            command_log_id=row["command_log_id"],
+            session_id=row["session_id"],
+            sandbox_run_id=row["sandbox_run_id"],
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            stream=row["stream"],
+            artifact_ref=row["artifact_ref"],
+            size_bytes=int(row["size_bytes"]),
+            content_digest=row["content_digest"],
+            truncated=bool(row["truncated"]),
+            created_at=row["created_at"],
         )
 
 
@@ -3172,6 +3503,9 @@ class CoreRepositories:
     agents: AgentMemberRepository
     sandbox_images: SandboxImageRecordRepository
     sandbox_workspaces: SandboxWorkspaceRecordRepository
+    sandbox_runs: SandboxRunRecordRepository
+    file_audit_entries: FileAuditEntryRepository
+    command_log_artifacts: CommandLogArtifactRepository
     runtime_signals: AgentRuntimeSignalRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
@@ -3199,6 +3533,9 @@ class CoreRepositories:
             agents=AgentMemberRepository(connection),
             sandbox_images=SandboxImageRecordRepository(connection),
             sandbox_workspaces=SandboxWorkspaceRecordRepository(connection),
+            sandbox_runs=SandboxRunRecordRepository(connection),
+            file_audit_entries=FileAuditEntryRepository(connection),
+            command_log_artifacts=CommandLogArtifactRepository(connection),
             runtime_signals=AgentRuntimeSignalRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),

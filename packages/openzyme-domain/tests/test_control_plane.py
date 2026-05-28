@@ -45,6 +45,9 @@ def test_control_plane_entity_names_are_stable() -> None:
         "ResearchGap",
         "SandboxImageRecord",
         "SandboxWorkspaceRecord",
+        "SandboxRunRecord",
+        "FileAuditEntry",
+        "CommandLogArtifactRecord",
     )
 
 

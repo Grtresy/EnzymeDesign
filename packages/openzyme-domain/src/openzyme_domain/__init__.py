@@ -10,8 +10,10 @@ from .control_plane import AgentRuntimeSignalReason
 from .control_plane import AgentRuntimeSignalStatus
 from .control_plane import ApprovalRequest
 from .control_plane import ApprovalRequestStatus
+from .control_plane import CommandLogArtifactRecord
 from .control_plane import EngineInvocation
 from .control_plane import EngineInvocationStatus
+from .control_plane import FileAuditEntry
 from .control_plane import InboxMessage
 from .control_plane import InboxParticipantKind
 from .control_plane import InboxStatus
@@ -23,6 +25,8 @@ from .control_plane import MemoryScopeKind
 from .control_plane import RunRecord
 from .control_plane import SandboxImageCompatibility
 from .control_plane import SandboxImageRecord
+from .control_plane import SandboxRunRecord
+from .control_plane import SandboxRunStatus
 from .control_plane import SandboxWorkspaceRecord
 from .control_plane import SandboxWorkspaceStatus
 from .control_plane import ResearchEvidence
@@ -49,9 +53,11 @@ __all__ = [
     "AgentRuntimeSignalStatus",
     "ApprovalRequest",
     "ApprovalRequestStatus",
+    "CommandLogArtifactRecord",
     "CONTROL_PLANE_ENTITY_NAMES",
     "EngineInvocation",
     "EngineInvocationStatus",
+    "FileAuditEntry",
     "InboxMessage",
     "InboxParticipantKind",
     "InboxStatus",
@@ -63,6 +69,8 @@ __all__ = [
     "RunRecord",
     "SandboxImageCompatibility",
     "SandboxImageRecord",
+    "SandboxRunRecord",
+    "SandboxRunStatus",
     "SandboxWorkspaceRecord",
     "SandboxWorkspaceStatus",
     "ResearchEvidence",

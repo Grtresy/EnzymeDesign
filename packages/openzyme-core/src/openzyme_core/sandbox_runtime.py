@@ -1,0 +1,1291 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from dataclasses import field
+from dataclasses import replace
+import hashlib
+import json
+from pathlib import Path
+from pathlib import PurePosixPath
+import os
+import shutil
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+from typing import Any
+from uuid import uuid4
+
+from openzyme_domain import CommandLogArtifactRecord
+from openzyme_domain import FileAuditEntry
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
+from openzyme_domain.control_plane import utc_now_iso
+
+from .artifact_boundary import ArtifactBoundaryError
+from .artifact_boundary import ArtifactBoundaryService
+from .harness import SessionRuntimeContext
+from .harness import ToolInvocation
+from .harness import ToolRegistry
+from .harness import ToolResult
+from .sandbox_workspace import SANDBOX_PROTOCOL_VERSION
+from .sandbox_workspace import SANDBOX_WORKSPACE_MANIFEST_VERSION
+from .sandbox_workspace import SandboxWorkspaceService
+from .sandbox_workspace import summarize_workspace_directory
+
+
+WORKSPACE_ROOT = PurePosixPath("/workspace")
+WORKSPACE_SRC = PurePosixPath("/workspace/src")
+WORKSPACE_WORK = PurePosixPath("/workspace/work")
+WORKSPACE_OUTPUT = PurePosixPath("/workspace/output")
+WORKSPACE_LOGS = PurePosixPath("/workspace/logs")
+ALLOWED_FILE_ROOTS = (WORKSPACE_SRC, WORKSPACE_WORK, WORKSPACE_OUTPUT, WORKSPACE_LOGS)
+READ_DEFAULT_LIMIT = 64 * 1024
+READ_MAX_LIMIT = 256 * 1024
+WRITE_MAX_BYTES = 256 * 1024
+LIST_MAX_ITEMS = 1000
+STDIO_INLINE_LIMIT = 32 * 1024
+EXEC_DEFAULT_TIMEOUT_SECONDS = 120
+EXEC_MAX_TIMEOUT_SECONDS = 900
+EXEC_POLICY_VERSION = "s09.exec_policy.v1"
+
+
+class SandboxRuntimeError(RuntimeError):
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        hint: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.hint = hint
+        self.details = {} if details is None else dict(details)
+
+
+@dataclass(frozen=True, slots=True)
+class FileDigest:
+    content_digest: str
+    size_bytes: int
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _json_digest(value: Any) -> str:
+    return _sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _workspace_root(workspace_root: Path | None) -> Path:
+    root = workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
+
+
+def _file_digest(path: Path) -> FileDigest:
+    content = path.read_bytes()
+    return FileDigest(content_digest=_sha256_bytes(content), size_bytes=len(content))
+
+
+def _public_path(value: str | None, *, default: PurePosixPath) -> PurePosixPath:
+    if value in {None, ""}:
+        return default
+    text = str(value)
+    if text.startswith("/openzyme/"):
+        raise SandboxRuntimeError("sandbox_path_forbidden", "agent-facing sandbox paths must use /workspace")
+    candidate = PurePosixPath(text)
+    if not candidate.is_absolute():
+        candidate = WORKSPACE_ROOT / candidate
+    if any(part in {"", ".", ".."} for part in candidate.parts[1:]):
+        raise SandboxRuntimeError("sandbox_path_forbidden", "workspace path must not contain empty, '.', or '..' segments")
+    return candidate
+
+
+def _is_under(path: PurePosixPath, root: PurePosixPath) -> bool:
+    return path == root or root in path.parents
+
+
+def _allowed_root_for(path: PurePosixPath, *, allow_workspace_root: bool = False) -> PurePosixPath:
+    if allow_workspace_root and path == WORKSPACE_ROOT:
+        return WORKSPACE_ROOT
+    for root in ALLOWED_FILE_ROOTS:
+        if _is_under(path, root):
+            return root
+    raise SandboxRuntimeError("sandbox_path_forbidden", "path must be under /workspace/src, /workspace/work, /workspace/output, or /workspace/logs")
+
+
+def _resolve_host_path(
+    workspace_path: Path,
+    public_path: PurePosixPath,
+    *,
+    allow_workspace_root: bool = False,
+) -> Path:
+    root = _allowed_root_for(public_path, allow_workspace_root=allow_workspace_root)
+    if root == WORKSPACE_ROOT:
+        relative = PurePosixPath(".")
+    else:
+        relative = public_path.relative_to(root)
+    if relative != PurePosixPath("."):
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise SandboxRuntimeError("sandbox_path_forbidden", "path escapes the allowed sandbox workspace root")
+    host_root = workspace_path if root == WORKSPACE_ROOT else workspace_path / root.relative_to(WORKSPACE_ROOT)
+    host_path = (host_root / Path(*(() if relative == PurePosixPath(".") else relative.parts))).resolve()
+    resolved_root = host_root.resolve()
+    if host_path != resolved_root and resolved_root not in host_path.parents:
+        raise SandboxRuntimeError("sandbox_path_forbidden", "path escapes the allowed sandbox workspace root")
+    for parent in (host_path, *host_path.parents):
+        if parent == resolved_root.parent:
+            break
+        if parent.exists() and parent.is_symlink():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "path traverses a symlink")
+    return host_path
+
+
+def _bounded_text(value: str, *, limit: int = STDIO_INLINE_LIMIT) -> tuple[str, bool, int, str]:
+    encoded = value.encode("utf-8", errors="replace")
+    digest = _sha256_bytes(encoded)
+    if len(encoded) <= limit:
+        return value, False, len(encoded), digest
+    return encoded[:limit].decode("utf-8", errors="replace"), True, len(encoded), digest
+
+
+def _safe_log_ref(sandbox_run_id: str, stream: str) -> str:
+    return f"sandbox-log://{sandbox_run_id}/{stream}"
+
+
+def _parse_hunk_header(line: str) -> tuple[int, int]:
+    # Unified diff header format: @@ -old,count +new,count @@
+    try:
+        old_part = line.split(" ", 2)[1]
+        start_text = old_part.removeprefix("-").split(",", 1)[0]
+        return int(start_text), 0
+    except (IndexError, ValueError) as exc:
+        raise SandboxRuntimeError("sandbox_patch_failed", "invalid unified diff hunk header") from exc
+
+
+def _strip_patch_path(value: str) -> PurePosixPath:
+    text = value.strip().split("\t", 1)[0].split(" ", 1)[0]
+    if text in {"---", "+++", "/dev/null", ""}:
+        raise SandboxRuntimeError("sandbox_path_forbidden", "patch must target an existing single file")
+    if text.startswith("a/") or text.startswith("b/"):
+        text = text[2:]
+    path = PurePosixPath(text)
+    if path.is_absolute():
+        return _public_path(path.as_posix(), default=WORKSPACE_SRC)
+    return _public_path(path.as_posix(), default=WORKSPACE_ROOT)
+
+
+def _apply_unified_diff(original: str, patch: str, *, public_path: PurePosixPath) -> str:
+    patch_lines = patch.splitlines(keepends=True)
+    if len([line for line in patch_lines if line.startswith("@@")]) == 0:
+        raise SandboxRuntimeError("sandbox_patch_failed", "patch must contain at least one unified diff hunk")
+    header_paths: list[PurePosixPath] = []
+    for line in patch_lines:
+        if line.startswith("--- ") or line.startswith("+++ "):
+            header_paths.append(_strip_patch_path(line[4:]))
+    if header_paths and any(path != public_path for path in header_paths):
+        raise SandboxRuntimeError("sandbox_path_forbidden", "unified diff path must match the tool path argument")
+    original_lines = original.splitlines(keepends=True)
+    output: list[str] = []
+    original_index = 0
+    index = 0
+    while index < len(patch_lines):
+        line = patch_lines[index]
+        if line.startswith("--- ") or line.startswith("+++ "):
+            index += 1
+            continue
+        if not line.startswith("@@"):
+            index += 1
+            continue
+        old_start, _ = _parse_hunk_header(line)
+        target_index = max(old_start - 1, 0)
+        if target_index < original_index:
+            raise SandboxRuntimeError("sandbox_patch_failed", "patch hunks overlap or move backwards")
+        output.extend(original_lines[original_index:target_index])
+        original_index = target_index
+        index += 1
+        while index < len(patch_lines) and not patch_lines[index].startswith("@@"):
+            hunk_line = patch_lines[index]
+            if hunk_line.startswith("\\"):
+                index += 1
+                continue
+            marker = hunk_line[:1]
+            content = hunk_line[1:]
+            if marker == " ":
+                if original_index >= len(original_lines) or original_lines[original_index] != content:
+                    raise SandboxRuntimeError("sandbox_patch_failed", "patch context does not match the target file")
+                output.append(original_lines[original_index])
+                original_index += 1
+            elif marker == "-":
+                if original_index >= len(original_lines) or original_lines[original_index] != content:
+                    raise SandboxRuntimeError("sandbox_patch_failed", "patch removal does not match the target file")
+                original_index += 1
+            elif marker == "+":
+                output.append(content)
+            elif hunk_line.strip() == "":
+                raise SandboxRuntimeError("sandbox_patch_failed", "blank hunk lines must be prefixed with a diff marker")
+            else:
+                raise SandboxRuntimeError("sandbox_patch_failed", "patch contains an invalid hunk line")
+            index += 1
+    output.extend(original_lines[original_index:])
+    return "".join(output)
+
+
+@dataclass(slots=True)
+class _ControlSocketServer:
+    socket_path: Path
+    sandbox_workspace_id: str
+    sandbox_run_id: str
+    source_snapshot_artifact_id: str
+    source_tree_digest: str
+    _thread: threading.Thread | None = None
+    _stop: threading.Event = field(default_factory=threading.Event)
+
+    def start(self) -> None:
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+        for _ in range(100):
+            if self.socket_path.exists():
+                return
+            time.sleep(0.01)
+        raise SandboxRuntimeError("sandbox_transport_unavailable", "control socket did not start")
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(str(self.socket_path))
+                client.sendall(b"\n")
+        except OSError:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _serve(self) -> None:
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(self.socket_path))
+            os.chmod(self.socket_path, 0o600)
+            server.listen(8)
+            server.settimeout(0.1)
+            while not self._stop.is_set():
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
+                with conn:
+                    payload = conn.recv(65536).decode("utf-8").strip()
+                    if not payload:
+                        continue
+                    response = self._handle(json.loads(payload))
+                    conn.sendall(json.dumps(response, sort_keys=True).encode("utf-8") + b"\n")
+
+    def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            method = str(request["method"])
+            params = dict(request.get("params") or {})
+            if method != "s09.transport_smoke":
+                raise SandboxRuntimeError("sandbox_transport_method_forbidden", "S09 smoke only supports fake transport calls")
+            call_identity = str(params.get("call_identity") or request.get("id") or "")
+            result = {
+                "sandbox_workspace_id": self.sandbox_workspace_id,
+                "sandbox_run_id": self.sandbox_run_id,
+                "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
+                "source_tree_digest": self.source_tree_digest,
+                "artifact_read_summary": dict(params.get("artifact_read_summary") or {}),
+                "call_identity": call_identity,
+                "status": "ok",
+            }
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+        except Exception as exc:
+            return {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {
+                    "message": str(exc),
+                    "type": exc.__class__.__name__,
+                    "error_code": getattr(exc, "error_code", None),
+                    "hint": getattr(exc, "hint", None),
+                    "details": getattr(exc, "details", None),
+                },
+            }
+
+
+@dataclass(slots=True)
+class SandboxRuntimeService:
+    repositories: Any
+    workspace_root: Path | None = None
+    log_root: Path | None = None
+    execution_backend: str = "podman"
+    podman_binary: str = "podman"
+
+    def list_files(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        path: str = "/workspace",
+        recursive: bool = False,
+    ) -> dict[str, Any]:
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        workspace_path = self._workspace_path(workspace.sandbox_workspace_id)
+        public_path = _public_path(path, default=WORKSPACE_ROOT)
+        host_path = _resolve_host_path(workspace_path, public_path, allow_workspace_root=True)
+        if not host_path.exists():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "listed path does not exist")
+        if host_path.is_symlink():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "listed path is a symlink")
+        if host_path.is_file():
+            items = [self._project_file(host_path, workspace_path)]
+        else:
+            if public_path == WORKSPACE_ROOT:
+                roots = [workspace_path / root.relative_to(WORKSPACE_ROOT) for root in ALLOWED_FILE_ROOTS]
+                iterator = (child for root in roots if root.exists() for child in (root.rglob("*") if recursive else (root,)))
+            else:
+                iterator = host_path.rglob("*") if recursive else host_path.iterdir()
+            items = []
+            truncated = False
+            for child in sorted(iterator, key=lambda item: item.relative_to(workspace_path).as_posix()):
+                if len(items) >= LIST_MAX_ITEMS:
+                    truncated = True
+                    break
+                if child.is_dir() and recursive:
+                    continue
+                items.append(self._project_file(child, workspace_path))
+            return {
+                "sandbox_workspace_id": sandbox_workspace_id,
+                "path": public_path.as_posix(),
+                "recursive": recursive,
+                "items": items,
+                "truncated": truncated,
+                "warning": "sandbox_listing_truncated" if truncated else None,
+            }
+        return {
+            "sandbox_workspace_id": sandbox_workspace_id,
+            "path": public_path.as_posix(),
+            "recursive": recursive,
+            "items": items,
+            "truncated": False,
+            "warning": None,
+        }
+
+    def read_file(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        path: str,
+        offset: int = 0,
+        limit: int = READ_DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        limit = self._bounded_read_limit(limit)
+        if offset < 0:
+            raise SandboxRuntimeError("sandbox_read_limit_exceeded", "offset must be non-negative")
+        public_path = _public_path(path, default=WORKSPACE_ROOT)
+        host_path = _resolve_host_path(self._workspace_path(workspace.sandbox_workspace_id), public_path)
+        if not host_path.is_file() or host_path.is_symlink():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "read path must be a regular file")
+        content = host_path.read_bytes()
+        digest = _sha256_bytes(content)
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "sandbox_workspace_id": sandbox_workspace_id,
+                "path": public_path.as_posix(),
+                "binary": True,
+                "content_digest": digest,
+                "size_bytes": len(content),
+                "mime": "application/octet-stream",
+            }
+        page = content[offset : offset + limit]
+        return {
+            "sandbox_workspace_id": sandbox_workspace_id,
+            "path": public_path.as_posix(),
+            "binary": False,
+            "offset": offset,
+            "limit": limit,
+            "content": page.decode("utf-8", errors="replace"),
+            "content_digest": digest,
+            "size_bytes": len(content),
+            "truncated": offset + limit < len(content),
+        }
+
+    def write_file(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        actor_ref: str,
+        path: str,
+        content: str,
+        create_dirs: bool = False,
+        expected_digest: str | None = None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_no_active_run(sandbox_workspace_id)
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        encoded = content.encode("utf-8")
+        if len(encoded) > WRITE_MAX_BYTES:
+            raise SandboxRuntimeError("sandbox_resource_exceeded", "sandbox.file.write content exceeds 256KiB")
+        public_path, host_path = self._regular_file_target(workspace, path)
+        old_digest = _file_digest(host_path).content_digest if host_path.exists() else None
+        if expected_digest not in {None, ""} and expected_digest != old_digest:
+            raise SandboxRuntimeError("sandbox_digest_conflict", "expected_digest does not match current file digest")
+        if not host_path.parent.exists():
+            if not create_dirs:
+                raise SandboxRuntimeError("sandbox_path_forbidden", "parent directory does not exist")
+            host_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = host_path.parent / f".{host_path.name}.tmp.{uuid4().hex}"
+        tmp.write_bytes(encoded)
+        tmp.replace(host_path)
+        new_digest = _file_digest(host_path).content_digest
+        self._write_audit(
+            session_id=session_id,
+            sandbox_workspace_id=sandbox_workspace_id,
+            actor_ref=actor_ref,
+            task_id=task_id,
+            lane_id=lane_id,
+            operation="write",
+            path=public_path.as_posix(),
+            old_digest=old_digest,
+            new_digest=new_digest,
+        )
+        self._refresh_workspace_summary(workspace)
+        return {"path": public_path.as_posix(), "old_digest": old_digest, "new_digest": new_digest, "size_bytes": len(encoded)}
+
+    def patch_file(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        actor_ref: str,
+        path: str,
+        base_digest: str,
+        patch: str,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_no_active_run(sandbox_workspace_id)
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        public_path, host_path = self._regular_file_target(workspace, path)
+        if not host_path.is_file():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "patch target must be an existing regular file")
+        old_digest = _file_digest(host_path).content_digest
+        if base_digest != old_digest:
+            raise SandboxRuntimeError("sandbox_digest_conflict", "base_digest does not match current file digest")
+        original = host_path.read_text(encoding="utf-8")
+        patched = _apply_unified_diff(original, patch, public_path=public_path)
+        tmp = host_path.parent / f".{host_path.name}.tmp.{uuid4().hex}"
+        tmp.write_text(patched, encoding="utf-8")
+        tmp.replace(host_path)
+        new_digest = _file_digest(host_path).content_digest
+        self._write_audit(
+            session_id=session_id,
+            sandbox_workspace_id=sandbox_workspace_id,
+            actor_ref=actor_ref,
+            task_id=task_id,
+            lane_id=lane_id,
+            operation="patch",
+            path=public_path.as_posix(),
+            old_digest=old_digest,
+            new_digest=new_digest,
+        )
+        self._refresh_workspace_summary(workspace)
+        return {"path": public_path.as_posix(), "old_digest": old_digest, "new_digest": new_digest}
+
+    def delete_file(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        actor_ref: str,
+        path: str,
+        expected_digest: str | None = None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._ensure_no_active_run(sandbox_workspace_id)
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        public_path, host_path = self._regular_file_target(workspace, path)
+        if not host_path.is_file():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "delete target must be an existing regular file")
+        old_digest = _file_digest(host_path).content_digest
+        if expected_digest not in {None, ""} and expected_digest != old_digest:
+            raise SandboxRuntimeError("sandbox_digest_conflict", "expected_digest does not match current file digest")
+        host_path.unlink()
+        self._write_audit(
+            session_id=session_id,
+            sandbox_workspace_id=sandbox_workspace_id,
+            actor_ref=actor_ref,
+            task_id=task_id,
+            lane_id=lane_id,
+            operation="delete",
+            path=public_path.as_posix(),
+            old_digest=old_digest,
+            new_digest=None,
+        )
+        self._refresh_workspace_summary(workspace)
+        return {"path": public_path.as_posix(), "old_digest": old_digest, "deleted": True}
+
+    def exec_command(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        agent_id: str,
+        argv: list[str] | tuple[str, ...],
+        cwd: str = "/workspace",
+        timeout_seconds: int = EXEC_DEFAULT_TIMEOUT_SECONDS,
+        env: dict[str, str] | None = None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+    ) -> SandboxRunRecord:
+        workspace = self._require_ready_workspace(session_id, sandbox_workspace_id)
+        self._ensure_no_active_run(sandbox_workspace_id)
+        argv_tuple = self._validate_argv(argv)
+        timeout_seconds = self._bounded_timeout(timeout_seconds)
+        user_env = self._validate_user_env(env or {})
+        cwd_public = _public_path(cwd, default=WORKSPACE_ROOT)
+        workspace_path = self._workspace_path(sandbox_workspace_id)
+        cwd_host = _resolve_host_path(workspace_path, cwd_public, allow_workspace_root=True)
+        if not cwd_host.is_dir():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "cwd must be a directory under /workspace")
+        source_snapshot = self._snapshot_source(
+            session_id=session_id,
+            sandbox_workspace_id=sandbox_workspace_id,
+            entrypoint=self._entrypoint_for(argv_tuple),
+        )
+        now = utc_now_iso()
+        run = SandboxRunRecord(
+            sandbox_run_id=_new_id("srun"),
+            session_id=session_id,
+            sandbox_workspace_id=sandbox_workspace_id,
+            agent_id=agent_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            argv=argv_tuple,
+            argv_digest=_json_digest(list(argv_tuple)),
+            cwd=cwd_public.as_posix(),
+            env_digest=_json_digest(user_env),
+            resource_policy={
+                "timeout_seconds": timeout_seconds,
+                "cpu": 2,
+                "memory": "2GiB",
+                "pids": 256,
+                "exec_policy_version": EXEC_POLICY_VERSION,
+            },
+            source_snapshot_artifact_id=source_snapshot["source_snapshot_artifact_id"],
+            source_tree_digest=source_snapshot["source_tree_digest"],
+            status=SandboxRunStatus.QUEUED,
+            changed_files_summary={},
+            compatibility={
+                "image_digest": workspace.image_digest,
+                "sandbox_protocol_version": workspace.sandbox_protocol_version,
+                "workspace_manifest_version": workspace.manifest_version,
+                "exec_policy_version": EXEC_POLICY_VERSION,
+            },
+            created_at=now,
+            updated_at=now,
+        )
+        self.repositories.sandbox_runs.save(run)
+        started_at = utc_now_iso()
+        run = replace(run, status=SandboxRunStatus.RUNNING, started_at=started_at, updated_at=started_at)
+        self.repositories.sandbox_runs.save(run)
+        pre_summary = self._workspace_file_snapshot(sandbox_workspace_id)
+        socket_path = Path(tempfile.gettempdir()) / f"oz-{run.sandbox_run_id}.sock"
+        server = _ControlSocketServer(
+            socket_path=socket_path,
+            sandbox_workspace_id=sandbox_workspace_id,
+            sandbox_run_id=run.sandbox_run_id,
+            source_snapshot_artifact_id=str(run.source_snapshot_artifact_id),
+            source_tree_digest=str(run.source_tree_digest),
+        )
+        completed: subprocess.CompletedProcess[str] | None = None
+        started = time.monotonic()
+        try:
+            server.start()
+            completed = self._run_process(
+                workspace=workspace,
+                workspace_path=workspace_path,
+                argv=argv_tuple,
+                cwd_public=cwd_public,
+                cwd_host=cwd_host,
+                timeout_seconds=timeout_seconds,
+                user_env=user_env,
+                socket_path=socket_path,
+            )
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return self._finish_run(
+                run,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                exit_code=completed.returncode,
+                duration_ms=duration_ms,
+                pre_summary=pre_summary,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return self._finish_run(
+                run,
+                stdout=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
+                stderr=(exc.stderr or "") if isinstance(exc.stderr, str) else "",
+                exit_code=None,
+                duration_ms=duration_ms,
+                pre_summary=pre_summary,
+                forced_status=SandboxRunStatus.TIMEOUT,
+                error_code="sandbox_exec_timeout",
+            )
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if isinstance(exc, SandboxRuntimeError):
+                error_code = exc.error_code
+                stderr = str(exc)
+            else:
+                error_code = "sandbox_run_recovery_failed"
+                stderr = str(exc)
+            return self._finish_run(
+                run,
+                stdout="",
+                stderr=stderr,
+                exit_code=None,
+                duration_ms=duration_ms,
+                pre_summary=pre_summary,
+                forced_status=SandboxRunStatus.FAILED,
+                error_code=error_code,
+            )
+        finally:
+            server.stop()
+
+    def mark_stale_active_runs_failed(self, *, sandbox_workspace_id: str, reason: str = "stale active run") -> list[SandboxRunRecord]:
+        active = self.repositories.sandbox_runs.get_active_by_workspace(sandbox_workspace_id)
+        if active is None:
+            return []
+        now = utc_now_iso()
+        failed = replace(
+            active,
+            status=SandboxRunStatus.FAILED,
+            error_code="sandbox_run_recovery_failed",
+            stderr_summary=reason,
+            ended_at=now,
+            updated_at=now,
+        )
+        self.repositories.sandbox_runs.save(failed)
+        return [failed]
+
+    def _finish_run(
+        self,
+        run: SandboxRunRecord,
+        *,
+        stdout: str,
+        stderr: str,
+        exit_code: int | None,
+        duration_ms: int,
+        pre_summary: dict[str, Any],
+        forced_status: SandboxRunStatus | None = None,
+        error_code: str | None = None,
+    ) -> SandboxRunRecord:
+        stdout_summary, stdout_truncated, stdout_size, stdout_digest = _bounded_text(stdout)
+        stderr_summary, stderr_truncated, stderr_size, stderr_digest = _bounded_text(stderr)
+        log_refs = []
+        if stdout_truncated or stderr_truncated:
+            log_refs.extend(
+                self._write_logs(
+                    run,
+                    stdout=stdout,
+                    stderr=stderr,
+                    stdout_digest=stdout_digest,
+                    stdout_size=stdout_size,
+                    stdout_truncated=stdout_truncated,
+                    stderr_digest=stderr_digest,
+                    stderr_size=stderr_size,
+                    stderr_truncated=stderr_truncated,
+                )
+            )
+        post_summary = self._workspace_file_snapshot(run.sandbox_workspace_id)
+        changed = self._changed_files(pre_summary, post_summary)
+        if forced_status is not None:
+            status = forced_status
+        elif exit_code == 0:
+            status = SandboxRunStatus.COMPLETED
+        else:
+            status = SandboxRunStatus.FAILED
+            error_code = error_code or "sandbox_exec_nonzero"
+        ended_at = utc_now_iso()
+        finished = replace(
+            run,
+            status=status,
+            stdout_summary=stdout_summary,
+            stderr_summary=stderr_summary,
+            exit_code=exit_code,
+            duration_ms=duration_ms,
+            changed_files_summary=changed,
+            log_artifact_ref=log_refs[0] if log_refs else None,
+            error_code=error_code,
+            ended_at=ended_at,
+            updated_at=ended_at,
+        )
+        self.repositories.sandbox_runs.save(finished)
+        workspace = self.repositories.sandbox_workspaces.get(run.sandbox_workspace_id)
+        if workspace is not None:
+            self._refresh_workspace_summary(
+                workspace,
+                last_command_summary={
+                    "sandbox_run_id": finished.sandbox_run_id,
+                    "status": finished.status.value,
+                    "argv_digest": finished.argv_digest,
+                    "cwd": finished.cwd,
+                    "started_at": finished.started_at,
+                    "ended_at": finished.ended_at,
+                    "duration_ms": finished.duration_ms,
+                    "exit_code": finished.exit_code,
+                    "error_code": finished.error_code,
+                    "source_snapshot_artifact_id": finished.source_snapshot_artifact_id,
+                    "changed_files_summary": finished.changed_files_summary,
+                    "stdout_summary": finished.stdout_summary,
+                    "stderr_summary": finished.stderr_summary,
+                    "log_artifact_ref": finished.log_artifact_ref,
+                },
+                last_error=None
+                if finished.status is SandboxRunStatus.COMPLETED
+                else {"error_code": finished.error_code, "hint": "Read the sandbox run summary before retrying."},
+            )
+        return finished
+
+    def _write_logs(
+        self,
+        run: SandboxRunRecord,
+        *,
+        stdout: str,
+        stderr: str,
+        stdout_digest: str,
+        stdout_size: int,
+        stdout_truncated: bool,
+        stderr_digest: str,
+        stderr_size: int,
+        stderr_truncated: bool,
+    ) -> list[str]:
+        root = self._log_root() / run.sandbox_run_id
+        root.mkdir(parents=True, exist_ok=True)
+        refs: list[str] = []
+        for stream, text, digest, size, truncated in (
+            ("stdout", stdout, stdout_digest, stdout_size, stdout_truncated),
+            ("stderr", stderr, stderr_digest, stderr_size, stderr_truncated),
+        ):
+            if not truncated:
+                continue
+            path = root / f"{stream}.log"
+            path.write_text(text, encoding="utf-8")
+            ref = _safe_log_ref(run.sandbox_run_id, stream)
+            self.repositories.command_log_artifacts.save(
+                CommandLogArtifactRecord(
+                    command_log_id=_new_id("cmdlog"),
+                    session_id=run.session_id,
+                    sandbox_run_id=run.sandbox_run_id,
+                    sandbox_workspace_id=run.sandbox_workspace_id,
+                    stream=stream,
+                    artifact_ref=ref,
+                    size_bytes=size,
+                    content_digest=digest,
+                    truncated=truncated,
+                    created_at=utc_now_iso(),
+                )
+            )
+            refs.append(ref)
+        return refs
+
+    def _write_audit(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        actor_ref: str,
+        task_id: str | None,
+        lane_id: str | None,
+        operation: str,
+        path: str,
+        old_digest: str | None,
+        new_digest: str | None,
+    ) -> None:
+        self.repositories.file_audit_entries.save(
+            FileAuditEntry(
+                audit_id=_new_id("faudit"),
+                session_id=session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                actor_ref=actor_ref,
+                task_id=task_id,
+                lane_id=lane_id,
+                operation=operation,
+                path=path,
+                old_digest=old_digest,
+                new_digest=new_digest,
+                created_at=utc_now_iso(),
+            )
+        )
+
+    def _project_file(self, path: Path, workspace_path: Path) -> dict[str, Any]:
+        relative = "/workspace/" + path.relative_to(workspace_path).as_posix()
+        if path.is_symlink():
+            return {"path": relative, "kind": "symlink", "size_bytes": 0}
+        if path.is_dir():
+            return {"path": relative, "kind": "directory", "size_bytes": None}
+        digest = _file_digest(path)
+        return {
+            "path": relative,
+            "kind": "file",
+            "size_bytes": digest.size_bytes,
+            "content_digest": digest.content_digest,
+        }
+
+    def _regular_file_target(self, workspace: SandboxWorkspaceRecord, path: str) -> tuple[PurePosixPath, Path]:
+        public_path = _public_path(path, default=WORKSPACE_ROOT)
+        root = _allowed_root_for(public_path)
+        if public_path in ALLOWED_FILE_ROOTS or root == WORKSPACE_ROOT:
+            raise SandboxRuntimeError("sandbox_path_forbidden", "file operation target must be a file path, not a workspace root")
+        host_path = _resolve_host_path(self._workspace_path(workspace.sandbox_workspace_id), public_path)
+        if host_path.exists() and host_path.is_symlink():
+            raise SandboxRuntimeError("sandbox_path_forbidden", "file operation target must not be a symlink")
+        return public_path, host_path
+
+    def _validate_argv(self, argv: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        values = tuple(str(item) for item in argv)
+        if not values:
+            raise SandboxRuntimeError("invalid_tool_arguments", "sandbox.exec argv must be non-empty")
+        forbidden = {"ssh", "scp", "sftp", "sbatch", "srun", "apptainer", "singularity", "docker", "podman", "curl", "wget"}
+        executable = Path(values[0]).name
+        if executable in forbidden:
+            raise SandboxRuntimeError("sandbox_path_forbidden", f"command {executable!r} is forbidden in sandbox.exec")
+        joined = " ".join(values)
+        forbidden_markers = ("/home/", "/tmp/openzyme", ".ssh", "hpc_runner", "runner_config", "SLURM_", "AWS_SECRET", "OPENAI_API_KEY")
+        if any(marker in joined for marker in forbidden_markers):
+            raise SandboxRuntimeError("sandbox_path_forbidden", "command contains a forbidden host path, runner, or secret marker")
+        return values
+
+    def _validate_user_env(self, env: dict[str, str]) -> dict[str, str]:
+        safe: dict[str, str] = {}
+        for key, value in env.items():
+            text_key = str(key)
+            upper = text_key.upper()
+            if any(marker in upper for marker in ("SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "KEY")):
+                raise SandboxRuntimeError("sandbox_env_forbidden", f"environment key {text_key!r} looks credential-like")
+            if text_key == "PYTHONPATH" or text_key.startswith("OPENZYME_") or text_key.startswith("TASK_"):
+                safe[text_key] = str(value)
+                continue
+            raise SandboxRuntimeError("sandbox_env_forbidden", f"environment key {text_key!r} is not allowlisted")
+        return safe
+
+    def _subprocess_env(self, user_env: dict[str, str], socket_path: Path) -> dict[str, str]:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+            "OPENZYME_CONTROL_SOCKET": str(socket_path),
+            "OPENZYME_SANDBOX_MODE": "s09",
+        }
+        env.update(user_env)
+        return env
+
+    def _container_env(self, user_env: dict[str, str]) -> dict[str, str]:
+        env = {
+            "OPENZYME_CONTROL_SOCKET": "/openzyme/control.sock",
+            "OPENZYME_SANDBOX_MODE": "s09",
+        }
+        env.update(user_env)
+        return env
+
+    def _run_process(
+        self,
+        *,
+        workspace: SandboxWorkspaceRecord,
+        workspace_path: Path,
+        argv: tuple[str, ...],
+        cwd_public: PurePosixPath,
+        cwd_host: Path,
+        timeout_seconds: int,
+        user_env: dict[str, str],
+        socket_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        if self.execution_backend == "local":
+            return subprocess.run(
+                list(argv),
+                cwd=str(cwd_host),
+                env=self._subprocess_env(user_env, socket_path),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        if self.execution_backend == "podman":
+            if shutil.which(self.podman_binary) is None:
+                raise SandboxRuntimeError("sandbox_image_missing", "podman binary is not available for sandbox.exec")
+            return subprocess.run(
+                self._podman_command(
+                    workspace=workspace,
+                    workspace_path=workspace_path,
+                    argv=argv,
+                    cwd_public=cwd_public,
+                    user_env=user_env,
+                    socket_path=socket_path,
+                ),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        raise SandboxRuntimeError("invalid_tool_arguments", f"unknown sandbox execution backend {self.execution_backend!r}")
+
+    def _podman_command(
+        self,
+        *,
+        workspace: SandboxWorkspaceRecord,
+        workspace_path: Path,
+        argv: tuple[str, ...],
+        cwd_public: PurePosixPath,
+        user_env: dict[str, str],
+        socket_path: Path,
+    ) -> list[str]:
+        env_args = [
+            item
+            for key, value in sorted(self._container_env(user_env).items())
+            for item in ("--env", f"{key}={value}")
+        ]
+        mounts = [
+            f"{workspace_path}:/workspace:ro,Z",
+            f"{workspace_path / 'src'}:/workspace/src:Z",
+            f"{workspace_path / 'work'}:/workspace/work:Z",
+            f"{workspace_path / 'output'}:/workspace/output:Z",
+            f"{workspace_path / 'logs'}:/workspace/logs:Z",
+            f"{workspace_path / 'input'}:/workspace/input:ro,Z",
+            f"{workspace_path / 'manifest'}:/workspace/manifest:ro,Z",
+            f"{socket_path}:/openzyme/control.sock:Z",
+        ]
+        mount_args = [item for mount in mounts for item in ("-v", mount)]
+        return [
+            self.podman_binary,
+            "run",
+            "--rm",
+            "--network=none",
+            "--userns=keep-id",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--security-opt=no-new-privileges",
+            "--cap-drop=all",
+            "--read-only",
+            "--memory=2g",
+            "--cpus=2",
+            "--pids-limit=256",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=256m",
+            *mount_args,
+            "-w",
+            cwd_public.as_posix(),
+            *env_args,
+            workspace.image_ref,
+            *argv,
+        ]
+
+    def _bounded_timeout(self, timeout_seconds: int) -> int:
+        value = int(timeout_seconds)
+        if value <= 0 or value > EXEC_MAX_TIMEOUT_SECONDS:
+            raise SandboxRuntimeError("sandbox_resource_exceeded", "timeout_seconds must be between 1 and 900")
+        return value
+
+    def _bounded_read_limit(self, limit: int) -> int:
+        value = int(limit)
+        if value < 0 or value > READ_MAX_LIMIT:
+            raise SandboxRuntimeError("sandbox_read_limit_exceeded", "read limit must be between 0 and 256KiB")
+        return value
+
+    def _snapshot_source(self, *, session_id: str, sandbox_workspace_id: str, entrypoint: str) -> dict[str, Any]:
+        try:
+            result = ArtifactBoundaryService(
+                self.repositories,
+                workspace_root=self.workspace_root,
+            ).snapshot_code(
+                session_id=session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                paths=None,
+                entrypoint=entrypoint,
+                metadata={"producer": "sandbox.exec"},
+            )
+            return result.to_payload()
+        except ArtifactBoundaryError as exc:
+            raise SandboxRuntimeError(exc.error_code, str(exc), hint=exc.hint, details=exc.details) from exc
+
+    def _entrypoint_for(self, argv: tuple[str, ...]) -> str:
+        if len(argv) >= 2 and Path(argv[0]).name.startswith("python"):
+            return argv[1]
+        if len(argv) >= 3 and Path(argv[0]).name == "bash" and argv[1] == "-lc":
+            return "bash -lc"
+        return Path(argv[0]).name
+
+    def _require_workspace(self, session_id: str, sandbox_workspace_id: str) -> SandboxWorkspaceRecord:
+        workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id)
+        if workspace is None or workspace.session_id != session_id:
+            raise SandboxRuntimeError("sandbox_workspace_not_found", "sandbox workspace is not available in this session")
+        return workspace
+
+    def _require_ready_workspace(self, session_id: str, sandbox_workspace_id: str) -> SandboxWorkspaceRecord:
+        workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        if workspace.status is not SandboxWorkspaceStatus.READY:
+            raise SandboxRuntimeError((workspace.last_error or {}).get("error_code", workspace.status.value), "sandbox workspace is not ready")
+        if workspace.image_compatibility is SandboxImageCompatibility.MISSING:
+            raise SandboxRuntimeError("sandbox_image_missing", "sandbox image digest is not registered")
+        if workspace.image_compatibility is SandboxImageCompatibility.INCOMPATIBLE:
+            raise SandboxRuntimeError("sandbox_image_incompatible", "sandbox image is incompatible")
+        if workspace.sandbox_protocol_version != SANDBOX_PROTOCOL_VERSION:
+            raise SandboxRuntimeError("sandbox_image_incompatible", "sandbox protocol version is incompatible")
+        if workspace.manifest_version != SANDBOX_WORKSPACE_MANIFEST_VERSION:
+            raise SandboxRuntimeError("sandbox_image_incompatible", "workspace manifest version is incompatible")
+        return workspace
+
+    def _ensure_no_active_run(self, sandbox_workspace_id: str) -> None:
+        active = self.repositories.sandbox_runs.get_active_by_workspace(sandbox_workspace_id)
+        if active is not None:
+            raise SandboxRuntimeError(
+                "sandbox_run_conflict",
+                "sandbox workspace already has an active sandbox.exec run",
+                details={"sandbox_run_id": active.sandbox_run_id},
+            )
+
+    def _workspace_path(self, sandbox_workspace_id: str) -> Path:
+        return _workspace_root(self.workspace_root) / sandbox_workspace_id
+
+    def _log_root(self) -> Path:
+        root = self.log_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-command-logs"
+        root.mkdir(parents=True, exist_ok=True)
+        return root.resolve()
+
+    def _refresh_workspace_summary(
+        self,
+        workspace: SandboxWorkspaceRecord,
+        *,
+        last_command_summary: dict[str, Any] | None = None,
+        last_error: dict[str, Any] | None = None,
+    ) -> None:
+        workspace_path = self._workspace_path(workspace.sandbox_workspace_id)
+        directory_summary = summarize_workspace_directory(workspace_path)
+        refreshed = replace(
+            workspace,
+            directory_summary=directory_summary,
+            volume_digest=str(directory_summary.get("volume_digest") or ""),
+            last_command_summary=last_command_summary
+            if last_command_summary is not None
+            else workspace.last_command_summary,
+            last_error=last_error,
+            last_attached_at=utc_now_iso(),
+        )
+        self.repositories.sandbox_workspaces.save(refreshed)
+
+    def _changed_files(self, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+        before_entries = {item["relative_path"]: item for item in before.get("entries", []) if isinstance(item, dict)}
+        after_entries = {item["relative_path"]: item for item in after.get("entries", []) if isinstance(item, dict)}
+        added = sorted(set(after_entries) - set(before_entries))[:100]
+        removed = sorted(set(before_entries) - set(after_entries))[:100]
+        modified = sorted(
+            path
+            for path in set(before_entries) & set(after_entries)
+            if before_entries[path].get("content_digest") != after_entries[path].get("content_digest")
+        )[:100]
+        return {
+            "added": added,
+            "modified": modified,
+            "removed": removed,
+            "truncated": any(len(values) >= 100 for values in (added, modified, removed)),
+        }
+
+    def _workspace_file_snapshot(self, sandbox_workspace_id: str) -> dict[str, Any]:
+        workspace_path = self._workspace_path(sandbox_workspace_id)
+        entries: list[dict[str, Any]] = []
+        for root_name in ("src", "work", "output", "logs"):
+            root = workspace_path / root_name
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(workspace_path).as_posix()):
+                if path.is_dir():
+                    continue
+                relative_path = path.relative_to(workspace_path).as_posix()
+                if path.is_symlink():
+                    entries.append({"relative_path": relative_path, "content_digest": "sha256:symlink"})
+                else:
+                    entries.append({"relative_path": relative_path, "content_digest": _file_digest(path).content_digest})
+        return {"entries": entries}
+
+
+def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolResult:
+    payload = {"error_code": exc.error_code, **exc.details}
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(payload, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=exc.error_code,
+        summary=str(exc),
+        error_code=exc.error_code,
+        hint=exc.hint,
+        details=payload,
+    )
+
+
+def register_sandbox_runtime_tools(registry: ToolRegistry, *, agent_id: str | None = None) -> None:
+    def _service(context: SessionRuntimeContext) -> SandboxRuntimeService:
+        return SandboxRuntimeService(context.repositories)
+
+    def _workspace_id(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
+        raw = invocation.arguments.get("sandbox_workspace_id")
+        if raw not in {None, ""}:
+            return str(raw)
+        workspace, error_code, hint = SandboxWorkspaceService(context.repositories).status_for_agent(
+            session_id=context.snapshot.session.session_id,
+            agent_id=agent_id or "",
+            focus_task_id=context.restore_focus.task_id,
+            focus_lane_id=context.restore_focus.lane_id,
+        )
+        if workspace is None:
+            raise SandboxRuntimeError(error_code or "sandbox_workspace_not_found", hint or "sandbox workspace is unavailable")
+        return workspace.sandbox_workspace_id
+
+    def list_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).list_files(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                path=str(invocation.arguments.get("path") or "/workspace"),
+                recursive=bool(invocation.arguments.get("recursive") or False),
+            )
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status="sandbox_files_listed")
+
+    def read_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).read_file(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                path=str(invocation.arguments["path"]),
+                offset=int(invocation.arguments.get("offset") or 0),
+                limit=int(invocation.arguments.get("limit") or READ_DEFAULT_LIMIT),
+            )
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status="sandbox_file_read")
+
+    def write_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).write_file(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                actor_ref=agent_id or "agent:unknown",
+                path=str(invocation.arguments["path"]),
+                content=str(invocation.arguments.get("content") or ""),
+                create_dirs=bool(invocation.arguments.get("create_dirs") or False),
+                expected_digest=None
+                if invocation.arguments.get("expected_digest") in {None, ""}
+                else str(invocation.arguments.get("expected_digest")),
+                task_id=context.restore_focus.task_id,
+                lane_id=context.restore_focus.lane_id,
+            )
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status="sandbox_file_written")
+
+    def patch_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).patch_file(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                actor_ref=agent_id or "agent:unknown",
+                path=str(invocation.arguments["path"]),
+                base_digest=str(invocation.arguments["base_digest"]),
+                patch=str(invocation.arguments["patch"]),
+                task_id=context.restore_focus.task_id,
+                lane_id=context.restore_focus.lane_id,
+            )
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status="sandbox_file_patched")
+
+    def delete_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).delete_file(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                actor_ref=agent_id or "agent:unknown",
+                path=str(invocation.arguments["path"]),
+                expected_digest=None
+                if invocation.arguments.get("expected_digest") in {None, ""}
+                else str(invocation.arguments.get("expected_digest")),
+                task_id=context.restore_focus.task_id,
+                lane_id=context.restore_focus.lane_id,
+            )
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status="sandbox_file_deleted")
+
+    def exec_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
+        try:
+            result = _service(context).exec_command(
+                session_id=context.snapshot.session.session_id,
+                sandbox_workspace_id=_workspace_id(context, invocation),
+                agent_id=agent_id or "agent:unknown",
+                argv=list(invocation.arguments["argv"]),
+                cwd=str(invocation.arguments.get("cwd") or "/workspace"),
+                timeout_seconds=int(invocation.arguments.get("timeout_seconds") or EXEC_DEFAULT_TIMEOUT_SECONDS),
+                env=dict(invocation.arguments.get("env") or {}),
+                task_id=context.restore_focus.task_id,
+                lane_id=context.restore_focus.lane_id,
+            ).to_dict()
+        except SandboxRuntimeError as exc:
+            return _tool_error(invocation, exc)
+        return _tool_success(invocation, result, status=str(result.get("status") or "sandbox_exec_finished"))
+
+    registry.register("sandbox.file.list", list_handler)
+    registry.register("sandbox.file.read", read_handler)
+    registry.register("sandbox.file.write", write_handler)
+    registry.register("sandbox.file.patch", patch_handler)
+    registry.register("sandbox.file.delete", delete_handler)
+    registry.register("sandbox.exec", exec_handler)
+
+
+def _tool_success(invocation: ToolInvocation, payload: dict[str, Any], *, status: str) -> ToolResult:
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=True,
+        content=json.dumps(payload, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=status,
+        summary=status,
+        details=payload,
+    )
+
+
+__all__ = [
+    "EXEC_POLICY_VERSION",
+    "SandboxRuntimeError",
+    "SandboxRuntimeService",
+    "register_sandbox_runtime_tools",
+]

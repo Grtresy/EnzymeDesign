@@ -62,6 +62,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `sandbox.file.read`
 - `sandbox.file.write`
 - `sandbox.file.patch`
+- `sandbox.file.delete`
 - `sandbox.exec`
 - `artifacts.materialize`
 - `artifacts.register`

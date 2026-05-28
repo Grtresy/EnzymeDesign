@@ -236,6 +236,100 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
+def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    return (
+        ToolDescriptor(
+            tool_name="sandbox.file.list",
+            description="List files in the executor persistent sandbox workspace without exposing Host paths.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "recursive": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="sandbox.file.read",
+            description="Read a bounded UTF-8 text page or binary digest summary from the executor sandbox workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 262144},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="sandbox.file.write",
+            description="Atomically write a small UTF-8 text file under /workspace/src, /workspace/work, /workspace/output, or /workspace/logs.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "create_dirs": {"type": "boolean"},
+                    "expected_digest": {"type": "string"},
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="sandbox.file.patch",
+            description="Apply a single-file unified diff under the executor sandbox workspace with base digest concurrency control.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "base_digest": {"type": "string"},
+                    "patch": {"type": "string"},
+                },
+                "required": ["path", "base_digest", "patch"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="sandbox.file.delete",
+            description="Delete one regular file under an allowed executor sandbox workspace directory.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "expected_digest": {"type": "string"},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="sandbox.exec",
+            description="Run a bounded bash/python command in the executor sandbox workspace after source snapshot preflight.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                    "env": {"type": "object", "additionalProperties": {"type": "string"}},
+                },
+                "required": ["argv"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
 def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     return (
         ToolDescriptor(
@@ -397,6 +491,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
         *artifact_tool_descriptors(),
+        *sandbox_tool_descriptors(),
         ToolDescriptor(
             tool_name="memory.compact",
             description="Write a compact summary for session, lane, or task context.",
@@ -450,5 +545,6 @@ __all__ = [
     "ToolDescriptor",
     "artifact_tool_descriptors",
     "builtin_tool_descriptors",
+    "sandbox_tool_descriptors",
     "top_level_tool_descriptors",
 ]

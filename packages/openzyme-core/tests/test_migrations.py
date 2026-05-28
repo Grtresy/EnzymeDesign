@@ -19,6 +19,7 @@ def test_migration_asset_is_available() -> None:
     session_scoped_agent_sql = get_migration_sql("012_v3_session_scoped_agent_members")
     sandbox_workspace_sql = get_migration_sql("013_v3_sandbox_workspace_foundation")
     artifact_boundary_sql = get_migration_sql("014_v3_sandbox_artifact_boundary")
+    sandbox_runtime_sql = get_migration_sql("015_v3_sandbox_file_command_runtime")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -38,6 +39,9 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS sandbox_workspace_records" in sandbox_workspace_sql
     assert "artifact_materialization_records" in artifact_boundary_sql
     assert "artifact_blob_gc_queue" in artifact_boundary_sql
+    assert "CREATE TABLE IF NOT EXISTS sandbox_run_records" in sandbox_runtime_sql
+    assert "CREATE TABLE IF NOT EXISTS sandbox_file_audit_entries" in sandbox_runtime_sql
+    assert "CREATE TABLE IF NOT EXISTS sandbox_command_log_artifacts" in sandbox_runtime_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -53,6 +57,7 @@ def test_migration_asset_is_available() -> None:
         "012_v3_session_scoped_agent_members",
         "013_v3_sandbox_workspace_foundation",
         "014_v3_sandbox_artifact_boundary",
+        "015_v3_sandbox_file_command_runtime",
     )
 
 
@@ -91,6 +96,9 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "sandbox_workspace_records",
         "artifact_materialization_records",
         "artifact_blob_gc_queue",
+        "sandbox_run_records",
+        "sandbox_file_audit_entries",
+        "sandbox_command_log_artifacts",
     }.issubset(table_names)
     task_columns = {
         row[1]
