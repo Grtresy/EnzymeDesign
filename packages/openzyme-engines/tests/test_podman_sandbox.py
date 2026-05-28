@@ -70,7 +70,11 @@ def test_podman_pipeline_rejects_output_escape(tmp_path: Path) -> None:
 
     assert outcome.status is RunStatus.FAILED
     stderr = next(artifact for artifact in outcome.artifacts if artifact.relative_path == "logs/stderr.log")
-    assert "artifacts.register only accepts files under /openzyme/output" in Path(stderr.storage_uri).read_text(encoding="utf-8")
+    stderr_text = Path(stderr.storage_uri).read_text(encoding="utf-8")
+    assert (
+        "artifacts.register only accepts files under /workspace/output" in stderr_text
+        or "artifacts.register only accepts files under /openzyme/output" in stderr_text
+    )
 
 
 def test_podman_pipeline_validates_registered_csv_columns(tmp_path: Path) -> None:

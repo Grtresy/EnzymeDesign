@@ -101,6 +101,7 @@ class PodmanPipelineSandboxRunner:
         socket_path = root / "control.sock"
         server = _ControlSocketServer(
             socket_path=socket_path,
+            input_dir=input_dir,
             output_dir=output_dir,
             artifacts=sandbox_inputs,
             control_handler=control_handler,
@@ -190,6 +191,7 @@ class PodmanPipelineSandboxRunner:
                 "path": f"/openzyme/input/{target.name}",
                 "kind": artifact.kind.value,
                 "format": (artifact.metadata or {}).get("format"),
+                "content_digest": (artifact.metadata or {}).get("content_digest"),
                 "title": artifact.title,
             }
         return staged
@@ -206,6 +208,7 @@ class _RegisteredOutput:
 @dataclass(slots=True)
 class _ControlSocketServer:
     socket_path: Path
+    input_dir: Path
     output_dir: Path
     artifacts: dict[str, dict[str, Any]]
     registered: list[_RegisteredOutput]
@@ -217,11 +220,13 @@ class _ControlSocketServer:
         self,
         *,
         socket_path: Path,
+        input_dir: Path,
         output_dir: Path,
         artifacts: dict[str, dict[str, Any]],
         control_handler: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> None:
         self.socket_path = socket_path
+        self.input_dir = input_dir
         self.output_dir = output_dir
         self.artifacts = artifacts
         self.control_handler = control_handler
@@ -283,6 +288,8 @@ class _ControlSocketServer:
             params = dict(request.get("params") or {})
             if method == "artifacts.get":
                 result = self.artifacts[str(params["artifact_id"])]
+            elif method == "artifacts.materialize":
+                result = self._materialize(params)
             elif method == "artifacts.register":
                 result = self._register(params)
             elif method == "artifacts.register_many":
@@ -307,11 +314,55 @@ class _ControlSocketServer:
                 },
             }
 
+    def _materialize(self, params: dict[str, Any]) -> dict[str, Any]:
+        artifact_id = str(params["artifact_id"])
+        result = dict(self.artifacts[artifact_id])
+        path = str(result["path"])
+        if path.startswith("/openzyme/input/"):
+            path = "/workspace/input/" + path.removeprefix("/openzyme/input/")
+        target = params.get("target") or params.get("target_path")
+        if target not in {None, ""}:
+            target_path = PurePath(str(target))
+            if (
+                not target_path.is_absolute()
+                or target_path.parts[:3] != ("/", "workspace", "input")
+                or any(part in {"", ".", ".."} for part in target_path.parts[3:])
+            ):
+                raise ValueError("materialized artifact target must be under /workspace/input")
+            source_path = PurePath(path)
+            source_host_path = (self.input_dir / Path(*source_path.parts[3:])).resolve()
+            input_root = self.input_dir.resolve()
+            if input_root not in (source_host_path, *source_host_path.parents):
+                raise ValueError("materialized artifact source escapes input directory")
+            target_host_path = (self.input_dir / Path(*target_path.parts[3:])).resolve()
+            if input_root not in (target_host_path, *target_host_path.parents):
+                raise ValueError("materialized artifact target escapes input directory")
+            if target_host_path != source_host_path:
+                target_host_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_host_path, target_host_path)
+                target_host_path.chmod(0o644)
+            path = target_path.as_posix()
+        return {
+            "artifact_id": artifact_id,
+            "path": path,
+            "artifact_digest": result.get("content_digest"),
+            "mode": str(params.get("mode") or "copy"),
+        }
+
     def _register(self, params: dict[str, Any]) -> dict[str, Any]:
         sandbox_path = Path(str(params["path"]))
-        if not sandbox_path.is_absolute() or sandbox_path.parts[:2] != ("/", "openzyme") or len(sandbox_path.parts) < 3 or sandbox_path.parts[2] != "output":
-            raise ValueError("registered artifact path must be under /openzyme/output")
-        relative_path = Path(*sandbox_path.parts[3:]).as_posix()
+        parts = sandbox_path.parts
+        if (
+            not sandbox_path.is_absolute()
+            or len(parts) < 3
+            or (
+                parts[:3] != ("/", "workspace", "output")
+                and not (parts[:2] == ("/", "openzyme") and len(parts) >= 3 and parts[2] == "output")
+            )
+        ):
+            raise ValueError("registered artifact path must be under /workspace/output")
+        relative_parts = parts[3:]
+        relative_path = Path(*relative_parts).as_posix()
         if not relative_path or any(part in {"", ".", ".."} for part in PurePath(relative_path).parts):
             raise ValueError("registered artifact relative path must not contain empty, '.', or '..' segments")
         host_path = (self.output_dir / relative_path).resolve()

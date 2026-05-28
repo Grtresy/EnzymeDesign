@@ -173,6 +173,66 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "additionalProperties": False,
             },
         ),
+        ToolDescriptor(
+            tool_name="artifacts.materialize",
+            description=(
+                "Copy or map an authorized catalog artifact into the executor sandbox input tree. "
+                "Returns only a sandbox-safe /workspace path and digest; never returns Host storage paths."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "artifact_id": {"type": "string"},
+                    "target": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["copy", "readonly"]},
+                },
+                "required": ["sandbox_workspace_id", "artifact_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifacts.snapshot_code",
+            description=(
+                "Seal source files from /workspace/src as an immutable CODE snapshot for sandbox provenance. "
+                "The returned payload contains source_snapshot_artifact_id and source_tree_digest."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "paths": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ]
+                    },
+                    "entrypoint": {"type": "string"},
+                    "metadata": {"type": "object"},
+                },
+                "required": ["sandbox_workspace_id", "entrypoint"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="artifacts.register",
+            description=(
+                "Seal a file or directory under /workspace/output into Host-owned artifact storage and create "
+                "an immutable artifact catalog record. Requires an existing source snapshot."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sandbox_workspace_id": {"type": "string"},
+                    "path": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "format": {"type": "string"},
+                    "metadata": {"type": "object"},
+                },
+                "required": ["sandbox_workspace_id", "path"],
+                "additionalProperties": False,
+            },
+        ),
     )
 
 

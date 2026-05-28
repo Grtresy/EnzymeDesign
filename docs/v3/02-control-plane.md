@@ -272,6 +272,12 @@ claimed --operator release--> pending
 - execution output artifact 只来自 runner declared output fetch，必须记录来源 run、engine invocation、tool contract、relative path 与 provenance
 - preprocess 生成的中间文件也是 session artifact；它们可以作为后续 execution input，但必须保留来源 artifact 与转换工具 metadata
 - `artifact.relative_path` 是 workspace-facing path，用于 UI 路径树、CLI 列表和 agent 对共享工作面的理解；它不是 Host 本地 filesystem path，也不能替代 artifact catalog 授权
+- artifact storage 采用两层模型：Host-private Blob 层按 `content_digest` / `tree_digest` 封存与去重内容；Artifact 层按不可变 `artifact_id` 记录 session/task/lane/run/invocation、kind、format、validation、producer metadata、provenance、sealed digest 与展示用 `relative_path`
+- `storage_uri` 或后续等价 Host-private storage field 只能指向 sealed Blob/Artifact storage；不得指向 mutable sandbox `/workspace/output`、sandbox host path、runner path 或 Host repo path
+- 同一 `relative_path` 可以存在多个 artifact leaf；重复 path 不覆盖、不合并、不作为唯一键，UI/CLI 只能用 `artifact_id` 区分，并可按 created_at、version、run 或 artifact id 排序
+- executor sandbox 的 `/workspace` working copy 不是 canonical artifact store；只有 `artifacts.materialize`、`artifacts.register`、`artifacts.snapshot_code` 产生或回链的 Host-owned records 才进入 canonical workspace
+- `artifacts.register` 的 canonical visible boundary 是 Artifact row commit；validation、Blob 写入、sealed digest recheck、provenance 完整性或 row commit 任一步失败都不得创建 visible Artifact record，也不得 fallback 到 mutable workspace path
+- `artifacts.snapshot_code` 生成 `ArtifactKind.CODE` source tree snapshot，记录 `sandbox_workspace_id`、entrypoint、`source_tree_digest`、file digest manifest 和 parent snapshot；后续 run、approval、SDK operation 与 registered output provenance 必须绑定 snapshot id / digest
 - canonical artifact 来源仍是 artifact row 的关系字段与 `metadata_json`；workspace projection 中的 `artifact.provenance` 是从这些 canonical 字段派生的展示模型，不是新的数据库字段或 migration 要求
 
 `report_draft` 建议最小字段：
@@ -330,7 +336,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 
 workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或恢复 CLI 后，调用方应能从 projection 重建 conversation timeline、task board、resident teammate roster、pending approvals、lane/artifact/report 状态与 capability invocation 摘要，而不依赖浏览器本地缓存、raw graph state 或临时 prompt 内容。
 
-`artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它不是 workspace/API/agent read model 字段。
+`artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它必须指向 sealed storage 或其它 Host-owned immutable backend，不是 workspace/API/agent read model 字段。
 
 `workspace.artifacts[]` 默认带 `artifact_id`、`kind`、`title`、`description`、`relative_path`、task/lane/invocation/run 关系字段、清洗后的 `metadata`，以及 projection-derived `provenance`。UI 默认按 `relative_path` 构造路径树；重复 `relative_path` 不合并，叶子身份始终是 `artifact_id`。`provenance` 固定展示 task、lane、invocation、run、producer/source、format、provider/external id/source locator、source/input/preprocess artifact ids、runner/pipeline id、code digest 与 tool contract 摘要。普通 workspace projection 不把 Host local path、runner staging path、`storage_uri`、`source_storage_uri`、`intermediate_storage_uri` 或 private path 当作 artifact browser 字段。
 

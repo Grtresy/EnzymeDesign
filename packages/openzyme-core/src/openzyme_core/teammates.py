@@ -8,6 +8,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import ResearchSummaryStatus
 
+from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .bio_research_tools import register_web_research_tools
@@ -507,6 +508,7 @@ def build_teammate_registry(
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
+    register_artifact_boundary_tools(registry)
     register_sandbox_workspace_tools(registry, agent_id=agent_id)
     register_protocol_tools(registry)
     register_report_draft_tools(registry)

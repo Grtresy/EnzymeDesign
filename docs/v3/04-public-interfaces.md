@@ -55,6 +55,20 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `report_draft.update`
 - `report.publish`
 
+默认 executor sandbox tool surface 还应包括：
+
+- `sandbox.workspace.status`
+- `sandbox.file.list`
+- `sandbox.file.read`
+- `sandbox.file.write`
+- `sandbox.file.patch`
+- `sandbox.exec`
+- `artifacts.materialize`
+- `artifacts.register`
+- `artifacts.snapshot_code`
+
+这些工具面向 executor 的 persistent sandbox working copy。它们允许 executor 在隔离容器中读写文件、运行 bash/Python、把 catalog artifact 显式搬入 sandbox、登记输出 artifact，并在 dry-run / execution 前把源码快照固化为 `ArtifactKind.CODE`。它们不得暴露 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、SSH/Slurm config 或 credentials。
+
 默认 master 内部 team coordination tool surface 还应包括：
 
 - `protocol.thread`
@@ -69,7 +83,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 `docs.search(query, tags?, limit?)` 返回受控文档库的匹配条目，条目至少包含 `doc_id`、`title`、`summary`、`tags`、`version` 和 `path`；`docs.read(doc_id | path)` 只读取 registry 中登记的文档，不能读取任意 repo 文件，返回同样 metadata 加 `content`。首批必须索引 `docs/v3/execution-pipeline-docs/`，供 execution teammate 按需学习 pipeline SDK。该工具是通用 V3 内部能力，后续 research/reporting 文档也可接入同一接口。
 
-旧式 `skill.list` / `skill.load` 可以作为迁移期兼容机制存在，但不再是 V3 execution pipeline / HPC SDK 用法说明的主路径。executor 应优先使用 `docs.search` / `docs.read`。
+旧式 `skill.list` / `skill.load` 可以作为迁移期兼容机制存在，但不再是 V3 execution pipeline / sandbox SDK / backend adapter 用法说明的主路径。executor 应优先使用 `docs.search` / `docs.read`。
 
 ### Internal Tool Result Envelope
 
@@ -119,6 +133,12 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 `GET /v3/sessions/{id}/workspace` 返回统一 snapshot。
 
+术语边界：
+
+- `workspace projection` / `session workspace` 指本 endpoint 返回的 session 级产品读模型，包含 conversation、task board、lane board、approval、delegation、artifacts、reports 与 capability projections。
+- `sandbox workspace` 指 executor 在受控 sandbox 内持久化、可恢复的 `/workspace` working copy；它是隔离执行壳内的文件工作面，不是 session workspace，也不是 artifact catalog。
+- executor sandbox 工作区的稳定身份字段写作 `sandbox_workspace_id`；裸 `workspace_id` 不应在新的 execution / provenance contract 中指代 sandbox working copy。
+
 最低字段分区：
 
 - `session`
@@ -154,14 +174,19 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `artifacts` 默认是 session 共享工作面的安全投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面；普通投影不直接返回文件内容或 Host 私有路径
 - `artifacts[].relative_path` 是 artifact browser 的 workspace-facing path；Web UI 默认按 `/` 分隔构造目录树，重复 path 仍保留为多个以 `artifact_id` 区分的文件叶子
 - `artifacts[].provenance` 是 projection-derived 展示对象，不是新的 canonical DB 字段。稳定输出字段为 `task_id`、`lane_id`、`invocation_id`、`run_id`、`produced_by`、`source`、`format`、`provider`、`external_id`、`source_locator`、`source_artifact_ids`、`input_artifact_ids`、`preprocess_artifact_ids`、`runner_run_id`、`pipeline_invocation_id`、`code_digest` 与 `tool_contract`
-- `ArtifactKind.CODE` 表示 agent-authored pipeline source。Python pipeline source 必须使用 `kind=code`、`metadata.format="python"`、`metadata.semantic_type="pipeline_source"`，并记录 `content_digest`、`lineage_root_artifact_id`、`version`，patch 版本还必须记录 `parent_artifact_id`
+- `ArtifactKind.CODE` 表示 agent-authored pipeline source 的 canonical 审计快照。兼容 catalog 单文件源码版本使用 `metadata.format="python"`、`metadata.semantic_type="pipeline_source"`、`content_digest`、`lineage_root_artifact_id`、`version` 与 `parent_artifact_id`；sandbox source tree snapshot 使用 `metadata.format="source_tree"`、`metadata.semantic_type="pipeline_source_snapshot"`，并记录 `sandbox_workspace_id`、`entrypoint`、`source_tree_digest`、file digest manifest 与 parent snapshot
 - 普通 artifact browser 只展示 metadata/provenance 摘要；内容读取和源码版本化由受控 agent tools 提供，不通过 workspace projection 直接返回文件内容，也不提供 delete/rename/move/edit 语义
 - `artifact.list` 返回当前 session 内的安全 artifact catalog，可按 task / invocation 过滤
 - `artifact.get` 返回单个 artifact 的安全 catalog record 及关联 invocation / output document 摘要；大字段通过 `path`、`offset`、`limit` 分页读取
 - `artifact.preview`、`artifact.read_text`、`artifact.range` 只读取 UTF-8 文本类 artifact，适合 FASTA、PDB、log、JSON、Markdown 等；二进制或不可读内容返回结构化 tool error
-- `artifact.create_text` 创建不可变 Python pipeline source artifact，并写入 SHA-256 `content_digest` 与 version 1 lineage metadata；只接受安全 `.py` basename，不接受 Host path 或目录路径
-- `artifact.patch_text` 基于 `base_artifact_id + base_content_digest + content` 创建新的不可变源码版本；digest 不匹配、非 code artifact、非法文件名、非 UTF-8 或超限内容必须返回结构化 tool error，不得覆盖旧 artifact
+- `artifact.create_text` 创建不可变 Python pipeline source artifact，并写入 SHA-256 `content_digest` 与 version 1 lineage metadata；只接受安全 `.py` basename，不接受 Host path 或目录路径。它是兼容/直接 catalog 编辑面，不是 executor 在 persistent sandbox 中日常 authoring 的主路径
+- `artifact.patch_text` 基于 `base_artifact_id + base_content_digest + content` 创建新的不可变源码版本；digest 不匹配、非 code artifact、非法文件名、非 UTF-8 或超限内容必须返回结构化 tool error，不得覆盖旧 artifact。它保留为受控源码版本工具，不替代 sandbox file CRUD
 - `artifact.diff_text` 返回两个 Python pipeline source artifact/version 之间的 bounded unified diff，结果只包含安全 artifact 投影和 digest
+- `artifacts.materialize` 通过 catalog 授权把 artifact 显式复制或映射到 executor sandbox；返回 sandbox-safe path，不返回 Host `storage_uri`；同一 artifact digest、target path 和 mode 幂等复用，目标路径 digest 冲突结构化失败，`target` 必须位于 `/workspace/input`
+- `artifacts.register` 只登记 `/workspace/output` 下的 sandbox output 或 Host-supervised fetched output；Host 在创建 visible Artifact row 前必须完成 validator、copy/seal、sealed digest recheck 和 provenance 完整性检查；同一路径不同 digest 创建不同 `artifact_id`，不覆盖旧 artifact
+- `artifacts.snapshot_code` 把 sandbox `/workspace/src` 中的 pipeline source 固化为 `ArtifactKind.CODE`；execution plan、approval、run 与 output provenance 必须引用这个快照，而不是引用可漂移的 working copy；source tree digest canonicalization 必须稳定
+- `sandbox.exec` 在同一 `sandbox_workspace_id` 下默认单活执行；active run 期间第二个 exec 和 agent-facing write/patch/delete 返回 conflict，read/list 可并发
+- `hpc.workspace(label)` 按 `sandbox_workspace_id + normalized_label` 复用 logical remote placement workspace；`stage_artifact` / `fetch_outputs` 只返回 opaque refs、artifact refs 和 bounded summary，不返回真实远端路径
 - artifact tool results、workspace projection、events 与 capability projection 都不得返回 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、`source_storage_uri` 或 `intermediate_storage_uri`
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
@@ -198,9 +223,9 @@ V3 Web UI 默认是 conversation-first。
 - top-level master agent loop 决定如何创建和编排 task
 - 具体 research / execution / reporting task 默认由 master 显式委托给 resident teammate agent 推进；auto-claim 仅用于显式 operator/debug/recovery 场景
 - `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
-- `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、提交受控 execution pipeline，并可通过 protocol 与 peers 沟通；具体 HPC / 长耗时 / 高 quota SDK operation 是否需要 approval 由 Host supervisor 的 tool policy 决定，teammate 不需要判断敏感性
-- execution teammate 不直接调用 HPC runner tool；它只能通过 `execution.pipeline.*` 提交或恢复 pipeline，由 sandbox SDK 和 Host supervisor 间接访问 runner
-- execution teammate 默认拥有 `docs.search` / `docs.read`，并应按需检索 `pipeline`、`artifact read/register`、`preprocess`、`hpc.vina`、`hpc.fpocket`、`batch ligand docking`、`sandbox rules` 与 `dry-run` 文档
+- `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、在自己的 persistent sandbox 中编辑和运行 pipeline，并可通过 protocol 与 peers 沟通；具体 HPC / 长耗时 / 高 quota SDK operation 是否需要 approval 由 Host supervisor 的 tool policy 决定，teammate 不需要判断敏感性
+- execution teammate 不直接调用 HPC runner tool，也不把 `execution.pipeline.start` 当作必须调用的 authoring 主路径；它通过 sandbox file/command tools 与 sandbox SDK 表达执行意图，由 Host supervisor 间接访问 runner
+- execution teammate 默认拥有 `docs.search` / `docs.read`，并应按需检索 `persistent sandbox`、`sandbox file command`、`artifact materialize register snapshot_code`、`preprocess`、`tool adapter`、`hpc placement`、`stage_artifact`、`fetch_outputs`、`batch ligand docking`、`sandbox rules` 与 `dry-run` 文档；`hpc` 是稳定 executor-facing placement namespace，领域工具通过 `structure_tools` / `docking` / `bio_tools` 表达，旧 runner-backed shorthand 只能是 internal migration debt
 - report teammate 默认直接读写 `report_draft` 并在合适时机 `publish` 为 final `report`
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填
@@ -270,20 +295,22 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 `llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 被持久化为 `llm_trace_step` 后尽快推送该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。Web UI 用它实时增量更新 `workspace.agent_traces`；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
 
-`execution.pipeline.start` 语义：
+迁移兼容 `execution.pipeline.start` 语义：
 
-- `code_artifact_id` 是必填入口，必须引用当前 session artifact catalog 中的 Python pipeline source artifact；inline `code` 不再是公开 contract，传入时返回 `unsupported_inline_pipeline_code` tool failure
+`execution.pipeline.start` 不再是 executor-facing authoring 主路径。稳定目标是 executor 在 persistent sandbox workspace 中通过 `sandbox.file.*` / `sandbox.exec` 工作，Host/supervisor 在内部创建 execution plan、approval、run 和 provenance。若当前实现或迁移期仍暴露 `execution.pipeline.start`，其语义必须满足：
+
+- 默认入口绑定 executor `sandbox_workspace_id` 与 `entrypoint`，Host 在 dry-run / execution 前通过 `artifacts.snapshot_code` 创建 Python pipeline source 审计快照；`code_artifact_id` 可作为兼容入口或显式复现入口，但不再是 executor 日常编辑 pipeline 的唯一主路径；inline `code` 不再是公开 contract，传入时返回 `unsupported_inline_pipeline_code` tool failure
 - 默认执行 dry-run / validation 并持久化 `ExecutionPlan`；该阶段不提交 HPC，也不把 Host `storage_uri` 交给 sandbox code
-- `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、HPC operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
-- `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated `hpc.*` operation，或调用方通过 `inputs.approval_policy="single_plan"` 要求单一 plan approval，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
-- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 `hpc.*` call，或 operation/参数摘要超出 approved plan policy，则进入 secondary approval gate
-- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须携带 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；Host 在正式执行前重新读取 code artifact 并校验 digest
+- `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、external operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
+- `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated external operation，或调用方通过 `inputs.approval_policy="single_plan"` 要求单一 plan approval，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
+- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 external call，或 operation/参数摘要超出 approved plan policy，则进入 secondary approval gate
+- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须携带 `sandbox_workspace_id`、`source_code_artifact_id`、`source_code_digest`、`source_code_version`；Host 在正式执行前重新读取 code snapshot 并校验 digest
 
 事件语义：
 
 - `research.evidence.recorded` 表示 normalized finding / source ref 已进入 canonical research storage
 - `artifact.recorded` 表示下载或生成的 workspace file asset 已进入 session artifact catalog
-- `execution.pipeline.started` 表示受控 pipeline sandbox 已创建并开始运行；payload 应包含 source code artifact provenance；plan approval 阶段以 `approval.requested` 和 `engine.invocation.updated(waiting_approval)` 表达，runtime SDK secondary approval gate 也使用同一等待态
+- `execution.pipeline.started` 表示受控 pipeline sandbox 已开始一次 plan-approved run；payload 应包含 `sandbox_workspace_id` 与 source code artifact provenance；plan approval 阶段以 `approval.requested` 和 `engine.invocation.updated(waiting_approval)` 表达，runtime SDK secondary approval gate 也使用同一等待态
 - `execution.pipeline.step.completed` 表示 pipeline 内一个 SDK step 完成；payload 必须能回链到 pipeline invocation 与 step id
 - `execution.pipeline.completed` / `execution.pipeline.failed` 表示 pipeline terminal state，不能替代每个 run / artifact 的 canonical record
 - `bio.*` SDK step 的成功、warning 和失败通过 `execution.pipeline.step.completed`、`execution.pipeline.failed`、engine invocation output payload 与 artifact provenance 投影；大型 FASTA/metadata/raw hits/parsed hits 不进入 RPC 全文

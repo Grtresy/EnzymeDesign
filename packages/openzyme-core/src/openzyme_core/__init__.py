@@ -57,11 +57,16 @@ from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_workspace import sandbox_image_record
+from .artifact_boundary import ArtifactBoundaryError
+from .artifact_boundary import ArtifactBoundaryService
+from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
 from .repositories import AgentMemberRepository
 from .repositories import AgentRuntimeSignalRepository
+from .repositories import ArtifactBlobGcRepository
+from .repositories import ArtifactMaterializationRepository
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
@@ -119,6 +124,10 @@ __all__ = [
     "AgentRuntimeService",
     "AgentMemberRepository",
     "AgentRuntimeSignalRepository",
+    "ArtifactBlobGcRepository",
+    "ArtifactBoundaryError",
+    "ArtifactBoundaryService",
+    "ArtifactMaterializationRepository",
     "ApprovalRequestRepository",
     "BackgroundCompletion",
     "build_teammate_registry",
@@ -163,6 +172,7 @@ __all__ = [
     "ProtocolService",
     "register_report_draft_tools",
     "register_artifact_tools",
+    "register_artifact_boundary_tools",
     "register_protocol_tools",
     "register_sandbox_workspace_tools",
     "ResearchEvidenceRepository",

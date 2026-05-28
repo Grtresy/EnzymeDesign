@@ -2191,6 +2191,66 @@ class SessionArtifactRepository:
         )
         self.connection.commit()
 
+    def commit_immutable(self, artifact: SessionArtifactRecord) -> None:
+        _require_session_exists(self.connection, artifact.session_id)
+        if artifact.invocation_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="engine_invocations",
+                id_column="invocation_id",
+                record_id=artifact.invocation_id,
+                expected_session_id=artifact.session_id,
+            )
+        if artifact.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=artifact.task_id,
+                expected_session_id=artifact.session_id,
+            )
+        if artifact.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=artifact.lane_id,
+                expected_session_id=artifact.session_id,
+            )
+        if artifact.run_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_run_records",
+                id_column="run_id",
+                record_id=artifact.run_id,
+                expected_session_id=artifact.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO session_artifact_records (
+                artifact_id, session_id, task_id, lane_id, invocation_id, run_id, kind, storage_uri,
+                relative_path, title, description, metadata_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                artifact.artifact_id,
+                artifact.session_id,
+                artifact.task_id,
+                artifact.lane_id,
+                artifact.invocation_id,
+                artifact.run_id,
+                artifact.kind.value,
+                artifact.storage_uri,
+                artifact.relative_path,
+                artifact.title,
+                artifact.description,
+                json.dumps({} if artifact.metadata is None else artifact.metadata, sort_keys=True),
+                artifact.created_at,
+            ),
+        )
+        self.connection.commit()
+
     def get(self, artifact_id: str) -> SessionArtifactRecord | None:
         row = self.connection.execute(
             "SELECT * FROM session_artifact_records WHERE artifact_id = ?",
@@ -2248,6 +2308,45 @@ class SessionArtifactRepository:
         ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
 
+    def find_by_metadata(
+        self,
+        *,
+        session_id: str,
+        key: str,
+        value: Any,
+        kind: str | None = None,
+        metadata_filter: dict[str, Any] | None = None,
+    ) -> SessionArtifactRecord | None:
+        if kind is None:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM session_artifact_records
+                WHERE session_id = ?
+                ORDER BY created_at, artifact_id
+                """,
+                (session_id,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT *
+                FROM session_artifact_records
+                WHERE session_id = ? AND kind = ?
+                ORDER BY created_at, artifact_id
+                """,
+                (session_id, kind),
+            ).fetchall()
+        expected = {} if metadata_filter is None else dict(metadata_filter)
+        for row in rows:
+            metadata = json.loads(row["metadata_json"])
+            if metadata.get(key) != value:
+                continue
+            if any(metadata.get(filter_key) != filter_value for filter_key, filter_value in expected.items()):
+                continue
+            return self._row_to_artifact(row)
+        return None
+
     def _row_to_artifact(self, row: sqlite3.Row) -> SessionArtifactRecord:
         from openzyme_domain import ArtifactKind
 
@@ -2266,6 +2365,83 @@ class SessionArtifactRepository:
             metadata=json.loads(row["metadata_json"]),
             created_at=row["created_at"],
         )
+
+
+@dataclass(slots=True)
+class ArtifactMaterializationRepository:
+    connection: sqlite3.Connection
+
+    def save(
+        self,
+        *,
+        materialization_id: str,
+        sandbox_workspace_id: str,
+        artifact_id: str,
+        artifact_digest: str,
+        target_path: str,
+        mode: str,
+        sandbox_path: str,
+        created_at: str,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO artifact_materialization_records (
+                materialization_id, sandbox_workspace_id, artifact_id, artifact_digest,
+                target_path, mode, sandbox_path, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(materialization_id) DO UPDATE SET
+                sandbox_path = excluded.sandbox_path,
+                updated_at = excluded.updated_at
+            """,
+            (
+                materialization_id,
+                sandbox_workspace_id,
+                artifact_id,
+                artifact_digest,
+                target_path,
+                mode,
+                sandbox_path,
+                created_at,
+                created_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, materialization_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM artifact_materialization_records WHERE materialization_id = ?",
+            (materialization_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+
+@dataclass(slots=True)
+class ArtifactBlobGcRepository:
+    connection: sqlite3.Connection
+
+    def enqueue(self, *, blob_ref: str, reason: str, created_at: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO artifact_blob_gc_queue (gc_id, blob_ref, reason, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (f"gc_{uuid4().hex[:12]}", blob_ref, reason, "pending", created_at),
+        )
+        self.connection.commit()
+
+    def list_pending(self) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM artifact_blob_gc_queue
+            WHERE status = 'pending'
+            ORDER BY created_at, gc_id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 @dataclass(slots=True)
@@ -3001,6 +3177,8 @@ class CoreRepositories:
     engine_documents: EngineDocumentRepository
     runs: RunRecordRepository
     artifacts: SessionArtifactRepository
+    artifact_materializations: ArtifactMaterializationRepository
+    artifact_blob_gc: ArtifactBlobGcRepository
     report_drafts: SessionReportDraftRepository
     reports: SessionReportRepository
     research_summaries: ResearchSummaryRepository
@@ -3026,6 +3204,8 @@ class CoreRepositories:
             engine_documents=EngineDocumentRepository(connection),
             runs=RunRecordRepository(connection),
             artifacts=SessionArtifactRepository(connection),
+            artifact_materializations=ArtifactMaterializationRepository(connection),
+            artifact_blob_gc=ArtifactBlobGcRepository(connection),
             report_drafts=SessionReportDraftRepository(connection),
             reports=SessionReportRepository(connection),
             research_summaries=ResearchSummaryRepository(connection),

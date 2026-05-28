@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from openzyme_engines import PodmanPipelineSandboxRunner
+from openzyme_engines.podman_sandbox import _ControlSocketServer
 
 
 def test_podman_runner_can_bind_existing_sandbox_workspace(
@@ -42,3 +45,44 @@ def test_podman_runner_can_bind_existing_sandbox_workspace(
         item == f"{workspace_root / workspace_id}:/workspace:Z"
         for item in calls[0]
     )
+
+
+def test_control_socket_materialize_copies_input_to_requested_workspace_target(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    source = input_dir / "art_input.txt"
+    source.write_text("authorized input\n", encoding="utf-8")
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "control.sock",
+        input_dir=input_dir,
+        output_dir=output_dir,
+        artifacts={
+            "art_input": {
+                "artifact_id": "art_input",
+                "path": "/openzyme/input/art_input.txt",
+                "content_digest": "sha256:test",
+            }
+        },
+    )
+
+    result = server._materialize(
+        {
+            "artifact_id": "art_input",
+            "target": "/workspace/input/nested/protein.txt",
+            "mode": "copy",
+        }
+    )
+
+    assert result["path"] == "/workspace/input/nested/protein.txt"
+    assert (input_dir / "nested" / "protein.txt").read_text(encoding="utf-8") == "authorized input\n"
+    with pytest.raises(ValueError, match="under /workspace/input"):
+        server._materialize(
+            {
+                "artifact_id": "art_input",
+                "target": "/workspace/output/protein.txt",
+            }
+        )
