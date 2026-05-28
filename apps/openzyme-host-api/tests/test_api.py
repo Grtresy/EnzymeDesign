@@ -38,8 +38,14 @@ from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import Task
@@ -48,8 +54,10 @@ from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
+from openzyme_core import SandboxWorkspaceService
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import sandbox_image_record
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
 from openzyme_engines import ExecutionParsedResult
@@ -1805,6 +1813,336 @@ def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     assert signals[0].agent_id == "agent:master"
     assert signals[0].reason.value == "approval_resolved"
     assert signals[0].source_ref == "appr_master"
+
+
+def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(tmp_path: Path) -> None:
+    repositories = _build_v3_engine_repositories()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=FakeHarnessModelFactory(),
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Resolve SDK controlled operation approval.",
+        session_id="sess_sdk_approval",
+    )
+    agent = AgentMember(
+        agent_id="agent:executor",
+        session_id="sess_sdk_approval",
+        lane_id=None,
+        task_id=None,
+        name="Executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-05-03T15:59:00+00:00",
+        updated_at="2026-05-03T15:59:00+00:00",
+        member_id="member_executor",
+    )
+    repositories.agents.save(agent)
+    repositories.sandbox_images.save(
+        sandbox_image_record(
+            image_ref="localhost/openzyme-pipeline-sandbox@sha256:s10",
+            image_digest="sha256:s10",
+        )
+    )
+    workspace = SandboxWorkspaceService(
+        repositories,
+        workspace_root=tmp_path / "workspaces",
+    ).create_or_get(session_id="sess_sdk_approval", agent_member_id="member_executor")
+    run = SandboxRunRecord(
+        sandbox_run_id="srun_sdk_approval",
+        session_id="sess_sdk_approval",
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=("python", "src/s10.py"),
+        argv_digest="sha256:argv",
+        cwd="/workspace",
+        env_digest="sha256:env",
+        status=SandboxRunStatus.RUNNING,
+        source_snapshot_artifact_id=None,
+        source_tree_digest="sha256:source",
+        changed_files_summary={},
+        created_at="2026-05-03T15:59:01+00:00",
+        updated_at="2026-05-03T15:59:01+00:00",
+    )
+    repositories.sandbox_runs.save(run)
+    approval = ApprovalRequest(
+        approval_id="appr_sdk_controlled",
+        session_id="sess_sdk_approval",
+        task_id=None,
+        lane_id=None,
+        kind="sdk_controlled_operation",
+        requested_action="Approve fake SDK operation.",
+        status=ApprovalRequestStatus.PENDING,
+        request_ref="op_sdk_controlled",
+        resolution_ref=None,
+        created_at="2026-05-03T15:59:02+00:00",
+    )
+    repositories.approvals.save(approval)
+    operation = ControlledOperation(
+        operation_id="op_sdk_controlled",
+        session_id="sess_sdk_approval",
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=run.sandbox_run_id,
+        logical_operation_key="fake.controlled",
+        operation_digest="sha256:operation",
+        params_digest="sha256:params",
+        backend_category="provider_http",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        approval_id=approval.approval_id,
+        approval_state=ApprovalRequestStatus.PENDING.value,
+        route_reason="s10_generic_backend_category",
+        expected_outputs_summary={},
+        resource_estimate={},
+        created_at="2026-05-03T15:59:03+00:00",
+        updated_at="2026-05-03T15:59:03+00:00",
+    )
+    repositories.controlled_operations.save(operation)
+    continuation = ContinuationState(
+        continuation_id="srun_sdk_approval:op_sdk_controlled",
+        session_id="sess_sdk_approval",
+        operation_id=operation.operation_id,
+        sandbox_run_id=run.sandbox_run_id,
+        approval_id=approval.approval_id,
+        status=ContinuationStateStatus.WAITING_APPROVAL,
+        created_at="2026-05-03T15:59:04+00:00",
+        updated_at="2026-05-03T15:59:04+00:00",
+    )
+    repositories.continuation_states.save(continuation)
+
+    result = service.resolve_approval(
+        approval.approval_id,
+        decision="approved",
+        actor_ref="tester",
+    )
+
+    assert result.status == "completed"
+    assert repositories.runtime_signals.list_by_session("sess_sdk_approval") == []
+    resolved = repositories.approvals.get(approval.approval_id)
+    assert resolved is not None
+    assert resolved.status is ApprovalRequestStatus.APPROVED
+    updated_operation = repositories.controlled_operations.get(operation.operation_id)
+    assert updated_operation is not None
+    assert updated_operation.approval_state == "approved"
+    assert updated_operation.status is ControlledOperationStatus.WAITING_APPROVAL
+    updated_continuation = repositories.continuation_states.get(continuation.continuation_id)
+    assert updated_continuation is not None
+    assert updated_continuation.status is ContinuationStateStatus.APPROVED
+    sdk_projection = result.workspace["capabilities"]["sdk_supervisor"][0]
+    assert sdk_projection["operation_id"] == operation.operation_id
+    assert sdk_projection["approval_state"] == "approved"
+    assert sdk_projection["backend_category"] == "provider_http"
+    assert any(
+        item["event_type"] == "sdk_controlled_operation.updated"
+        and item["payload"]["operation_id"] == operation.operation_id
+        for item in result.workspace["activity_feed"]
+    )
+    assert any(
+        event["event_type"] == "sdk_controlled_operation.approval_resolved"
+        for event in result.events
+    )
+
+    duplicate = service.resolve_approval(
+        approval.approval_id,
+        decision="approved",
+        actor_ref="tester",
+    )
+    assert duplicate.status == "completed"
+    assert repositories.runtime_signals.list_by_session("sess_sdk_approval") == []
+    duplicate_continuation = repositories.continuation_states.get(
+        continuation.continuation_id
+    )
+    assert duplicate_continuation is not None
+    assert duplicate_continuation.status is ContinuationStateStatus.APPROVED
+
+    reject_approval = replace(
+        approval,
+        approval_id="appr_sdk_rejected",
+        request_ref="op_sdk_rejected",
+        status=ApprovalRequestStatus.PENDING,
+        resolved_at=None,
+        created_at="2026-05-03T16:00:02+00:00",
+    )
+    repositories.approvals.save(reject_approval)
+    reject_operation = replace(
+        operation,
+        operation_id="op_sdk_rejected",
+        approval_id=reject_approval.approval_id,
+        approval_state=ApprovalRequestStatus.PENDING.value,
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        error_code=None,
+        error_summary=None,
+        created_at="2026-05-03T16:00:03+00:00",
+        updated_at="2026-05-03T16:00:03+00:00",
+    )
+    repositories.controlled_operations.save(reject_operation)
+    reject_continuation = replace(
+        continuation,
+        continuation_id="srun_sdk_approval:op_sdk_rejected",
+        operation_id=reject_operation.operation_id,
+        approval_id=reject_approval.approval_id,
+        status=ContinuationStateStatus.WAITING_APPROVAL,
+        created_at="2026-05-03T16:00:04+00:00",
+        updated_at="2026-05-03T16:00:04+00:00",
+    )
+    repositories.continuation_states.save(reject_continuation)
+
+    rejected = service.resolve_approval(
+        reject_approval.approval_id,
+        decision="rejected",
+        actor_ref="tester",
+    )
+    duplicate_reject = service.resolve_approval(
+        reject_approval.approval_id,
+        decision="rejected",
+        actor_ref="tester",
+    )
+    assert rejected.status == "completed"
+    assert duplicate_reject.status == "completed"
+    updated_reject_operation = repositories.controlled_operations.get(
+        reject_operation.operation_id
+    )
+    assert updated_reject_operation is not None
+    assert updated_reject_operation.status is ControlledOperationStatus.FAILED
+    assert updated_reject_operation.error_code == "approval_rejected"
+    assert repositories.runtime_signals.list_by_session("sess_sdk_approval") == []
+    try:
+        service.resolve_approval(
+            reject_approval.approval_id,
+            decision="approved",
+            actor_ref="tester",
+        )
+    except ValueError as exc:
+        assert "approval_state_conflict" in str(exc)
+    else:
+        raise AssertionError("expected approval_state_conflict")
+
+
+def test_v3_recover_abandoned_sdk_continuation_fails_closed(tmp_path: Path) -> None:
+    repositories = _build_v3_engine_repositories()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=FakeHarnessModelFactory(),
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Recover abandoned SDK continuation.",
+        session_id="sess_sdk_recovery",
+    )
+    agent = AgentMember(
+        agent_id="agent:executor",
+        session_id="sess_sdk_recovery",
+        lane_id=None,
+        task_id=None,
+        name="Executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-05-03T15:59:00+00:00",
+        updated_at="2026-05-03T15:59:00+00:00",
+        member_id="member_executor_recovery",
+    )
+    repositories.agents.save(agent)
+    repositories.sandbox_images.save(
+        sandbox_image_record(
+            image_ref="localhost/openzyme-pipeline-sandbox@sha256:s10",
+            image_digest="sha256:s10",
+        )
+    )
+    workspace = SandboxWorkspaceService(
+        repositories,
+        workspace_root=tmp_path / "workspaces",
+    ).create_or_get(
+        session_id="sess_sdk_recovery",
+        agent_member_id="member_executor_recovery",
+    )
+    run = SandboxRunRecord(
+        sandbox_run_id="srun_sdk_recovery",
+        session_id="sess_sdk_recovery",
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=("python", "src/s10.py"),
+        argv_digest="sha256:argv",
+        cwd="/workspace",
+        env_digest="sha256:env",
+        status=SandboxRunStatus.RUNNING,
+        source_snapshot_artifact_id=None,
+        source_tree_digest="sha256:source",
+        changed_files_summary={},
+        created_at="2026-05-03T16:10:01+00:00",
+        updated_at="2026-05-03T16:10:01+00:00",
+    )
+    repositories.sandbox_runs.save(run)
+    approval = ApprovalRequest(
+        approval_id="appr_sdk_recovery",
+        session_id="sess_sdk_recovery",
+        task_id=None,
+        lane_id=None,
+        kind="sdk_controlled_operation",
+        requested_action="Approve fake SDK operation.",
+        status=ApprovalRequestStatus.APPROVED,
+        request_ref="op_sdk_recovery",
+        resolution_ref=None,
+        created_at="2026-05-03T16:10:02+00:00",
+        resolved_at="2026-05-03T16:10:03+00:00",
+    )
+    repositories.approvals.save(approval)
+    operation = ControlledOperation(
+        operation_id="op_sdk_recovery",
+        session_id="sess_sdk_recovery",
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=run.sandbox_run_id,
+        logical_operation_key="fake.recovery",
+        operation_digest="sha256:operation",
+        params_digest="sha256:params",
+        backend_category="provider_http",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        approval_id=approval.approval_id,
+        approval_state=ApprovalRequestStatus.APPROVED.value,
+        route_reason="s10_generic_backend_category",
+        expected_outputs_summary={},
+        resource_estimate={},
+        created_at="2026-05-03T16:10:04+00:00",
+        updated_at="2026-05-03T16:10:04+00:00",
+    )
+    repositories.controlled_operations.save(operation)
+    continuation = ContinuationState(
+        continuation_id="srun_sdk_recovery:op_sdk_recovery",
+        session_id="sess_sdk_recovery",
+        operation_id=operation.operation_id,
+        sandbox_run_id=run.sandbox_run_id,
+        approval_id=approval.approval_id,
+        status=ContinuationStateStatus.APPROVED,
+        created_at="2026-05-03T16:10:05+00:00",
+        updated_at="2026-05-03T16:10:05+00:00",
+    )
+    repositories.continuation_states.save(continuation)
+
+    events = service.recover_abandoned_sdk_continuations(actor_ref="startup")
+
+    recovered_operation = repositories.controlled_operations.get(operation.operation_id)
+    recovered_continuation = repositories.continuation_states.get(
+        continuation.continuation_id
+    )
+    recovered_run = repositories.sandbox_runs.get(run.sandbox_run_id)
+    assert recovered_operation is not None
+    assert recovered_operation.status is ControlledOperationStatus.RECOVERY_FAILED
+    assert recovered_operation.error_code == "operation_recovery_failed"
+    assert recovered_continuation is not None
+    assert recovered_continuation.status is ContinuationStateStatus.RECOVERY_FAILED
+    assert recovered_continuation.error_code == "operation_recovery_failed"
+    assert recovered_run is not None
+    assert recovered_run.status is SandboxRunStatus.FAILED
+    assert recovered_run.error_code == "operation_recovery_failed"
+    assert repositories.approvals.get(approval.approval_id) == approval
+    assert repositories.runtime_signals.list_by_session("sess_sdk_recovery") == []
+    assert any(
+        event["event_type"] == "sdk_controlled_operation.recovery_failed"
+        for event in events
+    )
 
 
 def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic() -> (

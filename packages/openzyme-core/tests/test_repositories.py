@@ -7,6 +7,10 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxMessage
@@ -24,6 +28,11 @@ from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
@@ -790,3 +799,122 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
     assert final.status is AgentRuntimeSignalStatus.FAILED
     assert final.completed_at is not None
     assert final.last_error == "still failing"
+
+
+def test_continuation_state_claim_has_single_winner() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session = Session.create("sess_s10_claim", "proj_001", "S10", "S10")
+    repositories.sessions.save(session)
+    agent = AgentMember(
+        agent_id="agent:executor",
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name="Executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        member_id="member_executor",
+        created_at="2026-04-16T10:00:00+00:00",
+        updated_at="2026-04-16T10:00:00+00:00",
+    )
+    repositories.agents.save(agent)
+    workspace = SandboxWorkspaceRecord(
+        sandbox_workspace_id="sw_s10_claim",
+        session_id=session.session_id,
+        agent_member_id="member_executor",
+        agent_id=agent.agent_id,
+        status=SandboxWorkspaceStatus.READY,
+        image_ref="localhost/openzyme-pipeline-sandbox@sha256:s10",
+        image_digest="sha256:s10",
+        image_version="s10",
+        sandbox_protocol_version="s10",
+        image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+        manifest_version="s10",
+        created_at="2026-04-16T10:00:01+00:00",
+        last_attached_at="2026-04-16T10:00:01+00:00",
+    )
+    repositories.sandbox_workspaces.save(workspace)
+    run = SandboxRunRecord(
+        sandbox_run_id="srun_s10_claim",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=("python", "src/s10.py"),
+        argv_digest="sha256:argv",
+        cwd="/workspace",
+        env_digest="sha256:env",
+        status=SandboxRunStatus.RUNNING,
+        changed_files_summary={},
+        created_at="2026-04-16T10:00:02+00:00",
+        updated_at="2026-04-16T10:00:02+00:00",
+    )
+    repositories.sandbox_runs.save(run)
+    approval = ApprovalRequest(
+        approval_id="appr_s10_claim",
+        session_id=session.session_id,
+        task_id=None,
+        lane_id=None,
+        kind="sdk_controlled_operation",
+        requested_action="Approve S10 claim.",
+        status=ApprovalRequestStatus.PENDING,
+        request_ref="op_s10_claim",
+        resolution_ref=None,
+        created_at="2026-04-16T10:00:03+00:00",
+    )
+    repositories.approvals.save(approval)
+    operation = ControlledOperation(
+        operation_id="op_s10_claim",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=run.sandbox_run_id,
+        logical_operation_key="fake.claim",
+        operation_digest="sha256:operation",
+        params_digest="sha256:params",
+        backend_category="provider_http",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        approval_id=approval.approval_id,
+        approval_state=ApprovalRequestStatus.PENDING.value,
+        created_at="2026-04-16T10:00:04+00:00",
+        updated_at="2026-04-16T10:00:04+00:00",
+    )
+    repositories.controlled_operations.save(operation)
+    continuation = ContinuationState(
+        continuation_id="cont_s10_claim",
+        session_id=session.session_id,
+        operation_id=operation.operation_id,
+        sandbox_run_id=run.sandbox_run_id,
+        approval_id=approval.approval_id,
+        status=ContinuationStateStatus.WAITING_APPROVAL,
+        created_at="2026-04-16T10:00:05+00:00",
+        updated_at="2026-04-16T10:00:05+00:00",
+    )
+    repositories.continuation_states.save(continuation)
+    assert repositories.continuation_states.claim(
+        continuation.continuation_id,
+        claimed_by="worker:early",
+    ) is None
+
+    repositories.continuation_states.resolve_for_approval(
+        approval.approval_id,
+        decision="approved",
+    )
+    first = repositories.continuation_states.claim(
+        continuation.continuation_id,
+        claimed_by="worker:a",
+        lease_seconds=60,
+    )
+    second = repositories.continuation_states.claim(
+        continuation.continuation_id,
+        claimed_by="worker:b",
+        lease_seconds=60,
+    )
+
+    assert first is not None
+    assert first.status is ContinuationStateStatus.CLAIMED
+    assert first.claimed_by == "worker:a"
+    assert first.attempt_count == 1
+    assert second is None

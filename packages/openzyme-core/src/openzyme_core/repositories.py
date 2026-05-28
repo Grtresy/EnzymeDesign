@@ -17,6 +17,10 @@ from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import CommandLogArtifactRecord
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import FileAuditEntry
@@ -1524,6 +1528,463 @@ class SandboxRunRecordRepository:
             created_at=row["created_at"],
             started_at=row["started_at"],
             ended_at=row["ended_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class ControlledOperationRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: ControlledOperation) -> None:
+        _require_session_exists(self.connection, record.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="sandbox_workspace_records",
+            id_column="sandbox_workspace_id",
+            record_id=record.sandbox_workspace_id,
+            expected_session_id=record.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+            table_name="sandbox_run_records",
+            id_column="sandbox_run_id",
+            record_id=record.sandbox_run_id,
+            expected_session_id=record.session_id,
+        )
+        if record.task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=record.task_id,
+                expected_session_id=record.session_id,
+            )
+        if record.lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=record.lane_id,
+                expected_session_id=record.session_id,
+            )
+        if record.approval_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="approval_requests",
+                id_column="approval_id",
+                record_id=record.approval_id,
+                expected_session_id=record.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO controlled_operation_records (
+                operation_id, session_id, sandbox_workspace_id, sandbox_run_id,
+                task_id, lane_id, approval_id, approval_state, logical_operation_key,
+                operation_digest, params_digest, backend_category, route_reason,
+                input_artifact_digests_json, source_snapshot_artifact_id,
+                source_snapshot_digest, expected_outputs_summary_json,
+                resource_estimate_json, result_summary_json, error_code,
+                error_summary, idempotency_key, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(operation_id) DO UPDATE SET
+                approval_id = excluded.approval_id,
+                approval_state = excluded.approval_state,
+                status = excluded.status,
+                route_reason = excluded.route_reason,
+                expected_outputs_summary_json = excluded.expected_outputs_summary_json,
+                resource_estimate_json = excluded.resource_estimate_json,
+                result_summary_json = excluded.result_summary_json,
+                error_code = excluded.error_code,
+                error_summary = excluded.error_summary,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.operation_id,
+                record.session_id,
+                record.sandbox_workspace_id,
+                record.sandbox_run_id,
+                record.task_id,
+                record.lane_id,
+                record.approval_id,
+                record.approval_state,
+                record.logical_operation_key,
+                record.operation_digest,
+                record.params_digest,
+                record.backend_category,
+                record.route_reason,
+                _json_dumps(list(record.input_artifact_digests)),
+                record.source_snapshot_artifact_id,
+                record.source_snapshot_digest,
+                _json_dumps(record.expected_outputs_summary or {}),
+                _json_dumps(record.resource_estimate or {}),
+                _json_dumps(record.result_summary or {}),
+                record.error_code,
+                record.error_summary,
+                record.idempotency_key,
+                record.status.value,
+                record.created_at,
+                record.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, operation_id: str) -> ControlledOperation | None:
+        row = self.connection.execute(
+            "SELECT * FROM controlled_operation_records WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def get_by_approval_id(self, approval_id: str) -> ControlledOperation | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_records
+            WHERE approval_id = ?
+            ORDER BY created_at DESC, operation_id DESC
+            LIMIT 1
+            """,
+            (approval_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def find_by_idempotency_key(
+        self, *, session_id: str, sandbox_run_id: str, idempotency_key: str
+    ) -> ControlledOperation | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_records
+            WHERE session_id = ? AND sandbox_run_id = ? AND idempotency_key = ?
+            LIMIT 1
+            """,
+            (session_id, sandbox_run_id, idempotency_key),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def find_reusable_approved(
+        self, *, session_id: str, operation_digest: str
+    ) -> ControlledOperation | None:
+        row = self.connection.execute(
+            """
+            SELECT operation.*
+            FROM controlled_operation_records AS operation
+            JOIN approval_requests AS approval ON approval.approval_id = operation.approval_id
+            WHERE operation.session_id = ?
+              AND operation.operation_digest = ?
+              AND approval.status = ?
+            ORDER BY operation.created_at DESC, operation.operation_id DESC
+            LIMIT 1
+            """,
+            (session_id, operation_digest, ApprovalRequestStatus.APPROVED.value),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def list_by_session(self, session_id: str) -> list[ControlledOperation]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_records
+            WHERE session_id = ?
+            ORDER BY created_at, operation_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def list_by_run(self, sandbox_run_id: str) -> list[ControlledOperation]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM controlled_operation_records
+            WHERE sandbox_run_id = ?
+            ORDER BY created_at, operation_id
+            """,
+            (sandbox_run_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def _row_to_record(self, row: sqlite3.Row) -> ControlledOperation:
+        return ControlledOperation(
+            operation_id=row["operation_id"],
+            session_id=row["session_id"],
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            sandbox_run_id=row["sandbox_run_id"],
+            task_id=row["task_id"],
+            lane_id=row["lane_id"],
+            approval_id=row["approval_id"],
+            approval_state=row["approval_state"],
+            logical_operation_key=row["logical_operation_key"],
+            operation_digest=row["operation_digest"],
+            params_digest=row["params_digest"],
+            backend_category=row["backend_category"],
+            route_reason=row["route_reason"],
+            input_artifact_digests=_json_loads_list(row["input_artifact_digests_json"]),
+            source_snapshot_artifact_id=row["source_snapshot_artifact_id"],
+            source_snapshot_digest=row["source_snapshot_digest"],
+            expected_outputs_summary=_json_loads_object(row["expected_outputs_summary_json"]) or {},
+            resource_estimate=_json_loads_object(row["resource_estimate_json"]) or {},
+            result_summary=_json_loads_object(row["result_summary_json"]) or {},
+            error_code=row["error_code"],
+            error_summary=row["error_summary"],
+            idempotency_key=row["idempotency_key"],
+            status=ControlledOperationStatus(row["status"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class ContinuationStateRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: ContinuationState) -> None:
+        _require_session_exists(self.connection, record.session_id)
+        _require_linked_session_id(
+            self.connection,
+            table_name="controlled_operation_records",
+            id_column="operation_id",
+            record_id=record.operation_id,
+            expected_session_id=record.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+            table_name="sandbox_run_records",
+            id_column="sandbox_run_id",
+            record_id=record.sandbox_run_id,
+            expected_session_id=record.session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+            table_name="approval_requests",
+            id_column="approval_id",
+            record_id=record.approval_id,
+            expected_session_id=record.session_id,
+        )
+        self.connection.execute(
+            """
+            INSERT INTO continuation_state_records (
+                continuation_id, session_id, operation_id, sandbox_run_id, approval_id,
+                status, claimed_at, claimed_by, claim_expires_at, attempt_count,
+                completed_at, error_code, error_message, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(continuation_id) DO UPDATE SET
+                status = excluded.status,
+                claimed_at = excluded.claimed_at,
+                claimed_by = excluded.claimed_by,
+                claim_expires_at = excluded.claim_expires_at,
+                attempt_count = excluded.attempt_count,
+                completed_at = excluded.completed_at,
+                error_code = excluded.error_code,
+                error_message = excluded.error_message,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.continuation_id,
+                record.session_id,
+                record.operation_id,
+                record.sandbox_run_id,
+                record.approval_id,
+                record.status.value,
+                record.claimed_at,
+                record.claimed_by,
+                record.claim_expires_at,
+                record.attempt_count,
+                record.completed_at,
+                record.error_code,
+                record.error_message,
+                record.created_at,
+                record.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, continuation_id: str) -> ContinuationState | None:
+        row = self.connection.execute(
+            "SELECT * FROM continuation_state_records WHERE continuation_id = ?",
+            (continuation_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def get_by_operation_id(self, operation_id: str) -> ContinuationState | None:
+        row = self.connection.execute(
+            "SELECT * FROM continuation_state_records WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def get_by_approval_id(self, approval_id: str) -> ContinuationState | None:
+        row = self.connection.execute(
+            "SELECT * FROM continuation_state_records WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_record(row)
+
+    def resolve_for_approval(self, approval_id: str, *, decision: str) -> ContinuationState | None:
+        existing = self.get_by_approval_id(approval_id)
+        if existing is None:
+            return None
+        if existing.status.is_terminal:
+            return existing
+        status = (
+            ContinuationStateStatus.APPROVED
+            if decision == "approved"
+            else ContinuationStateStatus.REJECTED
+        )
+        updated = ContinuationState(
+            continuation_id=existing.continuation_id,
+            session_id=existing.session_id,
+            operation_id=existing.operation_id,
+            sandbox_run_id=existing.sandbox_run_id,
+            approval_id=existing.approval_id,
+            status=status,
+            claimed_at=existing.claimed_at,
+            claimed_by=existing.claimed_by,
+            claim_expires_at=existing.claim_expires_at,
+            attempt_count=existing.attempt_count,
+            created_at=existing.created_at,
+            updated_at=_utc_now_iso(),
+        )
+        self.save(updated)
+        return updated
+
+    def claim(
+        self, continuation_id: str, *, claimed_by: str, lease_seconds: int = 60
+    ) -> ContinuationState | None:
+        existing = self.get(continuation_id)
+        if existing is None or existing.status not in {
+            ContinuationStateStatus.APPROVED,
+            ContinuationStateStatus.CLAIMED,
+        }:
+            return None
+        now = _utc_now_iso()
+        if (
+            existing.status is ContinuationStateStatus.CLAIMED
+            and existing.claim_expires_at is not None
+            and existing.claim_expires_at > now
+        ):
+            return None
+        updated = ContinuationState(
+            continuation_id=existing.continuation_id,
+            session_id=existing.session_id,
+            operation_id=existing.operation_id,
+            sandbox_run_id=existing.sandbox_run_id,
+            approval_id=existing.approval_id,
+            status=ContinuationStateStatus.CLAIMED,
+            claimed_at=now,
+            claimed_by=claimed_by,
+            claim_expires_at=_utc_after_iso(lease_seconds),
+            attempt_count=existing.attempt_count + 1,
+            created_at=existing.created_at,
+            updated_at=now,
+        )
+        self.save(updated)
+        return updated
+
+    def complete(self, continuation_id: str) -> ContinuationState | None:
+        existing = self.get(continuation_id)
+        if existing is None:
+            return None
+        now = _utc_now_iso()
+        updated = ContinuationState(
+            continuation_id=existing.continuation_id,
+            session_id=existing.session_id,
+            operation_id=existing.operation_id,
+            sandbox_run_id=existing.sandbox_run_id,
+            approval_id=existing.approval_id,
+            status=ContinuationStateStatus.COMPLETED,
+            claimed_at=existing.claimed_at,
+            claimed_by=existing.claimed_by,
+            claim_expires_at=existing.claim_expires_at,
+            attempt_count=existing.attempt_count,
+            completed_at=now,
+            created_at=existing.created_at,
+            updated_at=now,
+        )
+        self.save(updated)
+        return updated
+
+    def fail(
+        self,
+        continuation_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+        recovery_failed: bool = False,
+    ) -> ContinuationState | None:
+        existing = self.get(continuation_id)
+        if existing is None:
+            return None
+        now = _utc_now_iso()
+        updated = ContinuationState(
+            continuation_id=existing.continuation_id,
+            session_id=existing.session_id,
+            operation_id=existing.operation_id,
+            sandbox_run_id=existing.sandbox_run_id,
+            approval_id=existing.approval_id,
+            status=ContinuationStateStatus.RECOVERY_FAILED
+            if recovery_failed
+            else ContinuationStateStatus.FAILED,
+            claimed_at=existing.claimed_at,
+            claimed_by=existing.claimed_by,
+            claim_expires_at=existing.claim_expires_at,
+            attempt_count=existing.attempt_count,
+            completed_at=now,
+            error_code=error_code,
+            error_message=error_message,
+            created_at=existing.created_at,
+            updated_at=now,
+        )
+        self.save(updated)
+        return updated
+
+    def list_by_session(self, session_id: str) -> list[ContinuationState]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM continuation_state_records
+            WHERE session_id = ?
+            ORDER BY created_at, continuation_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def list_recoverable(self) -> list[ContinuationState]:
+        rows = self.connection.execute(
+            """
+            SELECT *
+            FROM continuation_state_records
+            WHERE status IN (?, ?, ?)
+            ORDER BY created_at, continuation_id
+            """,
+            (
+                ContinuationStateStatus.WAITING_APPROVAL.value,
+                ContinuationStateStatus.APPROVED.value,
+                ContinuationStateStatus.CLAIMED.value,
+            ),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def _row_to_record(self, row: sqlite3.Row) -> ContinuationState:
+        return ContinuationState(
+            continuation_id=row["continuation_id"],
+            session_id=row["session_id"],
+            operation_id=row["operation_id"],
+            sandbox_run_id=row["sandbox_run_id"],
+            approval_id=row["approval_id"],
+            status=ContinuationStateStatus(row["status"]),
+            claimed_at=row["claimed_at"],
+            claimed_by=row["claimed_by"],
+            claim_expires_at=row["claim_expires_at"],
+            attempt_count=int(row["attempt_count"]),
+            completed_at=row["completed_at"],
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
 
@@ -3504,6 +3965,8 @@ class CoreRepositories:
     sandbox_images: SandboxImageRecordRepository
     sandbox_workspaces: SandboxWorkspaceRecordRepository
     sandbox_runs: SandboxRunRecordRepository
+    controlled_operations: ControlledOperationRepository
+    continuation_states: ContinuationStateRepository
     file_audit_entries: FileAuditEntryRepository
     command_log_artifacts: CommandLogArtifactRepository
     runtime_signals: AgentRuntimeSignalRepository
@@ -3534,6 +3997,8 @@ class CoreRepositories:
             sandbox_images=SandboxImageRecordRepository(connection),
             sandbox_workspaces=SandboxWorkspaceRecordRepository(connection),
             sandbox_runs=SandboxRunRecordRepository(connection),
+            controlled_operations=ControlledOperationRepository(connection),
+            continuation_states=ContinuationStateRepository(connection),
             file_audit_entries=FileAuditEntryRepository(connection),
             command_log_artifacts=CommandLogArtifactRepository(connection),
             runtime_signals=AgentRuntimeSignalRepository(connection),

@@ -310,6 +310,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.v3_background_runtime = background_runtime
+        dependencies.build_v3_service().recover_abandoned_sdk_continuations()
         background_runtime.start()
         try:
             yield

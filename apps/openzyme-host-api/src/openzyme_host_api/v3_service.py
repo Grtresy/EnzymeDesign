@@ -30,9 +30,11 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
+from openzyme_domain import SandboxRunStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionStatus
 from openzyme_domain import TaskPriority
@@ -213,6 +215,81 @@ class V3HostApiService:
             "workspace": self.workspace(session.session_id),
             "events": events,
         }
+
+    def recover_abandoned_sdk_continuations(
+        self,
+        *,
+        actor_ref: str = "host_startup",
+    ) -> list[dict[str, Any]]:
+        with self.operation_lock:
+            return self._recover_abandoned_sdk_continuations_locked(
+                actor_ref=actor_ref,
+            )
+
+    def _recover_abandoned_sdk_continuations_locked(
+        self,
+        *,
+        actor_ref: str,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        touched_session_ids: set[str] = set()
+        for continuation in self.repositories.continuation_states.list_recoverable():
+            failed_continuation = self.repositories.continuation_states.fail(
+                continuation.continuation_id,
+                error_code="operation_recovery_failed",
+                error_message="Host restarted before the SDK continuation could be resumed.",
+                recovery_failed=True,
+            )
+            operation = self.repositories.controlled_operations.get(
+                continuation.operation_id
+            )
+            if operation is not None and not operation.status.is_terminal:
+                operation = replace(
+                    operation,
+                    status=ControlledOperationStatus.RECOVERY_FAILED,
+                    error_code="operation_recovery_failed",
+                    error_summary=(
+                        "Host restarted before the SDK continuation could be resumed."
+                    ),
+                    updated_at=utc_now_iso(),
+                )
+                self.repositories.controlled_operations.save(operation)
+            run = self.repositories.sandbox_runs.get(continuation.sandbox_run_id)
+            if run is not None and not run.status.is_terminal:
+                now = utc_now_iso()
+                self.repositories.sandbox_runs.save(
+                    replace(
+                        run,
+                        status=SandboxRunStatus.FAILED,
+                        stderr_summary=(
+                            "operation_recovery_failed: Host restarted before the "
+                            "SDK continuation could be resumed."
+                        ),
+                        error_code="operation_recovery_failed",
+                        ended_at=now,
+                        updated_at=now,
+                    )
+                )
+            event = _event(
+                "sdk_controlled_operation.recovery_failed",
+                continuation.session_id,
+                {
+                    "actor_ref": actor_ref,
+                    "approval_id": continuation.approval_id,
+                    "continuation_id": continuation.continuation_id,
+                    "operation_id": continuation.operation_id,
+                    "sandbox_run_id": continuation.sandbox_run_id,
+                    "status": None
+                    if failed_continuation is None
+                    else failed_continuation.status.value,
+                    "error_code": "operation_recovery_failed",
+                },
+            )
+            self._record_events(continuation.session_id, events, [event])
+            touched_session_ids.add(continuation.session_id)
+        for session_id in touched_session_ids:
+            self._touch_session(session_id)
+        return events
 
     def _ensure_master_agent(self, session_id: str) -> AgentMember:
         existing = self.repositories.agents.get(session_id, "agent:master")
@@ -668,10 +745,15 @@ class V3HostApiService:
         approval = self.repositories.approvals.get(approval_id)
         if approval is None:
             raise KeyError(f"approval {approval_id!r} does not exist")
-        if approval.status is not ApprovalRequestStatus.PENDING:
-            raise ValueError(f"approval {approval_id!r} is not pending")
         if decision not in {"approved", "rejected"}:
             raise ValueError("decision must be 'approved' or 'rejected'")
+        if approval.status is not ApprovalRequestStatus.PENDING:
+            if approval.kind == "sdk_controlled_operation":
+                return self._resolve_existing_sdk_controlled_operation(
+                    approval,
+                    decision=decision,
+                )
+            raise ValueError(f"approval {approval_id!r} is not pending")
         events: list[dict[str, Any]] = []
         self._record_events(
             approval.session_id,
@@ -688,17 +770,24 @@ class V3HostApiService:
                 )
             ],
         )
-        assigned_agent_id = self._approval_assigned_agent_id(approval)
-        self._resolve_approval_record(approval, decision=decision, actor_ref=actor_ref)
-        if assigned_agent_id is not None:
-            self._enqueue_approval_resolved_signal(
-                approval, agent_id=assigned_agent_id, events=events
+        resolved = self._resolve_approval_record(approval, decision=decision, actor_ref=actor_ref)
+        if approval.kind == "sdk_controlled_operation":
+            self._resolve_sdk_controlled_operation(
+                resolved,
+                decision=decision,
+                events=events,
             )
         else:
-            self._ensure_master_agent(approval.session_id)
-            self._enqueue_approval_resolved_signal(
-                approval, agent_id="agent:master", events=events
-            )
+            assigned_agent_id = self._approval_assigned_agent_id(approval)
+            if assigned_agent_id is not None:
+                self._enqueue_approval_resolved_signal(
+                    approval, agent_id=assigned_agent_id, events=events
+                )
+            else:
+                self._ensure_master_agent(approval.session_id)
+                self._enqueue_approval_resolved_signal(
+                    approval, agent_id="agent:master", events=events
+                )
         self._touch_session(approval.session_id)
         self._extend_with_trace_events(approval.session_id, events)
         self._extend_with_activity_events(approval.session_id, events)
@@ -709,6 +798,87 @@ class V3HostApiService:
             outputs=(),
             events=events,
             workspace=self.workspace(approval.session_id),
+        )
+
+    def _resolve_existing_sdk_controlled_operation(
+        self,
+        approval: ApprovalRequest,
+        *,
+        decision: str,
+    ) -> V3CommandResult:
+        expected_status = (
+            ApprovalRequestStatus.APPROVED
+            if decision == "approved"
+            else ApprovalRequestStatus.REJECTED
+        )
+        if approval.status is not expected_status:
+            raise ValueError(
+                f"approval_state_conflict: approval {approval.approval_id!r} "
+                f"is already {approval.status.value}"
+            )
+        events: list[dict[str, Any]] = []
+        self._resolve_sdk_controlled_operation(
+            approval,
+            decision=decision,
+            events=events,
+        )
+        self._extend_with_trace_events(approval.session_id, events)
+        self._extend_with_activity_events(approval.session_id, events)
+        self.event_store.append(approval.session_id, events)
+        return V3CommandResult(
+            session_id=approval.session_id,
+            status=HarnessStatus.COMPLETED.value,
+            outputs=(),
+            events=events,
+            workspace=self.workspace(approval.session_id),
+        )
+
+    def _resolve_sdk_controlled_operation(
+        self,
+        approval: ApprovalRequest,
+        *,
+        decision: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        continuation = self.repositories.continuation_states.resolve_for_approval(
+            approval.approval_id,
+            decision=decision,
+        )
+        operation = self.repositories.controlled_operations.get_by_approval_id(
+            approval.approval_id
+        )
+        if operation is not None:
+            status = operation.status
+            error_code = operation.error_code
+            error_summary = operation.error_summary
+            if decision == "rejected":
+                status = ControlledOperationStatus.FAILED
+                error_code = "approval_rejected"
+                error_summary = "User rejected supervised SDK operation."
+            updated = replace(
+                operation,
+                approval_state=approval.status.value,
+                status=status,
+                error_code=error_code,
+                error_summary=error_summary,
+                updated_at=utc_now_iso(),
+            )
+            self.repositories.controlled_operations.save(updated)
+        self._record_events(
+            approval.session_id,
+            events,
+            [
+                _event(
+                    "sdk_controlled_operation.approval_resolved",
+                    approval.session_id,
+                    {
+                        "approval_id": approval.approval_id,
+                        "operation_id": None if operation is None else operation.operation_id,
+                        "continuation_id": None if continuation is None else continuation.continuation_id,
+                        "decision": decision,
+                    },
+                )
+            ],
         )
 
     def _enqueue_approval_resolved_signal(

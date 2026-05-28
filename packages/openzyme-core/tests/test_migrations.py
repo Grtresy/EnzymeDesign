@@ -20,6 +20,7 @@ def test_migration_asset_is_available() -> None:
     sandbox_workspace_sql = get_migration_sql("013_v3_sandbox_workspace_foundation")
     artifact_boundary_sql = get_migration_sql("014_v3_sandbox_artifact_boundary")
     sandbox_runtime_sql = get_migration_sql("015_v3_sandbox_file_command_runtime")
+    sdk_supervisor_sql = get_migration_sql("016_v3_sdk_supervisor_bridge")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -42,6 +43,8 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS sandbox_run_records" in sandbox_runtime_sql
     assert "CREATE TABLE IF NOT EXISTS sandbox_file_audit_entries" in sandbox_runtime_sql
     assert "CREATE TABLE IF NOT EXISTS sandbox_command_log_artifacts" in sandbox_runtime_sql
+    assert "CREATE TABLE IF NOT EXISTS controlled_operation_records" in sdk_supervisor_sql
+    assert "CREATE TABLE IF NOT EXISTS continuation_state_records" in sdk_supervisor_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -58,6 +61,7 @@ def test_migration_asset_is_available() -> None:
         "013_v3_sandbox_workspace_foundation",
         "014_v3_sandbox_artifact_boundary",
         "015_v3_sandbox_file_command_runtime",
+        "016_v3_sdk_supervisor_bridge",
     )
 
 
@@ -99,6 +103,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "sandbox_run_records",
         "sandbox_file_audit_entries",
         "sandbox_command_log_artifacts",
+        "controlled_operation_records",
+        "continuation_state_records",
     }.issubset(table_names)
     task_columns = {
         row[1]

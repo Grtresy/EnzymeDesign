@@ -11,6 +11,10 @@ from .control_plane import AgentRuntimeSignalStatus
 from .control_plane import ApprovalRequest
 from .control_plane import ApprovalRequestStatus
 from .control_plane import CommandLogArtifactRecord
+from .control_plane import ControlledOperation
+from .control_plane import ControlledOperationStatus
+from .control_plane import ContinuationState
+from .control_plane import ContinuationStateStatus
 from .control_plane import EngineInvocation
 from .control_plane import EngineInvocationStatus
 from .control_plane import FileAuditEntry
@@ -54,6 +58,10 @@ __all__ = [
     "ApprovalRequest",
     "ApprovalRequestStatus",
     "CommandLogArtifactRecord",
+    "ControlledOperation",
+    "ControlledOperationStatus",
+    "ContinuationState",
+    "ContinuationStateStatus",
     "CONTROL_PLANE_ENTITY_NAMES",
     "EngineInvocation",
     "EngineInvocationStatus",

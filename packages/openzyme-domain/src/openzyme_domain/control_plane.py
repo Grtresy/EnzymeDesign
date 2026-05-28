@@ -37,6 +37,8 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "SandboxImageRecord",
     "SandboxWorkspaceRecord",
     "SandboxRunRecord",
+    "ControlledOperation",
+    "ContinuationState",
     "FileAuditEntry",
     "CommandLogArtifactRecord",
 )
@@ -194,6 +196,33 @@ class SandboxRunStatus(StrEnum):
             self.RESOURCE_EXCEEDED,
             self.CANCELLED,
         }
+
+
+class ControlledOperationStatus(StrEnum):
+    CREATED = "created"
+    WAITING_APPROVAL = "waiting_approval"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RECOVERY_FAILED = "recovery_failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.COMPLETED, self.FAILED, self.RECOVERY_FAILED}
+
+
+class ContinuationStateStatus(StrEnum):
+    WAITING_APPROVAL = "waiting_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RECOVERY_FAILED = "recovery_failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in {self.REJECTED, self.COMPLETED, self.FAILED, self.RECOVERY_FAILED}
 
 
 class SandboxImageCompatibility(StrEnum):
@@ -569,6 +598,65 @@ class SandboxRunRecord:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["argv"] = list(self.argv)
+        data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledOperation:
+    operation_id: str
+    session_id: str
+    sandbox_workspace_id: str
+    sandbox_run_id: str
+    logical_operation_key: str
+    operation_digest: str
+    params_digest: str
+    backend_category: str
+    status: ControlledOperationStatus
+    created_at: str
+    updated_at: str
+    task_id: str | None = None
+    lane_id: str | None = None
+    approval_id: str | None = None
+    approval_state: str | None = None
+    route_reason: str | None = None
+    input_artifact_digests: tuple[str, ...] = ()
+    source_snapshot_artifact_id: str | None = None
+    source_snapshot_digest: str | None = None
+    expected_outputs_summary: dict[str, Any] | None = None
+    resource_estimate: dict[str, Any] | None = None
+    result_summary: dict[str, Any] | None = None
+    error_code: str | None = None
+    error_summary: str | None = None
+    idempotency_key: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        data["input_artifact_digests"] = list(self.input_artifact_digests)
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuationState:
+    continuation_id: str
+    session_id: str
+    operation_id: str
+    sandbox_run_id: str
+    approval_id: str
+    status: ContinuationStateStatus
+    created_at: str
+    updated_at: str
+    claimed_at: str | None = None
+    claimed_by: str | None = None
+    claim_expires_at: str | None = None
+    attempt_count: int = 0
+    completed_at: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
         data["status"] = self.status.value
         return data
 

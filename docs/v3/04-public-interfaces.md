@@ -30,7 +30,7 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 `POST /v3/sessions/{session_id}/messages` 是用户消息 ingress。它持久化用户消息并排队 `agent:master` wakeup signal，正常产品推进由 background runtime worker claim signal 后完成。该请求不提供 `max_steps` 字段，也不允许调用方控制本次后台 turn。后台 worker 的 agent turn budget 来自 `OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT`，debug/manual `/runtime/drain` 的 turn budget 则来自 `max_steps_per_agent`。
 
-`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后，只写入 approval resolution、必要的 execution continuation 状态，并排队相关 agent wakeup signal；恢复执行由 scheduler claim signal 后启动。配置化 Host 默认由 FastAPI lifespan 中的 background runtime worker 自动推进该 signal；`/runtime/drain` 只保留为 worker 禁用、测试 scheduler claim lease 或 operator recovery 时的手动入口。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
+`POST /v3/approvals/{approval_id}/resolve` 是普通用户/Web UI 改变 approval 状态的唯一入口。approval resolve 后只写入 approval resolution 与对应恢复状态，随后按 approval kind 分流：agent-level approval 可以排队相关 agent wakeup signal，由 scheduler claim 后恢复 agent turn；S10 SDK controlled-operation approval 必须先恢复 Host-owned blocked SDK RPC / sandbox continuation，`sandbox.exec` tool result 返回后 agent loop 才继续。配置化 Host 默认由 FastAPI lifespan 中的 background runtime worker 自动推进 agent wakeup；SDK continuation 由 Host supervisor continuation worker 推进。`/runtime/drain` 只保留为 worker 禁用、测试 scheduler claim lease 或 operator recovery 时的手动入口。在 resolve 前，任何 `execution.resume` / SDK resume 机制都不能被当成批准入口，也不应暴露为用户或 agent 必须手工编排的主流程。
 
 `POST /v3/sessions/{session_id}/runtime/drain` 是 debug / operator / manual scheduler command。Session B background worker 启用后，它只用于本地诊断、测试 scheduler claim lease、或 worker 禁用时的有界推进入口。请求字段：
 
@@ -304,7 +304,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - 默认执行 dry-run / validation 并持久化 `ExecutionPlan`；该阶段不提交 HPC，也不把 Host `storage_uri` 交给 sandbox code
 - `dry_run=true` 只返回 plan，用于 executor 修正代码或预览 artifact reads、external operations、expected outputs、resource / quota estimate 与 doc hints；它不创建 approval
 - `dry_run=false` 仍先生成 plan；若 plan 含 approval-gated external operation，或调用方通过 `inputs.approval_policy="single_plan"` 要求单一 plan approval，响应 `waiting_approval` 表示用户正在批准该 plan，而不是等待 executor 手工 resume
-- approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 runtime 出现未被 approved plan 覆盖的 external call，或 operation/参数摘要超出 approved plan policy，则进入 secondary approval gate
+- plan approval approve 后由 harness/API runtime signal 继续正式 sandbox 执行；若 `sandbox.exec` runtime 中出现未被 approved plan 覆盖的 SDK controlled operation，或 operation/参数摘要超出 approved plan policy，则进入 secondary approval gate。secondary approval approve 后恢复同一个 blocked SDK RPC / sandbox continuation，而不是唤醒 agent 重新规划。
 - plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须携带 `sandbox_workspace_id`、`source_code_artifact_id`、`source_code_digest`、`source_code_version`；Host 在正式执行前重新读取 code snapshot 并校验 digest
 
 事件语义：

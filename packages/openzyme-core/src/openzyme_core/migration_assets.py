@@ -20,6 +20,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "013_v3_sandbox_workspace_foundation",
     "014_v3_sandbox_artifact_boundary",
     "015_v3_sandbox_file_command_runtime",
+    "016_v3_sdk_supervisor_bridge",
 )
 
 

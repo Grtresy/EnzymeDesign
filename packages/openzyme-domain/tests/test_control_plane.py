@@ -46,6 +46,8 @@ def test_control_plane_entity_names_are_stable() -> None:
         "SandboxImageRecord",
         "SandboxWorkspaceRecord",
         "SandboxRunRecord",
+        "ControlledOperation",
+        "ContinuationState",
         "FileAuditEntry",
         "CommandLogArtifactRecord",
     )

@@ -104,7 +104,7 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval / execution continuation 状态并排队必要 wakeup，不直接 drain teammate 或触发 master response turn。
+teammate 完成或失败时必须通过 `task.update` 显式写入 task 业务终态，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
 
 ### Failed Delegation Follow-up Flow
 
@@ -158,7 +158,7 @@ auto-claim 启用时也只能做窄范围机械匹配：
 
 `blocked_by` 表示下游输入尚未形成，不是只用于展示的 UI 状态。blocked task 不能被 auto-claim，也不能被 `task.delegate` 提前委派；master 应在上游完成后读取 protocol thread、artifacts 或 task result，更新下游 task 的 description / instructions，再显式委派。
 
-runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。
+runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。S10 SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它恢复 blocked SDK RPC / sandbox continuation，agent 只在 `sandbox.exec` tool result 返回后继续。
 
 除 task claim 和 pending approval 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.update` 写入。
 
@@ -181,9 +181,10 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 
 - teammate work loop 仍然必须 bounded，避免无限 tool-call 循环。
 - 任一 tool call 创建 pending approval 后，当前 teammate/master work loop 必须停止并进入 `blocked` / `waiting approval`；同批后续 tool calls 不再执行。
-- approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复执行前必须先通过 harness/API resolve approval。
+- agent-level approval resolved 是唤醒相关 resident agent 的 runtime signal；恢复 agent turn 前必须先通过 harness/API resolve approval。S10 SDK controlled-operation approval resolved 不是 agent runtime signal，它只授权 Host supervisor 恢复同一个 blocked SDK RPC / sandbox continuation。
 - approved execution pipeline 的成功、失败和取消都回到原 executor：Host 只继续 engine invocation、记录 run/artifact/activity 证据并发出唤醒信号，不直接合成用户最终答复。
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.update(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 写入 `status="failed"`、`failure_summary` 与 `failure_ref`。
+- scheduler 只根据 user message、approval、engine completion、inbox、task availability 等信号唤醒 agent；它不根据 sandbox dirty state、可用 backend 或工具探测结果替 executor 选择 plan、切换本地/HPC 后端、自动重写 pipeline，或把 run 结果自动解释成任务终态。
 - 如果 bounded loop 到达 max steps，runtime 可以标记 runtime signal / agent 状态为 failed，但不能据此推断 task 业务终态；master 或 teammate 应通过 protocol thread、task state 与 artifacts 决定下一步。
 - 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 消费后再通过 task/protocol/report 变化唤醒 master。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。

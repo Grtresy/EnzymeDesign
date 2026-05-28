@@ -71,6 +71,8 @@ from .repositories import AgentRuntimeSignalRepository
 from .repositories import ArtifactBlobGcRepository
 from .repositories import ArtifactMaterializationRepository
 from .repositories import CommandLogArtifactRepository
+from .repositories import ControlledOperationRepository
+from .repositories import ContinuationStateRepository
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
@@ -138,6 +140,8 @@ __all__ = [
     "BackgroundCompletion",
     "build_teammate_registry",
     "CommandLogArtifactRepository",
+    "ControlledOperationRepository",
+    "ContinuationStateRepository",
     "register_bio_research_tools",
     "CapabilityEngine",
     "CorrelationStatus",

@@ -18,6 +18,12 @@ from typing import Any
 from uuid import uuid4
 
 from openzyme_domain import CommandLogArtifactRecord
+from openzyme_domain import ApprovalRequest
+from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import ContinuationState
+from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import FileAuditEntry
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxRunRecord
@@ -245,10 +251,15 @@ def _apply_unified_diff(original: str, patch: str, *, public_path: PurePosixPath
 @dataclass(slots=True)
 class _ControlSocketServer:
     socket_path: Path
+    repositories: Any
+    session_id: str
     sandbox_workspace_id: str
     sandbox_run_id: str
+    agent_id: str
     source_snapshot_artifact_id: str
     source_tree_digest: str
+    task_id: str | None = None
+    lane_id: str | None = None
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
 
@@ -303,19 +314,11 @@ class _ControlSocketServer:
         try:
             method = str(request["method"])
             params = dict(request.get("params") or {})
-            if method != "s09.transport_smoke":
-                raise SandboxRuntimeError("sandbox_transport_method_forbidden", "S09 smoke only supports fake transport calls")
-            call_identity = str(params.get("call_identity") or request.get("id") or "")
-            result = {
-                "sandbox_workspace_id": self.sandbox_workspace_id,
-                "sandbox_run_id": self.sandbox_run_id,
-                "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
-                "source_tree_digest": self.source_tree_digest,
-                "artifact_read_summary": dict(params.get("artifact_read_summary") or {}),
-                "call_identity": call_identity,
-                "status": "ok",
-            }
-            return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+            if method == "s09.transport_smoke":
+                return self._handle_transport_smoke(request, params)
+            if method == "s10.controlled_operation":
+                return self._handle_controlled_operation(request, params)
+            raise SandboxRuntimeError("sandbox_transport_method_forbidden", "control socket only supports supervised sandbox calls")
         except Exception as exc:
             return {
                 "jsonrpc": "2.0",
@@ -328,6 +331,333 @@ class _ControlSocketServer:
                     "details": getattr(exc, "details", None),
                 },
             }
+
+    def _handle_transport_smoke(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        call_identity = str(params.get("call_identity") or request.get("id") or "")
+        result = {
+            "sandbox_workspace_id": self.sandbox_workspace_id,
+            "sandbox_run_id": self.sandbox_run_id,
+            "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
+            "source_tree_digest": self.source_tree_digest,
+            "artifact_read_summary": dict(params.get("artifact_read_summary") or {}),
+            "call_identity": call_identity,
+            "status": "ok",
+        }
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _handle_controlled_operation(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        envelope = self._validated_s10_envelope(params)
+        operation_digest = self._operation_digest(envelope)
+        idempotency_key = str(envelope["idempotency_key"])
+        existing = self.repositories.controlled_operations.find_by_idempotency_key(
+            session_id=self.session_id,
+            sandbox_run_id=self.sandbox_run_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            if existing.operation_digest != operation_digest:
+                raise SandboxRuntimeError(
+                    "operation_drift_detected",
+                    "supervised SDK operation idempotency key was reused with a different digest",
+                    details={
+                        "operation_id": existing.operation_id,
+                        "operation_digest": existing.operation_digest,
+                        "new_operation_digest": operation_digest,
+                    },
+                )
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._resume_or_return(existing, envelope)}
+
+        reusable = self.repositories.controlled_operations.find_reusable_approved(
+            session_id=self.session_id,
+            operation_digest=operation_digest,
+        )
+        if reusable is not None:
+            operation = self._create_operation(
+                envelope,
+                operation_digest=operation_digest,
+                status=ControlledOperationStatus.COMPLETED,
+                approval_id=reusable.approval_id,
+                approval_state=ApprovalRequestStatus.APPROVED.value,
+                result_summary=dict(envelope.get("result_summary") or {"status": "completed"}),
+            )
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._operation_response(operation)}
+
+        operation = self._create_operation(
+            envelope,
+            operation_digest=operation_digest,
+            status=ControlledOperationStatus.WAITING_APPROVAL,
+            approval_state=ApprovalRequestStatus.PENDING.value,
+        )
+        approval = self._create_approval(operation, envelope)
+        operation = replace(operation, approval_id=approval.approval_id, updated_at=utc_now_iso())
+        self.repositories.controlled_operations.save(operation)
+        continuation = self._create_continuation(operation, approval)
+        claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
+        operation = self.repositories.controlled_operations.get(operation.operation_id) or operation
+        if claimed.status is ContinuationStateStatus.CLAIMED:
+            operation = replace(
+                operation,
+                status=ControlledOperationStatus.RUNNING,
+                approval_state=ApprovalRequestStatus.APPROVED.value,
+                updated_at=utc_now_iso(),
+            )
+            self.repositories.controlled_operations.save(operation)
+        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
+        operation = replace(
+            operation,
+            status=ControlledOperationStatus.COMPLETED,
+            result_summary=result_summary,
+            error_code=None,
+            error_summary=None,
+            updated_at=utc_now_iso(),
+        )
+        self.repositories.controlled_operations.save(operation)
+        self.repositories.continuation_states.complete(claimed.continuation_id)
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._operation_response(operation)}
+
+    def _validated_s10_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
+        schema_version = str(params.get("schema_version") or "")
+        if schema_version != "s10.supervised_rpc.v1":
+            raise SandboxRuntimeError(
+                "sdk_rpc_schema_unsupported",
+                "S10 supervised SDK RPC requires schema_version='s10.supervised_rpc.v1'",
+            )
+        backend_category = str(params.get("backend_category") or "")
+        if backend_category not in {"provider_http", "host_local_tool", "hpc_runner"}:
+            raise SandboxRuntimeError(
+                "operation_prerequisite_missing",
+                "backend_category must be provider_http, host_local_tool, or hpc_runner",
+            )
+        logical_operation_key = str(params.get("logical_operation_key") or "")
+        idempotency_key = str(params.get("idempotency_key") or "")
+        params_digest = str(params.get("params_digest") or "")
+        if not logical_operation_key or not idempotency_key or not params_digest:
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments",
+                "logical_operation_key, idempotency_key, and params_digest are required",
+            )
+        input_artifact_digests = params.get("input_artifact_digests") or []
+        if not isinstance(input_artifact_digests, list):
+            raise SandboxRuntimeError("invalid_tool_arguments", "input_artifact_digests must be a list")
+        expected_outputs_summary = params.get("expected_outputs_summary") or {}
+        resource_estimate = params.get("resource_estimate") or {}
+        if not isinstance(expected_outputs_summary, dict) or not isinstance(resource_estimate, dict):
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments",
+                "expected_outputs_summary and resource_estimate must be objects",
+            )
+        result_summary = params.get("result_summary") or {"status": "completed"}
+        if not isinstance(result_summary, dict):
+            raise SandboxRuntimeError("invalid_tool_arguments", "result_summary must be an object")
+        return {
+            "schema_version": schema_version,
+            "idempotency_key": idempotency_key,
+            "sandbox_workspace_id": self.sandbox_workspace_id,
+            "sandbox_run_id": self.sandbox_run_id,
+            "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
+            "source_snapshot_digest": self.source_tree_digest,
+            "logical_operation_key": logical_operation_key,
+            "params_digest": params_digest,
+            "input_artifact_digests": sorted(str(item) for item in input_artifact_digests),
+            "backend_category": backend_category,
+            "expected_outputs_summary": expected_outputs_summary,
+            "resource_estimate": resource_estimate,
+            "result_summary": result_summary,
+            "route_reason": str(params.get("route_reason") or "s10_generic_backend_category"),
+        }
+
+    def _operation_digest(self, envelope: dict[str, Any]) -> str:
+        return _json_digest(
+            {
+                "schema_version": envelope["schema_version"],
+                "sandbox_workspace_id": envelope["sandbox_workspace_id"],
+                "source_snapshot_digest": envelope["source_snapshot_digest"],
+                "logical_operation_key": envelope["logical_operation_key"],
+                "params_digest": envelope["params_digest"],
+                "input_artifact_digests": envelope["input_artifact_digests"],
+                "backend_category": envelope["backend_category"],
+                "expected_outputs_summary": envelope["expected_outputs_summary"],
+                "resource_estimate": envelope["resource_estimate"],
+            }
+        )
+
+    def _create_operation(
+        self,
+        envelope: dict[str, Any],
+        *,
+        operation_digest: str,
+        status: ControlledOperationStatus,
+        approval_id: str | None = None,
+        approval_state: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+    ) -> ControlledOperation:
+        now = utc_now_iso()
+        operation = ControlledOperation(
+            operation_id=_new_id("op"),
+            session_id=self.session_id,
+            sandbox_workspace_id=self.sandbox_workspace_id,
+            sandbox_run_id=self.sandbox_run_id,
+            logical_operation_key=str(envelope["logical_operation_key"]),
+            operation_digest=operation_digest,
+            params_digest=str(envelope["params_digest"]),
+            backend_category=str(envelope["backend_category"]),
+            status=status,
+            created_at=now,
+            updated_at=now,
+            task_id=self.task_id,
+            lane_id=self.lane_id,
+            approval_id=approval_id,
+            approval_state=approval_state,
+            route_reason=str(envelope["route_reason"]),
+            input_artifact_digests=tuple(envelope["input_artifact_digests"]),
+            source_snapshot_artifact_id=str(envelope["source_snapshot_artifact_id"]),
+            source_snapshot_digest=str(envelope["source_snapshot_digest"]),
+            expected_outputs_summary=dict(envelope["expected_outputs_summary"]),
+            resource_estimate=dict(envelope["resource_estimate"]),
+            result_summary=result_summary,
+            idempotency_key=str(envelope["idempotency_key"]),
+        )
+        self.repositories.controlled_operations.save(operation)
+        return operation
+
+    def _create_approval(self, operation: ControlledOperation, envelope: dict[str, Any]) -> ApprovalRequest:
+        approval = ApprovalRequest(
+            approval_id=_new_id("appr"),
+            session_id=self.session_id,
+            task_id=self.task_id,
+            lane_id=self.lane_id,
+            kind="sdk_controlled_operation",
+            requested_action=(
+                f"Approve supervised SDK operation {operation.logical_operation_key} "
+                f"via {operation.backend_category}"
+            ),
+            status=ApprovalRequestStatus.PENDING,
+            request_ref=operation.operation_id,
+            resolution_ref=None,
+            created_at=utc_now_iso(),
+        )
+        self.repositories.approvals.save(approval)
+        return approval
+
+    def _create_continuation(self, operation: ControlledOperation, approval: ApprovalRequest) -> ContinuationState:
+        now = utc_now_iso()
+        continuation = ContinuationState(
+            continuation_id=f"{operation.sandbox_run_id}:{operation.operation_id}",
+            session_id=self.session_id,
+            operation_id=operation.operation_id,
+            sandbox_run_id=operation.sandbox_run_id,
+            approval_id=approval.approval_id,
+            status=ContinuationStateStatus.WAITING_APPROVAL,
+            created_at=now,
+            updated_at=now,
+        )
+        self.repositories.continuation_states.save(continuation)
+        return continuation
+
+    def _resume_or_return(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
+        if operation.status is ControlledOperationStatus.COMPLETED:
+            return self._operation_response(operation)
+        continuation = self.repositories.continuation_states.get_by_operation_id(operation.operation_id)
+        if continuation is None:
+            raise SandboxRuntimeError(
+                "operation_recovery_failed",
+                "controlled operation is missing continuation state",
+                details={"operation_id": operation.operation_id},
+            )
+        claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
+        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
+        completed = replace(
+            operation,
+            status=ControlledOperationStatus.COMPLETED,
+            approval_state=ApprovalRequestStatus.APPROVED.value,
+            result_summary=result_summary,
+            updated_at=utc_now_iso(),
+        )
+        self.repositories.controlled_operations.save(completed)
+        self.repositories.continuation_states.complete(claimed.continuation_id)
+        return self._operation_response(completed)
+
+    def _wait_for_approval_and_claim(self, continuation_id: str) -> ContinuationState:
+        while not self._stop.is_set():
+            continuation = self.repositories.continuation_states.get(continuation_id)
+            if continuation is None:
+                raise SandboxRuntimeError("operation_recovery_failed", "continuation state disappeared")
+            if continuation.status is ContinuationStateStatus.REJECTED:
+                operation = self.repositories.controlled_operations.get(continuation.operation_id)
+                if operation is not None:
+                    failed = replace(
+                        operation,
+                        status=ControlledOperationStatus.FAILED,
+                        approval_state=ApprovalRequestStatus.REJECTED.value,
+                        error_code="approval_rejected",
+                        error_summary="User rejected supervised SDK operation.",
+                        updated_at=utc_now_iso(),
+                    )
+                    self.repositories.controlled_operations.save(failed)
+                raise SandboxRuntimeError(
+                    "approval_rejected",
+                    "supervised SDK operation approval was rejected",
+                    details={"continuation_id": continuation_id},
+                )
+            if continuation.status in {
+                ContinuationStateStatus.APPROVED,
+                ContinuationStateStatus.CLAIMED,
+            }:
+                claimed = self.repositories.continuation_states.claim(
+                    continuation_id,
+                    claimed_by=f"sandbox-supervisor:{self.sandbox_run_id}",
+                )
+                if claimed is not None:
+                    return claimed
+                latest = self.repositories.continuation_states.get(continuation_id)
+                if (
+                    latest is not None
+                    and latest.status is ContinuationStateStatus.CLAIMED
+                    and latest.claim_expires_at is not None
+                    and latest.claim_expires_at > utc_now_iso()
+                ):
+                    raise SandboxRuntimeError(
+                        "operation_lease_conflict",
+                        "SDK continuation is already claimed by another supervisor worker",
+                        details={"continuation_id": continuation_id},
+                    )
+            if continuation.status.is_terminal:
+                raise SandboxRuntimeError(
+                    continuation.error_code or "operation_recovery_failed",
+                    continuation.error_message or "continuation reached a terminal state before resume",
+                )
+            time.sleep(0.05)
+        failed = self.repositories.continuation_states.fail(
+            continuation_id,
+            error_code="operation_recovery_failed",
+            error_message="control socket stopped before SDK continuation resumed",
+            recovery_failed=True,
+        )
+        operation = None if failed is None else self.repositories.controlled_operations.get(failed.operation_id)
+        if operation is not None:
+            self.repositories.controlled_operations.save(
+                replace(
+                    operation,
+                    status=ControlledOperationStatus.RECOVERY_FAILED,
+                    error_code="operation_recovery_failed",
+                    error_summary="control socket stopped before SDK continuation resumed",
+                    updated_at=utc_now_iso(),
+                )
+            )
+        raise SandboxRuntimeError("operation_recovery_failed", "control socket stopped before SDK continuation resumed")
+
+    def _operation_response(self, operation: ControlledOperation) -> dict[str, Any]:
+        return {
+            "schema_version": "s10.supervised_rpc.v1",
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "approval_id": operation.approval_id,
+            "approval_state": operation.approval_state,
+            "backend_category": operation.backend_category,
+            "route_reason": operation.route_reason,
+            "status": operation.status.value,
+            "result_summary": operation.result_summary or {},
+        }
 
 
 @dataclass(slots=True)
@@ -617,10 +947,15 @@ class SandboxRuntimeService:
         socket_path = Path(tempfile.gettempdir()) / f"oz-{run.sandbox_run_id}.sock"
         server = _ControlSocketServer(
             socket_path=socket_path,
+            repositories=self.repositories,
+            session_id=session_id,
             sandbox_workspace_id=sandbox_workspace_id,
             sandbox_run_id=run.sandbox_run_id,
+            agent_id=agent_id,
             source_snapshot_artifact_id=str(run.source_snapshot_artifact_id),
             source_tree_digest=str(run.source_tree_digest),
+            task_id=task_id,
+            lane_id=lane_id,
         )
         completed: subprocess.CompletedProcess[str] | None = None
         started = time.monotonic()
@@ -900,7 +1235,7 @@ class SandboxRuntimeService:
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
             "OPENZYME_CONTROL_SOCKET": str(socket_path),
-            "OPENZYME_SANDBOX_MODE": "s09",
+            "OPENZYME_SANDBOX_MODE": "s10",
         }
         env.update(user_env)
         return env
@@ -908,7 +1243,7 @@ class SandboxRuntimeService:
     def _container_env(self, user_env: dict[str, str]) -> dict[str, str]:
         env = {
             "OPENZYME_CONTROL_SOCKET": "/openzyme/control.sock",
-            "OPENZYME_SANDBOX_MODE": "s09",
+            "OPENZYME_SANDBOX_MODE": "s10",
         }
         env.update(user_env)
         return env

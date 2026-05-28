@@ -395,6 +395,14 @@ class SessionProjectionBuilder:
                         }),
                     )
                 )
+        for operation in self.repositories.controlled_operations.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="sdk_controlled_operation.updated",
+                    created_at=operation.updated_at,
+                    payload=self._sanitize_execution_projection(operation.to_dict()),
+                )
+            )
         for draft in self.repositories.report_drafts.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(
@@ -419,6 +427,12 @@ class SessionProjectionBuilder:
             grouped.setdefault(self._capability_key_for_engine(invocation.engine_name), []).append(
                 self._project_invocation(session_id, invocation)
             )
+        operations = [
+            self._sanitize_execution_projection(operation.to_dict())
+            for operation in self.repositories.controlled_operations.list_by_session(session_id)
+        ]
+        if operations:
+            grouped["sdk_supervisor"] = operations
         return grouped
 
     def _project_invocation(self, session_id: str, invocation: Any) -> dict[str, Any]:
