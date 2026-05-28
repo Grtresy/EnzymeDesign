@@ -118,7 +118,7 @@ def test_hpc_tool_contract_smoke_records_final_status(
     if contract.support_status == "smoke_runnable":
         smoke_spec = build_smoke_runspec(
             contract,
-            _project_root() / "fixtures" / "contract_inputs",
+            _project_root() / "fixtures" / "hpc_tool_samples",
             partition=_adapter_partition(contract, runner_config),
         )
         record["smoke"] = _run_smoke(slurm, smoke_spec)

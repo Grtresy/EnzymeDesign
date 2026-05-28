@@ -30,7 +30,7 @@
   ],
   "inputs": [
     {
-      "local_path": "examples/target.pdb",
+      "local_path": "fixtures/hpc_tool_samples/fpocket/target.pdb",
       "remote_path": "target.pdb",
       "required": true
     }

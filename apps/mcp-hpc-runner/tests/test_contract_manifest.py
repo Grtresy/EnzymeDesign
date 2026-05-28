@@ -94,7 +94,7 @@ def test_smoke_runspec_generation_is_valid(tool_id: str) -> None:
     )
     spec = build_smoke_runspec(
         contract,
-        _project_root() / "fixtures" / "contract_inputs",
+        _project_root() / "fixtures" / "hpc_tool_samples",
         partition="cpu",
     )
 

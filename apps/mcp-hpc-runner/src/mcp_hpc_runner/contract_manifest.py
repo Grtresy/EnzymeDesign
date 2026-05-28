@@ -236,7 +236,7 @@ def _build_fpocket_smoke(
         resources=_resource_spec(contract, partition),
         inputs=[
             StagedInput(
-                local_path=str(input_root / "target.pdb"),
+                local_path=str(input_root / "fpocket" / "target.pdb"),
                 remote_path="target.pdb",
             )
         ],
@@ -286,11 +286,11 @@ def _build_vina_smoke(
         resources=_resource_spec(contract, partition),
         inputs=[
             StagedInput(
-                local_path=str(input_root / "receptor.pdbqt"),
+                local_path=str(input_root / "vina" / "receptor.pdbqt"),
                 remote_path="receptor.pdbqt",
             ),
             StagedInput(
-                local_path=str(input_root / "ligand.pdbqt"),
+                local_path=str(input_root / "vina" / "ligand.pdbqt"),
                 remote_path="ligand.pdbqt",
             ),
         ],
