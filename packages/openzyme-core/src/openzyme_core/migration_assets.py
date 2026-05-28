@@ -17,6 +17,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "010_v3_task_failure_fields",
     "011_v3_runtime_signal_leases",
     "012_v3_session_scoped_agent_members",
+    "013_v3_sandbox_workspace_foundation",
 )
 
 

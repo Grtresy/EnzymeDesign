@@ -34,6 +34,8 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "ResearchEvidence",
     "ResearchSourceRef",
     "ResearchGap",
+    "SandboxImageRecord",
+    "SandboxWorkspaceRecord",
 )
 
 
@@ -159,6 +161,23 @@ class AgentRuntimeSignalStatus(StrEnum):
     @property
     def is_terminal(self) -> bool:
         return self in {self.COMPLETED, self.FAILED, self.CANCELLED}
+
+
+class SandboxWorkspaceStatus(StrEnum):
+    READY = "ready"
+    ATTACHED = "attached"
+    DETACHED = "detached"
+    CORRUPT = "corrupt"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    MISSING_IMAGE = "missing_image"
+    IMAGE_INCOMPATIBLE = "image_incompatible"
+
+
+class SandboxImageCompatibility(StrEnum):
+    COMPATIBLE = "compatible"
+    COMPATIBLE_NON_CUTOVER_GRADE = "compatible_non_cutover_grade"
+    MISSING = "missing"
+    INCOMPATIBLE = "incompatible"
 
 
 class EngineInvocationStatus(StrEnum):
@@ -434,6 +453,64 @@ class AgentRuntimeSignal:
         data = asdict(self)
         data["reason"] = self.reason.value
         data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxImageRecord:
+    image_ref: str
+    image_digest: str | None
+    image_family: str
+    image_version: str
+    sandbox_protocol_version: str
+    manifest_schema_version: str
+    capabilities_declared: tuple[str, ...]
+    compatibility: SandboxImageCompatibility
+    is_default: bool
+    created_at: str
+    updated_at: str
+    compatibility_error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["capabilities_declared"] = list(self.capabilities_declared)
+        data["compatibility"] = self.compatibility.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxWorkspaceRecord:
+    sandbox_workspace_id: str
+    session_id: str
+    agent_member_id: str
+    agent_id: str
+    status: SandboxWorkspaceStatus
+    image_ref: str
+    image_digest: str | None
+    image_version: str | None
+    sandbox_protocol_version: str | None
+    image_compatibility: SandboxImageCompatibility
+    manifest_version: str
+    created_at: str
+    last_attached_at: str
+    focus_task_id: str | None = None
+    focus_lane_id: str | None = None
+    volume_digest: str | None = None
+    quota_summary: dict[str, Any] | None = None
+    directory_summary: dict[str, Any] | None = None
+    materialized_input_artifact_ids: tuple[str, ...] = ()
+    registered_artifact_ids: tuple[str, ...] = ()
+    source_code_artifact_ids: tuple[str, ...] = ()
+    last_command_summary: dict[str, Any] | None = None
+    last_error: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        data["image_compatibility"] = self.image_compatibility.value
+        data["materialized_input_artifact_ids"] = list(self.materialized_input_artifact_ids)
+        data["registered_artifact_ids"] = list(self.registered_artifact_ids)
+        data["source_code_artifact_ids"] = list(self.source_code_artifact_ids)
         return data
 
 

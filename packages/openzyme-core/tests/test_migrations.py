@@ -17,6 +17,7 @@ def test_migration_asset_is_available() -> None:
     task_failure_sql = get_migration_sql("010_v3_task_failure_fields")
     runtime_signal_lease_sql = get_migration_sql("011_v3_runtime_signal_leases")
     session_scoped_agent_sql = get_migration_sql("012_v3_session_scoped_agent_members")
+    sandbox_workspace_sql = get_migration_sql("013_v3_sandbox_workspace_foundation")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -32,6 +33,8 @@ def test_migration_asset_is_available() -> None:
     assert "ALTER TABLE tasks ADD COLUMN failure_summary" in task_failure_sql
     assert "ADD COLUMN claimed_by" in runtime_signal_lease_sql
     assert "agent_members_scoped" in session_scoped_agent_sql
+    assert "CREATE TABLE IF NOT EXISTS sandbox_image_records" in sandbox_workspace_sql
+    assert "CREATE TABLE IF NOT EXISTS sandbox_workspace_records" in sandbox_workspace_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -45,6 +48,7 @@ def test_migration_asset_is_available() -> None:
         "010_v3_task_failure_fields",
         "011_v3_runtime_signal_leases",
         "012_v3_session_scoped_agent_members",
+        "013_v3_sandbox_workspace_foundation",
     )
 
 
@@ -79,6 +83,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "session_research_evidence",
         "session_research_source_refs",
         "session_research_gaps",
+        "sandbox_image_records",
+        "sandbox_workspace_records",
     }.issubset(table_names)
     task_columns = {
         row[1]

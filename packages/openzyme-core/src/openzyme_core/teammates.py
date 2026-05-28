@@ -33,6 +33,7 @@ from .memory import register_memory_tools
 from .protocol_tools import register_protocol_tools
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
+from .sandbox_workspace import register_sandbox_workspace_tools
 from .task_board import register_task_board_tools
 from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import ToolDescriptor
@@ -407,32 +408,16 @@ def teammate_tool_descriptors(
                     },
                 ),
                 ToolDescriptor(
-                    tool_name="execution.pipeline.start",
+                    tool_name="sandbox.workspace.status",
                     description=(
-                        "Submit a versioned Python pipeline source artifact for the assigned task to the controlled execution sandbox. "
-                        "Inline code is not accepted; create or patch source with artifact.create_text / artifact.patch_text first."
+                        "Read or initialize the executor's persistent sandbox workspace status. "
+                        "Returns sandbox_workspace_id, image digest/version, quota, safe directory summary, and recent diagnostics."
                     ),
                     input_schema={
                         "type": "object",
                         "properties": {
-                            "task_id": {"type": "string"},
-                            "code_artifact_id": {"type": "string"},
-                            "inputs": {"type": "object"},
-                            "dry_run": {"type": "boolean"},
+                            "sandbox_workspace_id": {"type": "string"},
                         },
-                        "required": ["task_id", "code_artifact_id"],
-                        "additionalProperties": False,
-                    },
-                ),
-                ToolDescriptor(
-                    tool_name="execution.pipeline.status",
-                    description="Read the current status of an execution pipeline invocation.",
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            "invocation_id": {"type": "string"},
-                        },
-                        "required": ["invocation_id"],
                         "additionalProperties": False,
                     },
                 ),
@@ -506,6 +491,7 @@ def teammate_tool_descriptors(
 
 def build_teammate_registry(
     *,
+    agent_id: str | None = None,
     engine_registry: EngineRegistry | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
@@ -521,6 +507,7 @@ def build_teammate_registry(
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
+    register_sandbox_workspace_tools(registry, agent_id=agent_id)
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
     return registry
@@ -645,12 +632,12 @@ class TeammateConversationDriver(HarnessDriver):
                 "You are not user-facing. Do not speak to the user directly.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
                 "Prefer tools over narration. Complete or advance the assigned task, then send a structured protocol update if useful.",
-                "You may read any session artifact through artifact tools by artifact_id. When you need to author pipeline source, create and revise it with artifact.create_text, artifact.patch_text, and artifact.diff_text. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
+                "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",
                 "Researcher contract: when the assigned objective requires execution against a real structure, use RCSB/UniProt tools to persist a workspace artifact such as rcsb_pdb.download_structure; fetching a web page is not a structure artifact.",
-                "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then create or patch a Python pipeline source artifact and submit execution.pipeline.start with code_artifact_id. The source must use the documented openzyme_pipeline SDK operations and declare all artifact ids it reads in inputs.artifact_ids. Inline code is not accepted. Use dry_run only for an explicit plan preview; dry_run does not run the requested operation and does not satisfy execution or reporting gates.",
+                "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then call sandbox.workspace.status to inspect the persistent sandbox workspace foundation. S07 only proves sandbox identity, image metadata, quota, manifest, recovery, and safe projection; file CRUD and sandbox.exec arrive in S09. Do not treat execution.pipeline.start as the required authoring path.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
                 f"Instructions: {self.instructions}",
@@ -877,6 +864,7 @@ def run_teammate_loop(
     if parent_context.model_factory is None:
         raise ValueError("teammate loop requires model_factory")
     registry = build_teammate_registry(
+        agent_id=agent_id,
         engine_registry=parent_context.engine_registry,
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,

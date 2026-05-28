@@ -1455,18 +1455,18 @@ def test_public_tool_args_redact_pipeline_source_content() -> None:
     assert "secret source" not in json.dumps(sanitized)
 
 
-def test_executor_pipeline_start_descriptor_uses_code_artifact_id() -> None:
+def test_executor_descriptor_exposes_sandbox_workspace_status() -> None:
     descriptor = next(
         item
         for item in teammate_tool_descriptors(role="executor")
-        if item.tool_name == "execution.pipeline.start"
+        if item.tool_name == "sandbox.workspace.status"
     )
 
-    assert "code_artifact_id" in descriptor.input_schema["properties"]
-    assert "code" not in descriptor.input_schema["properties"]
-    assert "dry_run" in descriptor.input_schema["properties"]
-    assert descriptor.input_schema["required"] == ["task_id", "code_artifact_id"]
-    assert "Inline code is not accepted" in descriptor.description
+    tool_names = {item.tool_name for item in teammate_tool_descriptors(role="executor")}
+    assert "sandbox_workspace_id" in descriptor.input_schema["properties"]
+    assert "execution.pipeline.start" not in tool_names
+    assert "execution.pipeline.status" not in tool_names
+    assert "persistent sandbox workspace" in descriptor.description
 
 
 def test_research_teammate_direct_download_persists_workspace_artifact() -> None:
@@ -2371,9 +2371,9 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     assert "when the assigned task asks for fpocket" not in prompt
     assert "hpc.fpocket" not in prompt
     assert "first use docs.search or docs.read" in prompt
-    assert "execution.pipeline.start" in prompt
-    assert "documented openzyme_pipeline SDK operations" in prompt
-    assert "dry_run does not run the requested operation" in prompt
+    assert "sandbox.workspace.status" in prompt
+    assert "persistent sandbox workspace foundation" in prompt
+    assert "Do not treat execution.pipeline.start as the required authoring path" in prompt
 
 
 def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (

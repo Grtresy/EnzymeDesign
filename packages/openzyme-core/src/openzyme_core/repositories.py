@@ -32,6 +32,10 @@ from openzyme_domain import ResearchSourceRef
 from openzyme_domain import ResearchSummary
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_domain import RunRecord
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxImageRecord
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
@@ -125,6 +129,28 @@ def _utc_after_iso(seconds: int) -> str:
     return (
         datetime.now(tz=UTC).replace(microsecond=0) + timedelta(seconds=seconds)
     ).isoformat()
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _json_loads_object(value: str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        return {}
+    return dict(loaded)
+
+
+def _json_loads_list(value: str | None) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    loaded = json.loads(value)
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(str(item) for item in loaded)
 
 
 @dataclass(slots=True)
@@ -1049,6 +1075,15 @@ class AgentMemberRepository:
             return None
         return self._row_to_agent(row)
 
+    def get_by_member_id(self, member_id: str) -> AgentMember | None:
+        row = self.connection.execute(
+            "SELECT * FROM agent_members WHERE member_id = ?",
+            (member_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_agent(row)
+
     def _existing_member_id(self, session_id: str, agent_id: str) -> str | None:
         row = self.connection.execute(
             "SELECT member_id FROM agent_members WHERE session_id = ? AND agent_id = ?",
@@ -1077,6 +1112,242 @@ class AgentMemberRepository:
             idle_since=row["idle_since"],
             shutdown_requested_at=row["shutdown_requested_at"],
             member_id=row["member_id"],
+        )
+
+
+@dataclass(slots=True)
+class SandboxImageRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: SandboxImageRecord) -> None:
+        if record.is_default:
+            self.connection.execute(
+                "UPDATE sandbox_image_records SET is_default = 0 WHERE image_ref != ?",
+                (record.image_ref,),
+            )
+        self.connection.execute(
+            """
+            INSERT INTO sandbox_image_records (
+                image_ref, image_digest, image_family, image_version,
+                sandbox_protocol_version, manifest_schema_version,
+                capabilities_declared_json, compatibility, compatibility_error,
+                is_default, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(image_ref) DO UPDATE SET
+                image_digest = excluded.image_digest,
+                image_family = excluded.image_family,
+                image_version = excluded.image_version,
+                sandbox_protocol_version = excluded.sandbox_protocol_version,
+                manifest_schema_version = excluded.manifest_schema_version,
+                capabilities_declared_json = excluded.capabilities_declared_json,
+                compatibility = excluded.compatibility,
+                compatibility_error = excluded.compatibility_error,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.image_ref,
+                record.image_digest,
+                record.image_family,
+                record.image_version,
+                record.sandbox_protocol_version,
+                record.manifest_schema_version,
+                _json_dumps(list(record.capabilities_declared)),
+                record.compatibility.value,
+                record.compatibility_error,
+                1 if record.is_default else 0,
+                record.created_at,
+                record.updated_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, image_ref: str) -> SandboxImageRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM sandbox_image_records WHERE image_ref = ?",
+            (image_ref,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def get_default(self) -> SandboxImageRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM sandbox_image_records WHERE is_default = 1 LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def _row_to_record(self, row: sqlite3.Row) -> SandboxImageRecord:
+        return SandboxImageRecord(
+            image_ref=row["image_ref"],
+            image_digest=row["image_digest"],
+            image_family=row["image_family"],
+            image_version=row["image_version"],
+            sandbox_protocol_version=row["sandbox_protocol_version"],
+            manifest_schema_version=row["manifest_schema_version"],
+            capabilities_declared=_json_loads_list(row["capabilities_declared_json"]),
+            compatibility=SandboxImageCompatibility(row["compatibility"]),
+            compatibility_error=row["compatibility_error"],
+            is_default=bool(row["is_default"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+@dataclass(slots=True)
+class SandboxWorkspaceRecordRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: SandboxWorkspaceRecord) -> None:
+        _require_session_exists(self.connection, record.session_id)
+        agent = self.connection.execute(
+            "SELECT 1 FROM agent_members WHERE session_id = ? AND member_id = ? AND agent_id = ?",
+            (record.session_id, record.agent_member_id, record.agent_id),
+        ).fetchone()
+        if agent is None:
+            msg = (
+                "agent_members(session_id={!r}, member_id={!r}, agent_id={!r}) does not exist"
+            ).format(record.session_id, record.agent_member_id, record.agent_id)
+            raise OwnershipError(msg)
+        if record.focus_task_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="tasks",
+                id_column="task_id",
+                record_id=record.focus_task_id,
+                expected_session_id=record.session_id,
+            )
+        if record.focus_lane_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="lanes",
+                id_column="lane_id",
+                record_id=record.focus_lane_id,
+                expected_session_id=record.session_id,
+            )
+        self.connection.execute(
+            """
+            INSERT INTO sandbox_workspace_records (
+                sandbox_workspace_id, session_id, agent_member_id, agent_id,
+                focus_task_id, focus_lane_id, status, image_ref, image_digest,
+                image_version, sandbox_protocol_version, image_compatibility,
+                manifest_version, volume_digest, quota_summary_json,
+                directory_summary_json, materialized_input_artifact_ids_json,
+                registered_artifact_ids_json, source_code_artifact_ids_json,
+                last_command_summary_json, last_error_json, created_at,
+                last_attached_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sandbox_workspace_id) DO UPDATE SET
+                focus_task_id = excluded.focus_task_id,
+                focus_lane_id = excluded.focus_lane_id,
+                status = excluded.status,
+                image_ref = excluded.image_ref,
+                image_digest = excluded.image_digest,
+                image_version = excluded.image_version,
+                sandbox_protocol_version = excluded.sandbox_protocol_version,
+                image_compatibility = excluded.image_compatibility,
+                manifest_version = excluded.manifest_version,
+                volume_digest = excluded.volume_digest,
+                quota_summary_json = excluded.quota_summary_json,
+                directory_summary_json = excluded.directory_summary_json,
+                materialized_input_artifact_ids_json = excluded.materialized_input_artifact_ids_json,
+                registered_artifact_ids_json = excluded.registered_artifact_ids_json,
+                source_code_artifact_ids_json = excluded.source_code_artifact_ids_json,
+                last_command_summary_json = excluded.last_command_summary_json,
+                last_error_json = excluded.last_error_json,
+                last_attached_at = excluded.last_attached_at
+            """,
+            (
+                record.sandbox_workspace_id,
+                record.session_id,
+                record.agent_member_id,
+                record.agent_id,
+                record.focus_task_id,
+                record.focus_lane_id,
+                record.status.value,
+                record.image_ref,
+                record.image_digest,
+                record.image_version,
+                record.sandbox_protocol_version,
+                record.image_compatibility.value,
+                record.manifest_version,
+                record.volume_digest,
+                _json_dumps(record.quota_summary or {}),
+                _json_dumps(record.directory_summary or {}),
+                _json_dumps(list(record.materialized_input_artifact_ids)),
+                _json_dumps(list(record.registered_artifact_ids)),
+                _json_dumps(list(record.source_code_artifact_ids)),
+                None if record.last_command_summary is None else _json_dumps(record.last_command_summary),
+                None if record.last_error is None else _json_dumps(record.last_error),
+                record.created_at,
+                record.last_attached_at,
+            ),
+        )
+        self.connection.commit()
+
+    def get(self, sandbox_workspace_id: str) -> SandboxWorkspaceRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
+            (sandbox_workspace_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def get_by_session_member(
+        self, session_id: str, agent_member_id: str
+    ) -> SandboxWorkspaceRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM sandbox_workspace_records
+            WHERE session_id = ? AND agent_member_id = ?
+            """,
+            (session_id, agent_member_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_record(row)
+
+    def list_by_session(self, session_id: str) -> list[SandboxWorkspaceRecord]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM sandbox_workspace_records
+            WHERE session_id = ?
+            ORDER BY created_at, sandbox_workspace_id
+            """,
+            (session_id,),
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def _row_to_record(self, row: sqlite3.Row) -> SandboxWorkspaceRecord:
+        return SandboxWorkspaceRecord(
+            sandbox_workspace_id=row["sandbox_workspace_id"],
+            session_id=row["session_id"],
+            agent_member_id=row["agent_member_id"],
+            agent_id=row["agent_id"],
+            focus_task_id=row["focus_task_id"],
+            focus_lane_id=row["focus_lane_id"],
+            status=SandboxWorkspaceStatus(row["status"]),
+            image_ref=row["image_ref"],
+            image_digest=row["image_digest"],
+            image_version=row["image_version"],
+            sandbox_protocol_version=row["sandbox_protocol_version"],
+            image_compatibility=SandboxImageCompatibility(row["image_compatibility"]),
+            manifest_version=row["manifest_version"],
+            volume_digest=row["volume_digest"],
+            quota_summary=_json_loads_object(row["quota_summary_json"]) or {},
+            directory_summary=_json_loads_object(row["directory_summary_json"]) or {},
+            materialized_input_artifact_ids=_json_loads_list(row["materialized_input_artifact_ids_json"]),
+            registered_artifact_ids=_json_loads_list(row["registered_artifact_ids_json"]),
+            source_code_artifact_ids=_json_loads_list(row["source_code_artifact_ids_json"]),
+            last_command_summary=_json_loads_object(row["last_command_summary_json"]),
+            last_error=_json_loads_object(row["last_error_json"]),
+            created_at=row["created_at"],
+            last_attached_at=row["last_attached_at"],
         )
 
 
@@ -2723,6 +2994,8 @@ class CoreRepositories:
     inbox: InboxMessageRepository
     memory: MemoryEntryRepository
     agents: AgentMemberRepository
+    sandbox_images: SandboxImageRecordRepository
+    sandbox_workspaces: SandboxWorkspaceRecordRepository
     runtime_signals: AgentRuntimeSignalRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
@@ -2746,6 +3019,8 @@ class CoreRepositories:
             inbox=InboxMessageRepository(connection),
             memory=MemoryEntryRepository(connection),
             agents=AgentMemberRepository(connection),
+            sandbox_images=SandboxImageRecordRepository(connection),
+            sandbox_workspaces=SandboxWorkspaceRecordRepository(connection),
             runtime_signals=AgentRuntimeSignalRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),

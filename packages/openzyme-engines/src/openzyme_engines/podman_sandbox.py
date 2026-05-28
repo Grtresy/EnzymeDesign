@@ -76,10 +76,15 @@ class PodmanPipelineSandboxRunner:
         code: str,
         inputs: tuple[SessionArtifactRecord, ...] = (),
         control_handler: Callable[[str, dict[str, Any]], Any] | None = None,
+        sandbox_workspace_id: str | None = None,
     ) -> ExecutionOutcome:
         workspace_root = self.workspace_root.resolve()
-        root = _ensure_within(workspace_root / _safe_host_segment(invocation_id, label="invocation_id"), workspace_root, label="invocation sandbox")
-        if root.exists():
+        root_segment = _safe_host_segment(
+            sandbox_workspace_id or invocation_id,
+            label="sandbox_workspace_id" if sandbox_workspace_id is not None else "invocation_id",
+        )
+        root = _ensure_within(workspace_root / root_segment, workspace_root, label="invocation sandbox")
+        if sandbox_workspace_id is None and root.exists():
             shutil.rmtree(root)
         input_dir = root / "input"
         work_dir = root / "work"
@@ -87,6 +92,7 @@ class PodmanPipelineSandboxRunner:
         logs_dir = root / "logs"
         for directory in (input_dir, work_dir, output_dir, logs_dir):
             directory.mkdir(parents=True, exist_ok=True)
+        root.chmod(0o777)
         for directory in (input_dir, work_dir, output_dir, logs_dir):
             directory.chmod(0o777)
         (work_dir / "pipeline.py").write_text(code, encoding="utf-8")
@@ -127,6 +133,8 @@ class PodmanPipelineSandboxRunner:
                     f"{logs_dir}:/openzyme/logs:Z",
                     "-v",
                     f"{socket_path}:/openzyme/control.sock:Z",
+                    "-v",
+                    f"{root}:/workspace:Z",
                     self.image,
                 ],
                 check=False,

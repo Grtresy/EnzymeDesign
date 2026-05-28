@@ -53,6 +53,10 @@ from .protocols import CorrelationThread
 from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
+from .sandbox_workspace import SandboxWorkspaceService
+from .sandbox_workspace import derive_sandbox_workspace_id
+from .sandbox_workspace import register_sandbox_workspace_tools
+from .sandbox_workspace import sandbox_image_record
 from .artifact_tools import register_artifact_tools
 from .bio_research_tools import register_bio_research_tools
 from .protocol_tools import register_protocol_tools
@@ -72,6 +76,8 @@ from .repositories import ResearchGapRepository
 from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
+from .repositories import SandboxImageRecordRepository
+from .repositories import SandboxWorkspaceRecordRepository
 from .repositories import SessionReportDraftRepository
 from .repositories import SessionReportRepository
 from .repositories import SessionArtifactRepository
@@ -158,11 +164,15 @@ __all__ = [
     "register_report_draft_tools",
     "register_artifact_tools",
     "register_protocol_tools",
+    "register_sandbox_workspace_tools",
     "ResearchEvidenceRepository",
     "ResearchGapRepository",
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
     "RunRecordRepository",
+    "SandboxImageRecordRepository",
+    "SandboxWorkspaceRecordRepository",
+    "SandboxWorkspaceService",
     "SessionReportDraftRepository",
     "SessionReportRepository",
     "RestoreFocus",
@@ -199,6 +209,7 @@ __all__ = [
     "build_conversation_projection",
     "builtin_tool_descriptors",
     "connect_sqlite",
+    "derive_sandbox_workspace_id",
     "get_migration_sql",
     "load_recent_conversation",
     "persist_conversation_message",
@@ -210,6 +221,7 @@ __all__ = [
     "register_lane_tools",
     "run_teammate_loop",
     "run_agent_harness_loop",
+    "sandbox_image_record",
     "TeammateConversationDriver",
     "teammate_role_for_task_kind",
     "teammate_tool_descriptors",

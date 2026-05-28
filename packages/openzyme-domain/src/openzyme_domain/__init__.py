@@ -21,6 +21,10 @@ from .control_plane import MemoryEntry
 from .control_plane import MemoryKind
 from .control_plane import MemoryScopeKind
 from .control_plane import RunRecord
+from .control_plane import SandboxImageCompatibility
+from .control_plane import SandboxImageRecord
+from .control_plane import SandboxWorkspaceRecord
+from .control_plane import SandboxWorkspaceStatus
 from .control_plane import ResearchEvidence
 from .control_plane import ResearchGap
 from .control_plane import ResearchSourceRef
@@ -57,6 +61,10 @@ __all__ = [
     "MemoryKind",
     "MemoryScopeKind",
     "RunRecord",
+    "SandboxImageCompatibility",
+    "SandboxImageRecord",
+    "SandboxWorkspaceRecord",
+    "SandboxWorkspaceStatus",
     "ResearchEvidence",
     "ResearchGap",
     "ResearchSourceRef",

@@ -93,6 +93,7 @@ class SessionWorkspaceProjection:
     agent_traces: dict[str, list[dict[str, Any]]]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
+    sandbox_workspaces: tuple[dict[str, Any], ...]
     report_drafts: tuple[dict[str, Any], ...]
     reports: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
@@ -110,6 +111,7 @@ class SessionWorkspaceProjection:
             "agent_traces": self.agent_traces,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
+            "sandbox_workspaces": list(self.sandbox_workspaces),
             "report_drafts": list(self.report_drafts),
             "reports": list(self.reports),
             "capabilities": self.capabilities,
@@ -134,6 +136,10 @@ class SessionProjectionBuilder:
         agent_traces = self.build_agent_traces_projection(session_id)
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
         artifacts = tuple(self._project_workspace_artifact(artifact) for artifact in self.repositories.artifacts.list_by_session(session_id))
+        sandbox_workspaces = tuple(
+            workspace.to_dict()
+            for workspace in self.repositories.sandbox_workspaces.list_by_session(session_id)
+        )
         report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
         reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
@@ -149,6 +155,7 @@ class SessionProjectionBuilder:
             agent_traces=agent_traces,
             activity_feed=activity_feed,
             artifacts=artifacts,
+            sandbox_workspaces=sandbox_workspaces,
             report_drafts=report_drafts,
             reports=reports,
             capabilities=capabilities,

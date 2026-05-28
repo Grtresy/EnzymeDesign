@@ -43,6 +43,8 @@ def test_control_plane_entity_names_are_stable() -> None:
         "ResearchEvidence",
         "ResearchSourceRef",
         "ResearchGap",
+        "SandboxImageRecord",
+        "SandboxWorkspaceRecord",
     )
 
 
