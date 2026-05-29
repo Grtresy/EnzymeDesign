@@ -226,7 +226,7 @@ V3 Web UI 默认是 conversation-first。
 - `research teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、调用 `deep_research` 或直接调用 provider-specific research tools、请求 approval，并可通过 protocol 与 peers 沟通
 - `execution teammate` 围绕 task 读取共享 workspace / artifacts、按需绑定 lane、在自己的 persistent sandbox 中编辑和运行 pipeline，并可通过 protocol 与 peers 沟通；具体 HPC / 长耗时 / 高 quota SDK operation 是否需要 approval 由 Host supervisor 的 tool policy 决定，teammate 不需要判断敏感性
 - execution teammate 不直接调用 HPC runner tool，也不把 `execution.pipeline.start` 当作必须调用的 authoring 主路径；它通过 sandbox file/command tools 与 sandbox SDK 表达执行意图，由 Host supervisor 间接访问 runner
-- execution teammate 默认拥有 `docs.search` / `docs.read`，并应按需检索 `persistent sandbox`、`sandbox file command`、`artifact materialize register snapshot_code`、`preprocess`、`tool adapter`、`hpc placement`、`stage_artifact`、`fetch_outputs`、`batch ligand docking`、`sandbox rules` 与 `dry-run` 文档；`hpc` 是稳定 executor-facing placement namespace，领域工具通过 `structure_tools` / `docking` / `bio_tools` 表达，旧 runner-backed shorthand 只能是 internal migration debt
+- execution teammate 默认拥有 `docs.search` / `docs.read`，并应按需检索 `persistent sandbox`、`sandbox file command`、`artifact materialize register snapshot_code`、`preprocess`、`tool adapter`、`hpc placement`、`stage_artifact`、`fetch_outputs`、`batch ligand docking`、`sandbox rules` 与 `dry-run` 文档；`hpc` 是稳定 executor-facing placement namespace，领域工具通过 `structure_tools` / `docking` / `bio_tools` 表达，公开 SDK / docs / prompt 不暴露旧 runner-backed shorthand
 - report teammate 默认直接读写 `report_draft` 并在合适时机 `publish` 为 final `report`
 - approval 以对话流中的卡片形式出现，用户只需要 approve / reject
 - task、lane、engine、artifact、report 变化通过 workspace projection 和 control-plane events 回填

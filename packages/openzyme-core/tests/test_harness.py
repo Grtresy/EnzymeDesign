@@ -2377,7 +2377,7 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
         ]
     )
     assert "when the assigned task asks for fpocket" not in prompt
-    assert "hpc.fpocket" not in prompt
+    assert "runner-backed hpc tool shorthand" not in prompt
     assert "first use docs.search or docs.read" in prompt
     assert "sandbox.workspace.status" in prompt
     assert "persistent sandbox workspace foundation" in prompt

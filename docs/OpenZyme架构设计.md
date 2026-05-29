@@ -178,7 +178,8 @@ Agent Harness Kernel
 Capability Engines
   |
   +--> deep_research / provider tools
-  +--> execution.pipeline.* / sandbox / openzyme_pipeline SDK
+  +--> sandbox.workspace.* / sandbox.file.* / sandbox.exec / openzyme_pipeline SDK
+  +--> execution pipeline internals and migration bridge
   +--> report_draft.* / report.publish
   |
   v
@@ -279,7 +280,7 @@ Projection 约束：
 - teammate 输出、工具调用、trace 和 protocol thread 通过 `agent_traces`、`delegation`、`activity_feed`、`inbox` 等 read model 表达
 - `delegation.agents` 表达 resident team roster，而不是最近一次 `task.delegate` 的临时返回
 - `artifacts` 是 session 共享工作面；`storage_uri` 只属于 Host-private catalog record，workspace/API/agent tool result 只能暴露安全 artifact 投影，不能暴露 Host repo path、Host artifact path、sandbox host path、runner private path、SSH/Slurm config 或 runner credentials
-- pipeline 源码必须进入 artifact catalog：Python source 使用 `ArtifactKind.CODE`、`metadata.semantic_type="pipeline_source"`、SHA-256 `content_digest` 与 version/lineage metadata；源码修改通过 `artifact.patch_text` 生成新的不可变 artifact，不能覆盖旧版本或藏在 prompt/浏览器状态/Host 本地路径中
+- 执行相关源码必须可审计：executor 日常编辑发生在 persistent sandbox workspace 内；进入 dry-run、approval、正式执行或报告复用前，Host 必须把相关源码 snapshot 为 `ArtifactKind.CODE` artifact，记录 `metadata.semantic_type="pipeline_source"`、SHA-256 `content_digest`、`sandbox_workspace_id`、entrypoint、file digests 与 version/lineage metadata
 - `report_drafts` 是 reporter 的中间交付面，不是一次 invocation 的临时字符串
 - `capabilities` 按 capability key 承载 research/execution 等投影，避免把 engine 内部状态固化成顶层 contract
 
@@ -360,33 +361,43 @@ Claim 语义：
 
 Research 输出应归一化为 evidence、source refs、gaps 和必要的 workspace artifacts。普通 search hit 是 source/evidence，不应伪装成 artifact；真实下载或生成的 sequence / structure 文件才进入 artifacts。
 
-### 8.2 Execution Pipeline
+### 8.2 Persistent Executor Sandbox 与 Execution Pipeline
 
-V3 execution 的主路径是 executor-authored pipeline source artifact，而不是 executor 直接调用 runner、SSH、Slurm 或 runner config。executor 必须先用 artifact tools 创建或修订 Python pipeline source artifact，再把 `code_artifact_id` 交给 `execution.pipeline.start`；inline code 不是公开执行入口。
+V3 execution 的目标主路径是 executor-owned persistent sandbox workspace，而不是 executor 直接调用 runner、SSH、Slurm 或 runner config。executor 在自己的 sandbox 中迭代脚本、运行 Python/bash、检查中间文件；当某段源码进入 dry-run、approval、正式执行或结果审计时，Host 将相关 sandbox working-copy source snapshot 为 `ArtifactKind.CODE`，并把 snapshot digest 绑定到 execution plan、approval、run、artifact provenance 和 workspace projection。
 
 关键接口：
 
-- `execution.pipeline.start`
-- `execution.pipeline.status`
+- executor-facing `sandbox.workspace.status`
+- executor-facing `sandbox.file.*` / `sandbox.exec`（Session 09 runtime 面）
 - sandbox 内 `openzyme_pipeline` SDK
+- Host/internal execution plan、run、approval、provenance 记录
+- 迁移兼容 `execution.pipeline.start` / `execution.pipeline.status` bridge；它们不再是 executor 必须调用的 authoring 主路径
 - docs 工具 `docs.search` / `docs.read`
 
 执行边界：
 
-- pipeline code 在受控 rootless Podman sandbox 中运行
-- sandbox 默认无网络、非 root、资源受限
+- executor sandbox 运行在受控 rootless Podman 环境中，默认无网络、非 root、资源受限
+- 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 rootless container process 并挂载各自独立的 persistent sandbox workspace；image layer 可以共享，sandbox workspace 不共享
+- executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
+- 每个 executor 拥有独立 persistent sandbox workspace；`sandbox_workspace_id` 按 `session_id + agent_id` 复用，`task_id` / `lane_id` 只是当前 focus metadata；持久化对象是 sandbox workspace volume、manifest、projection summary 和 canonical records，不是容器进程或 container id；容器可重启，sandbox workspace volume 保留，`sandbox_workspace_id` 进入 execution provenance
 - Host repo、用户 home、`.ssh`、数据库、runner config、HPC credentials 不得挂载进 sandbox
+- sandbox 内可做文件 CRUD、bash、python 和中间结果检查；sandbox workspace 是 working copy/cache，不是 canonical truth
 - NCBI、UniProt、EBI HMMER 等网络数据库请求只能通过 `openzyme_pipeline.bio` 由 Host supervisor 托管执行；sandbox 不直接联网，也不保存 provider credential 或 Host cache path
 - MAFFT、CD-HIT、HMMER CLI 等 AOX/HMM 生信工具只能通过 `openzyme_pipeline.bio_tools` 由 Host supervisor 托管执行；pipeline 不直接 shell/subprocess 调本地 binary
-- HPC 请求只能通过 `openzyme_pipeline.hpc` 进入 Host supervisor，再编译为 runner `RunSpec`
-- dry-run / validation 先生成 `ExecutionPlan`；需要 approval 的 HPC operation 或显式 `inputs.approval_policy="single_plan"` plan 在用户 approve 前不得提交
+- MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 和领域 toolchain packaging 不进入 executor base image；它们属于 Host supervisor 的 backend/toolchain registry 和 bio_tools route policy
+- 外部执行只能通过 Host-supervised SDK 进入 provider、明确配置的本地 adapter 或 HPC runner；AOX/HMM `bio_tools` 的 Session 14 产品 route 是 HPC-only，不以 Host-local Apptainer 作为 fallback。`openzyme_pipeline.hpc` 保留为 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域能力优先由 `bio` / `bio_tools` / `structure_tools` / `docking` 表达，稳定边界是不暴露 SSH、Slurm、runner path、SIF path 或 database mount
+- dry-run / validation 先生成 `ExecutionPlan`；需要 approval 的外部/backend operation 或显式 `inputs.approval_policy="single_plan"` plan 在用户 approve 前不得提交
 - dry-run 必须列出 bio SDK operations、预计 provider requests、分页/配额估计和 expected database artifacts；大型 FASTA、metadata、raw hits、parsed hits 均登记为 artifact，RPC 只返回 bounded summary
 - dry-run 必须列出 bio_tools operations、资源估计、expected outputs 和 approval/route 需求；declared output 缺失、格式非法、资源超限、tool_missing 或 oversized log 均返回结构化状态
-- plan、approval、execution invocation、output artifact provenance 与 workspace projection 记录 `source_code_artifact_id`、`source_code_digest`、`source_code_version`；正式执行前 Host 重新读取 source artifact 并校验 digest
-- approval 绑定 plan digest、artifact reads、SDK/toolchain/HPC operation list、expected outputs 和资源/配额估计
-- sandbox `artifacts.register` 必须在登记前执行非空、FASTA/HMM/CSV 必需列等轻量校验；Session 05 AOX/HMM fixture gate 以单条用户 prompt 验证 source artifact patch/diff、dry-run、approval、execution、artifact provenance 和 final answer
+- plan、approval、execution invocation、output artifact provenance 与 workspace projection 记录 `sandbox_workspace_id`、`source_code_artifact_id`、`source_code_digest`、`source_code_version`、input artifact digests、operation set、backend route 和 expected outputs；正式执行前 Host 重新校验 approved source snapshot digest
+- approval 绑定完整 operation digest、artifact reads、SDK/toolchain/backend operation list、expected outputs 和资源/配额估计；同 session 内 digest 完全一致可复用 approved approval，digest 漂移必须重新审批或结构化失败
+- sandbox `artifacts.materialize` 只能把授权 catalog artifact 安全搬入 workspace；同一 artifact digest、target path 和 mode 幂等复用，路径 digest 冲突结构化失败；`artifacts.register` 必须在登记前执行非空、FASTA/HMM/CSV 必需列等轻量校验；`artifacts.snapshot_code` 用于把执行相关源码冻结为 CODE artifact
+- 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`；container process id 不是 canonical state，`SandboxRun`、file audit、command log artifact 和 changed-file summary 才是审计状态
 - runner/HPC 不得直接使用 Host 本地 artifact path；输入必须通过 artifact catalog 授权并 staged 到远端工作目录
 - 远端输出只有在 declared `expected_outputs` 中声明后才会下载并登记为 artifact
+- 对 HPC-heavy 流程，Host 维护独立的 HPC placement workspace；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用，executor 通过 `hpc.workspace`、`stage_artifact` 和 `fetch_outputs` 声明文件流，Host supervisor 负责真实 staging/fetch 和 artifact registration，不能把该远端工作区描述成 sandbox workspace 的 mirror，也不能把 remote path 暴露给 executor
+- Provider cache 只能作为 Host-private optimization；cache key/digest 可进 provenance，但 cache hit 不能替代当前真实 provider/live prerequisite 证据
+- AOX/HMM live cutover passed 必须生成 sealed `evidence_bundle_id`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer
 
 ### 8.3 Report Draft 与 Report
 

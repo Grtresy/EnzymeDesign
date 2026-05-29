@@ -187,8 +187,9 @@ restore context
 - 对外暴露统一 tool / command contract
 - 被 `engine invocation` 统一调度和恢复
 - 不拥有产品顶层真状态
-- `execution` 默认通过受控 pipeline sandbox 承载 executor 生成的 Python pipeline，而不是让 executor 直接调用 runner tool
-- pipeline 内的 HPC 调用必须通过 `openzyme_pipeline` SDK 进入 Host supervisor，再由 tool contract compiler 生成 runner `RunSpec`
+- `execution` 默认通过 executor-owned persistent sandbox workspace 承载脚本迭代、Python/bash 操作和 SDK 调用，而不是让 executor 直接调用 runner tool
+- 进入 dry-run、approval、正式执行或结果审计的源码必须 snapshot 为 CODE artifact；Host 用 snapshot digest 绑定 plan、run、artifact provenance 和 workspace projection
+- 外部 provider、明确配置的本地 adapter 和 HPC 调用必须通过 `openzyme_pipeline` SDK 进入 Host supervisor，再由 Host 选择受控 adapter、runner 或独立 HPC placement workspace；AOX/HMM `bio_tools` 的 S14 产品 route 是 HPC-only，不以 Host-local Apptainer 作为 fallback
 - preprocess 是 pipeline 可调用能力，由 executor 在受控代码中判断和编排；preprocess 产物必须先登记为可信 workspace artifact，再被 HPC step 消费
 
 ## 4. 数据流
@@ -294,13 +295,16 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `report draft` 默认不是 capability invocation 的副产物，而是 report teammate 可持续修订的共享工作对象
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
-- `execution` 默认入口是 `execution.pipeline.*`，executor 只能提交或恢复受控 pipeline，不能直接 tool call `exec.run` / runner
-- `execution` pipeline 默认运行在 rootless Podman sandbox 中，通过注入的 `openzyme_pipeline` SDK 访问 `artifacts`、`bio`、`bio_tools`、`preprocess` 与 `hpc`
+- `execution` 的 executor-facing 默认入口是 sandbox-first：先通过 `sandbox.workspace.status` 理解自己的持久工作区，后续通过 `sandbox.file.*` / `sandbox.exec` 编辑和运行受控代码；`execution.pipeline.*` 若仍存在，只是 Host 内部或迁移兼容桥，不再是 executor 必须调用的主路径
+- `execution` 默认运行在 rootless Podman persistent sandbox 中，通过注入的 `openzyme_pipeline` SDK 和 agent-facing `sandbox.*` tools 访问受控 sandbox workspace、artifacts、bio、bio_tools、preprocess 与后续领域 SDK
+- executor sandbox base image 默认由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 等领域 packaging 不进入 base image，由后续 backend/toolchain registry 管理
+- 同一 `sandbox_workspace_id` 默认单活 `sandbox.exec`；artifact materialization 按 artifact digest、target path 和 mode 幂等复用；SDK approval 按完整 operation digest 复用，digest 漂移必须重新审批或结构化失败
 - execution teammate 默认通过 `docs.search` / `docs.read` 按需读取 `docs/v3/execution-pipeline-docs/`，而不是依赖 prompt 内嵌完整 SDK reference
-- `hpc.*` SDK 调用默认由 Host supervisor 执行 approval、quota、artifact 权限校验、tool contract 编译和 runner 调用
-- `bio.*` SDK 调用默认由 Host supervisor 执行 provider 配置、网络访问、分页、quota、artifact 登记和 provenance；sandbox 不直接联网
-- `bio_tools.*` SDK 调用默认由 Host supervisor 执行 tool preflight、local/HPC route、declared output 校验、artifact 登记和 provenance；sandbox 不直接 shell/subprocess 调 CLI
-- `execution` 默认仍以 tool contract 编译 `command / inputs / expected_outputs / checks`，并通过 runner staging 传输 artifact
+- HPC/backend 类 SDK 调用默认由 Host supervisor 执行 approval、quota、artifact 权限校验、tool contract 编译、placement workspace staging/fetch 和 runner 调用；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用；`hpc` 保留为 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域 operation 优先由 `bio_tools` / `structure_tools` / `docking` 表达
+- `bio.*` SDK 调用默认由 Host supervisor 执行 provider 配置、网络访问、分页、quota、artifact 登记和 provenance；sandbox 不直接联网；Host provider cache 只能作为私有优化，不能替代真实 provider/live prerequisite 证据
+- `bio_tools.*` SDK 调用默认由 Host supervisor 执行 tool preflight、静态 route policy、declared output 校验、artifact 登记和 provenance；AOX/HMM S14 启用 route 是 HPC-only，sandbox 不直接 shell/subprocess 调 CLI
+- `execution` 默认仍以 tool contract 编译 `command / inputs / expected_outputs / checks`；HPC-heavy 流程通过 explicit placement workspace、`stage_artifact` 和 `fetch_outputs` 声明文件流，避免每个 substep 隐式上传下载，也避免把远端 workspace 误建模为本地 sandbox mirror
+- AOX/HMM live cutover 默认产出 sealed `evidence_bundle_id`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer
 - preprocess 默认作为 pipeline SDK 能力存在，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 - research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成

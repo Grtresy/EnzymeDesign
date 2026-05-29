@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -639,7 +640,14 @@ class FakeEngineHarnessInvoker:
                             "name": "artifact.create_text",
                             "args": {
                                 "filename": "fpocket_pipeline.py",
-                                "content": "from openzyme_pipeline import artifacts, hpc\nstructure = artifacts.get('art_v3_structure')\nhpc.fpocket(structure_artifact_id=structure['artifact_id'])\n",
+                                "content": (
+                                    "from openzyme_pipeline import artifacts, hpc, structure_tools\n"
+                                    "structure = artifacts.get('art_v3_structure')\n"
+                                    "ws = hpc.workspace('fpocket')\n"
+                                    "remote_structure = ws.stage_artifact(structure['artifact_id'], workspace_path='inputs/structure.pdb')\n"
+                                    "run = structure_tools.fpocket(structure=remote_structure, placement=ws, expected_outputs=[{'path': 'target_out', 'kind': 'directory', 'format': 'fpocket'}])\n"
+                                    "ws.fetch_outputs(run)\n"
+                                ),
                             },
                         }
                     ],
@@ -973,7 +981,7 @@ class FailedHpcExecutionEngine:
             "type": "hpc_operation_failed",
             "message": "Pipeline failed: Traceback (most recent call last):",
             "hint": "Inspect the HPC run or runner configuration.",
-            "stderr_excerpt": "PipelineSdkError: hpc.fpocket failed with status failed",
+            "stderr_excerpt": "PipelineSdkError: structure_tools.fpocket failed with status failed",
             "hpc_failure": {
                 "run_id": "run_failed_hpc",
                 "runner_run_id": "runner_failed_hpc",
@@ -2274,9 +2282,8 @@ def _seed_v3_execution_artifact(
                 f"{float(residue_index):8.3f}{float(atom_index):8.3f}{0.0:8.3f}  1.00 20.00           C"
             )
             serial += 1
-    Path("/tmp/v3_input_structure.pdb").write_text(
-        "\n".join(lines) + "\nEND\n", encoding="utf-8"
-    )
+    content = "\n".join(lines) + "\nEND\n"
+    Path("/tmp/v3_input_structure.pdb").write_text(content, encoding="utf-8")
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_v3_structure",
@@ -2290,7 +2297,11 @@ def _seed_v3_execution_artifact(
             relative_path="v3_input_structure.pdb",
             title="v3_input_structure.pdb",
             description=None,
-            metadata={"source": "test_fixture", "format": "pdb"},
+            metadata={
+                "source": "test_fixture",
+                "format": "pdb",
+                "content_digest": f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+            },
             created_at="2026-04-20T12:00:03+00:00",
         )
     )

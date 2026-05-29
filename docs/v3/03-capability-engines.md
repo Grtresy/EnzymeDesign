@@ -149,74 +149,88 @@ deep research 对 harness 至少提供：
 
 - 负责将某项 task 或 artifact 集合转化为可执行请求
 - 继续复用 `apps/mcp-hpc-runner` 作为外部执行边界
-- 负责运行 executor 以 versioned code artifact 提交的受控 execution pipeline source
-- 负责把 pipeline 内的 HPC SDK 调用显式编译成 runner `RunSpec.inputs`
-- 负责把 runner 下载后的 declared outputs 回填为 canonical workspace artifacts
+- 负责为 executor 提供 session-scoped persistent sandbox workspace
+- 负责把 sandbox working copy 中的 pipeline source 固化为 `ArtifactKind.CODE` 审计快照
+- 负责通过 Host supervisor 把 sandbox 内的受控 SDK / adapter 调用转换为 provider、local tool 或 runner 请求
+- 负责把 sandbox、本地工具或 runner 下载后的 declared outputs 回填为 canonical workspace artifacts
 
 要求：
 
-- 对 harness 至少提供 `execution.pipeline.start(invocation_id, task_id, code_artifact_id, inputs)`、`execution.pipeline.status(invocation_id)`；`code_artifact_id` 必须引用当前 session artifact catalog 中 `kind=code`、`format=python`、`semantic_type=pipeline_source` 的版本化源码 artifact；inline `code` 会被拒绝为 tool failure；恢复等待中的 pipeline 是 harness / supervisor 内部调度语义，不是 executor 或 master 需要显式编排的用户级 tool contract
-- executor 不得直接调用 runner tool、SSH、Slurm 或 runner config；它只能先通过 `artifact.create_text` / `artifact.patch_text` 创建或修订 pipeline source artifact，再提交 `code_artifact_id`，并通过 sandbox 内注入的 SDK 间接请求 HPC
-- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交 HPC job 或高 quota 消耗的 `hpc.*` operation 必须标记为 approval-gated；AOX/HMM fixture gate 使用 `inputs.approval_policy="single_plan"` 验证单一 plan approval 语义
-- `execution.pipeline.start` 的默认主路径是 dry-run / validation first：Host supervisor 先构建 `ExecutionPlan`，再让用户批准该 plan；批准前不得提交 HPC job，也不得启动会触发 HPC 的正式执行
-- dry run 是校验过程，`ExecutionPlan` 是结果；plan 至少绑定 `plan_digest`、artifact reads、preprocess operations、HPC operation list、expected outputs、resource / quota estimate、doc hints 与 approval requirements
-- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须记录 `source_code_artifact_id`、`source_code_digest` 与 `source_code_version`；正式执行前 Host 重新读取源码 artifact 并校验 digest，防止批准后源码漂移
+- 对 harness 至少提供 executor-facing `sandbox.workspace.status`，并在 sandbox runtime session 中提供 `sandbox.file.list`、`sandbox.file.read`、`sandbox.file.write`、`sandbox.file.patch`、`sandbox.file.delete` 与 `sandbox.exec`；`execution.pipeline.start` / `execution.pipeline.status` 若继续存在，只作为 Host 内部或迁移兼容桥，不再作为 executor 日常 authoring 主路径
+- executor 在自己的 persistent sandbox 中拥有完整文件 CRUD、bash 与 Python 能力；sandbox working copy 是执行准备工作面，canonical truth 仍然是 artifact catalog、engine invocation、run、approval、task board 与 workspace projection
+- executor 不得直接调用 runner tool、SSH、Slurm、runner config 或 Host 本地 artifact path；它通过 sandbox 内预装的 `openzyme_pipeline` SDK 与 Host supervisor 通信，由 supervisor 间接请求 provider、本地工具、HPC runner 或 artifact catalog
+- `artifact.create_text` / `artifact.patch_text` / `artifact.diff_text` 可以保留为受控 catalog 源码编辑兼容面和审计工具，但不再是 executor authoring pipeline 的主路径；主路径是 sandbox file/command tool，运行或提交前由 Host 创建 `artifacts.snapshot_code` 快照
+- 敏感性由 SDK operation policy / Host supervisor 判定，而不是由 master 或 executor 判断；例如耗时、计算量大、会提交外部 job 或高 quota 消耗的 operation 必须标记为 approval-gated；AOX/HMM fixture gate 使用 `inputs.approval_policy="single_plan"` 验证单一 plan approval 语义
+- 受控执行的默认主路径是 dry-run / validation first：Host supervisor 先构建 `ExecutionPlan`，再让用户批准该 plan；批准前不得提交外部 job，也不得启动会触发 runner/HPC 的正式执行
+- dry run 是校验过程，`ExecutionPlan` 是结果；plan 至少绑定 `plan_digest`、`sandbox_workspace_id`、entrypoint、source snapshot、artifact reads、local/preprocess/provider operations、external/HPC operation list、expected outputs、resource / quota estimate、doc hints 与 approval requirements
+- plan、approval、execution invocation、output artifact provenance 与 workspace projection 必须记录 `source_code_artifact_id`、`source_code_digest`、`source_code_version` 与 `sandbox_workspace_id`；正式执行前 Host 重新读取源码快照并校验 digest，防止批准后 working copy 漂移
 - approval 绑定 `plan_digest`、operation list、artifact reads、expected outputs 与 resource/quota 摘要；用户 approve 后，Host supervisor 才启动正式 sandbox 执行
-- runtime SDK call approval gate 只作为兜底：正式执行时若出现未被 approved plan 覆盖的 `hpc.*` operation、artifact id 或参数 / quota 范围，Host supervisor 必须再次创建 `ApprovalRequest` 并进入 `waiting_approval`，不得提交该 HPC operation
+- runtime SDK call approval gate 只作为兜底：正式执行时若出现未被 approved plan 覆盖的外部 operation、artifact id 或参数 / quota 范围，Host supervisor 必须再次创建 `ApprovalRequest` 并进入 `waiting_approval`，不得提交该 operation
 - approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
 - execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
-- Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 `execution.pipeline.status`、artifacts 和 structured error 后生成用户可见收尾
+- Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 sandbox/execution status、artifacts 和 structured error 后生成用户可见收尾
 - 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或用 `task.update(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
 - execution / HPC retry 与失败诊断策略属于 executor prompt、受控 docs 或 tool result hints；runtime wakeup instruction 只应携带 invocation/status/artifact/error evidence，不应规定重试或修复策略
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
 - command 不得直接引用 Host 本地 `SessionArtifactRecord.storage_uri`；HPC command 只能引用 `/work`、`/out`、`$MCP_WORKDIR`、`$MCP_OUTDIR` 等远端路径
 - runner/HPC 不得直接使用 Host 本地 artifact path；所有输入必须先经 artifact catalog 授权，再通过 runner staging 映射为远端工作目录路径
+- 本地 sandbox workspace 与 HPC placement workspace 是两个独立工作面；文件流必须通过显式 `stage_artifact` / `fetch_outputs` 或等价 Host-supervised declarations 表达，scheduler 不得把本地执行和 HPC 执行自动重写成不同后端
 - 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
 - 远端结果只有在 `expected_outputs` 中声明后才会被下载并登记为 artifact
 - output artifact 必须保留相对路径层级，不能只保留 basename
 
 ### 3.1 Execution Pipeline Sandbox
 
-execution engine 的目标入口是 pipeline sandbox，而不是固定 tool-specific preprocess
-adapter。executor 可以写 Python pipeline 表达判断、循环、批处理和分支，但 pipeline
-只能在受控运行时内执行。
+execution engine 的目标入口是 executor persistent sandbox，而不是固定 tool-specific
+preprocess adapter，也不是每次执行即销毁的一次性源码容器。executor 可以在 sandbox 中
+用文件、bash、Python 与预装 SDK 组织判断、循环、批处理和分支；真正进入 canonical state
+的是显式登记的 artifacts、execution plans、runs、approvals、events 与源码快照。
 
 默认运行边界：
 
-- pipeline code 运行在 rootless Podman sandbox 中，默认无网络、非 root、资源受限
-- sandbox 只挂载当前 invocation 的 `/openzyme/input`、`/openzyme/work`、`/openzyme/output` 和 per-invocation control socket
-- `/openzyme/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
-- `/openzyme/work` 与 `/openzyme/output` 可写；只有 SDK 明确登记的 `/openzyme/output` 文件可进入 artifact catalog
+- sandbox 运行在 rootless Podman 容器中，默认无网络、非 root、资源受限，并按 executor/session 持久化工作目录
+- 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 container process 并挂载各自的 persistent `/workspace`；image layer 可以共享，sandbox workspace volume 不共享
+- executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
+- 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
+- sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
+- `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog
+- `/workspace/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
+- `/workspace/work` 与 `/workspace/output` 可写；只有 SDK 明确登记或 Host 明确 snapshot 的文件可进入 artifact catalog
 - Host repo、用户 home、`.ssh`、数据库、runner config 和 HPC credentials 不得挂载进 sandbox
-- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER 请求只能通过 `openzyme_pipeline.bio` 走 Unix domain socket 到 Host supervisor，HPC 请求只能通过 `openzyme_pipeline.hpc`
+- sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER、本地生信工具、HPC runner 与 artifact catalog 请求都必须通过 `openzyme_pipeline` 走 Host supervisor
+- MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 和领域 toolchain packaging 不进入 executor base image；它们属于 Host supervisor 的 backend/toolchain registry 和 bio_tools route policy
+- 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`；run record、file audit、log artifact 和 changed-file summary 是审计状态，container process id 不是 canonical state
+- sandbox 对外能力是 file+command+SDK bridge；后台 scheduler 只唤醒 agent 和 engine continuation，不替 executor 判断该用本地、HPC 还是其它 backend
 
 `openzyme_pipeline` SDK 至少提供概念能力：
 
-- `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图
-- `execution.pipeline.start.inputs.artifact_ids` / `context_artifact_ids` 必须显式列出 pipeline source 将读取的 artifact；Host dry-run 发现未声明的字面量 `artifacts.get("...")` 时返回可修复 tool failure，让 executor 重新调用
+- `artifacts.materialize(artifact_id, target_path=None)`：把授权 artifact 显式搬入 sandbox working tree 或 input view，返回 sandbox-safe path
+- `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图，保留为轻量兼容入口
 - `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact
+- `artifacts.snapshot_code(paths, entrypoint, metadata)`：把 sandbox `/workspace/src` 中的源码固化为 `ArtifactKind.CODE` 审计快照，供 plan、approval 与 run provenance 绑定
 - `bio.ncbi_fetch_proteins(accessions=[...], fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
 - `bio.uniprot_fetch(accessions=[...], fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
 - `bio.hmmer_search(hmm_artifact_id=..., database=..., params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
-- `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary
+- `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary。Session 14 先启用 `cdhit` / `mafft` / `hmmbuild` / `hmmalign` 的 HPC route，`hmmer_search_cli` 保留 public SDK 名称但固定返回 `unsupported_in_s14`
 - `preprocess.convert_format(...)`
 - `preprocess.prepare_receptor(...)`
 - `preprocess.prepare_ligand(...)`
 - `preprocess.smiles_to_3d(...)`
-- `hpc.fpocket(...)`
-- `hpc.vina(...)`
+- `hpc.workspace(label)` / `stage_artifact` / `fetch_outputs`：声明 Host-supervised HPC placement workspace 与文件流；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用，不暴露真实远端路径
+- backend/tool adapter calls：例如 fpocket、Vina、AOX/HMM 相关工具；领域 operation 优先由 `bio_tools` / `structure_tools` / `docking` 表达，HPC 文件流由 `hpc` placement namespace 表达
 - `run.wait()` 与 `run.fetch_artifacts()`
 
 Host supervisor 负责：
 
 - 校验 pipeline 是否只能读取当前 session/task/lane 授权 artifact
-- 执行 dry-run / plan，列出预计 artifact 读写、HPC jobs、资源与输出
+- 执行 dry-run / plan，列出预计 artifact 读写、provider/local/HPC operations、资源与输出
 - 执行 SDK operation policy、approval gate、provider/tool quota、timeout、输出大小限制、declared output 校验和失败分类
 - 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
-- 把每个 `hpc.*` 调用转换为 tool contract compiler 输入
+- 把每个外部 backend/tool adapter 调用转换为 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
 - 调用 `apps/mcp-hpc-runner`，并把 fetched outputs 登记为 session artifacts
-- 记录 pipeline code digest、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
+- 记录 `sandbox_workspace_id`、pipeline code digest、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按完整 operation digest 复用，digest 漂移必须重新审批或失败；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
+- Provider cache 只能作为 Host-private optimization；cache key/digest 可进入 provenance，但不能作为 live cutover passed 证据。AOX/HMM live cutover 必须生成 sealed evidence bundle。
 
 ### 3.2 Pipeline SDK Docs
 
@@ -227,7 +241,7 @@ V3 默认提供可检索的 pipeline SDK 文档库：
 
 - 文档根目录：`docs/v3/execution-pipeline-docs/`
 - executor 默认可使用只读 `docs.search` / `docs.read`
-- 文档库必须与当前 SDK 版本同步，并优先覆盖 artifact、preprocess、HPC tool、batch pattern、sandbox rule 与示例
+- 文档库必须与当前 SDK 版本同步，并优先覆盖 persistent sandbox、artifact materialize/register/snapshot、preprocess、tool adapter、batch pattern、sandbox rule 与示例
 
 execution teammate 的默认 authoring 流程：
 
@@ -236,8 +250,9 @@ restore task + artifact catalog
   -> read minimal prompt keywords
   -> docs.search for needed SDK/API details
   -> docs.read selected references/examples
-  -> write pipeline code
-  -> run pipeline dry-run / validation
+  -> edit sandbox files and pipeline code
+  -> snapshot source when needed
+  -> run sandbox dry-run / validation through the Host supervisor
   -> fix from structured feedback or request approval
 ```
 
@@ -245,7 +260,7 @@ dry-run 反馈必须给出可检索关键词或相关 doc id。例如 Vina ligan
 反馈应提示查询 `preprocess.prepare_ligand` 或 `hpc-vina.md`，而不是只返回低层
 Python exception。
 
-### 3.3 Execution Tool Contract 与 HPC SDK
+### 3.3 Execution Tool Contract 与 External Backend SDK
 
 tool contract 至少描述：
 
@@ -255,8 +270,11 @@ tool contract 至少描述：
 - failure signatures 与 parser hints
 - preprocess requirements，例如 Vina 需要 receptor/ligand PDBQT
 
-`hpc.*` SDK 函数的实现默认应由 tool contract 驱动，而不是不断增加
-tool-specific command 拼接分支。每次 HPC SDK 调用都必须生成可审计 `RunSpec`。
+外部 backend SDK 函数的实现默认应由 tool contract 驱动，而不是不断增加
+tool-specific command 拼接分支。每次 runner-backed 调用都必须生成可审计
+`RunSpec`；旧 runner-backed `hpc.fpocket` / `hpc.vina` shorthand 只是迁移期实现债，
+不是稳定 executor-facing product namespace。稳定 public SDK 中 `hpc` 保留为
+placement / remote workspace / declarative stage-fetch namespace。
 
 preprocess 是 pipeline 的受控本地能力：
 
@@ -266,7 +284,8 @@ preprocess 是 pipeline 的受控本地能力：
 - `smiles_to_3d` 负责 SMILES 到三维 ligand 中间结构
 
 executor 在 pipeline code 中判断是否需要 preprocess；preprocess 输出必须先成为可信
-session artifact，再被后续 `hpc.*` 调用作为 `RunSpec.inputs` 消费。
+session artifact，再被后续外部 backend/tool adapter 调用作为 `RunSpec.inputs` 或本地
+tool 输入消费。
 
 ## 4. Reporting 默认不属于 Capability Engine
 

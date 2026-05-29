@@ -81,7 +81,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
-- `deep_research.start`、`execution.pipeline.start` 这类调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用
+- `deep_research.start` 以及迁移兼容的 execution engine start 调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用；execution teammate 的稳定 authoring path 是 sandbox-first，不是让 master 或 executor 直接编排 `execution.pipeline.start`
 - 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning
 - reporting 默认不要求 engine start；report teammate 应优先围绕 `report_draft` 推进交付
 
@@ -90,7 +90,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - `lane.remove`
 - `lane.keep`
 - `lane.unbind_task`
-- 直接 engine start tools such as `deep_research.start`, `execution.pipeline.start`
+- 直接 engine start tools，例如 `deep_research.start` 或迁移兼容的 execution pipeline start bridge
 
 ## 6. Conversation 与 Projection
 

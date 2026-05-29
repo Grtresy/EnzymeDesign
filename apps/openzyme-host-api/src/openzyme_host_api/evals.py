@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -245,9 +246,12 @@ class V3LocalEvalInvoker:
                         "args": {
                             "filename": "fpocket_pipeline.py",
                             "content": (
-                                "from openzyme_pipeline import artifacts, hpc\n"
+                                "from openzyme_pipeline import artifacts, hpc, structure_tools\n"
                                 "structure = artifacts.get('art_eval_structure')\n"
-                                "hpc.fpocket(structure_artifact_id=structure['artifact_id'])\n"
+                                "ws = hpc.workspace('fpocket')\n"
+                                "remote_structure = ws.stage_artifact(structure['artifact_id'], workspace_path='inputs/structure.pdb')\n"
+                                "run = structure_tools.fpocket(structure=remote_structure, placement=ws, expected_outputs=[{'path': 'target_out', 'kind': 'directory', 'format': 'fpocket'}])\n"
+                                "ws.fetch_outputs(run)\n"
                             ),
                         },
                     }
@@ -589,7 +593,7 @@ def _aox_hmm_draft_source() -> str:
 def _aox_hmm_final_source() -> str:
     return f'''from pathlib import Path
 
-from openzyme_pipeline import artifacts, bio, bio_tools
+from openzyme_pipeline import artifacts, bio, bio_tools, hpc
 
 
 AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}
@@ -618,32 +622,63 @@ reference = bio.ncbi_fetch_proteins(
 reference_fasta_id = reference["artifact_ids"][0]
 reference_metadata_id = reference["artifact_ids"][1]
 
-reference_cdhit90 = bio_tools.cdhit(
-    input_fasta_artifact_id=reference_fasta_id,
+ws = hpc.workspace("aox_hmm")
+
+
+def stage(artifact_id, path):
+    return ws.stage_artifact(artifact_id, workspace_path=path)
+
+
+def fetch(run):
+    return ws.fetch_outputs(run)
+
+
+reference_fasta_remote = stage(reference_fasta_id, "inputs/reference.fasta")
+reference_cdhit90 = fetch(bio_tools.cdhit(
+    input_fasta=reference_fasta_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}}],
     identity=0.9,
     mode="reference",
-)
-alignment = bio_tools.mafft(input_fasta_artifact_id=reference_cdhit90["artifact_ids"][0])
-hmm = bio_tools.hmmbuild(alignment_artifact_id=alignment["artifact_ids"][0])
-hmmalign = bio_tools.hmmalign(
-    hmm_artifact_id=hmm["artifact_ids"][0],
-    fasta_artifact_id=reference_fasta_id,
-)
-hmmer_cli = bio_tools.hmmer_search_cli(
-    hmm_artifact_id=hmm["artifact_ids"][0],
-    target_fasta_artifact_id=reference_fasta_id,
+))
+reference_cdhit90_remote = stage(reference_cdhit90["registered_artifact_ids"][0], "inputs/reference_cdhit90.fasta")
+alignment = fetch(bio_tools.mafft(
+    input_fasta=reference_cdhit90_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence", "format": "fasta"}}],
+))
+alignment_remote = stage(alignment["registered_artifact_ids"][0], "inputs/alignment.fasta")
+hmm = fetch(bio_tools.hmmbuild(
+    alignment=alignment_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result", "format": "hmm"}}],
+))
+hmm_remote = stage(hmm["registered_artifact_ids"][0], "inputs/model.hmm")
+hmmalign = fetch(bio_tools.hmmalign(
+    hmm=hmm_remote,
+    fasta=reference_fasta_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence", "format": "fasta"}}],
+))
+hmmer_cli = fetch(bio_tools.hmmer_search_cli(
+    hmm=hmm_remote,
+    target_fasta=reference_fasta_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result", "format": "csv"}}],
     params={{"evalue": "1e-20"}},
-)
+))
 hmmer_provider = bio.hmmer_search(
-    hmm_artifact_id=hmm["artifact_ids"][0],
+    hmm_artifact_id=hmm["registered_artifact_ids"][0],
     database="uniprotkb",
     params={{"evalue": "1e-20", "query": "aox"}},
 )
-candidate_cdhit85 = bio_tools.cdhit(
-    input_fasta_artifact_id=reference_fasta_id,
+candidate_cdhit85 = fetch(bio_tools.cdhit(
+    input_fasta=reference_fasta_remote,
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/cdhit/candidate_cdhit85.fasta", "kind": "sequence", "format": "fasta"}}],
     identity=0.85,
     mode="candidate",
-)
+))
 
 candidates = AOX_ACCESSIONS[:5]
 filtered_rows = ["accession,evalue,score,passed_filter"]
@@ -700,7 +735,7 @@ candidate_cdhit85_fasta = register_text(
     metadata={{
         "tool_name": "cd-hit",
         "identity": 0.85,
-        "source_operation_artifact_ids": candidate_cdhit85["artifact_ids"],
+        "source_operation_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     }},
 )
 nodes_csv = register_text(
@@ -720,13 +755,13 @@ summary = {{
     "filter": "evalue <= 1e-20 and score >= 100",
     "reference_fasta_artifact_id": reference_fasta_id,
     "reference_metadata_artifact_id": reference_metadata_id,
-    "cdhit90_artifact_ids": reference_cdhit90["artifact_ids"],
-    "alignment_artifact_ids": alignment["artifact_ids"],
-    "hmm_artifact_ids": hmm["artifact_ids"],
-    "hmmalign_artifact_ids": hmmalign["artifact_ids"],
-    "hmmer_cli_artifact_ids": hmmer_cli["artifact_ids"],
+    "cdhit90_artifact_ids": reference_cdhit90["registered_artifact_ids"],
+    "alignment_artifact_ids": alignment["registered_artifact_ids"],
+    "hmm_artifact_ids": hmm["registered_artifact_ids"],
+    "hmmalign_artifact_ids": hmmalign["registered_artifact_ids"],
+    "hmmer_cli_artifact_ids": hmmer_cli["registered_artifact_ids"],
     "hmmer_provider_artifact_ids": hmmer_provider["artifact_ids"],
-    "candidate_cdhit85_artifact_ids": candidate_cdhit85["artifact_ids"],
+    "candidate_cdhit85_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     "derived_artifact_ids": [
         filtered_fasta["artifact_id"],
         filtered_csv["artifact_id"],
@@ -999,53 +1034,111 @@ class AoxHmmFixtureSandboxRunner:
             },
         )
         reference_fasta_id = str(reference["artifact_ids"][0])
-        cdhit90 = control_handler(
-            "bio_tools.cdhit",
-            {
-                "input_fasta_artifact_id": reference_fasta_id,
-                "identity": 0.9,
-                "mode": "reference",
-            },
+        workspace = dict(control_handler("hpc.workspace", {"label": "aox_hmm"}))
+
+        def stage(artifact_id: str, path: str) -> dict[str, Any]:
+            return dict(
+                control_handler(
+                    "hpc.stage_artifact",
+                    {
+                        "hpc_workspace": workspace,
+                        "artifact_id": artifact_id,
+                        "workspace_path": path,
+                    },
+                )
+            )
+
+        def fetch(run: dict[str, Any]) -> dict[str, Any]:
+            return dict(
+                control_handler(
+                    "hpc.fetch_outputs",
+                    {
+                        "hpc_workspace": workspace,
+                        "run_id": run["run_id"],
+                    },
+                )
+            )
+
+        reference_remote = stage(reference_fasta_id, "inputs/reference.fasta")
+        cdhit90 = fetch(
+            control_handler(
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": reference_remote,
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence"}],
+                    "identity": 0.9,
+                    "mode": "reference",
+                },
+            )
         )
-        alignment = control_handler(
-            "bio_tools.mafft",
-            {"input_fasta_artifact_id": cdhit90["artifact_ids"][0], "params": {}},
+        alignment_remote = stage(cdhit90["registered_artifact_ids"][0], "inputs/alignment_input.fasta")
+        alignment = fetch(
+            control_handler(
+                "bio_tools.mafft",
+                {
+                    "input_fasta": alignment_remote,
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}],
+                    "params": {},
+                },
+            )
         )
-        hmm = control_handler(
-            "bio_tools.hmmbuild",
-            {"alignment_artifact_id": alignment["artifact_ids"][0], "params": {}},
+        hmm = fetch(
+            control_handler(
+                "bio_tools.hmmbuild",
+                {
+                    "alignment": stage(alignment["registered_artifact_ids"][0], "inputs/alignment.fasta"),
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}],
+                    "params": {},
+                },
+            )
         )
-        control_handler(
-            "bio_tools.hmmalign",
-            {
-                "hmm_artifact_id": hmm["artifact_ids"][0],
-                "fasta_artifact_id": reference_fasta_id,
-                "params": {},
-            },
+        hmm_remote = stage(hmm["registered_artifact_ids"][0], "inputs/model.hmm")
+        fetch(
+            control_handler(
+                "bio_tools.hmmalign",
+                {
+                    "hmm": hmm_remote,
+                    "fasta": reference_remote,
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}],
+                    "params": {},
+                },
+            )
         )
-        control_handler(
-            "bio_tools.hmmer_search_cli",
-            {
-                "hmm_artifact_id": hmm["artifact_ids"][0],
-                "target_fasta_artifact_id": reference_fasta_id,
-                "params": {"evalue": "1e-20"},
-            },
+        fetch(
+            control_handler(
+                "bio_tools.hmmer_search_cli",
+                {
+                    "hmm": hmm_remote,
+                    "target_fasta": reference_remote,
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result"}],
+                    "params": {"evalue": "1e-20"},
+                },
+            )
         )
         control_handler(
             "bio.hmmer_search",
             {
-                "hmm_artifact_id": hmm["artifact_ids"][0],
+                "hmm_artifact_id": hmm["registered_artifact_ids"][0],
                 "database": "uniprotkb",
                 "params": {"evalue": "1e-20", "query": "aox"},
             },
         )
-        cdhit85 = control_handler(
-            "bio_tools.cdhit",
-            {
-                "input_fasta_artifact_id": reference_fasta_id,
-                "identity": 0.85,
-                "mode": "candidate",
-            },
+        cdhit85 = fetch(
+            control_handler(
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": reference_remote,
+                    "placement": workspace,
+                    "expected_outputs": [{"path": "bio_tools/cdhit/candidate_cdhit85.fasta", "kind": "sequence"}],
+                    "identity": 0.85,
+                    "mode": "candidate",
+                },
+            )
         )
 
         output_dir = Path(tempfile.gettempdir()) / "openzyme-aox-hmm-fixture" / invocation_id
@@ -1126,7 +1219,7 @@ class AoxHmmFixtureSandboxRunner:
                     "format": "fasta",
                     "tool_name": "cd-hit",
                     "identity": 0.85,
-                    "source_operation_artifact_ids": list(cdhit85["artifact_ids"]),
+                    "source_operation_artifact_ids": list(cdhit85["registered_artifact_ids"]),
                 },
             ),
             write_artifact(
@@ -1146,8 +1239,8 @@ class AoxHmmFixtureSandboxRunner:
                         "candidate_count": len(candidates),
                         "filter": "evalue <= 1e-20 and score >= 100",
                         "reference_artifact_ids": list(reference["artifact_ids"]),
-                        "cdhit90_artifact_ids": list(cdhit90["artifact_ids"]),
-                        "candidate_cdhit85_artifact_ids": list(cdhit85["artifact_ids"]),
+                        "cdhit90_artifact_ids": list(cdhit90["registered_artifact_ids"]),
+                        "candidate_cdhit85_artifact_ids": list(cdhit85["registered_artifact_ids"]),
                     },
                     sort_keys=True,
                     indent=2,
@@ -1207,6 +1300,7 @@ def seed_v3_eval_execution_artifact(
     repositories: CoreRepositories, session_id: str
 ) -> None:
     fixture_path = Path(__file__).parent / "fixtures" / "fpocket" / "1ubq.pdb"
+    content_digest = f"sha256:{hashlib.sha256(fixture_path.read_bytes()).hexdigest()}"
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_eval_structure",
@@ -1224,6 +1318,7 @@ def seed_v3_eval_execution_artifact(
                 "source": "eval_fixture",
                 "format": "pdb",
                 "validation_profile": "fpocket_valid",
+                "content_digest": content_digest,
             },
             created_at="2026-04-20T12:00:03+00:00",
         )

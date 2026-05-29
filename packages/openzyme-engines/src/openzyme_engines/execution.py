@@ -7,11 +7,14 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import shutil
 import tempfile
 from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
+from openzyme_core import ArtifactBoundaryError
+from openzyme_core import ArtifactBoundaryService
 from openzyme_core import EngineDescriptor
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
@@ -20,6 +23,8 @@ from openzyme_core.artifact_projection import project_artifact_for_agent
 from openzyme_core.artifact_projection import sanitize_private_artifact_fields
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
@@ -28,6 +33,9 @@ from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import RunRecord
 from openzyme_domain import RunStatus
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_tools import get_hpc_tool_contract
@@ -2624,7 +2632,13 @@ class ExecutionEngine:
             return self._run_pipeline_bio(session=session, invocation=invocation, method=method, params=params)
         if method in {"bio_tools.cdhit", "bio_tools.mafft", "bio_tools.hmmbuild", "bio_tools.hmmalign", "bio_tools.hmmer_search_cli"}:
             return self._run_pipeline_bio_tool(session=session, invocation=invocation, method=method, params=params)
-        if method in {"hpc.fpocket", "hpc.vina"}:
+        if method == "hpc.workspace":
+            return self._run_pipeline_hpc_workspace(invocation=invocation, params=params)
+        if method == "hpc.stage_artifact":
+            return self._run_pipeline_hpc_stage_artifact(session=session, invocation=invocation, params=params)
+        if method == "hpc.fetch_outputs":
+            return self._run_pipeline_hpc_fetch_outputs(session=session, invocation=invocation, params=params)
+        if method in {"structure_tools.fpocket", "docking.vina"}:
             return self._run_pipeline_hpc(session=session, task=task, invocation=invocation, method=method, params=params)
         if method == "run.wait":
             run = self.repositories.runs.get(str(params["run_id"]))
@@ -2637,6 +2651,709 @@ class ExecutionEngine:
                 for artifact in self.repositories.artifacts.list_by_run(str(params["run_id"]))
             ]
         raise ValueError(f"unsupported SDK operation {method!r}")
+
+    def _pipeline_sandbox_workspace_id(self, invocation: EngineInvocation) -> str:
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        return str(pipeline.get("sandbox_workspace_id") or f"pipeline:{invocation.invocation_id}")
+
+    def _normalize_hpc_workspace_label(self, label: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", label.strip()).strip("-._")
+        if not normalized or len(normalized) > 80 or normalized in {".", ".."}:
+            raise PipelineSdkFailure(
+                error_type="hpc_workspace_label_invalid",
+                message=f"HPC workspace label {label!r} is invalid.",
+                hint="Use a short label containing letters, numbers, '.', '_' or '-'.",
+                stage="hpc_workspace_validation",
+                retryable=False,
+                sdk_method="hpc.workspace",
+                details={"label": label},
+            )
+        return normalized
+
+    def _validate_hpc_workspace_path(self, value: str, *, sdk_method: str) -> str:
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        forbidden_chars = (";", "&", "|", "`", "$", "\\", "\n", "\r", "<", ">", "*", "?", "[", "]", "{", "}", "!")
+        if (
+            not normalized
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or any(char in normalized for char in forbidden_chars)
+        ):
+            raise PipelineSdkFailure(
+                error_type="hpc_stage_path_invalid",
+                message=f"HPC workspace path {value!r} is invalid.",
+                hint="Use a normalized POSIX relative path without '..' or shell metacharacters.",
+                stage="hpc_stage_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"workspace_path": value},
+            )
+        return path.as_posix()
+
+    def _run_pipeline_hpc_workspace(self, *, invocation: EngineInvocation, params: dict[str, Any]) -> dict[str, Any]:
+        label = str(params.get("label") or "")
+        normalized_label = self._normalize_hpc_workspace_label(label)
+        sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
+        digest = hashlib.sha256(f"{sandbox_workspace_id}:{normalized_label}".encode("utf-8")).hexdigest()[:16]
+        return {
+            "kind": "hpc_workspace",
+            "hpc_workspace_id": f"hpcws_{digest}",
+            "label": label,
+            "normalized_label": normalized_label,
+            "sandbox_workspace_id": sandbox_workspace_id,
+            "placement_profile_id": "default",
+        }
+
+    def _require_hpc_workspace(self, value: Any, *, sdk_method: str) -> dict[str, Any]:
+        if not isinstance(value, dict) or not value.get("hpc_workspace_id"):
+            raise PipelineSdkFailure(
+                error_type="hpc_workspace_forbidden",
+                message=f"{sdk_method} requires an explicit hpc.workspace(...) placement.",
+                hint="Create a workspace with hpc.workspace(label) and pass it as placement.",
+                stage="hpc_placement_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+            )
+        return dict(value)
+
+    def _run_pipeline_hpc_stage_artifact(
+        self,
+        *,
+        session: Any,
+        invocation: EngineInvocation,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self._require_hpc_workspace(params.get("hpc_workspace"), sdk_method="hpc.stage_artifact")
+        artifact_id = str(params.get("artifact_id") or "")
+        artifact = self.repositories.artifacts.get(artifact_id)
+        if artifact is None or artifact.session_id != session.session_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_workspace_forbidden",
+                message=f"Artifact {artifact_id!r} is not available for staging in this session.",
+                hint="Stage only catalog artifacts created or authorized in the current session.",
+                stage="hpc_stage_validation",
+                retryable=False,
+                sdk_method="hpc.stage_artifact",
+                details={"artifact_id": artifact_id},
+            )
+        workspace_relative_path = self._validate_hpc_workspace_path(
+            str(params.get("workspace_path") or ""),
+            sdk_method="hpc.stage_artifact",
+        )
+        artifact_digest = self._sealed_artifact_digest(
+            artifact,
+            sdk_method="hpc.stage_artifact",
+        )
+        hpc_workspace_id = str(workspace["hpc_workspace_id"])
+        existing_stage = self._find_hpc_stage_ref(
+            session_id=session.session_id,
+            hpc_workspace_id=hpc_workspace_id,
+            workspace_relative_path=workspace_relative_path,
+        )
+        if existing_stage is not None:
+            existing_digest = str(existing_stage.get("artifact_digest") or "")
+            if existing_digest != artifact_digest:
+                raise PipelineSdkFailure(
+                    error_type="hpc_stage_conflict",
+                    message=f"HPC workspace path {workspace_relative_path!r} is already staged with a different sealed digest.",
+                    hint="Use a different workspace_path or reuse the artifact already staged at that path.",
+                    stage="hpc_stage_validation",
+                    retryable=False,
+                    sdk_method="hpc.stage_artifact",
+                    details={
+                        "hpc_workspace_id": hpc_workspace_id,
+                        "workspace_relative_path": workspace_relative_path,
+                        "existing_artifact_digest": existing_digest,
+                        "requested_artifact_digest": artifact_digest,
+                    },
+                )
+            return dict(existing_stage)
+        stage_ref_id = "stage_" + hashlib.sha256(
+            f"{hpc_workspace_id}:{artifact.artifact_id}:{artifact_digest}:{workspace_relative_path}".encode("utf-8")
+        ).hexdigest()[:16]
+        payload = {
+            "kind": "hpc_stage_ref",
+            "stage_ref_id": stage_ref_id,
+            "hpc_workspace_id": hpc_workspace_id,
+            "artifact_id": artifact.artifact_id,
+            "artifact_digest": artifact_digest,
+            "workspace_relative_path": workspace_relative_path,
+            "source": "artifact_catalog",
+            "sandbox_workspace_id": self._pipeline_sandbox_workspace_id(invocation),
+        }
+        now = utc_now_iso()
+        self.repositories.engine_documents.save(
+            self._document_record(
+                document_id=self._hpc_stage_document_id(hpc_workspace_id, workspace_relative_path),
+                session_id=session.session_id,
+                invocation_id=invocation.invocation_id,
+                document_kind="hpc_stage_ref",
+                payload=payload,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        return payload
+
+    def _run_pipeline_hpc_fetch_outputs(
+        self,
+        *,
+        session: Any,
+        invocation: EngineInvocation,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        if "register" in params:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_register_parameter_unsupported",
+                message="hpc.fetch_outputs does not accept a register parameter in S11 v1.",
+                hint="Call ws.fetch_outputs(run); declared outputs are always registered through the artifact boundary.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+            )
+        workspace = self._require_hpc_workspace(params.get("hpc_workspace"), sdk_method="hpc.fetch_outputs")
+        run_id = str(params.get("run_id") or "")
+        run = self.repositories.runs.get(run_id)
+        if run is None or run.session_id != session.session_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"HPC run {run_id!r} is not available in this session.",
+                hint="Pass the run handle returned by the approved HPC placement operation.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"run_id": run_id},
+            )
+        pending = self._load_hpc_pending_outputs(session_id=session.session_id, run_id=run_id)
+        if pending is None or str(pending.get("hpc_workspace_id") or "") != str(workspace["hpc_workspace_id"]):
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"HPC run {run_id!r} has no declared outputs for this workspace.",
+                hint="Fetch only the run handle returned by an approved operation in the same hpc.workspace(...).",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"run_id": run_id, "hpc_workspace_id": workspace["hpc_workspace_id"]},
+            )
+        existing_fetch = self._load_hpc_fetch_result(session_id=session.session_id, run_id=run_id)
+        if existing_fetch is not None:
+            return dict(existing_fetch)
+        boundary = self._ensure_pipeline_artifact_boundary_workspace(invocation)
+        registered: list[SessionArtifactRecord] = []
+        fetch_refs: list[dict[str, Any]] = []
+        for output in list(pending.get("outputs") or []):
+            registered_artifact, fetch_ref = self._register_hpc_pending_output(
+                boundary=boundary,
+                session_id=session.session_id,
+                invocation=invocation,
+                run=run,
+                hpc_workspace_id=str(workspace["hpc_workspace_id"]),
+                pending=output,
+                operation_payload=pending,
+            )
+            registered.append(registered_artifact)
+            fetch_refs.append(fetch_ref)
+        payload = {
+            "kind": "hpc_fetch_result",
+            "hpc_workspace_id": str(workspace["hpc_workspace_id"]),
+            "run_id": run_id,
+            "status": run.status.value,
+            "registered_artifact_ids": [artifact.artifact_id for artifact in registered],
+            "artifacts": [project_artifact_for_agent(artifact) for artifact in registered],
+            "fetch_refs": fetch_refs,
+        }
+        self._save_hpc_fetch_result(
+            session_id=session.session_id,
+            invocation_id=invocation.invocation_id,
+            run_id=run_id,
+            payload=payload,
+        )
+        return payload
+
+    def _sealed_artifact_digest(self, artifact: SessionArtifactRecord, *, sdk_method: str) -> str:
+        metadata = dict(artifact.metadata or {})
+        digest = metadata.get("content_digest") or metadata.get("tree_digest")
+        if digest is None or str(digest).strip() == "":
+            raise PipelineSdkFailure(
+                error_type="hpc_stage_digest_missing",
+                message=f"Artifact {artifact.artifact_id!r} does not expose an S08 sealed digest.",
+                hint="Register or materialize the input through the artifact boundary before staging it to HPC.",
+                stage="hpc_stage_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id},
+            )
+        return str(digest)
+
+    def _hpc_stage_document_id(self, hpc_workspace_id: str, workspace_relative_path: str) -> str:
+        digest = hashlib.sha256(f"{hpc_workspace_id}:{workspace_relative_path}".encode("utf-8")).hexdigest()[:24]
+        return f"hpc_stage_{digest}"
+
+    def _hpc_pending_document_id(self, run_id: str) -> str:
+        digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:24]
+        return f"hpc_pending_{digest}"
+
+    def _hpc_fetch_document_id(self, run_id: str) -> str:
+        digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:24]
+        return f"hpc_fetch_{digest}"
+
+    def _find_hpc_stage_ref(
+        self,
+        *,
+        session_id: str,
+        hpc_workspace_id: str,
+        workspace_relative_path: str,
+    ) -> dict[str, Any] | None:
+        document = self.repositories.engine_documents.get(
+            self._hpc_stage_document_id(hpc_workspace_id, workspace_relative_path)
+        )
+        if document is None or document.session_id != session_id or document.document_kind != "hpc_stage_ref":
+            return None
+        payload = dict(document.payload)
+        if (
+            str(payload.get("hpc_workspace_id") or "") == hpc_workspace_id
+            and str(payload.get("workspace_relative_path") or "") == workspace_relative_path
+        ):
+            return payload
+        return None
+
+    def _load_hpc_pending_outputs(self, *, session_id: str, run_id: str) -> dict[str, Any] | None:
+        document = self.repositories.engine_documents.get(self._hpc_pending_document_id(run_id))
+        if document is None or document.session_id != session_id or document.document_kind != "hpc_pending_outputs":
+            return None
+        return dict(document.payload)
+
+    def _load_hpc_fetch_result(self, *, session_id: str, run_id: str) -> dict[str, Any] | None:
+        document = self.repositories.engine_documents.get(self._hpc_fetch_document_id(run_id))
+        if document is None or document.session_id != session_id or document.document_kind != "hpc_fetch_result":
+            return None
+        return dict(document.payload)
+
+    def _save_hpc_fetch_result(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+        run_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        now = utc_now_iso()
+        self.repositories.engine_documents.save(
+            self._document_record(
+                document_id=self._hpc_fetch_document_id(run_id),
+                session_id=session_id,
+                invocation_id=invocation_id,
+                document_kind="hpc_fetch_result",
+                payload=payload,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    def _save_hpc_pending_outputs(
+        self,
+        *,
+        session_id: str,
+        invocation: EngineInvocation,
+        run: RunRecord,
+        operation_key: str,
+        sdk_method: str,
+        hpc_workspace_id: str,
+        stage_refs: list[dict[str, Any]],
+        declared_outputs: list[dict[str, Any]],
+        request_metadata: dict[str, Any],
+        drafts: tuple[BioArtifactDraft, ...] = (),
+        execution_artifacts: tuple[ExecutionArtifactRef, ...] = (),
+        raw_result: dict[str, Any] | None = None,
+    ) -> None:
+        declared_by_path = {
+            self._validate_hpc_workspace_path(str(item.get("path") or ""), sdk_method=sdk_method): dict(item)
+            for item in declared_outputs
+        }
+        outputs: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        for draft in drafts:
+            relative_path = self._validate_hpc_workspace_path(draft.relative_path, sdk_method=sdk_method)
+            if declared_by_path and relative_path not in declared_by_path:
+                continue
+            seen_paths.add(relative_path)
+            outputs.append(
+                {
+                    "relative_path": relative_path,
+                    "declared_output": declared_by_path.get(relative_path, {"path": relative_path}),
+                    "artifact_kind": draft.kind.value,
+                    "format": draft.format,
+                    "title": draft.title,
+                    "content": draft.content,
+                    "metadata": dict(draft.metadata),
+                }
+            )
+        for artifact in execution_artifacts:
+            relative_path = self._validate_hpc_workspace_path(artifact.relative_path, sdk_method=sdk_method)
+            if declared_by_path and relative_path not in declared_by_path:
+                continue
+            seen_paths.add(relative_path)
+            declared = declared_by_path.get(relative_path, {"path": relative_path})
+            outputs.append(
+                {
+                    "relative_path": relative_path,
+                    "declared_output": declared,
+                    "artifact_kind": artifact.kind.value,
+                    "format": declared.get("format") or dict(artifact.metadata or {}).get("format"),
+                    "title": PurePosixPath(relative_path).name,
+                    "source_uri": artifact.storage_uri,
+                    "metadata": dict(artifact.metadata or {}),
+                }
+            )
+        for relative_path, declared in declared_by_path.items():
+            if relative_path in seen_paths:
+                continue
+            outputs.append(
+                {
+                    "relative_path": relative_path,
+                    "declared_output": declared,
+                    "artifact_kind": self._artifact_kind_from_declared(declared, relative_path).value,
+                    "format": declared.get("format"),
+                    "title": PurePosixPath(relative_path).name,
+                    "metadata": {},
+                    "synthetic_source": True,
+                }
+            )
+        payload = {
+            "kind": "hpc_pending_outputs",
+            "run_id": run.run_id,
+            "runner_run_id": run.runner_run_id,
+            "operation_key": operation_key,
+            "sdk_method": sdk_method,
+            "hpc_workspace_id": hpc_workspace_id,
+            "stage_refs": stage_refs,
+            "declared_outputs": declared_outputs,
+            "selected_backend": "hpc",
+            "status": run.status.value,
+            "raw_result": dict(raw_result or {}),
+            "request_metadata": dict(request_metadata),
+            "outputs": outputs,
+        }
+        now = utc_now_iso()
+        self.repositories.engine_documents.save(
+            self._document_record(
+                document_id=self._hpc_pending_document_id(run.run_id),
+                session_id=session_id,
+                invocation_id=invocation.invocation_id,
+                document_kind="hpc_pending_outputs",
+                payload=payload,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    def _ensure_pipeline_artifact_boundary_workspace(
+        self,
+        invocation: EngineInvocation,
+    ) -> ArtifactBoundaryService:
+        sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
+        workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        workspace_path = workspace_root / sandbox_workspace_id
+        for directory in ("src", "input", "work", "output", "logs", "manifest"):
+            (workspace_path / directory).mkdir(parents=True, exist_ok=True)
+        workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id)
+        if workspace is None:
+            now = utc_now_iso()
+            member_id = f"member_{hashlib.sha256(sandbox_workspace_id.encode('utf-8')).hexdigest()[:16]}"
+            agent_id = f"agent:pipeline:{_safe_ref(invocation.invocation_id)}"
+            self.repositories.agents.save(
+                AgentMember(
+                    agent_id=agent_id,
+                    session_id=invocation.session_id,
+                    lane_id=invocation.lane_id,
+                    task_id=invocation.task_id,
+                    name="Pipeline executor",
+                    role="executor",
+                    status=AgentMemberStatus.IDLE,
+                    parent_agent_id=None,
+                    created_at=now,
+                    updated_at=now,
+                    idle_since=now,
+                    member_id=member_id,
+                )
+            )
+            workspace = SandboxWorkspaceRecord(
+                sandbox_workspace_id=sandbox_workspace_id,
+                session_id=invocation.session_id,
+                agent_member_id=member_id,
+                agent_id=agent_id,
+                focus_task_id=invocation.task_id,
+                focus_lane_id=invocation.lane_id,
+                status=SandboxWorkspaceStatus.READY,
+                image_ref="openzyme-pipeline-sandbox:s11-compat",
+                image_digest="sha256:s11-compat",
+                image_version="s11-compat",
+                sandbox_protocol_version="s11",
+                image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+                manifest_version="s11.workspace_manifest.v1",
+                volume_digest="",
+                quota_summary={},
+                directory_summary={},
+                materialized_input_artifact_ids=(),
+                registered_artifact_ids=(),
+                source_code_artifact_ids=(),
+                created_at=now,
+                last_attached_at=now,
+            )
+            self.repositories.sandbox_workspaces.save(workspace)
+        boundary = ArtifactBoundaryService(self.repositories, workspace_root=workspace_root)
+        workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id) or workspace
+        if not workspace.source_code_artifact_ids:
+            pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+            source = self._reload_pipeline_source(invocation, pipeline)
+            (workspace_path / "src" / "pipeline.py").write_text(source.code, encoding="utf-8")
+            try:
+                boundary.snapshot_code(
+                    session_id=invocation.session_id,
+                    sandbox_workspace_id=sandbox_workspace_id,
+                    paths=["pipeline.py"],
+                    entrypoint="pipeline.py",
+                    metadata=source.metadata(),
+                )
+            except ArtifactBoundaryError as exc:
+                raise PipelineSdkFailure(
+                    error_type=exc.error_code,
+                    message=str(exc),
+                    hint=exc.hint or "Ensure the executor sandbox source tree is snapshotted before registering outputs.",
+                    stage="hpc_fetch_register",
+                    retryable=False,
+                    sdk_method="hpc.fetch_outputs",
+                    details=exc.details,
+                ) from exc
+        return boundary
+
+    def _register_hpc_pending_output(
+        self,
+        *,
+        boundary: ArtifactBoundaryService,
+        session_id: str,
+        invocation: EngineInvocation,
+        run: RunRecord,
+        hpc_workspace_id: str,
+        pending: dict[str, Any],
+        operation_payload: dict[str, Any],
+    ) -> tuple[SessionArtifactRecord, dict[str, Any]]:
+        relative_path = self._validate_hpc_workspace_path(
+            str(pending.get("relative_path") or ""),
+            sdk_method="hpc.fetch_outputs",
+        )
+        sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
+        workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        source_path = workspace_root / sandbox_workspace_id / "output" / relative_path
+        self._write_hpc_pending_output_source(source_path, pending)
+        output_digest = self._digest_hpc_output_source(source_path)
+        fetch_ref_id = "fetch_" + hashlib.sha256(
+            f"{hpc_workspace_id}:{run.run_id}:{relative_path}:{output_digest}".encode("utf-8")
+        ).hexdigest()[:16]
+        declared = dict(pending.get("declared_output") or {"path": relative_path})
+        metadata = {
+            **dict(pending.get("metadata") or {}),
+            "hpc_workspace_id": hpc_workspace_id,
+            "fetch_ref_id": fetch_ref_id,
+            "declared_output_path": relative_path,
+            "declared_output": declared,
+            "declared_outputs": list(operation_payload.get("declared_outputs") or []),
+            "stage_refs": list(operation_payload.get("stage_refs") or []),
+            "selected_backend": "hpc",
+            "sdk_method": operation_payload.get("sdk_method"),
+            "pipeline_step_id": operation_payload.get("operation_key"),
+            "runner_run_id": run.runner_run_id,
+            "pipeline_invocation_id": invocation.invocation_id,
+            "planned_fetch_intent": True,
+            **dict(operation_payload.get("request_metadata") or {}),
+        }
+        format_value = pending.get("format") or declared.get("format")
+        try:
+            result = boundary.register(
+                session_id=session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                path=f"/workspace/output/{relative_path}",
+                kind=self._artifact_kind_from_declared(declared, relative_path),
+                format=None if format_value in {None, ""} else str(format_value),
+                metadata=metadata,
+                invocation_id=invocation.invocation_id,
+                run_id=run.run_id,
+            )
+        except ArtifactBoundaryError as exc:
+            raise PipelineSdkFailure(
+                error_type=exc.error_code,
+                message=str(exc),
+                hint=exc.hint or "Declared output registration through the S08 artifact boundary failed.",
+                stage="hpc_fetch_register",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details=exc.details,
+            ) from exc
+        artifact_digest = result.content_digest or result.tree_digest or output_digest
+        fetch_ref = {
+            "fetch_ref_id": fetch_ref_id,
+            "hpc_workspace_id": hpc_workspace_id,
+            "run_id": run.run_id,
+            "declared_output_path": relative_path,
+            "registered_artifact_id": result.artifact.artifact_id,
+            "output_digest": artifact_digest,
+        }
+        return result.artifact, fetch_ref
+
+    def _write_hpc_pending_output_source(self, target: Path, pending: dict[str, Any]) -> None:
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source_uri = pending.get("source_uri")
+        if isinstance(source_uri, str) and source_uri and Path(source_uri).exists():
+            source = Path(source_uri)
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copyfile(source, target)
+            return
+        if self._pending_output_is_directory(pending):
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "summary.json").write_text(
+                json.dumps({"status": "s11_controlled_fetch", "path": pending.get("relative_path")}, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return
+        content = pending.get("content")
+        if not isinstance(content, str):
+            content = self._dummy_content_for_declared_output(pending)
+        target.write_text(content, encoding="utf-8")
+
+    def _pending_output_is_directory(self, pending: dict[str, Any]) -> bool:
+        declared = dict(pending.get("declared_output") or {})
+        kind = str(declared.get("kind") or pending.get("artifact_kind") or "").lower()
+        format_value = str(declared.get("format") or pending.get("format") or "").lower()
+        return kind == "directory" or format_value == "fpocket"
+
+    def _dummy_content_for_declared_output(self, pending: dict[str, Any]) -> str:
+        declared = dict(pending.get("declared_output") or {})
+        format_value = str(declared.get("format") or pending.get("format") or "").lower()
+        path = str(pending.get("relative_path") or "output")
+        if format_value in {"fa", "faa", "fasta"}:
+            return ">s11_fetch_placeholder\nMKTAYIAKQRQISFVKSHFSRQ\n"
+        if format_value == "hmm":
+            return "HMMER3/f [fixture]\nNAME s11_fetch_placeholder\n//\n"
+        if format_value == "csv":
+            return "target,accession,evalue,score\n"
+        if format_value == "json":
+            return "{}\n"
+        if format_value in {"pdb", "pdbqt"}:
+            return "REMARK S11 controlled fetch placeholder\n"
+        return f"S11 controlled fetch placeholder for {path}\n"
+
+    def _artifact_kind_from_declared(self, declared: dict[str, Any], relative_path: str) -> ArtifactKind:
+        value = declared.get("kind")
+        if value is not None:
+            try:
+                return ArtifactKind(str(value))
+            except ValueError:
+                pass
+        return _artifact_kind_from_path(relative_path)
+
+    def _digest_hpc_output_source(self, path: Path) -> str:
+        if path.is_file():
+            return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+        files: list[dict[str, Any]] = []
+        for child in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+            if child.is_dir():
+                continue
+            content = child.read_bytes()
+            files.append(
+                {
+                    "relative_path": child.relative_to(path).as_posix(),
+                    "content_digest": f"sha256:{hashlib.sha256(content).hexdigest()}",
+                    "size_bytes": len(content),
+                }
+            )
+        payload = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+    def _require_stage_ref_artifact_id(
+        self,
+        ref: Any,
+        *,
+        placement: dict[str, Any],
+        slot_name: str,
+        sdk_method: str,
+        session_id: str | None = None,
+    ) -> str:
+        if not isinstance(ref, dict) or not ref.get("stage_ref_id") or not ref.get("artifact_id"):
+            raise PipelineSdkFailure(
+                error_type="hpc_stage_ref_required",
+                message=f"{sdk_method} requires {slot_name} to be a staged artifact ref.",
+                hint="Call ws.stage_artifact(artifact_id, workspace_path=...) and pass the returned ref.",
+                stage="hpc_stage_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+            )
+        if str(ref.get("hpc_workspace_id") or "") != str(placement.get("hpc_workspace_id") or ""):
+            raise PipelineSdkFailure(
+                error_type="hpc_workspace_forbidden",
+                message=f"{sdk_method} {slot_name} was staged into a different HPC workspace.",
+                hint="Stage all inputs into the same hpc.workspace(...) passed as placement.",
+                stage="hpc_stage_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"slot_name": slot_name},
+            )
+        if session_id is not None:
+            artifact_id = str(ref["artifact_id"])
+            artifact = self.repositories.artifacts.get(artifact_id)
+            if artifact is None or artifact.session_id != session_id:
+                raise PipelineSdkFailure(
+                    error_type="artifact_not_available",
+                    message=f"Artifact {artifact_id!r} is not available in this session.",
+                    hint="Stage only catalog artifacts from the current session.",
+                    stage="hpc_stage_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"artifact_id": artifact_id, "slot_name": slot_name},
+                )
+            expected_digest = self._sealed_artifact_digest(artifact, sdk_method=sdk_method)
+            actual_digest = str(ref.get("artifact_digest") or "")
+            if actual_digest != expected_digest:
+                raise PipelineSdkFailure(
+                    error_type="artifact_digest_mismatch",
+                    message=f"{sdk_method} {slot_name} staged digest does not match the catalog sealed digest.",
+                    hint="Use the StageRef returned by ws.stage_artifact for the current artifact version.",
+                    stage="hpc_stage_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "artifact_id": artifact_id,
+                        "slot_name": slot_name,
+                        "expected_digest": expected_digest,
+                        "actual_digest": actual_digest,
+                    },
+                )
+            workspace_path = str(ref.get("workspace_relative_path") or "")
+            if workspace_path:
+                self._validate_hpc_workspace_path(workspace_path, sdk_method=sdk_method)
+        return str(ref["artifact_id"])
+
+    def _require_declared_outputs(self, params: dict[str, Any], *, sdk_method: str) -> list[dict[str, Any]]:
+        expected_outputs = [dict(item) for item in list(params.get("expected_outputs") or []) if isinstance(item, dict)]
+        if not expected_outputs:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"{sdk_method} requires declared expected_outputs.",
+                hint="Declare the workspace-relative output paths that ws.fetch_outputs may register.",
+                stage="hpc_output_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+            )
+        for output in expected_outputs:
+            self._validate_hpc_workspace_path(str(output.get("path") or ""), sdk_method=sdk_method)
+        return expected_outputs
 
     def _run_pipeline_bio(
         self,
@@ -2770,6 +3487,25 @@ class ExecutionEngine:
             return dict(completed[operation_key])
         adapter = self.bio_tools_adapter or DeterministicBioToolsAdapter()
         retrieved_at = utc_now_iso()
+        placement = self._require_hpc_workspace(params.get("placement"), sdk_method=method)
+        expected_outputs = self._require_declared_outputs(params, sdk_method=method)
+        stage_refs: list[dict[str, Any]] = []
+
+        def staged_artifact(slot_name: str) -> SessionArtifactRecord:
+            ref = dict(params.get(slot_name) or {})
+            stage_refs.append(ref)
+            return self._require_pipeline_artifact(
+                session_id=session.session_id,
+                artifact_id=self._require_stage_ref_artifact_id(
+                    ref,
+                    placement=placement,
+                    slot_name=slot_name,
+                    sdk_method=method,
+                    session_id=session.session_id,
+                ),
+                sdk_method=method,
+            )
+
         if method == "bio_tools.cdhit":
             try:
                 identity = float(params.get("identity") or 0)
@@ -2784,107 +3520,108 @@ class ExecutionEngine:
                     details={"identity": params.get("identity")},
                 ) from exc
             result = adapter.cdhit(
-                input_fasta=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("input_fasta_artifact_id") or ""),
-                    sdk_method=method,
-                ),
+                input_fasta=staged_artifact("input_fasta"),
                 identity=identity,
                 mode=str(params.get("mode") or "protein"),
                 retrieved_at=retrieved_at,
             )
         elif method == "bio_tools.mafft":
             result = adapter.mafft(
-                input_fasta=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("input_fasta_artifact_id") or ""),
-                    sdk_method=method,
-                ),
+                input_fasta=staged_artifact("input_fasta"),
                 params=dict(params.get("params") or {}),
                 retrieved_at=retrieved_at,
             )
         elif method == "bio_tools.hmmbuild":
             result = adapter.hmmbuild(
-                alignment=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("alignment_artifact_id") or ""),
-                    sdk_method=method,
-                ),
+                alignment=staged_artifact("alignment"),
                 params=dict(params.get("params") or {}),
                 retrieved_at=retrieved_at,
             )
         elif method == "bio_tools.hmmalign":
             result = adapter.hmmalign(
-                hmm=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("hmm_artifact_id") or ""),
-                    sdk_method=method,
-                ),
-                fasta=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("fasta_artifact_id") or ""),
-                    sdk_method=method,
-                ),
+                hmm=staged_artifact("hmm"),
+                fasta=staged_artifact("fasta"),
                 params=dict(params.get("params") or {}),
                 retrieved_at=retrieved_at,
             )
         elif method == "bio_tools.hmmer_search_cli":
             result = adapter.hmmer_search_cli(
-                hmm=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("hmm_artifact_id") or ""),
-                    sdk_method=method,
-                ),
-                target_fasta=self._require_pipeline_artifact(
-                    session_id=session.session_id,
-                    artifact_id=str(params.get("target_fasta_artifact_id") or ""),
-                    sdk_method=method,
-                ),
+                hmm=staged_artifact("hmm"),
+                target_fasta=staged_artifact("target_fasta"),
                 params=dict(params.get("params") or {}),
                 retrieved_at=retrieved_at,
             )
         else:
             raise ValueError(f"unsupported bio tools SDK operation {method!r}")
-        records = self._persist_bio_artifacts(
+        now = utc_now_iso()
+        run_id = f"run_{invocation.invocation_id}_{len(self.repositories.runs.list_by_invocation(session.session_id, invocation.invocation_id)) + 1}"
+        run = RunRecord(
+            run_id=run_id,
             session_id=session.session_id,
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
             invocation_id=invocation.invocation_id,
+            approval_id=invocation.approval_id,
+            engine_name=invocation.engine_name,
+            runner_run_id=operation_key,
+            status=RunStatus.SUCCEEDED,
+            execution_mode="hpc_placement",
+            remote_run_dir=f"hpc://{placement['hpc_workspace_id']}/{operation_key}",
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            summary=f"{method} placement operation succeeded",
+        )
+        self.repositories.runs.save(run)
+        request_metadata = {
+            "pipeline_invocation_id": invocation.invocation_id,
+            "sdk_method": method,
+            "code_digest": pipeline.get("code_digest"),
+            "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
+            "source_code_digest": pipeline.get("source_code_digest"),
+            "source_code_version": pipeline.get("source_code_version"),
+            "pipeline_step_id": operation_key,
+            "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
+            "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+            "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
+            "hpc_workspace_id": placement.get("hpc_workspace_id"),
+            "stage_refs": stage_refs,
+            "declared_outputs": expected_outputs,
+        }
+        self._save_hpc_pending_outputs(
+            session_id=session.session_id,
+            invocation=invocation,
+            run=run,
             operation_key=operation_key,
+            sdk_method=method,
+            hpc_workspace_id=str(placement.get("hpc_workspace_id")),
+            stage_refs=stage_refs,
+            declared_outputs=expected_outputs,
+            request_metadata=request_metadata,
             drafts=result.artifacts,
-            request_metadata={
-                "pipeline_invocation_id": invocation.invocation_id,
-                "sdk_method": method,
-                "code_digest": pipeline.get("code_digest"),
-                "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
-                "source_code_digest": pipeline.get("source_code_digest"),
-                "source_code_version": pipeline.get("source_code_version"),
-                "pipeline_step_id": operation_key,
-                "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
-                "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
-                "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
-            },
+            raw_result={"provider": result.provider, "summary": result.summary},
         )
         payload = {
+            "kind": "hpc_run_handle",
             "tool_id": method,
             "provider": result.provider,
             "status": RunStatus.SUCCEEDED.value,
+            "run_id": run.run_id,
             "operation_key": operation_key,
+            "placement": "hpc",
+            "hpc_workspace_id": placement.get("hpc_workspace_id"),
+            "stage_refs": stage_refs,
+            "declared_outputs": expected_outputs,
             "summary": result.summary,
             "warnings": list(result.warnings),
-            "artifact_count": len(records),
-            "artifact_ids": [record.artifact_id for record in records],
-            "artifacts": [project_artifact_for_agent(record) for record in records],
         }
         self._record_pipeline_completed_operation(invocation, operation_key, payload)
-        self._append_pipeline_list(invocation, "bio_artifact_ids", [record.artifact_id for record in records])
         self._emit(
             "execution.pipeline.step.completed",
             {
                 "invocation_id": invocation.invocation_id,
                 "operation": method,
                 "operation_key": operation_key,
-                "artifact_ids": [record.artifact_id for record in records],
                 "warning_count": len(result.warnings),
             },
         )
@@ -2904,24 +3641,45 @@ class ExecutionEngine:
         completed = dict(pipeline.get("completed_operations") or {})
         if operation_key in completed:
             return dict(completed[operation_key])
-        if method == "hpc.fpocket":
-            self._validate_fpocket_artifact(str(params["structure_artifact_id"]))
+        placement = self._require_hpc_workspace(params.get("placement"), sdk_method=method)
+        expected_outputs = self._require_declared_outputs(params, sdk_method=method)
+        if method == "structure_tools.fpocket":
+            structure_id = self._require_stage_ref_artifact_id(
+                params.get("structure"),
+                placement=placement,
+                slot_name="structure",
+                sdk_method=method,
+                session_id=session.session_id,
+            )
+            self._validate_fpocket_artifact(structure_id, sdk_method=method)
         approved = set(str(value) for value in list(pipeline.get("approved_operation_keys") or []))
         if operation_key not in approved and not self._pipeline_hpc_covered_by_approved_plan(pipeline=pipeline, method=method, params=params):
             approval = self._request_pipeline_approval(invocation=invocation, method=method, params=params, operation_key=operation_key)
             raise PipelineApprovalRequired(approval)
         tool_params = dict(params.get("params") or {})
-        if method == "hpc.fpocket":
+        if method == "structure_tools.fpocket":
             handoff = ExecutionHandoff(
                 execution_goal="Run fpocket from execution pipeline.",
-                required_artifact_ids=(str(params["structure_artifact_id"]),),
+                required_artifact_ids=(structure_id,),
                 catalog_tool_id="fpocket",
-                tool_inputs={"structure_artifact_id": str(params["structure_artifact_id"]), **tool_params},
+                tool_inputs={"structure_artifact_id": structure_id, **tool_params},
                 require_approval=False,
             )
         else:
-            receptor_id = str(params["receptor_artifact_id"])
-            ligand_id = str(params["ligand_artifact_id"])
+            receptor_id = self._require_stage_ref_artifact_id(
+                params.get("receptor"),
+                placement=placement,
+                slot_name="receptor",
+                sdk_method=method,
+                session_id=session.session_id,
+            )
+            ligand_id = self._require_stage_ref_artifact_id(
+                params.get("ligand"),
+                placement=placement,
+                slot_name="ligand",
+                sdk_method=method,
+                session_id=session.session_id,
+            )
             self._require_pdbqt_artifact(receptor_id, slot_name="vina receptor")
             self._require_pdbqt_artifact(ligand_id, slot_name="vina ligand")
             handoff = ExecutionHandoff(
@@ -2931,8 +3689,51 @@ class ExecutionEngine:
                 tool_inputs={"receptor_artifact_id": receptor_id, "ligand_artifact_id": ligand_id, **tool_params},
                 require_approval=False,
             )
-        result = self._submit_pipeline_hpc_step(session=session, task=task, invocation=invocation, handoff=handoff, operation_key=operation_key)
-        self._record_pipeline_completed_operation(invocation, operation_key, result)
+        stage_refs = [
+            value for value in (params.get("structure"), params.get("receptor"), params.get("ligand")) if isinstance(value, dict)
+        ]
+        result = self._submit_pipeline_hpc_step(
+            session=session,
+            task=task,
+            invocation=invocation,
+            handoff=handoff,
+            operation_key=operation_key,
+            sdk_method=method,
+            hpc_workspace_id=str(placement.get("hpc_workspace_id")),
+            stage_refs=stage_refs,
+            declared_outputs=expected_outputs,
+        )
+        run_handle = {
+            "kind": "hpc_run_handle",
+            "tool_id": result.get("tool_id"),
+            "run_id": result.get("run_id"),
+            "runner_run_id": result.get("runner_run_id"),
+            "status": result.get("status"),
+            "execution_mode": result.get("execution_mode"),
+            "exit_code": result.get("exit_code"),
+            "error_code": result.get("error_code"),
+            "stage": result.get("stage"),
+            "raw_result": result.get("raw_result"),
+            "runner_result": result.get("runner_result"),
+            "operation_key": operation_key,
+            "placement": "hpc",
+            "hpc_workspace_id": placement.get("hpc_workspace_id"),
+            "declared_outputs": expected_outputs,
+            "stage_refs": stage_refs,
+            "summary": None,
+            "warnings": [],
+        }
+        parsed_result = result.get("parsed_result")
+        if isinstance(parsed_result, dict):
+            result_summary = str(parsed_result.get("result_summary") or "")
+            if result_summary:
+                run_handle["summary"] = result_summary
+        if run_handle["summary"] is None:
+            run_handle["summary"] = f"{method} placement operation {run_handle['status']}"
+        completed_payload = dict(run_handle)
+        if isinstance(parsed_result, dict):
+            completed_payload["parsed_result"] = parsed_result
+        self._record_pipeline_completed_operation(invocation, operation_key, completed_payload)
         self._emit(
             "execution.pipeline.step.completed",
             {
@@ -2942,7 +3743,7 @@ class ExecutionEngine:
                 "run_id": result.get("run_id"),
             },
         )
-        return result
+        return run_handle
 
     def _pipeline_hpc_covered_by_approved_plan(
         self,
@@ -2969,10 +3770,34 @@ class ExecutionEngine:
         return False
 
     def _pipeline_hpc_artifact_ids(self, method: str, params: dict[str, Any]) -> set[str]:
-        if method == "hpc.fpocket":
-            return {str(params["structure_artifact_id"])}
-        if method == "hpc.vina":
-            return {str(params["receptor_artifact_id"]), str(params["ligand_artifact_id"])}
+        placement = dict(params.get("placement") or {})
+        if method == "structure_tools.fpocket":
+            try:
+                return {
+                    self._require_stage_ref_artifact_id(
+                        params.get("structure"),
+                        placement=placement,
+                        slot_name="structure",
+                        sdk_method=method,
+                    )
+                }
+            except PipelineSdkFailure:
+                return set()
+        if method == "docking.vina":
+            ids: set[str] = set()
+            for slot_name in ("receptor", "ligand"):
+                try:
+                    ids.add(
+                        self._require_stage_ref_artifact_id(
+                            params.get(slot_name),
+                            placement=placement,
+                            slot_name=slot_name,
+                            sdk_method=method,
+                        )
+                    )
+                except PipelineSdkFailure:
+                    return set()
+            return ids
         return set()
 
     def _submit_pipeline_hpc_step(
@@ -2983,6 +3808,10 @@ class ExecutionEngine:
         invocation: EngineInvocation,
         handoff: ExecutionHandoff,
         operation_key: str,
+        sdk_method: str,
+        hpc_workspace_id: str,
+        stage_refs: list[dict[str, Any]],
+        declared_outputs: list[dict[str, Any]],
     ) -> dict[str, Any]:
         required_artifacts = self._resolve_artifacts(session.session_id, handoff.required_artifact_ids)
         context_artifacts = self._resolve_artifacts(session.session_id, handoff.context_artifact_ids)
@@ -3031,37 +3860,20 @@ class ExecutionEngine:
             finished_at=now if outcome.status.is_terminal else None,
         )
         self.repositories.runs.save(run)
-        artifact_records: tuple[SessionArtifactRecord, ...] = ()
         final_outcome = outcome
-        if outcome.status is RunStatus.SUCCEEDED and not outcome.artifacts:
-            final_outcome = self.runner.fetch_execution_artifacts(
-                run_id=outcome.job_id or outcome.run_id,
-                remote_run_dir=outcome.remote_run_dir,
-                runspec=runspec,
-                job_id=outcome.job_id,
-            )
-            self._emit(
-                "execution.artifacts.fetched",
-                {
-                    "invocation_id": invocation.invocation_id,
-                    "run_id": run.run_id,
-                    "runner_run_id": run.runner_run_id,
-                    "artifact_count": len(final_outcome.artifacts),
-                    "relative_paths": [artifact.relative_path for artifact in final_outcome.artifacts],
-                },
-            )
         if final_outcome.status.is_terminal:
-            artifact_records = self._persist_artifacts(
+            self._save_hpc_pending_outputs(
                 session_id=session.session_id,
-                task_id=invocation.task_id,
-                lane_id=invocation.lane_id,
-                invocation_id=invocation.invocation_id,
-                run_id=run.run_id,
-                runner_run_id=run.runner_run_id,
-                created_at=now,
-                artifacts=final_outcome.artifacts,
+                invocation=invocation,
+                run=run,
+                operation_key=operation_key,
+                sdk_method=sdk_method,
+                hpc_workspace_id=hpc_workspace_id,
+                stage_refs=stage_refs,
+                declared_outputs=declared_outputs,
                 request_metadata=metadata,
-                expected_outputs=tuple(dict(item) for item in list(runspec.get("expected_outputs") or [])),
+                execution_artifacts=final_outcome.artifacts,
+                raw_result=final_outcome.raw_result,
             )
             run = RunRecord(
                 run_id=run.run_id,
@@ -3087,7 +3899,7 @@ class ExecutionEngine:
             parsed_result = parser.parse_result(
                 handoff=handoff,
                 outcome=final_outcome,
-                artifact_refs=artifact_records,
+                artifact_refs=(),
             )
         return {
             "tool_id": handoff.catalog_tool_id,
@@ -3109,7 +3921,6 @@ class ExecutionEngine:
                 "stderr": final_outcome.raw_result.get("stderr"),
                 "logs": final_outcome.raw_result.get("logs"),
             },
-            "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_records],
         }
 
     def _run_pipeline_preprocess(
@@ -3474,7 +4285,7 @@ class ExecutionEngine:
         error_type = "sandbox_execution_failed"
         error_hint = "Read the log excerpts, correct the pipeline code, and retry execution.pipeline.start with declared inputs."
         hpc_failure = None
-        if failure_excerpt and "PipelineSdkError: hpc." in failure_excerpt and " failed with status failed" in failure_excerpt:
+        if failure_excerpt and "PipelineSdkError: " in failure_excerpt and " failed with status failed" in failure_excerpt:
             error_type = "hpc_operation_failed"
             error_hint = (
                 "The pipeline code reached the approved HPC operation, but the HPC runner returned failed. "
@@ -3506,7 +4317,7 @@ class ExecutionEngine:
                 "stderr_excerpt": stderr_excerpt,
                 "stdout_excerpt": stdout_excerpt,
                 "hint": error_hint,
-                "sdk_method": "hpc.fpocket" if "hpc.fpocket" in (failure_excerpt or "") else None,
+                "sdk_method": "structure_tools.fpocket" if "structure_tools.fpocket" in (failure_excerpt or "") else None,
             }
             if hpc_failure is not None:
                 error_payload["hpc_failure"] = hpc_failure
@@ -3952,6 +4763,7 @@ class ExecutionEngine:
         operation_key: str,
         drafts: tuple[BioArtifactDraft, ...],
         request_metadata: dict[str, Any],
+        run_id: str | None = None,
     ) -> tuple[SessionArtifactRecord, ...]:
         persisted: list[SessionArtifactRecord] = []
         now = utc_now_iso()
@@ -3977,7 +4789,7 @@ class ExecutionEngine:
                 task_id=task_id,
                 lane_id=lane_id,
                 invocation_id=invocation_id,
-                run_id=None,
+                run_id=run_id,
                 kind=draft.kind,
                 storage_uri=str(storage_path),
                 relative_path=relative_path,
@@ -3994,6 +4806,9 @@ class ExecutionEngine:
                     "pipeline_step_id": operation_key,
                     "input_artifact_ids": list(request_metadata.get("input_artifact_ids") or []),
                     "preprocess_artifact_ids": list(request_metadata.get("preprocess_artifact_ids") or []),
+                    "hpc_workspace_id": request_metadata.get("hpc_workspace_id"),
+                    "stage_refs": list(request_metadata.get("stage_refs") or []),
+                    "declared_outputs": list(request_metadata.get("declared_outputs") or []),
                     "content_digest": f"sha256:{hashlib.sha256(draft.content.encode('utf-8')).hexdigest()}",
                 },
                 created_at=now,
@@ -4162,16 +4977,16 @@ class ExecutionEngine:
             return
         raise ValueError(f"{slot_name} artifact {artifact_id!r} must be PDBQT; use preprocess.prepare_receptor/prepare_ligand first")
 
-    def _validate_fpocket_artifact(self, artifact_id: str) -> None:
+    def _validate_fpocket_artifact(self, artifact_id: str, *, sdk_method: str = "structure_tools.fpocket") -> None:
         artifact = self.repositories.artifacts.get(artifact_id)
         if artifact is None:
             raise PipelineSdkFailure(
                 error_type="invalid_fpocket_input",
                 message=f"fpocket structure artifact {artifact_id!r} does not exist.",
-                hint="Provide an existing PDB artifact before calling hpc.fpocket.",
+                hint="Stage an existing PDB artifact before calling structure_tools.fpocket.",
                 stage="input_validation",
                 retryable=False,
-                sdk_method="hpc.fpocket",
+                sdk_method=sdk_method,
             )
         metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
         is_pdb = metadata_format == "pdb" or artifact.storage_uri.lower().endswith(".pdb") or artifact.relative_path.lower().endswith(".pdb")
@@ -4182,7 +4997,7 @@ class ExecutionEngine:
                 hint="Use a valid PDB artifact for fpocket; convert or replace non-PDB structures before requesting HPC approval.",
                 stage="input_validation",
                 retryable=False,
-                sdk_method="hpc.fpocket",
+                sdk_method=sdk_method,
             )
         atom_count, residue_count = _count_pdb_atoms_and_residues(artifact.storage_uri)
         if atom_count < 50 or residue_count < 10:
@@ -4195,7 +5010,7 @@ class ExecutionEngine:
                 hint="Use a protein-scale PDB with at least 50 ATOM/HETATM records and at least 10 residues.",
                 stage="input_validation",
                 retryable=False,
-                sdk_method="hpc.fpocket",
+                sdk_method=sdk_method,
             )
 
     def _sandbox_safe_artifact(self, artifact: SessionArtifactRecord) -> dict[str, Any]:
@@ -4266,8 +5081,9 @@ class ExecutionEngine:
             "preprocess.prepare_receptor": ("preprocess.prepare_receptor", None),
             "preprocess.prepare_ligand": ("preprocess.prepare_ligand", None),
             "preprocess.smiles_to_3d": ("preprocess.smiles_to_3d", None),
-            "hpc.fpocket": ("hpc.fpocket", "hpc-fpocket.md"),
-            "hpc.vina": ("hpc.vina", "hpc-vina.md"),
+            "hpc.workspace": ("hpc.workspace", "sdk-overview.md"),
+            "structure_tools.fpocket": ("structure_tools.fpocket", "hpc-fpocket.md"),
+            "docking.vina": ("docking.vina", "hpc-vina.md"),
         }
         try:
             tree = ast.parse(code)
@@ -4309,8 +5125,9 @@ class ExecutionEngine:
                 "preprocess.prepare_receptor",
                 "preprocess.prepare_ligand",
                 "preprocess.smiles_to_3d",
-                "hpc.fpocket",
-                "hpc.vina",
+                "hpc.workspace",
+                "structure_tools.fpocket",
+                "docking.vina",
                 "run.wait",
                 "run.fetch_artifacts",
             } or operation in seen:
@@ -4319,7 +5136,7 @@ class ExecutionEngine:
             keyword, doc_id = doc_hints.get(operation, (operation, None))
             item: dict[str, Any] = {
                 "operation": operation,
-                "approval_required": operation.startswith("hpc."),
+                "approval_required": operation in {"structure_tools.fpocket", "docking.vina"},
                 "doc_keyword": keyword,
             }
             if doc_id is not None:
@@ -4390,9 +5207,9 @@ class ExecutionEngine:
         all_input_ids = [*artifact_ids, *context_artifact_ids]
         for item in operations:
             method = str(item.get("operation") or "")
-            if not method.startswith("hpc."):
+            if method not in {"structure_tools.fpocket", "docking.vina"}:
                 continue
-            artifact_scope = all_input_ids[:1] if method == "hpc.fpocket" else all_input_ids[:2]
+            artifact_scope = all_input_ids[:1] if method == "structure_tools.fpocket" else all_input_ids[:2]
             hpc_operations.append(
                 {
                     "method": method,
@@ -4529,9 +5346,9 @@ class ExecutionEngine:
         return f"{method}:plan:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
     def _planned_expected_outputs(self, method: str) -> list[dict[str, Any]]:
-        if method == "hpc.fpocket":
+        if method == "structure_tools.fpocket":
             return [{"path": "fpocket.log", "kind": "log"}, {"path": "pockets/pockets.json", "kind": "result"}]
-        if method == "hpc.vina":
+        if method == "docking.vina":
             return [{"path": "vina.log", "kind": "log"}, {"path": "poses/vina_out.pdbqt", "kind": "structure"}]
         return []
 
@@ -4584,7 +5401,7 @@ class ExecutionEngine:
         return {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 30}
 
     def _planned_resource_estimate(self, method: str) -> dict[str, Any]:
-        if method == "hpc.vina":
+        if method == "docking.vina":
             return {"cpu": 4, "memory_gb": 8, "max_runtime_minutes": 120}
         return {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 60}
 
@@ -4612,7 +5429,7 @@ class ExecutionEngine:
         execution_plan: dict[str, Any],
     ) -> dict[str, Any] | None:
         for operation in list(execution_plan.get("hpc_operations") or []):
-            if operation.get("method") != "hpc.fpocket":
+            if operation.get("method") != "structure_tools.fpocket":
                 continue
             artifact_ids = [str(value) for value in list(operation.get("artifact_ids") or [])]
             if not artifact_ids:

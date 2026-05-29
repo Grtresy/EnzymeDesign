@@ -73,8 +73,9 @@ artifacts.register(
 For fetched HPC outputs:
 
 ```python
-from openzyme_pipeline import hpc, structure_tools
+from openzyme_pipeline import artifacts, hpc, structure_tools
 
+structure = artifacts.get("art_structure")
 ws = hpc.workspace("fpocket")
 remote_structure = ws.stage_artifact(
     structure["artifact_id"],
@@ -87,7 +88,7 @@ run = structure_tools.fpocket(
         {"path": "target_out", "kind": "directory", "format": "fpocket"},
     ],
 )
-result = ws.fetch_outputs(run, register=True)
+result = ws.fetch_outputs(run)
 
 for item in result.get("artifacts", []):
     print(item["artifact_id"])

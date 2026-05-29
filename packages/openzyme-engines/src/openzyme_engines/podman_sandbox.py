@@ -54,6 +54,24 @@ class PodmanPipelineSandboxRunner:
     timeout_seconds: int = 120
     workspace_root: Path = Path(tempfile.gettempdir()) / "openzyme-podman-pipelines"
 
+    def _local_pipeline_sdk_src(self) -> Path | None:
+        candidate = Path(__file__).resolve().parents[3] / "openzyme-pipeline" / "src"
+        if (candidate / "openzyme_pipeline").is_dir():
+            return candidate
+        return None
+
+    def _prepare_pipeline_sdk_src(self, *, root: Path) -> Path | None:
+        sdk_src = self._local_pipeline_sdk_src()
+        if sdk_src is None:
+            return None
+        runtime_src = root / "sdk_src"
+        if runtime_src.exists():
+            shutil.rmtree(runtime_src)
+        shutil.copytree(sdk_src, runtime_src)
+        for path in (runtime_src, *runtime_src.rglob("*")):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        return runtime_src
+
     def preflight(self) -> PodmanSandboxPreflight:
         podman = shutil.which(self.podman_binary)
         if podman is None:
@@ -108,36 +126,39 @@ class PodmanPipelineSandboxRunner:
         )
         server.start()
         run_id = f"podman_{uuid4().hex[:12]}"
+        command = [
+            self.podman_binary,
+            "run",
+            "--rm",
+            "--network=none",
+            "--userns=keep-id",
+            "--security-opt=no-new-privileges",
+            "--cap-drop=all",
+            "--read-only",
+            "--memory=2g",
+            "--cpus=2",
+            "--pids-limit=256",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=256m",
+            "-v",
+            f"{input_dir}:/openzyme/input:ro,Z",
+            "-v",
+            f"{work_dir}:/openzyme/work:Z",
+            "-v",
+            f"{output_dir}:/openzyme/output:Z",
+            "-v",
+            f"{logs_dir}:/openzyme/logs:Z",
+            "-v",
+            f"{socket_path}:/openzyme/control.sock:Z",
+            "-v",
+            f"{root}:/workspace:Z",
+        ]
+        if sdk_src := self._prepare_pipeline_sdk_src(root=root):
+            command.extend(["-e", "PYTHONPATH=/openzyme/sdk", "-v", f"{sdk_src}:/openzyme/sdk:ro,Z"])
+        command.append(self.image)
         try:
             completed = subprocess.run(
-                [
-                    self.podman_binary,
-                    "run",
-                    "--rm",
-                    "--network=none",
-                    "--userns=keep-id",
-                    "--security-opt=no-new-privileges",
-                    "--cap-drop=all",
-                    "--read-only",
-                    "--memory=2g",
-                    "--cpus=2",
-                    "--pids-limit=256",
-                    "--tmpfs",
-                    "/tmp:rw,noexec,nosuid,nodev,size=256m",
-                    "-v",
-                    f"{input_dir}:/openzyme/input:ro,Z",
-                    "-v",
-                    f"{work_dir}:/openzyme/work:Z",
-                    "-v",
-                    f"{output_dir}:/openzyme/output:Z",
-                    "-v",
-                    f"{logs_dir}:/openzyme/logs:Z",
-                    "-v",
-                    f"{socket_path}:/openzyme/control.sock:Z",
-                    "-v",
-                    f"{root}:/workspace:Z",
-                    self.image,
-                ],
+                command,
                 check=False,
                 capture_output=True,
                 text=True,

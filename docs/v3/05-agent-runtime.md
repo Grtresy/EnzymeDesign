@@ -171,11 +171,12 @@ runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `t
 - unread inbox messages 与相关 protocol thread
 - task board 中与该 role/focus 相关的任务
 - session-wide artifact catalog、report drafts、engine invocations 与 source refs 的摘要
+- executor restore context 还应包含其 persistent sandbox workspace 摘要：`sandbox_workspace_id`、最近显式 materialized artifacts、working copy dirty 状态、最近 source snapshot、最近 execution plan/run 与可检索 sandbox docs 关键词
 - memory summary 与压缩后的 continuity notes
 
 master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。
 
-master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
+master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
 
 ## 7. Failure And Recovery Defaults
 

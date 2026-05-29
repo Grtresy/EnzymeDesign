@@ -374,7 +374,7 @@ def _run_validator(
     required_columns_raw = metadata.get("required_columns") or ()
     required_columns = tuple(str(item) for item in required_columns_raw)
     try:
-        if normalized_format in {None, "txt", "text", "log", "md", "markdown", "pdb", "pdbqt", "py", "python"}:
+        if normalized_format in {None, "txt", "text", "log", "md", "markdown", "pdb", "pdbqt", "py", "python", "fpocket"}:
             _validate_nonempty(path)
         elif normalized_format in {"fa", "faa", "fasta"}:
             _validate_fasta(path)
@@ -507,6 +507,8 @@ class ArtifactBoundaryService:
         kind: str | ArtifactKind = ArtifactKind.RESULT,
         format: str | None = None,
         metadata: dict[str, Any] | None = None,
+        invocation_id: str | None = None,
+        run_id: str | None = None,
     ) -> RegisterResult:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
         source_snapshot_id = self._latest_source_snapshot_id(workspace)
@@ -624,8 +626,8 @@ class ArtifactBoundaryService:
             session_id=session_id,
             task_id=workspace.focus_task_id,
             lane_id=workspace.focus_lane_id,
-            invocation_id=None,
-            run_id=None,
+            invocation_id=invocation_id,
+            run_id=run_id,
             kind=kind_value,
             storage_uri=str(sealed_path),
             relative_path=relative_path,

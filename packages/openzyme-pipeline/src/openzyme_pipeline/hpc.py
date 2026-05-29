@@ -1,40 +1,57 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from .client import call
-from .client import PipelineSdkError
 
 
-def fpocket(*, structure_artifact_id: str, params: dict[str, Any] | None = None, expected_outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return _checked_hpc_result(
-        "hpc.fpocket",
-        call("hpc.fpocket", {"structure_artifact_id": structure_artifact_id, "params": dict(params or {}), "expected_outputs": list(expected_outputs or [])}),
+@dataclass(frozen=True, slots=True)
+class HpcWorkspace:
+    hpc_workspace_id: str
+    label: str
+    normalized_label: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "hpc_workspace",
+            "hpc_workspace_id": self.hpc_workspace_id,
+            "label": self.label,
+            "normalized_label": self.normalized_label,
+        }
+
+    def stage_artifact(self, artifact_id: str, *, workspace_path: str) -> dict[str, Any]:
+        return dict(
+            call(
+                "hpc.stage_artifact",
+                {
+                    "hpc_workspace": self.to_dict(),
+                    "artifact_id": artifact_id,
+                    "workspace_path": workspace_path,
+                },
+            )
+        )
+
+    def fetch_outputs(self, run: dict[str, Any] | str) -> dict[str, Any]:
+        run_id = run if isinstance(run, str) else str(run.get("run_id") or "")
+        return dict(
+            call(
+                "hpc.fetch_outputs",
+                {
+                    "hpc_workspace": self.to_dict(),
+                    "run_id": run_id,
+                },
+            )
+        )
+
+
+def workspace(label: str) -> HpcWorkspace:
+    payload = dict(call("hpc.workspace", {"label": label}))
+    return HpcWorkspace(
+        hpc_workspace_id=str(payload["hpc_workspace_id"]),
+        label=str(payload["label"]),
+        normalized_label=str(payload["normalized_label"]),
     )
 
 
-def vina(*, receptor_artifact_id: str, ligand_artifact_id: str, params: dict[str, Any] | None = None, expected_outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return _checked_hpc_result(
-        "hpc.vina",
-        call(
-            "hpc.vina",
-            {
-                "receptor_artifact_id": receptor_artifact_id,
-                "ligand_artifact_id": ligand_artifact_id,
-                "params": dict(params or {}),
-                "expected_outputs": list(expected_outputs or []),
-            },
-        ),
-    )
-
-
-def _checked_hpc_result(method: str, result: Any) -> dict[str, Any]:
-    payload = dict(result or {})
-    status = str(payload.get("status") or "").lower()
-    if status and status not in {"succeeded", "success", "completed"}:
-        run_id = payload.get("run_id") or payload.get("runner_run_id") or "unknown"
-        raise PipelineSdkError(f"{method} failed with status {status} for run {run_id}")
-    return payload
-
-
-__all__ = ["fpocket", "vina"]
+__all__ = ["HpcWorkspace", "workspace"]
