@@ -23,6 +23,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ContinuationStateStatus
+from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
@@ -126,6 +127,19 @@ def _wait_for_pending_approval(
             return pending_items[0]
         time.sleep(0.05)
     raise AssertionError("expected pending approval")
+
+
+def _wait_for_operation_with_approval(
+    repositories: CoreRepositories,
+    operation_id: str,
+    approval_id: str,
+) -> ControlledOperation:
+    for _ in range(100):
+        operation = repositories.controlled_operations.get(operation_id)
+        if operation is not None and operation.approval_id == approval_id:
+            return operation
+        time.sleep(0.05)
+    raise AssertionError("expected controlled operation to be linked to approval")
 
 
 def _resolve_s10_approval(
@@ -633,6 +647,433 @@ def test_sandbox_exec_controlled_operation_structured_schema_and_prerequisite_er
     }
     assert repositories.approvals.list_by_session(session.session_id) == []
     assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+
+
+def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_provider.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import call\n"
+            "result = call('s10.controlled_operation', {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'ncbi_fetch_proteins',\n"
+            "    'idempotency_key': 's12_provider_001',\n"
+            "    'params_digest': 'sha256:params-provider',\n"
+            "    'input_artifact_ids': ['artifact_query'],\n"
+            "    'input_artifact_digests': ['sha256:query'],\n"
+            "    'expected_outputs': {'kind': 'fasta', 'storage_uri': '/private/out.fasta'},\n"
+            "    'planned_fetch_intent': {'remote_path': '/private/provider/fetch'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "    'adapter_result': {\n"
+            "        'status': 'completed',\n"
+            "        'provider_request_id': 'provider_req_001',\n"
+            "        'registered_artifact_ids': ['artifact_provider_fasta'],\n"
+            "        'output_artifact_ids': ['artifact_provider_fasta'],\n"
+            "        'validation_results': {'fasta': 'ok'},\n"
+            "        'bounded_summary': {'records': 2},\n"
+            "        'warnings': ['preview truncated'],\n"
+            "        'remote_path': '/private/provider/cache.fasta',\n"
+            "    },\n"
+            "})\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s12_provider.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    approval_envelope = operation.adapter_approval_envelope or {}
+    assert approval_envelope["adapter_envelope_schema_version"] == "s12.adapter_envelope.v1"
+    assert approval_envelope["approval_id"] == pending.approval_id
+    assert approval_envelope["sdk_module"] == "bio"
+    assert approval_envelope["function_name"] == "ncbi_fetch_proteins"
+    assert approval_envelope["route_policy_id"] == "bio.ncbi_fetch_proteins.provider:v1"
+    assert approval_envelope["selected_backend"] == "provider_http"
+    assert approval_envelope["provider_config_digest"] == "provider_config:ncbi:v1"
+    assert approval_envelope["expected_outputs"] == {"kind": "fasta"}
+    assert approval_envelope["planned_fetch_intent"] == {}
+    assert "storage_uri" not in json.dumps(approval_envelope, sort_keys=True)
+    assert "remote_path" not in json.dumps(approval_envelope, sort_keys=True)
+    for post_run_key in {
+        "fetch_refs",
+        "registered_artifact_ids",
+        "output_artifact_ids",
+        "backend_run_id",
+        "provider_request_id",
+    }:
+        assert post_run_key not in approval_envelope
+    assert operation.adapter_result_envelope == {}
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["schema_version"] == "s12.adapter_envelope.v1"
+    assert payload["adapter_approval_envelope"] == approval_envelope
+    result_envelope = payload["adapter_result_envelope"]
+    assert result_envelope["status"] == "completed"
+    assert result_envelope["provider_request_id"] == "provider_req_001"
+    assert result_envelope["registered_artifact_ids"] == ["artifact_provider_fasta"]
+    assert result_envelope["bounded_summary"] == {"records": 2}
+    assert result_envelope["warnings"] == [
+        {
+            "code": "adapter_warning",
+            "stage": "adapter_result",
+            "retryable": False,
+            "summary": "preview truncated",
+            "details_ref": None,
+            "safe_diagnostics": None,
+        }
+    ]
+    assert "remote_path" not in json.dumps(result_envelope, sort_keys=True)
+    persisted = repositories.controlled_operations.get(operation.operation_id)
+    assert persisted is not None
+    assert persisted.adapter_result_envelope == result_envelope
+
+
+def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_route_failures.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "cases = {\n"
+            "    'missing_policy': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'idempotency_key': 's12_missing_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
+            "    'unknown_policy': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'bio.unknown.provider:v1',\n"
+            "        'idempotency_key': 's12_unknown_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
+            "    'fixture': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'test.fixture_adapter:v1',\n"
+            "        'sdk_module': 'bio_tools',\n"
+            "        'function_name': 'mafft',\n"
+            "        'idempotency_key': 's12_fixture_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
+            "    'prerequisite': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'test.prerequisite_missing:v1',\n"
+            "        'sdk_module': 'bio_tools',\n"
+            "        'function_name': 'mafft',\n"
+            "        'idempotency_key': 's12_prerequisite_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
+            "    'mismatch': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "        'sdk_module': 'bio_tools',\n"
+            "        'function_name': 'mafft',\n"
+            "        'idempotency_key': 's12_mismatch_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
+            "}\n"
+            "errors = {}\n"
+            "for name, params in cases.items():\n"
+            "    try:\n"
+            "        call('s10.controlled_operation', params)\n"
+            "    except PipelineSdkError as exc:\n"
+            "        errors[name] = exc.error_code\n"
+            "    else:\n"
+            "        raise SystemExit(f'expected {name} failure')\n"
+            "print(json.dumps(errors, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/s12_route_failures.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == {
+        "fixture": "fixture_backend_forbidden",
+        "mismatch": "adapter_schema_incompatible",
+        "missing_policy": "route_policy_missing",
+        "prerequisite": "operation_prerequisite_missing",
+        "unknown_policy": "route_policy_missing",
+    }
+    assert repositories.approvals.list_by_session(session.session_id) == []
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+
+
+def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_hpc.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "stage_ref = {\n"
+            "    'kind': 'hpc_stage_ref',\n"
+            "    'stage_ref_id': 'stage_input_001',\n"
+            "    'hpc_workspace_id': 'hpcws_s12',\n"
+            "    'artifact_id': 'artifact_input_fasta',\n"
+            "    'artifact_digest': 'sha256:input-fasta',\n"
+            "    'workspace_relative_path': 'inputs/query.fasta',\n"
+            "    'remote_path': 'hpc://private/input.fasta',\n"
+            "}\n"
+            "fetch_intent = {\n"
+            "    'declared_outputs': [\n"
+            "        {'path': 'outputs/alignment.fasta', 'format': 'fasta', 'remote_path': 'hpc://private/out'}\n"
+            "    ],\n"
+            "    'remote_path': 'hpc://private/run',\n"
+            "}\n"
+            "base = {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio_tools.mafft.hpc:v1',\n"
+            "    'sdk_module': 'bio_tools',\n"
+            "    'function_name': 'mafft',\n"
+            "    'params_digest': 'sha256:hpc-params',\n"
+            "    'input_artifact_ids': ['artifact_input_fasta'],\n"
+            "    'input_artifact_digests': ['sha256:input-fasta'],\n"
+            "    'expected_outputs': [{'path': 'outputs/alignment.fasta'}],\n"
+            "    'resource_estimate': {'walltime_minutes': 5},\n"
+            "}\n"
+            "errors = {}\n"
+            "try:\n"
+            "    call('s10.controlled_operation', dict(\n"
+            "        base,\n"
+            "        idempotency_key='s12_hpc_missing_placement',\n"
+            "        hpc_workspace_id='hpcws_s12',\n"
+            "        stage_refs=[stage_ref],\n"
+            "        planned_fetch_intent=fetch_intent,\n"
+            "    ))\n"
+            "except PipelineSdkError as exc:\n"
+            "    errors['missing_placement'] = exc.error_code\n"
+            "try:\n"
+            "    call('s10.controlled_operation', dict(\n"
+            "        base,\n"
+            "        idempotency_key='s12_hpc_bad_path',\n"
+            "        placement='hpc',\n"
+            "        hpc_workspace_id='hpcws_s12',\n"
+            "        stage_refs=[dict(stage_ref, workspace_relative_path='/remote/input.fasta')],\n"
+            "        planned_fetch_intent=fetch_intent,\n"
+            "    ))\n"
+            "except PipelineSdkError as exc:\n"
+            "    errors['bad_stage_path'] = exc.error_code\n"
+            "result = call('s10.controlled_operation', dict(\n"
+            "    base,\n"
+            "    idempotency_key='s12_hpc_valid',\n"
+            "    placement='hpc',\n"
+            "    hpc_workspace_id='hpcws_s12',\n"
+            "    stage_refs=[stage_ref],\n"
+            "    planned_fetch_intent=fetch_intent,\n"
+            "    adapter_result={\n"
+            "        'status': 'completed',\n"
+            "        'backend_run_id': 'slurm_123',\n"
+            "        'fetch_refs': [{'fetch_ref_id': 'fetch_alignment', 'remote_path': 'hpc://private/out'}],\n"
+            "        'registered_artifact_ids': ['artifact_alignment'],\n"
+            "        'validation_results': {'alignment': 'ok'},\n"
+            "        'bounded_summary': {'outputs': 1},\n"
+            "    },\n"
+            "))\n"
+            "print(json.dumps({'errors': errors, 'result': result}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s12_hpc.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    approval_envelope = operation.adapter_approval_envelope or {}
+    assert approval_envelope["placement"] == "hpc"
+    assert approval_envelope["hpc_workspace_id"] == "hpcws_s12"
+    assert approval_envelope["stage_refs"] == [
+        {
+            "kind": "hpc_stage_ref",
+            "stage_ref_id": "stage_input_001",
+            "hpc_workspace_id": "hpcws_s12",
+            "artifact_id": "artifact_input_fasta",
+            "artifact_digest": "sha256:input-fasta",
+            "workspace_relative_path": "inputs/query.fasta",
+        }
+    ]
+    assert approval_envelope["planned_fetch_intent"] == {
+        "declared_outputs": [{"path": "outputs/alignment.fasta", "format": "fasta"}]
+    }
+    assert "fetch_refs" not in approval_envelope
+    assert "remote_path" not in json.dumps(approval_envelope, sort_keys=True)
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["errors"] == {
+        "bad_stage_path": "hpc_stage_path_invalid",
+        "missing_placement": "hpc_workspace_forbidden",
+    }
+    result_envelope = payload["result"]["adapter_result_envelope"]
+    assert result_envelope["backend_run_id"] == "slurm_123"
+    assert result_envelope["registered_artifact_ids"] == ["artifact_alignment"]
+    assert result_envelope["bounded_summary"] == {"outputs": 1}
+    assert "remote_path" not in json.dumps(result_envelope, sort_keys=True)
+    operations = repositories.controlled_operations.list_by_run(run.sandbox_run_id)
+    assert len(operations) == 1
+    assert operations[0].operation_id == operation.operation_id
+
+
+def test_sandbox_exec_s12_result_fields_do_not_affect_digest_but_prerun_fields_do(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_drift.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "base = {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'uniprot_fetch',\n"
+            "    'idempotency_key': 's12_digest_scope',\n"
+            "    'params_digest': 'sha256:params-a',\n"
+            "    'input_artifact_ids': ['artifact_query'],\n"
+            "    'input_artifact_digests': ['sha256:query'],\n"
+            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "}\n"
+            "first = call('s10.controlled_operation', dict(\n"
+            "    base,\n"
+            "    adapter_result={\n"
+            "        'status': 'completed',\n"
+            "        'provider_request_id': 'provider_req_first',\n"
+            "        'bounded_summary': {'records': 1},\n"
+            "    },\n"
+            "))\n"
+            "second = call('s10.controlled_operation', dict(\n"
+            "    base,\n"
+            "    adapter_result={\n"
+            "        'status': 'completed',\n"
+            "        'provider_request_id': 'provider_req_second',\n"
+            "        'bounded_summary': {'records': 99},\n"
+            "    },\n"
+            "))\n"
+            "try:\n"
+            "    call('s10.controlled_operation', dict(base, params_digest='sha256:params-b'))\n"
+            "except PipelineSdkError as exc:\n"
+            "    drift_error = exc.error_code\n"
+            "else:\n"
+            "    raise SystemExit('expected S12 digest drift')\n"
+            "print(json.dumps({\n"
+            "    'drift_error': drift_error,\n"
+            "    'first_operation': first['operation_id'],\n"
+            "    'second_operation': second['operation_id'],\n"
+            "    'second_provider_request_id': second['adapter_result_envelope']['provider_request_id'],\n"
+            "}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s12_drift.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["drift_error"] == "operation_drift_detected"
+    assert payload["first_operation"] == payload["second_operation"]
+    assert payload["second_provider_request_id"] == "provider_req_first"
+    operations = repositories.controlled_operations.list_by_run(run.sandbox_run_id)
+    assert len(operations) == 1
+    assert operations[0].adapter_result_envelope is not None
+    assert operations[0].adapter_result_envelope["provider_request_id"] == "provider_req_first"
 
 
 def test_sandbox_exec_controlled_operation_reuses_approved_digest_without_second_approval(

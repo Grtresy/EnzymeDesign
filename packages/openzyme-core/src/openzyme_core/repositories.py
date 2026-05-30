@@ -161,6 +161,15 @@ def _json_loads_list(value: str | None) -> tuple[str, ...]:
     return tuple(str(item) for item in loaded)
 
 
+def _json_loads_object_tuple(value: str | None) -> tuple[dict[str, Any], ...]:
+    if value is None:
+        return ()
+    loaded = json.loads(value)
+    if not isinstance(loaded, list):
+        return ()
+    return tuple(dict(item) for item in loaded if isinstance(item, dict))
+
+
 @dataclass(slots=True)
 class SessionRepository:
     connection: sqlite3.Connection
@@ -1583,16 +1592,27 @@ class ControlledOperationRepository:
                 task_id, lane_id, approval_id, approval_state, logical_operation_key,
                 operation_digest, params_digest, backend_category, route_reason,
                 input_artifact_digests_json, source_snapshot_artifact_id,
-                source_snapshot_digest, expected_outputs_summary_json,
-                resource_estimate_json, result_summary_json, error_code,
-                error_summary, idempotency_key, status, created_at, updated_at
+                source_snapshot_digest, adapter_envelope_schema_version,
+                sdk_module, function_name, route_policy_id, placement,
+                hpc_workspace_id, selected_backend, resource_class,
+                runtime_packaging_id, toolchain_id, provider_config_digest,
+                input_artifact_ids_json, stage_refs_json,
+                planned_fetch_intent_json, approval_requirement_json,
+                adapter_approval_envelope_json, adapter_result_envelope_json,
+                expected_outputs_summary_json, resource_estimate_json,
+                result_summary_json, error_code, error_summary,
+                idempotency_key, status, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(operation_id) DO UPDATE SET
                 approval_id = excluded.approval_id,
                 approval_state = excluded.approval_state,
                 status = excluded.status,
-                route_reason = excluded.route_reason,
+                adapter_approval_envelope_json = excluded.adapter_approval_envelope_json,
+                adapter_result_envelope_json = excluded.adapter_result_envelope_json,
                 expected_outputs_summary_json = excluded.expected_outputs_summary_json,
                 resource_estimate_json = excluded.resource_estimate_json,
                 result_summary_json = excluded.result_summary_json,
@@ -1617,6 +1637,23 @@ class ControlledOperationRepository:
                 _json_dumps(list(record.input_artifact_digests)),
                 record.source_snapshot_artifact_id,
                 record.source_snapshot_digest,
+                record.adapter_envelope_schema_version,
+                record.sdk_module,
+                record.function_name,
+                record.route_policy_id,
+                record.placement,
+                record.hpc_workspace_id,
+                record.selected_backend,
+                record.resource_class,
+                record.runtime_packaging_id,
+                record.toolchain_id,
+                record.provider_config_digest,
+                _json_dumps(list(record.input_artifact_ids)),
+                _json_dumps([dict(item) for item in record.stage_refs]),
+                _json_dumps(record.planned_fetch_intent or {}),
+                _json_dumps(record.approval_requirement or {}),
+                _json_dumps(record.adapter_approval_envelope or {}),
+                _json_dumps(record.adapter_result_envelope or {}),
                 _json_dumps(record.expected_outputs_summary or {}),
                 _json_dumps(record.resource_estimate or {}),
                 _json_dumps(record.result_summary or {}),
@@ -1724,6 +1761,23 @@ class ControlledOperationRepository:
             input_artifact_digests=_json_loads_list(row["input_artifact_digests_json"]),
             source_snapshot_artifact_id=row["source_snapshot_artifact_id"],
             source_snapshot_digest=row["source_snapshot_digest"],
+            adapter_envelope_schema_version=row["adapter_envelope_schema_version"],
+            sdk_module=row["sdk_module"],
+            function_name=row["function_name"],
+            route_policy_id=row["route_policy_id"],
+            placement=row["placement"],
+            hpc_workspace_id=row["hpc_workspace_id"],
+            selected_backend=row["selected_backend"],
+            resource_class=row["resource_class"],
+            runtime_packaging_id=row["runtime_packaging_id"],
+            toolchain_id=row["toolchain_id"],
+            provider_config_digest=row["provider_config_digest"],
+            input_artifact_ids=_json_loads_list(row["input_artifact_ids_json"]),
+            stage_refs=_json_loads_object_tuple(row["stage_refs_json"]),
+            planned_fetch_intent=_json_loads_object(row["planned_fetch_intent_json"]) or {},
+            approval_requirement=_json_loads_object(row["approval_requirement_json"]) or {},
+            adapter_approval_envelope=_json_loads_object(row["adapter_approval_envelope_json"]) or {},
+            adapter_result_envelope=_json_loads_object(row["adapter_result_envelope_json"]) or {},
             expected_outputs_summary=_json_loads_object(row["expected_outputs_summary_json"]) or {},
             resource_estimate=_json_loads_object(row["resource_estimate_json"]) or {},
             result_summary=_json_loads_object(row["result_summary_json"]) or {},

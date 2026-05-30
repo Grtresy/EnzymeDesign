@@ -878,10 +878,43 @@ def test_continuation_state_claim_has_single_winner() -> None:
         status=ControlledOperationStatus.WAITING_APPROVAL,
         approval_id=approval.approval_id,
         approval_state=ApprovalRequestStatus.PENDING.value,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio_tools",
+        function_name="mafft",
+        route_policy_id="bio_tools.mafft.hpc:v1",
+        placement="hpc",
+        hpc_workspace_id="hpcws_s10_claim",
+        selected_backend="hpc",
+        resource_class="hpc_batch_small",
+        runtime_packaging_id="s14.pending.runtime",
+        toolchain_id="s14.pending.mafft",
+        input_artifact_ids=("art_input",),
+        stage_refs=({"stage_ref_id": "stage_input", "hpc_workspace_id": "hpcws_s10_claim"},),
+        planned_fetch_intent={"declared_outputs": [{"path": "outputs/alignment.fasta"}]},
+        approval_requirement={"required": True},
+        adapter_approval_envelope={"sdk_module": "bio_tools", "function_name": "mafft"},
+        adapter_result_envelope={
+            "operation_id": "op_s10_claim",
+            "backend_run_id": "slurm_001",
+            "registered_artifact_ids": ["artifact_alignment"],
+        },
         created_at="2026-04-16T10:00:04+00:00",
         updated_at="2026-04-16T10:00:04+00:00",
     )
     repositories.controlled_operations.save(operation)
+    saved_operation = repositories.controlled_operations.get(operation.operation_id)
+    assert saved_operation is not None
+    assert saved_operation.sdk_module == "bio_tools"
+    assert saved_operation.function_name == "mafft"
+    assert saved_operation.route_policy_id == "bio_tools.mafft.hpc:v1"
+    assert saved_operation.stage_refs == ({"stage_ref_id": "stage_input", "hpc_workspace_id": "hpcws_s10_claim"},)
+    assert saved_operation.planned_fetch_intent == {"declared_outputs": [{"path": "outputs/alignment.fasta"}]}
+    assert saved_operation.adapter_approval_envelope == {"sdk_module": "bio_tools", "function_name": "mafft"}
+    assert saved_operation.adapter_result_envelope == {
+        "operation_id": "op_s10_claim",
+        "backend_run_id": "slurm_001",
+        "registered_artifact_ids": ["artifact_alignment"],
+    }
     continuation = ContinuationState(
         continuation_id="cont_s10_claim",
         session_id=session.session_id,

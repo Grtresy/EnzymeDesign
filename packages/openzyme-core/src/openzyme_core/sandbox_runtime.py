@@ -58,6 +58,121 @@ STDIO_INLINE_LIMIT = 32 * 1024
 EXEC_DEFAULT_TIMEOUT_SECONDS = 120
 EXEC_MAX_TIMEOUT_SECONDS = 900
 EXEC_POLICY_VERSION = "s09.exec_policy.v1"
+S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
+S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
+PRIVATE_ADAPTER_PAYLOAD_KEYS = {
+    "host_path",
+    "sandbox_host_path",
+    "runner_path",
+    "remote_path",
+    "sif_path",
+    "credential",
+    "credentials",
+    "api_key",
+    "token",
+    "secret",
+    "provider_credential",
+    "provider_credentials",
+    "provider_secret",
+    "private_endpoint",
+    "runner_config",
+    "ssh_config",
+    "slurm_config",
+    "database_mount",
+    "database_path",
+    "mount_path",
+    "storage_uri",
+    "command",
+    "complete_command",
+    "raw_command",
+}
+S12_ROUTE_POLICIES: dict[str, dict[str, Any]] = {
+    "bio.ncbi_fetch_proteins.provider:v1": {
+        "sdk_module": "bio",
+        "function_name": "ncbi_fetch_proteins",
+        "selected_backend": "provider_http",
+        "backend_category": "provider_http",
+        "route_reason": "static_policy:v1",
+        "resource_class": "network_io",
+        "runtime_packaging_id": "provider_http:v1",
+        "provider_config_digest": "provider_config:ncbi:v1",
+        "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-ncbi",
+        "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-ncbi",
+        "approval_requirement": {"required": True},
+        "status": "ok",
+    },
+    "bio.uniprot_fetch.provider:v1": {
+        "sdk_module": "bio",
+        "function_name": "uniprot_fetch",
+        "selected_backend": "provider_http",
+        "backend_category": "provider_http",
+        "route_reason": "static_policy:v1",
+        "resource_class": "network_io",
+        "runtime_packaging_id": "provider_http:v1",
+        "provider_config_digest": "provider_config:uniprot:v1",
+        "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-uniprot",
+        "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-uniprot",
+        "approval_requirement": {"required": True},
+        "status": "ok",
+    },
+    "bio.hmmer_search.provider:v1": {
+        "sdk_module": "bio",
+        "function_name": "hmmer_search",
+        "selected_backend": "provider_http",
+        "backend_category": "provider_http",
+        "route_reason": "static_policy:v1",
+        "resource_class": "network_io",
+        "runtime_packaging_id": "provider_http:v1",
+        "provider_config_digest": "provider_config:ebi_hmmer:v1",
+        "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-ebi-hmmer-rest",
+        "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-ebi-hmmer-rest",
+        "approval_requirement": {"required": True},
+        "status": "ok",
+    },
+    "bio_tools.mafft.hpc:v1": {
+        "sdk_module": "bio_tools",
+        "function_name": "mafft",
+        "selected_backend": "hpc",
+        "backend_category": "hpc_runner",
+        "route_reason": "static_policy:v1",
+        "resource_class": "hpc_batch_small",
+        "runtime_packaging_id": "s14.pending.hpc_apptainer_sif",
+        "toolchain_id": "s14.pending.mafft",
+        "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#hpc-evidence",
+        "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#parameter-inventory-mafft",
+        "approval_requirement": {"required": True},
+        "status": "ok",
+    },
+    "test.fixture_adapter:v1": {
+        "sdk_module": "bio_tools",
+        "function_name": "mafft",
+        "selected_backend": "fixture",
+        "backend_category": "host_local_tool",
+        "route_reason": "unit_fixture_forbidden",
+        "resource_class": "fixture",
+        "runtime_packaging_id": "fixture",
+        "toolchain_id": "fixture",
+        "evidence_ref": "fixture",
+        "parameter_inventory_ref": "fixture",
+        "approval_requirement": {"required": False},
+        "status": "ok",
+    },
+    "test.prerequisite_missing:v1": {
+        "sdk_module": "bio_tools",
+        "function_name": "mafft",
+        "selected_backend": "hpc",
+        "backend_category": "hpc_runner",
+        "route_reason": "static_policy:v1",
+        "resource_class": "hpc_batch_small",
+        "runtime_packaging_id": "s14.pending.hpc_apptainer_sif",
+        "toolchain_id": "s14.pending.mafft",
+        "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#hpc-evidence",
+        "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#parameter-inventory-mafft",
+        "approval_requirement": {"required": True},
+        "status": "prerequisite_missing",
+        "error_code": "operation_prerequisite_missing",
+    },
+}
 
 
 class SandboxRuntimeError(RuntimeError):
@@ -91,6 +206,59 @@ def _sha256_bytes(content: bytes) -> str:
 
 def _json_digest(value: Any) -> str:
     return _sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _scrub_private_adapter_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _scrub_private_adapter_payload(item)
+            for key, item in value.items()
+            if str(key) not in PRIVATE_ADAPTER_PAYLOAD_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_private_adapter_payload(item) for item in value]
+    return value
+
+
+def _structured_adapter_message(value: Any, *, default_code: str) -> dict[str, Any] | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        message = dict(_scrub_private_adapter_payload(value))
+        code = str(
+            message.get("code")
+            or message.get("error_code")
+            or message.get("warning_code")
+            or default_code
+        )
+        summary = str(message.get("summary") or message.get("message") or code)
+        return {
+            "code": code,
+            "stage": str(message.get("stage") or "adapter_result"),
+            "retryable": bool(message.get("retryable", False)),
+            "summary": summary,
+            "details_ref": message.get("details_ref"),
+            "safe_diagnostics": message.get("safe_diagnostics"),
+        }
+    return {
+        "code": default_code,
+        "stage": "adapter_result",
+        "retryable": False,
+        "summary": str(value),
+        "details_ref": None,
+        "safe_diagnostics": None,
+    }
+
+
+def _structured_adapter_warnings(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    warnings: list[dict[str, Any]] = []
+    for item in value:
+        warning = _structured_adapter_message(item, default_code="adapter_warning")
+        if warning is not None:
+            warnings.append(warning)
+    return warnings
 
 
 def _workspace_root(workspace_root: Path | None) -> Path:
@@ -390,6 +558,8 @@ class _ControlSocketServer:
         )
         approval = self._create_approval(operation, envelope)
         operation = replace(operation, approval_id=approval.approval_id, updated_at=utc_now_iso())
+        if operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            operation = replace(operation, adapter_approval_envelope=self._adapter_approval_envelope(operation))
         self.repositories.controlled_operations.save(operation)
         continuation = self._create_continuation(operation, approval)
         claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
@@ -403,7 +573,7 @@ class _ControlSocketServer:
             )
             self.repositories.controlled_operations.save(operation)
         result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
-        operation = replace(
+        completed = replace(
             operation,
             status=ControlledOperationStatus.COMPLETED,
             result_summary=result_summary,
@@ -411,16 +581,24 @@ class _ControlSocketServer:
             error_summary=None,
             updated_at=utc_now_iso(),
         )
+        if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            completed = replace(
+                completed,
+                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
+            )
+        operation = completed
         self.repositories.controlled_operations.save(operation)
         self.repositories.continuation_states.complete(claimed.continuation_id)
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._operation_response(operation)}
 
     def _validated_s10_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
         schema_version = str(params.get("schema_version") or "")
-        if schema_version != "s10.supervised_rpc.v1":
+        if schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            return self._validated_s12_envelope(params)
+        if schema_version != S10_SUPERVISED_RPC_SCHEMA:
             raise SandboxRuntimeError(
                 "sdk_rpc_schema_unsupported",
-                "S10 supervised SDK RPC requires schema_version='s10.supervised_rpc.v1'",
+                "supervised SDK RPC requires a supported schema_version",
             )
         backend_category = str(params.get("backend_category") or "")
         if backend_category not in {"provider_http", "host_local_tool", "hpc_runner"}:
@@ -451,22 +629,297 @@ class _ControlSocketServer:
             raise SandboxRuntimeError("invalid_tool_arguments", "result_summary must be an object")
         return {
             "schema_version": schema_version,
+            "adapter_envelope_schema_version": None,
             "idempotency_key": idempotency_key,
             "sandbox_workspace_id": self.sandbox_workspace_id,
             "sandbox_run_id": self.sandbox_run_id,
             "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
             "source_snapshot_digest": self.source_tree_digest,
             "logical_operation_key": logical_operation_key,
+            "sdk_module": None,
+            "function_name": None,
             "params_digest": params_digest,
+            "input_artifact_ids": [],
             "input_artifact_digests": sorted(str(item) for item in input_artifact_digests),
             "backend_category": backend_category,
+            "route_policy_id": None,
+            "placement": None,
+            "hpc_workspace_id": None,
+            "stage_refs": [],
+            "selected_backend": backend_category,
+            "resource_class": None,
+            "runtime_packaging_id": None,
+            "toolchain_id": None,
+            "provider_config_digest": None,
+            "planned_fetch_intent": {},
+            "approval_requirement": {},
             "expected_outputs_summary": expected_outputs_summary,
             "resource_estimate": resource_estimate,
             "result_summary": result_summary,
             "route_reason": str(params.get("route_reason") or "s10_generic_backend_category"),
+            "adapter_result": {},
         }
 
+    def _validated_s12_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
+        route_policy_id = str(params.get("route_policy_id") or "")
+        policy = self._route_policy(route_policy_id)
+        sdk_module = str(params.get("sdk_module") or policy["sdk_module"])
+        function_name = str(params.get("function_name") or policy["function_name"])
+        if sdk_module != policy["sdk_module"] or function_name != policy["function_name"]:
+            raise SandboxRuntimeError(
+                "adapter_schema_incompatible",
+                "SDK module/function does not match the selected route policy",
+                details={
+                    "route_policy_id": route_policy_id,
+                    "sdk_module": sdk_module,
+                    "function_name": function_name,
+                },
+            )
+        if policy["selected_backend"] == "fixture":
+            raise SandboxRuntimeError(
+                "fixture_backend_forbidden",
+                "deterministic fixture adapter is not allowed on the product path",
+                details={"route_policy_id": route_policy_id},
+            )
+        if policy.get("status") != "ok":
+            raise SandboxRuntimeError(
+                str(policy.get("error_code") or "operation_prerequisite_missing"),
+                "route policy prerequisite is not satisfied",
+                details={"route_policy_id": route_policy_id, "status": policy.get("status")},
+            )
+        self._require_policy_refs(policy, route_policy_id=route_policy_id)
+        idempotency_key = str(params.get("idempotency_key") or "")
+        params_digest = str(params.get("params_digest") or "")
+        if not idempotency_key or not params_digest:
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments",
+                "idempotency_key and params_digest are required",
+            )
+        input_artifact_ids = params.get("input_artifact_ids") or []
+        input_artifact_digests = params.get("input_artifact_digests") or []
+        stage_refs = params.get("stage_refs") or []
+        if not isinstance(input_artifact_ids, list) or not isinstance(input_artifact_digests, list):
+            raise SandboxRuntimeError("invalid_tool_arguments", "input artifact fields must be lists")
+        if not isinstance(stage_refs, list) or not all(isinstance(item, dict) for item in stage_refs):
+            raise SandboxRuntimeError("invalid_tool_arguments", "stage_refs must be a list of objects")
+        expected_outputs = params.get("expected_outputs", params.get("expected_outputs_summary") or {})
+        expected_outputs_summary = self._expected_outputs_summary(expected_outputs)
+        resource_estimate = params.get("resource_estimate") or {}
+        if not isinstance(resource_estimate, dict):
+            raise SandboxRuntimeError("invalid_tool_arguments", "resource_estimate must be an object")
+        planned_fetch_intent = params.get("planned_fetch_intent") or {}
+        if not isinstance(planned_fetch_intent, dict):
+            raise SandboxRuntimeError("invalid_tool_arguments", "planned_fetch_intent must be an object")
+        planned_fetch_intent = dict(_scrub_private_adapter_payload(planned_fetch_intent))
+        placement = str(params.get("placement") or "provider")
+        hpc_workspace_id = str(params.get("hpc_workspace_id") or "")
+        if policy["selected_backend"] == "hpc":
+            if placement != "hpc" or not hpc_workspace_id:
+                raise SandboxRuntimeError(
+                    "hpc_workspace_forbidden",
+                    "HPC route operations require explicit hpc placement and hpc_workspace_id",
+                    details={"route_policy_id": route_policy_id},
+                )
+            if not stage_refs:
+                raise SandboxRuntimeError(
+                    "hpc_workspace_forbidden",
+                    "HPC route operations require stage_refs",
+                    details={"route_policy_id": route_policy_id},
+                )
+            stage_refs = self._validated_hpc_stage_refs(stage_refs, hpc_workspace_id=hpc_workspace_id)
+            planned_fetch_intent = self._validated_hpc_fetch_intent(planned_fetch_intent)
+        adapter_result = params.get("adapter_result") or {}
+        if not isinstance(adapter_result, dict):
+            raise SandboxRuntimeError("invalid_tool_arguments", "adapter_result must be an object")
+        result_summary = params.get("result_summary") or adapter_result.get("bounded_summary") or {"status": "completed"}
+        if not isinstance(result_summary, dict):
+            raise SandboxRuntimeError("invalid_tool_arguments", "result_summary must be an object")
+        logical_operation_key = f"{sdk_module}.{function_name}"
+        return {
+            "schema_version": S12_ADAPTER_ENVELOPE_SCHEMA,
+            "adapter_envelope_schema_version": S12_ADAPTER_ENVELOPE_SCHEMA,
+            "idempotency_key": idempotency_key,
+            "sandbox_workspace_id": self.sandbox_workspace_id,
+            "sandbox_run_id": self.sandbox_run_id,
+            "source_snapshot_artifact_id": self.source_snapshot_artifact_id,
+            "source_snapshot_digest": self.source_tree_digest,
+            "logical_operation_key": logical_operation_key,
+            "sdk_module": sdk_module,
+            "function_name": function_name,
+            "params_digest": params_digest,
+            "input_artifact_ids": sorted(str(item) for item in input_artifact_ids),
+            "input_artifact_digests": sorted(str(item) for item in input_artifact_digests),
+            "backend_category": str(policy["backend_category"]),
+            "route_policy_id": route_policy_id,
+            "placement": placement,
+            "hpc_workspace_id": hpc_workspace_id or None,
+            "stage_refs": [dict(item) for item in stage_refs],
+            "selected_backend": str(policy["selected_backend"]),
+            "route_reason": str(policy["route_reason"]),
+            "resource_class": str(policy["resource_class"]),
+            "runtime_packaging_id": str(policy.get("runtime_packaging_id") or ""),
+            "toolchain_id": policy.get("toolchain_id"),
+            "provider_config_digest": policy.get("provider_config_digest"),
+            "planned_fetch_intent": planned_fetch_intent,
+            "approval_requirement": dict(policy.get("approval_requirement") or {}),
+            "expected_outputs_summary": expected_outputs_summary,
+            "resource_estimate": resource_estimate,
+            "result_summary": result_summary,
+            "adapter_result": adapter_result,
+        }
+
+    def _route_policy(self, route_policy_id: str) -> dict[str, Any]:
+        if not route_policy_id:
+            raise SandboxRuntimeError("route_policy_missing", "route_policy_id is required")
+        policy = S12_ROUTE_POLICIES.get(route_policy_id)
+        if policy is None:
+            raise SandboxRuntimeError(
+                "route_policy_missing",
+                "route policy is not registered",
+                details={"route_policy_id": route_policy_id},
+            )
+        return dict(policy)
+
+    def _require_policy_refs(self, policy: dict[str, Any], *, route_policy_id: str) -> None:
+        if not policy.get("evidence_ref") or not policy.get("parameter_inventory_ref"):
+            raise SandboxRuntimeError(
+                "operation_prerequisite_missing",
+                "route policy must include evidence and parameter inventory refs",
+                details={"route_policy_id": route_policy_id},
+            )
+        if not policy.get("runtime_packaging_id"):
+            raise SandboxRuntimeError(
+                "runtime_packaging_missing",
+                "route policy must include runtime_packaging_id",
+                details={"route_policy_id": route_policy_id},
+            )
+        if policy.get("backend_category") == "provider_http" and not policy.get("provider_config_digest"):
+            raise SandboxRuntimeError(
+                "operation_prerequisite_missing",
+                "provider route policy must include provider_config_digest",
+                details={"route_policy_id": route_policy_id},
+            )
+        if policy.get("selected_backend") == "hpc" and not policy.get("toolchain_id"):
+            raise SandboxRuntimeError(
+                "operation_prerequisite_missing",
+                "HPC route policy must include toolchain_id",
+                details={"route_policy_id": route_policy_id},
+            )
+
+    def _validated_hpc_stage_refs(
+        self,
+        stage_refs: list[Any],
+        *,
+        hpc_workspace_id: str,
+    ) -> list[dict[str, Any]]:
+        safe_keys = {
+            "kind",
+            "stage_ref_id",
+            "hpc_workspace_id",
+            "artifact_id",
+            "artifact_digest",
+            "workspace_relative_path",
+            "source",
+            "sandbox_workspace_id",
+        }
+        validated: list[dict[str, Any]] = []
+        for ref in stage_refs:
+            raw_item = dict(ref)
+            item = {key: raw_item[key] for key in safe_keys if key in raw_item}
+            if item.get("kind") != "hpc_stage_ref":
+                raise SandboxRuntimeError(
+                    "hpc_stage_ref_required",
+                    "HPC route operations require S11 hpc_stage_ref entries",
+                )
+            if str(item.get("hpc_workspace_id") or "") != hpc_workspace_id:
+                raise SandboxRuntimeError(
+                    "hpc_workspace_forbidden",
+                    "HPC stage ref belongs to a different workspace",
+                    details={"hpc_workspace_id": hpc_workspace_id},
+                )
+            if not item.get("stage_ref_id") or not item.get("artifact_id") or not item.get("artifact_digest"):
+                raise SandboxRuntimeError(
+                    "hpc_stage_ref_required",
+                    "HPC stage refs must include stage_ref_id, artifact_id, and artifact_digest",
+                )
+            workspace_path = str(item.get("workspace_relative_path") or "")
+            if workspace_path:
+                item["workspace_relative_path"] = self._validated_hpc_workspace_path(workspace_path)
+            validated.append(item)
+        return validated
+
+    def _validated_hpc_fetch_intent(self, planned_fetch_intent: dict[str, Any]) -> dict[str, Any]:
+        intent = dict(_scrub_private_adapter_payload(planned_fetch_intent))
+        declared_outputs = intent.get("declared_outputs") or intent.get("expected_outputs") or []
+        if not isinstance(declared_outputs, list) or not declared_outputs:
+            raise SandboxRuntimeError(
+                "hpc_fetch_not_declared",
+                "HPC route operations require planned_fetch_intent declared_outputs",
+            )
+        validated_outputs: list[dict[str, Any]] = []
+        for output in declared_outputs:
+            if not isinstance(output, dict):
+                raise SandboxRuntimeError(
+                    "hpc_fetch_not_declared",
+                    "planned_fetch_intent declared_outputs must be objects",
+                )
+            item = dict(output)
+            item["path"] = self._validated_hpc_workspace_path(str(item.get("path") or ""))
+            validated_outputs.append(item)
+        intent["declared_outputs"] = validated_outputs
+        return intent
+
+    def _validated_hpc_workspace_path(self, value: str) -> str:
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        forbidden_chars = (";", "&", "|", "`", "$", "\\", "\n", "\r", "<", ">", "*", "?", "[", "]", "{", "}", "!")
+        if (
+            not normalized
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or any(char in normalized for char in forbidden_chars)
+        ):
+            raise SandboxRuntimeError(
+                "hpc_stage_path_invalid",
+                "HPC workspace paths must be normalized workspace-relative paths",
+            )
+        return path.as_posix()
+
+    def _expected_outputs_summary(self, expected_outputs: Any) -> dict[str, Any]:
+        if isinstance(expected_outputs, dict):
+            return dict(_scrub_private_adapter_payload(expected_outputs))
+        if isinstance(expected_outputs, list):
+            return {"items": list(_scrub_private_adapter_payload(expected_outputs))}
+        raise SandboxRuntimeError("invalid_tool_arguments", "expected_outputs must be an object or list")
+
     def _operation_digest(self, envelope: dict[str, Any]) -> str:
+        if envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA:
+            return _json_digest(
+                {
+                    "schema_version": envelope["schema_version"],
+                    "sandbox_workspace_id": envelope["sandbox_workspace_id"],
+                    "source_snapshot_digest": envelope["source_snapshot_digest"],
+                    "sdk_module": envelope["sdk_module"],
+                    "function_name": envelope["function_name"],
+                    "params_digest": envelope["params_digest"],
+                    "input_artifact_ids": envelope["input_artifact_ids"],
+                    "input_artifact_digests": envelope["input_artifact_digests"],
+                    "placement": envelope["placement"],
+                    "hpc_workspace_id": envelope["hpc_workspace_id"],
+                    "stage_refs": envelope["stage_refs"],
+                    "selected_backend": envelope["selected_backend"],
+                    "route_reason": envelope["route_reason"],
+                    "route_policy_id": envelope["route_policy_id"],
+                    "runtime_packaging_id": envelope["runtime_packaging_id"],
+                    "toolchain_id": envelope["toolchain_id"],
+                    "provider_config_digest": envelope["provider_config_digest"],
+                    "resource_class": envelope["resource_class"],
+                    "resource_estimate": envelope["resource_estimate"],
+                    "expected_outputs": envelope["expected_outputs_summary"],
+                    "planned_fetch_intent": envelope["planned_fetch_intent"],
+                    "approval_requirement": envelope["approval_requirement"],
+                }
+            )
         return _json_digest(
             {
                 "schema_version": envelope["schema_version"],
@@ -512,13 +965,109 @@ class _ControlSocketServer:
             input_artifact_digests=tuple(envelope["input_artifact_digests"]),
             source_snapshot_artifact_id=str(envelope["source_snapshot_artifact_id"]),
             source_snapshot_digest=str(envelope["source_snapshot_digest"]),
+            adapter_envelope_schema_version=envelope.get("adapter_envelope_schema_version"),
+            sdk_module=envelope.get("sdk_module"),
+            function_name=envelope.get("function_name"),
+            route_policy_id=envelope.get("route_policy_id"),
+            placement=envelope.get("placement"),
+            hpc_workspace_id=envelope.get("hpc_workspace_id"),
+            selected_backend=envelope.get("selected_backend"),
+            resource_class=envelope.get("resource_class"),
+            runtime_packaging_id=envelope.get("runtime_packaging_id"),
+            toolchain_id=envelope.get("toolchain_id"),
+            provider_config_digest=envelope.get("provider_config_digest"),
+            input_artifact_ids=tuple(envelope.get("input_artifact_ids") or ()),
+            stage_refs=tuple(dict(item) for item in envelope.get("stage_refs") or ()),
+            planned_fetch_intent=dict(envelope.get("planned_fetch_intent") or {}),
+            approval_requirement=dict(envelope.get("approval_requirement") or {}),
             expected_outputs_summary=dict(envelope["expected_outputs_summary"]),
             resource_estimate=dict(envelope["resource_estimate"]),
             result_summary=result_summary,
             idempotency_key=str(envelope["idempotency_key"]),
         )
+        if envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA:
+            operation = replace(
+                operation,
+                adapter_approval_envelope=self._adapter_approval_envelope(operation),
+                adapter_result_envelope=self._adapter_result_envelope(operation, envelope)
+                if result_summary is not None
+                else {},
+            )
         self.repositories.controlled_operations.save(operation)
         return operation
+
+    def _adapter_approval_envelope(self, operation: ControlledOperation) -> dict[str, Any]:
+        return {
+            "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
+            "sandbox_workspace_id": operation.sandbox_workspace_id,
+            "sandbox_run_id": operation.sandbox_run_id,
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "approval_id": operation.approval_id,
+            "approval_state": operation.approval_state,
+            "sdk_module": operation.sdk_module,
+            "function_name": operation.function_name,
+            "source_snapshot_artifact_id": operation.source_snapshot_artifact_id,
+            "source_snapshot_digest": operation.source_snapshot_digest,
+            "input_artifact_ids": list(operation.input_artifact_ids),
+            "input_artifact_digests": list(operation.input_artifact_digests),
+            "params_digest": operation.params_digest,
+            "placement": operation.placement,
+            "hpc_workspace_id": operation.hpc_workspace_id,
+            "stage_refs": [dict(item) for item in operation.stage_refs],
+            "selected_backend": operation.selected_backend,
+            "route_reason": operation.route_reason,
+            "route_policy_id": operation.route_policy_id,
+            "runtime_packaging_id": operation.runtime_packaging_id,
+            "toolchain_id": operation.toolchain_id,
+            "provider_config_digest": operation.provider_config_digest,
+            "resource_class": operation.resource_class,
+            "resource_estimate": operation.resource_estimate or {},
+            "expected_outputs": operation.expected_outputs_summary or {},
+            "planned_fetch_intent": operation.planned_fetch_intent or {},
+            "approval_requirement": operation.approval_requirement or {},
+        }
+
+    def _adapter_result_envelope(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
+        if operation.adapter_envelope_schema_version != S12_ADAPTER_ENVELOPE_SCHEMA:
+            return {}
+        adapter_result = dict(_scrub_private_adapter_payload(envelope.get("adapter_result") or {}))
+        forbidden_pre_run_keys = {
+            "sdk_module",
+            "function_name",
+            "route_policy_id",
+            "placement",
+            "hpc_workspace_id",
+            "stage_refs",
+            "selected_backend",
+            "params_digest",
+            "source_snapshot_digest",
+            "input_artifact_digests",
+            "expected_outputs",
+            "planned_fetch_intent",
+        }
+        for key in forbidden_pre_run_keys:
+            adapter_result.pop(key, None)
+        return {
+            "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "sandbox_run_id": operation.sandbox_run_id,
+            "status": adapter_result.get("status") or operation.status.value,
+            "backend_run_id": adapter_result.get("backend_run_id"),
+            "provider_request_id": adapter_result.get("provider_request_id"),
+            "fetch_refs": list(adapter_result.get("fetch_refs") or []),
+            "registered_artifact_ids": list(adapter_result.get("registered_artifact_ids") or []),
+            "output_artifact_ids": list(adapter_result.get("output_artifact_ids") or []),
+            "validation_results": adapter_result.get("validation_results") or {},
+            "bounded_summary": adapter_result.get("bounded_summary") or operation.result_summary or {},
+            "warnings": _structured_adapter_warnings(adapter_result.get("warnings")),
+            "error": _structured_adapter_message(
+                adapter_result.get("error"),
+                default_code="adapter_error",
+            ),
+            "safe_diagnostics_ref": adapter_result.get("safe_diagnostics_ref"),
+        }
 
     def _create_approval(self, operation: ControlledOperation, envelope: dict[str, Any]) -> ApprovalRequest:
         approval = ApprovalRequest(
@@ -573,6 +1122,11 @@ class _ControlSocketServer:
             result_summary=result_summary,
             updated_at=utc_now_iso(),
         )
+        if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            completed = replace(
+                completed,
+                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
+            )
         self.repositories.controlled_operations.save(completed)
         self.repositories.continuation_states.complete(claimed.continuation_id)
         return self._operation_response(completed)
@@ -647,7 +1201,7 @@ class _ControlSocketServer:
         raise SandboxRuntimeError("operation_recovery_failed", "control socket stopped before SDK continuation resumed")
 
     def _operation_response(self, operation: ControlledOperation) -> dict[str, Any]:
-        return {
+        response = {
             "schema_version": "s10.supervised_rpc.v1",
             "operation_id": operation.operation_id,
             "operation_digest": operation.operation_digest,
@@ -658,6 +1212,28 @@ class _ControlSocketServer:
             "status": operation.status.value,
             "result_summary": operation.result_summary or {},
         }
+        if operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            response.update(
+                {
+                    "schema_version": S12_ADAPTER_ENVELOPE_SCHEMA,
+                    "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
+                    "sdk_module": operation.sdk_module,
+                    "function_name": operation.function_name,
+                    "route_policy_id": operation.route_policy_id,
+                    "placement": operation.placement,
+                    "hpc_workspace_id": operation.hpc_workspace_id,
+                    "selected_backend": operation.selected_backend,
+                    "resource_class": operation.resource_class,
+                    "runtime_packaging_id": operation.runtime_packaging_id,
+                    "toolchain_id": operation.toolchain_id,
+                    "provider_config_digest": operation.provider_config_digest,
+                    "stage_refs": [dict(item) for item in operation.stage_refs],
+                    "planned_fetch_intent": operation.planned_fetch_intent or {},
+                    "adapter_approval_envelope": operation.adapter_approval_envelope or {},
+                    "adapter_result_envelope": operation.adapter_result_envelope or {},
+                }
+            )
+        return response
 
 
 @dataclass(slots=True)

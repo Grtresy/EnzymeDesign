@@ -623,6 +623,23 @@ class ControlledOperation:
     input_artifact_digests: tuple[str, ...] = ()
     source_snapshot_artifact_id: str | None = None
     source_snapshot_digest: str | None = None
+    adapter_envelope_schema_version: str | None = None
+    sdk_module: str | None = None
+    function_name: str | None = None
+    route_policy_id: str | None = None
+    placement: str | None = None
+    hpc_workspace_id: str | None = None
+    selected_backend: str | None = None
+    resource_class: str | None = None
+    runtime_packaging_id: str | None = None
+    toolchain_id: str | None = None
+    provider_config_digest: str | None = None
+    input_artifact_ids: tuple[str, ...] = ()
+    stage_refs: tuple[dict[str, Any], ...] = ()
+    planned_fetch_intent: dict[str, Any] | None = None
+    approval_requirement: dict[str, Any] | None = None
+    adapter_approval_envelope: dict[str, Any] | None = None
+    adapter_result_envelope: dict[str, Any] | None = None
     expected_outputs_summary: dict[str, Any] | None = None
     resource_estimate: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None
@@ -633,7 +650,9 @@ class ControlledOperation:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["status"] = self.status.value
+        data["input_artifact_ids"] = list(self.input_artifact_ids)
         data["input_artifact_digests"] = list(self.input_artifact_digests)
+        data["stage_refs"] = [dict(item) for item in self.stage_refs]
         return data
 
 
