@@ -209,9 +209,9 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图，保留为轻量兼容入口
 - `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact
 - `artifacts.snapshot_code(paths, entrypoint, metadata)`：把 sandbox `/workspace/src` 中的源码固化为 `ArtifactKind.CODE` 审计快照，供 plan、approval 与 run provenance 绑定
-- `bio.ncbi_fetch_proteins(accessions=[...], fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
-- `bio.uniprot_fetch(accessions=[...], fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
-- `bio.hmmer_search(hmm_artifact_id=..., database=..., params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
+- `bio.ncbi_fetch_proteins(accessions=[...], output_dir="/workspace/output/...", fields=[...])`：Host 托管 NCBI protein FASTA/metadata 拉取，返回 bounded summary 和 artifact refs
+- `bio.uniprot_fetch(accessions=[...], output_dir="/workspace/output/...", fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
+- `bio.hmmer_search(hmm_artifact_id=..., database="refprot", output_dir="/workspace/output/...", params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
 - `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary。Session 14 先启用 `cdhit` / `mafft` / `hmmbuild` / `hmmalign` 的 HPC route，`hmmer_search_cli` 保留 public SDK 名称但固定返回 `unsupported_in_s14`
 - `preprocess.convert_format(...)`
 - `preprocess.prepare_receptor(...)`

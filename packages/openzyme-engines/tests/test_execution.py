@@ -32,8 +32,13 @@ from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import register_execution_tools
+from openzyme_engines.execution import BioArtifactDraft
+from openzyme_engines.execution import BioProviderHttpConfig
+from openzyme_engines.execution import BioSdkResult
+from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
+from openzyme_engines.execution import ProviderHttpBioDatabaseAdapter
 
 
 FPOCKET_EXPECTED_OUTPUTS = [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
@@ -321,6 +326,22 @@ class SandboxPreflight:
     def __init__(self, ok: bool, message: str = "ok") -> None:
         self.ok = ok
         self.message = message
+
+
+class FakeHttpResponse:
+    def __init__(self, *, status: int = 200, headers: dict[str, str] | None = None, body: str) -> None:
+        self.status = status
+        self.headers = headers or {}
+        self._body = body.encode("utf-8")
+
+    def __enter__(self) -> "FakeHttpResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    def read(self) -> bytes:
+        return self._body
 
 
 class HandlerSandboxRunner:
@@ -747,6 +768,24 @@ def _save_fasta_artifact(repositories: CoreRepositories, artifact_id: str = "art
         )
     )
     return artifact_id
+
+
+def _approve_request(repositories: CoreRepositories, approval: ApprovalRequest) -> None:
+    repositories.approvals.save(
+        ApprovalRequest(
+            approval_id=approval.approval_id,
+            session_id=approval.session_id,
+            task_id=approval.task_id,
+            lane_id=approval.lane_id,
+            kind=approval.kind,
+            requested_action=approval.requested_action,
+            status=ApprovalRequestStatus.APPROVED,
+            request_ref=approval.request_ref,
+            resolution_ref="artifact://approval-resolution.json",
+            created_at=approval.created_at,
+            resolved_at="2026-04-20T12:10:00+00:00",
+        )
+    )
 
 
 def test_execution_engine_waits_for_approval_before_submitting() -> None:
@@ -1280,9 +1319,9 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
         repositories,
         "code_bio_dry_run",
         "from openzyme_pipeline import bio\n"
-        "bio.ncbi_fetch_proteins(accessions=['P12345'])\n"
-        "bio.uniprot_fetch(accessions=['Q8XYZ1'], batch_size=50)\n"
-        "bio.hmmer_search(hmm_artifact_id='art_hmm_001', database='uniprotkb')\n",
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/ncbi')\n"
+        "bio.uniprot_fetch(accessions=['Q8XYZ1'], output_dir='/workspace/output/bio/uniprot', batch_size=50)\n"
+        "bio.hmmer_search(hmm_artifact_id='art_hmm_001', database='refprot', output_dir='/workspace/output/bio/hmmer')\n",
     )
     network_code_artifact_id = _pipeline_source_id(
         repositories,
@@ -1315,7 +1354,15 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
     ]
     assert plan["resource_quota_estimate"]["bio_operation_count"] == 3
     assert plan["resource_quota_estimate"]["provider_requests"] == 3
-    assert plan["expected_outputs"][0]["path"] == "bio/ncbi/proteins.fasta"
+    assert all(operation["approval_required"] is True for operation in plan["bio_operations"])
+    assert plan["approval_requirements"][0]["kind"] == "provider_operation"
+    assert plan["expected_outputs"][0]["path"] == "<output_dir>/provider_request.json"
+    uniprot_sequence_output = next(
+        output
+        for output in plan["expected_outputs"]
+        if output["path"] == "<output_dir>/provider_parsed/sequences.fasta"
+    )
+    assert uniprot_sequence_output["optional"] is True
     assert rejected.invocation.status is EngineInvocationStatus.FAILED
     assert rejected.parsed_result is not None
     assert rejected.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_network_call"
@@ -1441,7 +1488,7 @@ def test_pipeline_single_plan_approval_policy_gates_bio_tool_execution() -> None
         repositories,
         "code_single_plan_bio_tools",
         "from openzyme_pipeline import bio, bio_tools\n"
-        "refs = bio.ncbi_fetch_proteins(accessions=['AAC72747.1'])\n"
+        "refs = bio.ncbi_fetch_proteins(accessions=['AAC72747.1'], output_dir='/workspace/output/bio/ncbi')\n"
         "from openzyme_pipeline import hpc\n"
         "ws = hpc.workspace('aox_hmm')\n"
         "remote_refs = ws.stage_artifact(refs['artifact_ids'][0], workspace_path='inputs/reference.fasta')\n"
@@ -1477,62 +1524,466 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
         repositories,
         "code_bio_fetch",
         "from openzyme_pipeline import bio\n"
-        "bio.ncbi_fetch_proteins(accessions=['P12345'])\n"
-        "bio.uniprot_fetch(accessions=['Q8XYZ1', 'MISSING999'], batch_size=1)\n",
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/ncbi')\n"
+        "bio.uniprot_fetch(accessions=['Q8XYZ1', 'MISSING999'], output_dir='/workspace/output/bio/uniprot', batch_size=1)\n",
     )
     sandbox = BioSandboxRunner(
         (
-            ("bio.ncbi_fetch_proteins", {"accessions": ["P12345"], "fields": ["taxonomy"]}),
+            (
+                "bio.ncbi_fetch_proteins",
+                {
+                    "accessions": ["P12345"],
+                    "fields": ["taxonomy"],
+                    "output_dir": "/workspace/output/bio/ncbi",
+                },
+            ),
             (
                 "bio.uniprot_fetch",
                 {
                     "accessions": ["Q8XYZ1", "MISSING999"],
                     "fields": ["length", "taxonomy", "reviewed"],
                     "batch_size": 1,
+                    "output_dir": "/workspace/output/bio/uniprot",
                 },
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
 
-    result = engine.start_pipeline(
+    first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_bio_fetch",
         code_artifact_id=code_artifact_id,
-        inputs={},
+        inputs={"approval_policy": "single_plan"},
     )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_fetch", resolution="approved")
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert len(sandbox.results) == 2
-    assert sandbox.results[0]["artifact_count"] == 2
+    assert sandbox.results[0]["artifact_count"] == 4
     assert sandbox.results[1]["warnings"][0]["warning_code"] == "partial_accession_missing"
     assert "sequence" not in sandbox.results[0]["artifacts"][0]["metadata"]
     artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_fetch")
     bio_artifacts = [
         artifact
         for artifact in artifacts
-        if artifact.metadata and artifact.metadata.get("source") == "host_supervised_bio_sdk"
+        if artifact.metadata and artifact.metadata.get("producer") == "host_supervised_bio_provider"
     ]
     assert {artifact.relative_path for artifact in bio_artifacts} == {
-        "bio/ncbi/proteins.fasta",
-        "bio/ncbi/proteins.metadata.json",
-        "bio/uniprot/sequences.fasta",
-        "bio/uniprot/metadata.json",
+        "bio/ncbi/provider_request.json",
+        "bio/ncbi/provider_observation.json",
+        "bio/ncbi/provider_parsed/proteins.fasta",
+        "bio/ncbi/provider_parsed/proteins.metadata.json",
+        "bio/uniprot/provider_request.json",
+        "bio/uniprot/provider_observation.json",
+        "bio/uniprot/provider_parsed/sequences.fasta",
+        "bio/uniprot/provider_parsed/metadata.json",
     }
-    fasta_artifact = next(artifact for artifact in bio_artifacts if artifact.relative_path == "bio/ncbi/proteins.fasta")
+    fasta_artifact = next(
+        artifact for artifact in bio_artifacts if artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
+    )
     assert fasta_artifact.kind is ArtifactKind.SEQUENCE
     assert fasta_artifact.metadata is not None
     assert fasta_artifact.metadata["provider"] == "ncbi"
     assert fasta_artifact.metadata["response_digest"].startswith("sha256:")
     assert fasta_artifact.metadata["source_code_artifact_id"] == code_artifact_id
     assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">P12345")
-    metadata_artifact = next(artifact for artifact in bio_artifacts if artifact.relative_path == "bio/uniprot/metadata.json")
+    metadata_artifact = next(
+        artifact for artifact in bio_artifacts if artifact.relative_path == "bio/uniprot/provider_parsed/metadata.json"
+    )
     metadata_payload = json.loads(Path(metadata_artifact.storage_uri).read_text(encoding="utf-8"))
     assert "sequence" not in metadata_payload["records"][0]
     status = engine.get_pipeline_status("inv_pipeline_bio_fetch")
     assert status["details"]["bio_artifact_ids"]
     assert "P12345" not in str(status.get("sandbox_outcome", {}))
+
+
+def test_pipeline_bio_requires_output_dir_before_approval() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_missing_output_dir",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'])\n",
+    )
+    sandbox = BioSandboxRunner((("bio.ncbi_fetch_proteins", {"accessions": ["P12345"], "fields": []}),))
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_missing_output_dir",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.approval is None
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "provider_output_path_invalid"
+    assert repositories.approvals.list_by_session("sess_001") == []
+    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_missing_output_dir") == []
+
+
+def test_pipeline_bio_product_path_without_provider_does_not_use_fixture() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_no_provider",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/ncbi')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.ncbi_fetch_proteins",
+                {
+                    "accessions": ["P12345"],
+                    "fields": [],
+                    "output_dir": "/workspace/output/bio/ncbi",
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_no_provider",
+        code_artifact_id=code_artifact_id,
+        inputs={"approval_policy": "single_plan"},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_no_provider", resolution="approved")
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "provider_not_configured"
+    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_no_provider") == []
+
+
+def test_pipeline_bio_approval_and_result_envelopes_keep_s12_field_placement() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_s12_envelope",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/ncbi-envelope')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.ncbi_fetch_proteins",
+                {
+                    "accessions": ["P12345"],
+                    "fields": [],
+                    "output_dir": "/workspace/output/bio/ncbi-envelope",
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_s12_envelope",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+    )
+
+    assert first.approval is not None
+    assert first.approval.kind == "execution_pipeline_plan"
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_s12_envelope",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    document = repositories.engine_documents.list_by_invocation("sess_001", "inv_pipeline_bio_s12_envelope")[0]
+    envelopes = document.payload["pipeline"]["adapter_approval_envelopes"]
+    assert len(envelopes) == 1
+    approval_envelope = next(iter(envelopes.values()))
+    assert approval_envelope["adapter_envelope_schema_version"] == "s12.adapter_envelope.v1"
+    assert approval_envelope["sdk_module"] == "bio"
+    assert approval_envelope["function_name"] == "ncbi_fetch_proteins"
+    assert approval_envelope["route_policy_id"] == "bio.ncbi_fetch_proteins.provider:v1"
+    assert approval_envelope["selected_backend"] == "provider_http"
+    assert approval_envelope["runtime_packaging_id"] == "provider_http:v1"
+    assert approval_envelope["provider_config_digest"] == "provider_config:ncbi:v1"
+    assert approval_envelope["planned_output_path_summary"] == {
+        "output_dir": "/workspace/output/bio/ncbi-envelope"
+    }
+    assert approval_envelope["approval_requirement"] == {"required": True}
+    assert approval_envelope["expected_outputs"][0]["path"] == "<output_dir>/provider_request.json"
+    assert "params_digest" in approval_envelope
+    assert approval_envelope["approval_source"] == "execution_pipeline_plan"
+    assert approval_envelope["approved_plan_digest"]
+    assert "provider_request_id" not in approval_envelope
+    assert "registered_artifact_ids" not in approval_envelope
+    assert "transcript_manifest" not in approval_envelope
+
+    payload = sandbox.results[0]
+    result_envelope = payload["adapter_result_envelope"]
+    assert "transcript_manifest" not in result_envelope
+    assert "transcript_manifest" in result_envelope["bounded_summary"]
+    assert result_envelope["bounded_summary"]["transcript_manifest"]["route_policy_id"] == (
+        "bio.ncbi_fetch_proteins.provider:v1"
+    )
+    assert result_envelope["provider_request_id"]
+    assert result_envelope["registered_artifact_ids"] == result_envelope["output_artifact_ids"]
+
+
+def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
+    class SensitiveAdapter:
+        def ncbi_fetch_proteins(self, *, accessions, fields, retrieved_at):  # type: ignore[no-untyped-def]
+            del accessions, fields
+            return BioSdkResult(
+                provider="ncbi",
+                operation="bio.ncbi_fetch_proteins",
+                summary={"provider": "ncbi", "record_count": 1},
+                provider_observation={
+                    "headers": {"authorization": "Bearer secret-token", "x-request-id": "req-1"},
+                    "host_path": "/tmp/private/cache",
+                },
+                artifacts=(
+                    BioArtifactDraft(
+                        relative_path="provider_raw/provider.json",
+                        kind=ArtifactKind.RESULT,
+                        title="provider.json",
+                        content=json.dumps(
+                            {
+                                "token": "secret-token",
+                                "storage_uri": "/tmp/private/raw.json",
+                                "message": "valid provider payload",
+                            }
+                        ),
+                        format="json",
+                        metadata={"format": "json", "provider": "ncbi", "retrieved_at": retrieved_at},
+                    ),
+                ),
+                api_version="test",
+            )
+
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_sanitize",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/sanitize')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.ncbi_fetch_proteins",
+                {
+                    "accessions": ["P12345"],
+                    "fields": [],
+                    "output_dir": "/workspace/output/bio/sanitize",
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=SensitiveAdapter(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_sanitize",
+        code_artifact_id=code_artifact_id,
+        inputs={"approval_policy": "single_plan"},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_sanitize", resolution="approved")
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    raw_artifact = next(
+        artifact
+        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_sanitize")
+        if artifact.relative_path == "bio/sanitize/provider_raw/provider.json"
+    )
+    observation = next(
+        artifact
+        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_sanitize")
+        if artifact.relative_path == "bio/sanitize/provider_observation.json"
+    )
+    raw_text = Path(raw_artifact.storage_uri).read_text(encoding="utf-8")
+    observation_text = Path(observation.storage_uri).read_text(encoding="utf-8")
+    assert "secret-token" not in raw_text
+    assert "secret-token" not in observation_text
+    assert "/tmp/private" not in raw_text
+    assert "/tmp/private" not in observation_text
+    assert "req-1" in observation_text
+
+
+def test_provider_http_bio_adapter_ncbi_fetches_fasta_with_identity() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        calls.append((request.full_url, request.get_method()))
+        return FakeHttpResponse(
+            headers={"x-ratelimit-limit": "3", "authorization": "Bearer secret"},
+            body=">P12345 example protein\nMSEQUENCE\n",
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ncbi_email="operator@example.test"),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    result = adapter.ncbi_fetch_proteins(
+        accessions=("P12345",),
+        fields=("definition",),
+        retrieved_at="2026-05-30T00:00:00+00:00",
+    )
+
+    assert calls and calls[0][1] == "GET"
+    assert "email=operator%40example.test" in calls[0][0]
+    assert result.summary["record_count"] == 1
+    assert {artifact.relative_path for artifact in result.artifacts} == {
+        "provider_raw/ncbi_efetch.fasta",
+        "provider_parsed/proteins.fasta",
+        "provider_parsed/proteins.metadata.json",
+    }
+    observation = result.provider_observation or {}
+    headers = observation["requests"][0]["headers"]
+    assert headers["x-ratelimit-limit"] == "3"
+    assert "authorization" not in headers
+
+
+def test_provider_http_bio_adapter_uniprot_handles_empty_results_warning() -> None:
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del request, timeout
+        return FakeHttpResponse(headers={"x-uniprot-release": "2026_01"}, body='{"results":[]}')
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    result = adapter.uniprot_fetch(
+        accessions=("Q8XYZ1",),
+        fields=("length", "taxonomy"),
+        batch_size=50,
+        retrieved_at="2026-05-30T00:00:00+00:00",
+    )
+
+    assert result.summary["record_count"] == 0
+    assert result.warnings[0]["warning_code"] == "empty_results"
+    assert {artifact.relative_path for artifact in result.artifacts} == {
+        "provider_raw/pages.json",
+        "provider_parsed/metadata.json",
+    }
+
+
+def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_provider_http")
+    hmm_artifact = repositories.artifacts.get(hmm_artifact_id)
+    assert hmm_artifact is not None
+    calls: list[str] = []
+    form_bodies: list[bytes] = []
+    result_polls = 0
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal result_polls
+        del timeout
+        url = request.full_url
+        calls.append(url)
+        if request.get_method() == "POST":
+            form_bodies.append(request.data)
+            return FakeHttpResponse(body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}')
+        assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
+        result_polls += 1
+        if result_polls == 1:
+            return FakeHttpResponse(body='{"status":"STARTED","result":null,"page_count":null}')
+        return FakeHttpResponse(
+            body=json.dumps(
+                {
+                    "status": "SUCCESS",
+                    "database": "refprot",
+                    "number_of_hits": 1,
+                    "page_count": 1,
+                    "result": {
+                        "hits": [
+                            {
+                                "name": "hit1",
+                                "acc": "HIT001",
+                                "evalue": 1e-42,
+                                "score": 1834.7,
+                            },
+                            {
+                                "name": "hit2",
+                                "acc": None,
+                                "evalue": 0.0,
+                                "score": 3153.7,
+                                "metadata": {"uniprot_accession": "A0A_TEST"},
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ebi_hmmer_email="operator@example.test"),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    result = adapter.hmmer_search(
+        hmm_artifact=hmm_artifact,
+        database="refprot",
+        params={"evalue": "1e-20"},
+        retrieved_at="2026-05-30T00:00:00+00:00",
+    )
+
+    assert any("/search/hmmsearch?" in url or url.endswith("/search/hmmsearch") for url in calls)
+    assert result_polls == 2
+    assert form_bodies
+    submit_payload = json.loads(form_bodies[0].decode("utf-8"))
+    assert submit_payload["database"] == "refprot"
+    assert submit_payload["input"].startswith("HMMER3/f")
+    assert submit_payload["E"] == "1e-20"
+    assert result.summary["hit_count"] == 2
+    assert result.summary["provider_job_id"] == "fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"
+    parsed = next(artifact for artifact in result.artifacts if artifact.relative_path == "provider_parsed/parsed_hits.csv")
+    assert "hit1,HIT001,1e-42,1834.7" in parsed.content
+    assert "hit2,A0A_TEST,0.0,3153.7" in parsed.content
 
 
 def test_pipeline_bio_hmmer_search_persists_raw_and_parsed_hits() -> None:
@@ -1543,33 +1994,48 @@ def test_pipeline_bio_hmmer_search_persists_raw_and_parsed_hits() -> None:
         repositories,
         "code_bio_hmmer",
         "from openzyme_pipeline import bio\n"
-        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb')\n",
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='refprot', output_dir='/workspace/output/bio/hmmer')\n",
     )
     sandbox = BioSandboxRunner(
         (
             (
                 "bio.hmmer_search",
-                {"hmm_artifact_id": hmm_artifact_id, "database": "uniprotkb", "params": {"E": 1e-5}},
+                {
+                    "hmm_artifact_id": hmm_artifact_id,
+                    "database": "refprot",
+                    "params": {"E": 1e-5},
+                    "output_dir": "/workspace/output/bio/hmmer",
+                },
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
 
-    result = engine.start_pipeline(
+    first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_bio_hmmer",
         code_artifact_id=code_artifact_id,
-        inputs={"artifact_ids": [hmm_artifact_id]},
+        inputs={"artifact_ids": [hmm_artifact_id], "approval_policy": "single_plan"},
     )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_hmmer", resolution="approved")
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert sandbox.results[0]["summary"]["hit_count"] == 1
     artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_hmmer")
     paths = {artifact.relative_path for artifact in artifacts}
-    assert "bio/hmmer/raw_hits.json" in paths
-    assert "bio/hmmer/parsed_hits.csv" in paths
-    parsed = next(artifact for artifact in artifacts if artifact.relative_path == "bio/hmmer/parsed_hits.csv")
+    assert "bio/hmmer/provider_raw/raw_hits.json" in paths
+    assert "bio/hmmer/provider_parsed/parsed_hits.csv" in paths
+    assert "bio/hmmer/provider_observation.json" in paths
+    parsed = next(artifact for artifact in artifacts if artifact.relative_path == "bio/hmmer/provider_parsed/parsed_hits.csv")
     assert parsed.metadata is not None
     assert parsed.metadata["provider"] == "ebi_hmmer"
     assert parsed.metadata["query_hmm_artifact_id"] == hmm_artifact_id
@@ -1584,25 +2050,39 @@ def test_pipeline_bio_hmmer_empty_results_returns_warning() -> None:
         repositories,
         "code_bio_hmmer_empty",
         "from openzyme_pipeline import bio\n"
-        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='empty')\n",
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='empty', output_dir='/workspace/output/bio/hmmer-empty')\n",
     )
     sandbox = BioSandboxRunner(
         (
             (
                 "bio.hmmer_search",
-                {"hmm_artifact_id": hmm_artifact_id, "database": "empty", "params": {}},
+                {
+                    "hmm_artifact_id": hmm_artifact_id,
+                    "database": "empty",
+                    "params": {},
+                    "output_dir": "/workspace/output/bio/hmmer-empty",
+                },
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
 
-    result = engine.start_pipeline(
+    first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_bio_empty",
         code_artifact_id=code_artifact_id,
-        inputs={"artifact_ids": [hmm_artifact_id]},
+        inputs={"artifact_ids": [hmm_artifact_id], "approval_policy": "single_plan"},
     )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_empty", resolution="approved")
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert sandbox.results[0]["summary"]["hit_count"] == 0
@@ -1610,7 +2090,7 @@ def test_pipeline_bio_hmmer_empty_results_returns_warning() -> None:
     parsed = next(
         artifact
         for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_empty")
-        if artifact.relative_path == "bio/hmmer/parsed_hits.csv"
+        if artifact.relative_path == "bio/hmmer-empty/provider_parsed/parsed_hits.csv"
     )
     assert Path(parsed.storage_uri).read_text(encoding="utf-8") == "target,accession,evalue,score\n"
 
@@ -1623,7 +2103,7 @@ def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
         repositories,
         "code_bio_timeout",
         "from openzyme_pipeline import bio\n"
-        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb', params={{'simulate': 'timeout'}})\n",
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='refprot', output_dir='/workspace/output/bio/hmmer-timeout', params={{'simulate': 'timeout'}})\n",
     )
     sandbox = BioSandboxRunner(
         (
@@ -1631,36 +2111,48 @@ def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
                 "bio.hmmer_search",
                 {
                     "hmm_artifact_id": hmm_artifact_id,
-                    "database": "uniprotkb",
+                    "database": "refprot",
                     "params": {"simulate": "timeout"},
+                    "output_dir": "/workspace/output/bio/hmmer-timeout",
                 },
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
 
-    result = engine.start_pipeline(
+    first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id="inv_pipeline_bio_timeout",
         code_artifact_id=code_artifact_id,
-        inputs={"artifact_ids": [hmm_artifact_id]},
+        inputs={"artifact_ids": [hmm_artifact_id], "approval_policy": "single_plan"},
     )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_timeout", resolution="approved")
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None
     error = result.parsed_result.structured_findings["error"]
-    assert error["type"] == "bio_provider_timeout"
-    assert error["stage"] == "bio_provider_request"
+    assert error["type"] == "provider_timeout"
+    assert error["stage"] == "provider_request"
     assert error["retryable"] is True
     assert error["details"]["provider"] == "ebi_hmmer"
+    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_timeout")
+    assert "bio/hmmer-timeout/provider_error.json" in {artifact.relative_path for artifact in artifacts}
 
 
 @pytest.mark.parametrize(
     ("simulation", "error_type", "stage", "retryable"),
     [
-        ("schema_drift", "bio_schema_drift", "bio_result_parse", False),
-        ("pagination_failure", "bio_pagination_failure", "bio_provider_pagination", True),
+        ("schema_drift", "provider_schema_drift", "provider_response_parse", False),
+        ("pagination_failure", "provider_timeout", "provider_pagination", True),
     ],
 )
 def test_pipeline_bio_schema_and_pagination_failures_are_structured(
@@ -1676,7 +2168,7 @@ def test_pipeline_bio_schema_and_pagination_failures_are_structured(
         repositories,
         f"code_bio_{simulation}",
         "from openzyme_pipeline import bio\n"
-        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='uniprotkb', params={{'simulate': '{simulation}'}})\n",
+        f"bio.hmmer_search(hmm_artifact_id='{hmm_artifact_id}', database='refprot', output_dir='/workspace/output/bio/hmmer-{simulation}', params={{'simulate': '{simulation}'}})\n",
     )
     sandbox = BioSandboxRunner(
         (
@@ -1684,21 +2176,31 @@ def test_pipeline_bio_schema_and_pagination_failures_are_structured(
                 "bio.hmmer_search",
                 {
                     "hmm_artifact_id": hmm_artifact_id,
-                    "database": "uniprotkb",
+                    "database": "refprot",
                     "params": {"simulate": simulation},
+                    "output_dir": f"/workspace/output/bio/hmmer-{simulation}",
                 },
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+    )
 
-    result = engine.start_pipeline(
+    first = engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
         invocation_id=f"inv_pipeline_bio_{simulation}",
         code_artifact_id=code_artifact_id,
-        inputs={"artifact_ids": [hmm_artifact_id]},
+        inputs={"artifact_ids": [hmm_artifact_id], "approval_policy": "single_plan"},
     )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(invocation_id=f"inv_pipeline_bio_{simulation}", resolution="approved")
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None

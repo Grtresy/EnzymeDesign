@@ -2,7 +2,7 @@
 
 ## Probe Summary
 
-Probe 日期：2026-05-25；NCBI identity probe 与 EBI HMMER known-good probe 于 2026-05-27 复核；HPC AOX/HMM bio-tools SIF 与小样本 smoke 于 2026-05-28 复核。
+Probe 日期：2026-05-25；NCBI identity probe 与 EBI HMMER known-good probe 于 2026-05-27 复核；HPC AOX/HMM bio-tools SIF 与小样本 smoke 于 2026-05-28 复核；S13 fixed AOX/HMM HMM 对 EBI HMMER `refprot` 的 current re-probe 于 2026-05-30 复核。
 
 范围：本文是 Session 06 的文档型证据，覆盖 provider、HPC prerequisite、数据库 inventory、参数 inventory、Host 本机非 route 观察、sandbox image 轻量依赖建议，以及 Session 14 锁定 `bio_tools.*` 静态 route policy 之前必须读取的 evidence matrix。
 
@@ -30,6 +30,12 @@ Operator / 环境摘要：
 | EBI HMMER known-good submit response | sha256 `0d4e4723dcc681a1fd14d3fb5f23016df3faf68e3c4b1efe56604708851383b2` |
 | EBI HMMER known-good job detail response | sha256 `59bb9a715b8a09169e177b4cff829fe6a6110b60cdb7101b61e29929d8302f2d` |
 | EBI HMMER known-good result page response | sha256 `21e53d73d7bb4a1921228afe9c18f2b2b0771f6fc919ff074d201b99043cadc3` |
+| S13 fixed AOX/HMM 13 accession FASTA 输入 | sha256 `b888fb5b305b55a092752503ade757335bdd29791e9a5ba10450f160b6d4936b` |
+| S13 fixed AOX/HMM MAFFT alignment | sha256 `a004145870fdde7ffd68d4e991d4906199f22d486509831f709d889bfa340fd3` |
+| S13 fixed AOX/HMM `AOX_ref.hmm` | sha256 `e25e470405dc57d87b2e4ee49ae2906477a36e1c5a13760b2d61680a5b297925` |
+| S13 fixed AOX/HMM provider adapter probe manifest | sha256 `e67c11efba84d1f87f0c9f86f6f4f34e0ccf4e584bde02d6ab65ba7c8848adad` |
+| S13 fixed AOX/HMM provider raw hits sample | sha256 `0c260657ea44785bd519ff0af4030d396073d13b3fb5f4f303f80af44a81b666` |
+| S13 fixed AOX/HMM provider parsed hits CSV | sha256 `91bb5df534d01e952577b5a209e0d4083d924c822d084665367bd94378be9ce6` |
 | HMMER `hmmbuild` 输出 | sha256 `440ef6d8863e74a6cb3bf3db8c019c17f2097e17401035852aee722448cbecc2` |
 | HMMER `hmmalign` 输出 | sha256 `b196fc4ad890e104259328e50088738d7b3b7c6a474799377c260e95a74b47aa` |
 | HMMER `hmmsearch --tblout` 输出 | sha256 `73c5853772152f87b3bce76461b811dde93a21705c9d017b56f98cb54e4f4e86` |
@@ -52,7 +58,7 @@ Operator / 环境摘要：
 - 未主动诱发 retry/backoff；下方矩阵只记录 retry policy 是否仍是 prerequisite。
 - 已证明 MAFFT、CD-HIT、HMMER CLI（`hmmbuild`、`hmmalign`、`hmmsearch`）可通过 Diannan HPC SIF 在受控小样本上运行，并通过 runner staging/fetch 与 declared-output validation。尚未把这些 runtime evidence 固化为 S14 产品 adapter contract。
 - 尚未证明 HPC-managed production HMMER target database inventory；按当前 S15 主路，HMM search 使用 EBI HMMER REST `refprot`，该缺口不阻塞 Session 06 作为 S13/S14/S15 主路实施输入的完成判断，只阻塞后续启用 offline/HPC `bio_tools.hmmer_search_cli` 产品 route。
-- EBI HMMER REST 的早期 toy HMM / `pdb` 样本提交后 job 立即失败；2026-05-27 使用 Pfam PF00069 HMM 与 `refprot` 重新 probe 后，submit、polling 和 result pagination 均成功。早期失败归类为样本/数据库选择不适合作为 provider 可用性证明。
+- EBI HMMER REST 的早期 toy HMM / `pdb` 样本提交后 job 立即失败；2026-05-27 使用 Pfam PF00069 HMM 与 `refprot` 重新 probe 后，submit、polling 和 result pagination 均成功。2026-05-30 又使用 S15 固定 13 accession 构建的 AOX/HMM HMM 通过当前 `ProviderHttpBioDatabaseAdapter` 对 `refprot` 完成 submit、STARTED polling、SUCCESS result 和 bounded result pagination。早期失败归类为样本/数据库选择不适合作为 provider 可用性证明。
 
 ## Session 06 Conclusion
 
@@ -63,14 +69,14 @@ Operator / 环境摘要：
 S06 自身完成状态：
 
 - Evidence sink 已统一到本文档；探索计划不再承载实际证据。
-- Provider prerequisite 已有当前安全证据：NCBI、UniProt 与 EBI HMMER REST 均有可达性、基础 schema/error 语义或 pagination 观察。
+- Provider prerequisite 已有当前安全证据：NCBI、UniProt 与 EBI HMMER REST 均有可达性、基础 schema/error 语义或 pagination 观察；EBI HMMER REST 已包含 S13 fixed AOX/HMM HMM 对 `refprot` 的 current re-probe。
 - HPC AOX/HMM CLI tool runtime prerequisite 已有当前安全证据：MAFFT、CD-HIT、`hmmbuild`、`hmmalign` 和 `hmmsearch` 均已通过 Diannan HPC SIF/version 检查，并在 Runner SSH 与 Slurm 小样本 smoke 中完成 staging、fetch 和 declared-output validation。
 - Host-local 与 sandbox 边界已锁定：Host 本机不部署 AOX/HMM CLI 生信工具；executor sandbox 不承载 MAFFT/CD-HIT/HMMER、Apptainer、SSH/Slurm client、provider credential 或 database mount。
 - 剩余缺口均已归属到后续 session 或 optional route，不是 S06 继续补证据才能完成的事项。
 
 主路放行理由：
 
-- Provider prerequisite 已覆盖并可用：NCBI、UniProt 与 EBI HMMER REST 均为 `ok`；EBI HMMER REST 已用 known-good PF00069 HMM 对 `refprot` 证明 submit、polling 和 result pagination。
+- Provider prerequisite 已覆盖并可用：NCBI、UniProt 与 EBI HMMER REST 均为 `ok`；EBI HMMER REST 已用 known-good PF00069 HMM 和 S13 fixed AOX/HMM HMM 对 `refprot` 证明 submit、polling 和 result pagination。
 - HPC tool runtime prerequisite 已覆盖并可用：MAFFT、CD-HIT、`hmmbuild`、`hmmalign` 和 `hmmsearch` 均已通过 Diannan HPC SIF/version 检查，并在 Runner SSH 与 Slurm 小样本 smoke 中完成 staging、fetch 和 declared-output validation。
 - 当前 S15 HMM search 主路是 `bio.hmmer_search(..., database="refprot")` 的 EBI HMMER REST provider，不要求 HPC 本地生产 HMMER target database。
 - Host 本机与 executor sandbox 都不是 AOX/HMM CLI 生信工具部署面；Host-local HMMER 只保留为非 route 观察，sandbox image 只记录轻量依赖建议，不参与本结论。
@@ -79,7 +85,7 @@ S06 自身完成状态：
 
 - 不能宣称 offline/HPC `bio_tools.hmmer_search_cli` 产品 route 已 ready；它仍缺 HPC-managed production target database 的 logical name、version、digest、record count 和 availability。
 - 不能宣称 S14 adapter contract 已完成；MAFFT、CD-HIT、HMMER CLI 还需要在 S14 固化 Host-managed command template、typed params、resource profile、staging/fetch expectations 和 failure signatures。
-- 不能宣称 AOX/HMM 固定 HMM 已对 `refprot` 完成 EBI HMMER REST 成功搜索；当前 S06 provider success proof 使用的是 known-good PF00069 HMM。S13/S15 仍需用 AOX/HMM 固定合同输入重新验证。
+- 不能把 S13 fixed-HMM provider re-probe 扩大解释为 S15 live E2E passed；S15 仍需从固定 prompt 进入产品路径，经过 master/executor/approval/sandbox/Host supervisor/artifact catalog/final answer 完整验收。
 - 不能把 S06 当成 S15 live E2E cutover proof；S15 仍需用 AOX/HMM 固定 prompt 和真实产品路径重新验收。
 
 ## Provider Evidence
@@ -139,7 +145,7 @@ Probe：对两个 accession 执行 UniProtKB REST search，使用 `size=1`、sel
 
 ### Provider Evidence：EBI HMMER REST
 
-Probe：检查 EBI HMMER API v1 OpenAPI、database list，提交早期受控 toy `hmmsearch` 样本，并用 Pfam PF00069 known-good HMM 对 `refprot` 重新 probe。
+Probe：检查 EBI HMMER API v1 OpenAPI、database list，提交早期受控 toy `hmmsearch` 样本，用 Pfam PF00069 known-good HMM 对 `refprot` 重新 probe，并在 S13 使用 S15 固定 13 accession 构建的 AOX/HMM HMM 对 `refprot` 做 current re-probe。
 
 观察结果：
 
@@ -158,11 +164,16 @@ Probe：检查 EBI HMMER API v1 OpenAPI、database list，提交早期受控 toy
 - 2026-05-27 使用 Pfam PF00069 HMM（`Pkinase`，`LENG 262`）提交 `database="refprot"`，返回 job id `fdaf751e-bf95-4e6a-a70a-6eadf2078ae2`。
 - known-good job 轮询返回 `SUCCESS`，`database=refprot`，`input_type=hmm`，`number_of_hits=1384826`，`number_of_included=1354281`，`date_done=2026-05-27T07:16:27.791Z`。
 - 拉取 result page 1、`page_size=3` 返回 `SUCCESS`，`page_count=461609`，包含 3 条 hit；第一条 hit 的 `score=1834.7283935546875`、`evalue=0`。
+- 2026-05-30 使用 S15 固定 13 accession 通过 NCBI EFetch 生成 FASTA，再用本仓库 SIF `mafft_7.525.sif` 和 `hmmer_3.4.sif` 生成 `AOX_ref.hmm`。该步骤只用于构造 S13 HMMER provider re-probe 输入，不计为产品 NCBI/HPC adapter proof。
+- 同日使用当前 `ProviderHttpBioDatabaseAdapter` 提交 JSON body：`database="refprot"`、`input=<HMMER3 AOX_ref.hmm>`、`E="1e-20"`。该 JSON submit 形式与 HMMER-web API examples 一致，旧 form-url-encoded `hmm=...` 形式已被真实 probe 证明会返回 `Cannot parse request body`。
+- S13 current fixed-HMM job id 为 `a07a0781-8d59-4f84-802c-9572e98c2ee1`；polling 观察到 3 次 `STARTED`，随后返回 `SUCCESS`。
+- S13 current fixed-HMM raw result第一份 payload 显示 `database=refprot`、`nseqs=89460830`、`nhits=43283`、`nreported=43283`、`nincluded=43283`、第一条 hit `uniprot_accession=A0A8J2EEX1`、`score=5204.41943359375`、`evalue=0`。
+- S13 current fixed-HMM probe 使用 bounded sample config：`hmmer_page_size=3`、`hmmer_max_hits=3`。adapter artifactize 了 top 3 parsed hits，并记录 `provider_result_truncated` warning；parsed CSV 首行包含 `A0A8J2EEX1`、`A0A1J1IYP0` 和 `A0A4V3SBX3`。
 - 早期失败样本是 20 aa toy HMM / toy MSA，并且使用 `database=pdb`；该失败不能作为 EBI HMMER provider unavailable 证据，只能作为 invalid/unsuitable sample failure mapping 的输入。
 
 状态判断：`ok`。
 
-原因：endpoint、schema 和 database inventory 可达，known-good HMM 对 `refprot` 的 submit、polling 和 result pagination 已成功。S13 仍必须实现 failed-job mapping、empty-result mapping、pagination recovery、bounded result artifactization 和 schema validation；S15 仍必须用 AOX/HMM 固定 prompt 和当前真实 HMM 重新证明 cutover。
+原因：endpoint、schema 和 database inventory 可达，known-good HMM 与 S13 fixed AOX/HMM HMM 对 `refprot` 的 submit、polling 和 result pagination 均已成功。S13 仍必须实现 failed-job mapping、empty-result mapping、pagination recovery、bounded result artifactization 和 schema validation；S15 仍必须用 AOX/HMM 固定 prompt 和真实产品路径重新证明 cutover。
 
 ### Provider 边缘语义观察
 
@@ -170,7 +181,7 @@ Probe：检查 EBI HMMER API v1 OpenAPI、database list，提交早期受控 toy
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `bio.ncbi_fetch_proteins` | 单批 accession fetch probe 不涉及分页；S13 仍需实现 batch policy。 | 不适用。 | 本地 probe 使用有界请求 timeout；未诱发 provider timeout。 | Response 暴露 `x-ratelimit-limit: 3` 和 `x-ratelimit-remaining`；未诱发 429。 | 未观察到；未来 adapter 必须 map partial batch failures。 | invalid id 返回 HTTP `200` 和 provider error text，不能当成 empty FASTA success。 | 对一个 accession 观察到 FASTA header/body shape；metadata schema 未证明。 |
 | `bio.uniprot_fetch` | 已观察到两个单结果页面的 cursor pagination。 | 不适用。 | 本地 probe 使用有界请求 timeout；未诱发 provider timeout。 | 未观察到 429；观察到 release/deployment headers。 | 未观察到；两条结果查询跨两页完成。 | 合法 accession 形状的 no-hit query 返回 HTTP `200` 且 `results` 为 0。 | success 与 invalid-format error 的预期 JSON keys 已观察到；未诱发 drift。 |
-| `bio.hmmer_search` | known-good `refprot` job 已观察到 result pagination；page 1 / `page_size=3` 返回 3 条 hit，`page_count=461609`。 | 已观察到 submit/status/result polling endpoints；known-good job 从 submitted 到 `SUCCESS`。 | 本地 probe 使用有界请求 timeout；未诱发 provider timeout。 | 未观察到 429。 | 未观察到；S13 仍需处理 partial/failure states。 | toy sample failed；未观察到 empty-hit success。 | OpenAPI schema 可达；failed job result payload 为 `status=FAILURE`、`result=null`、`page_count=null`，successful result payload 包含 `status`、`result.hits` 和 `page_count`。 |
+| `bio.hmmer_search` | known-good `refprot` job 已观察到 result pagination；S13 fixed-HMM probe 已 artifactize top 3 hits 并记录 truncation warning。 | 已观察到 submit/status/result polling endpoints；S13 fixed-HMM job 从 `STARTED` 轮询到 `SUCCESS`。 | 本地 probe 使用有界请求 timeout；未诱发 provider timeout。 | 未观察到 429。 | 未观察到；S13 仍需处理 partial/failure states。 | toy sample failed；未观察到 empty-hit success。 | OpenAPI schema 可达；failed job result payload 为 `status=FAILURE`、`result=null`、`page_count=null`，successful result payload 包含 `status`、`result.hits`、`result.stats` 和 `page_count`。 |
 
 ## Host Local Non-route Observations
 
@@ -420,7 +431,7 @@ Forbidden params：
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `bio.ncbi_fetch_proteins` | `provider` | `ok` | [Provider Evidence：NCBI](#provider-evidence-ncbi) | NCBI endpoint 与 configured email/tool identity 已观察；batch policy、timeout、retry 和 rate-limit handling 由 S13 固化 | `network_io` | `provider_http` | FASTA artifact、metadata JSON/CSV artifact、bounded summary | Dry-run 应展示 provider、accession count、batch size、quota/rate-limit summary 和 outputs | N/A |  | S13 必须把 NCBI identity、retry/quota policy 和 invalid accession mapping 固化到 Host provider policy；credential 不得进入 workspace 或 tool result。 |
 | `bio.uniprot_fetch` | `provider` | `ok` | [Provider Evidence：UniProt](#provider-evidence-uniprot) | UniProt REST availability、field selection、cursor pagination、invalid-accession handling | `network_io` | `provider_http` | FASTA/sequence artifact、metadata JSON/CSV artifact、bounded summary | Dry-run 应展示 provider、requested fields、page estimate 和 outputs | N/A |  | 真实 adapter 中保留 cursor pagination 和 schema validation。 |
-| `bio.hmmer_search` | `provider` | `ok` | [Provider Evidence：EBI HMMER REST](#provider-evidence-ebi-hmmer-rest) | EBI HMMER submit/status/result、database selection、successful result pagination | `network_io` | `provider_http` | raw hits JSON artifact、parsed hits CSV artifact、bounded summary | Dry-run 应展示 provider、database logical name、polling timeout 和 expected hit artifacts | N/A |  | S13 必须把 failed-job、empty-result、pagination、large-result artifactization 和 schema validation 固化到 Host provider adapter；S15 仍需用 AOX/HMM 固定 prompt 重新证明 live cutover。 |
+| `bio.hmmer_search` | `provider` | `ok` | [Provider Evidence：EBI HMMER REST](#provider-evidence-ebi-hmmer-rest) | EBI HMMER JSON submit/status/result、database selection、successful result pagination；S13 fixed AOX/HMM HMM `refprot` re-probe 已通过 | `network_io` | `provider_http` | raw hits JSON artifact、parsed hits CSV artifact、bounded summary | Dry-run 应展示 provider、database logical name、polling timeout 和 expected hit artifacts | N/A |  | S13 必须把 failed-job、empty-result、pagination、large-result artifactization 和 schema validation 固化到 Host provider adapter；S15 仍需用 AOX/HMM 固定 prompt 和完整产品路径重新证明 live cutover。 |
 | `bio_tools.cdhit` | `hpc` | `ok` | [HPC Evidence](#hpc-evidence) | HPC CD-HIT SIF/version、Slurm smoke、staging/fetch、declared output validation 已观察；S14 仍需产品 adapter contract | `hpc_batch_small` | `hpc_apptainer_sif` | representative FASTA artifact、cluster membership artifact、summary/log artifacts | Dry-run 必须展示 static backend `hpc`、identity threshold、resource profile 和 declared outputs | [Parameter Inventory：CD-HIT](#parameter-inventory-cd-hit) |  | S14 固化 Host-managed HPC CD-HIT contract、typed params schema、command template 和 failure signatures。 |
 | `bio_tools.mafft` | `hpc` | `ok` | [HPC Evidence](#hpc-evidence) | HPC MAFFT SIF/version、Slurm smoke、staging/fetch、declared output validation 已观察；S14 仍需产品 adapter contract | `hpc_batch_small` | `hpc_apptainer_sif` | MSA artifact、summary/log artifacts | Dry-run 必须展示 static backend `hpc`、alignment mode、resource profile 和 declared outputs | [Parameter Inventory：MAFFT](#parameter-inventory-mafft) |  | S14 固化 Host-managed HPC MAFFT contract、typed params schema、command template 和 failure signatures。 |
 | `bio_tools.hmmbuild` | `hpc` | `ok` | [HPC Evidence](#hpc-evidence) | HPC HMMER SIF/version、Slurm smoke、staging/fetch、declared output validation 已观察；S14 仍需产品 adapter contract | `hpc_batch_small` | `hpc_apptainer_sif` | HMM artifact、bounded summary、stdout/stderr log artifact | Dry-run 必须展示 static backend `hpc`、HMMER version/source、resource profile 和 declared outputs | [Parameter Inventory：HMMER CLI](#parameter-inventory-hmmer-cli) |  | S14 固化 Host-managed HPC `hmmbuild` contract、typed params schema、command template 和 failure signatures。 |
@@ -430,7 +441,7 @@ Forbidden params：
 ## Remediation Hints
 
 - S13 必须把已复核的 NCBI email/tool identity、retry/quota policy 和 invalid accession mapping 固化到 Host provider policy。
-- S13 必须把 EBI HMMER REST failed-job、empty-result、pagination、large-result artifactization 和 schema validation 固化到 Host provider adapter；S15 仍需用 AOX/HMM 固定 prompt 重新证明 live cutover。
+- S13 必须把 EBI HMMER REST failed-job、empty-result、pagination、large-result artifactization 和 schema validation 固化到 Host provider adapter；S13 fixed-HMM re-probe 已通过，S15 仍需用 AOX/HMM 固定 prompt 和完整产品路径重新证明 live cutover。
 - 为 MAFFT、CD-HIT、`hmmbuild`、`hmmalign` 和 `hmmsearch` 增加 S14 产品 adapter contracts，包含安全 logical tool ids、resource profiles、staging/fetch expectations、command template ids 和 failure signatures。
 - 若启用 offline/HPC `bio_tools.hmmer_search_cli` 产品 route，记录 HPC database logical names、versions、digests、record counts 和 availability，但不得暴露 private paths 或 mounts；S15 主路不依赖该数据库。
 - MAFFT/CD-HIT/HMMER CLI 参数必须保持 typed 且 bounded；Session 14 必须拒绝 path、shell、redirect 和 raw passthrough 参数。

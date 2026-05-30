@@ -33,6 +33,7 @@ from .execution import ExecutionStartResult
 from .execution import ExecutionStatusSnapshot
 from .execution import PreprocessArtifactDraft
 from .execution import PreprocessResult
+from .execution import ProviderHttpBioDatabaseAdapter
 from .execution import register_execution_tools
 from .podman_sandbox import DEFAULT_SANDBOX_IMAGE
 from .podman_sandbox import PodmanPipelineSandboxRunner
@@ -78,6 +79,7 @@ __all__ = [
     "ResearchUnitPlan",
     "PreprocessArtifactDraft",
     "PreprocessResult",
+    "ProviderHttpBioDatabaseAdapter",
     "PodmanPipelineSandboxRunner",
     "PodmanSandboxPreflight",
     "register_deep_research_tools",

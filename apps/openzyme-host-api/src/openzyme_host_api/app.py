@@ -40,6 +40,7 @@ from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
 from openzyme_engines import ExecutionStatusSnapshot as V3ExecutionStatusSnapshot
 from openzyme_engines import NativeDeepResearchRunner
 from openzyme_engines import PodmanPipelineSandboxRunner
+from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
@@ -244,6 +245,8 @@ class HostApiDependencies:
     v3_operation_lock: RLock = field(default_factory=RLock)
     v3_background_runtime_enabled: bool | None = None
     v3_pipeline_sandbox_runner: Any | None = None
+    v3_bio_adapter: Any | None = None
+    v3_allow_bio_fixture_adapter: bool = False
 
     def build_v3_service(self) -> V3HostApiService:
         return V3HostApiService(
@@ -279,6 +282,9 @@ class HostApiDependencies:
                     self.foundation.execution_adapter,
                     self.foundation.limiter_registry,
                 ),
+                bio_adapter=self.v3_bio_adapter
+                or ProviderHttpBioDatabaseAdapter.from_env(),
+                allow_bio_fixture_adapter=self.v3_allow_bio_fixture_adapter,
                 sandbox_runner=self.v3_pipeline_sandbox_runner
                 or PodmanPipelineSandboxRunner(),
             ),

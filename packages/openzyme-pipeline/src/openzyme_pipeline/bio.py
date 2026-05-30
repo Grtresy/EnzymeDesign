@@ -8,12 +8,17 @@ from .client import call
 def ncbi_fetch_proteins(
     *,
     accessions: list[str],
+    output_dir: str,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
     return dict(
         call(
             "bio.ncbi_fetch_proteins",
-            {"accessions": list(accessions), "fields": list(fields or [])},
+            {
+                "accessions": list(accessions),
+                "fields": list(fields or []),
+                "output_dir": output_dir,
+            },
         )
     )
 
@@ -21,6 +26,7 @@ def ncbi_fetch_proteins(
 def uniprot_fetch(
     *,
     accessions: list[str],
+    output_dir: str,
     fields: list[str] | None = None,
     batch_size: int | None = None,
 ) -> dict[str, Any]:
@@ -31,6 +37,7 @@ def uniprot_fetch(
                 "accessions": list(accessions),
                 "fields": list(fields or []),
                 "batch_size": batch_size,
+                "output_dir": output_dir,
             },
         )
     )
@@ -40,6 +47,7 @@ def hmmer_search(
     *,
     hmm_artifact_id: str,
     database: str,
+    output_dir: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return dict(
@@ -49,6 +57,7 @@ def hmmer_search(
                 "hmm_artifact_id": hmm_artifact_id,
                 "database": database,
                 "params": dict(params or {}),
+                "output_dir": output_dir,
             },
         )
     )

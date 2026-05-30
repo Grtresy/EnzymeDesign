@@ -25,6 +25,7 @@ from openzyme_engines import ResearchSupervisorAction
 from openzyme_engines import ResearchUnitDraft
 from openzyme_engines import ResearchUnitPlan
 from openzyme_engines import ExecutionOutcome
+from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import ExecutionArtifactRef
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
@@ -586,7 +587,11 @@ def _aox_hmm_draft_source() -> str:
     return (
         "from openzyme_pipeline import bio\n\n"
         f"AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}\n\n"
-        "reference = bio.ncbi_fetch_proteins(accessions=AOX_ACCESSIONS, fields=['definition', 'organism'])\n"
+        "reference = bio.ncbi_fetch_proteins(\n"
+        "    accessions=AOX_ACCESSIONS,\n"
+        "    output_dir='/workspace/output/bio/ncbi',\n"
+        "    fields=['definition', 'organism'],\n"
+        ")\n"
     )
 
 
@@ -617,10 +622,20 @@ def fasta_for(accessions):
 
 reference = bio.ncbi_fetch_proteins(
     accessions=AOX_ACCESSIONS,
+    output_dir="/workspace/output/bio/ncbi",
     fields=["definition", "organism", "length"],
 )
-reference_fasta_id = reference["artifact_ids"][0]
-reference_metadata_id = reference["artifact_ids"][1]
+
+
+def artifact_id_by_suffix(result, suffix):
+    for artifact in result.get("artifacts", []):
+        if str(artifact.get("relative_path", "")).endswith(suffix):
+            return artifact["artifact_id"]
+    raise RuntimeError(f"Missing expected artifact suffix: {{suffix}}")
+
+
+reference_fasta_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.fasta")
+reference_metadata_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.metadata.json")
 
 ws = hpc.workspace("aox_hmm")
 
@@ -669,7 +684,8 @@ hmmer_cli = fetch(bio_tools.hmmer_search_cli(
 ))
 hmmer_provider = bio.hmmer_search(
     hmm_artifact_id=hmm["registered_artifact_ids"][0],
-    database="uniprotkb",
+    database="refprot",
+    output_dir="/workspace/output/bio/hmmer",
     params={{"evalue": "1e-20", "query": "aox"}},
 )
 candidate_cdhit85 = fetch(bio_tools.cdhit(
@@ -1031,9 +1047,17 @@ class AoxHmmFixtureSandboxRunner:
             {
                 "accessions": list(AOX_HMM_ACCESSIONS),
                 "fields": ["definition", "organism", "length"],
+                "output_dir": "/workspace/output/bio/ncbi",
             },
         )
-        reference_fasta_id = str(reference["artifact_ids"][0])
+
+        def artifact_id_by_suffix(result: dict[str, Any], suffix: str) -> str:
+            for artifact in list(result.get("artifacts") or []):
+                if str(artifact.get("relative_path") or "").endswith(suffix):
+                    return str(artifact["artifact_id"])
+            raise RuntimeError(f"Missing expected artifact suffix: {suffix}")
+
+        reference_fasta_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.fasta")
         workspace = dict(control_handler("hpc.workspace", {"label": "aox_hmm"}))
 
         def stage(artifact_id: str, path: str) -> dict[str, Any]:
@@ -1124,7 +1148,8 @@ class AoxHmmFixtureSandboxRunner:
             "bio.hmmer_search",
             {
                 "hmm_artifact_id": hmm["registered_artifact_ids"][0],
-                "database": "uniprotkb",
+                "database": "refprot",
+                "output_dir": "/workspace/output/bio/hmmer",
                 "params": {"evalue": "1e-20", "query": "aox"},
             },
         )
@@ -1547,6 +1572,8 @@ def _run_v3_aox_hmm_prompt_scenario(
                 v3_repositories=v3_repositories,
                 v3_background_runtime_enabled=True,
                 v3_pipeline_sandbox_runner=AoxHmmFixtureSandboxRunner(),
+                v3_bio_adapter=DeterministicBioDatabaseAdapter(),
+                v3_allow_bio_fixture_adapter=True,
             )
         )
         with TestClient(app) as client:
@@ -1644,13 +1671,17 @@ def _run_v3_aox_hmm_prompt_scenario(
                 ]
                 projected_text = json.dumps(workspace, sort_keys=True)
                 required_paths = {
-                    "bio/ncbi/proteins.fasta",
-                    "bio/ncbi/proteins.metadata.json",
+                    "bio/ncbi/provider_request.json",
+                    "bio/ncbi/provider_observation.json",
+                    "bio/ncbi/provider_parsed/proteins.fasta",
+                    "bio/ncbi/provider_parsed/proteins.metadata.json",
                     "bio_tools/cdhit/clustered.fasta",
                     "bio_tools/mafft/alignment.fasta",
                     "bio_tools/hmmbuild/model.hmm",
-                    "bio/hmmer/raw_hits.json",
-                    "bio/hmmer/parsed_hits.csv",
+                    "bio/hmmer/provider_request.json",
+                    "bio/hmmer/provider_observation.json",
+                    "bio/hmmer/provider_raw/raw_hits.json",
+                    "bio/hmmer/provider_parsed/parsed_hits.csv",
                     "aox_hmm/filtered.fasta",
                     "aox_hmm/filtered.csv",
                     "aox_hmm/scoring.csv",

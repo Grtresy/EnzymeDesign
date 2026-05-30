@@ -43,6 +43,7 @@ aligned = bio_tools.hmmalign(
 hits = bio.hmmer_search(
     hmm_artifact_id=hmm_artifact,
     database="refprot",
+    output_dir="/workspace/output/bio/hmmer",
 )
 ```
 
@@ -52,7 +53,7 @@ Functions:
 - `bio_tools.mafft(input_fasta=..., placement=..., expected_outputs=..., params=...)`
 - `bio_tools.hmmbuild(alignment=..., placement=..., expected_outputs=..., params=...)`
 - `bio_tools.hmmalign(hmm=..., fasta=..., placement=..., expected_outputs=..., params=...)`
-- `bio_tools.hmmer_search_cli(hmm=..., target_fasta=..., placement=..., expected_outputs=..., params=...)`: public SDK name reserved for an offline/HPC route, but Session 14 keeps it disabled as `unsupported_in_s14`. Use `bio.hmmer_search(..., database="refprot")` for the current AOX/HMM main route.
+- `bio_tools.hmmer_search_cli(hmm=..., target_fasta=..., placement=..., expected_outputs=..., params=...)`: public SDK name reserved for an offline/HPC route, but Session 14 keeps it disabled as `unsupported_in_s14`. Use `bio.hmmer_search(..., database="refprot", output_dir="/workspace/output/...")` for the current AOX/HMM main route.
 
 The Host supervisor owns tool discovery, preflight, static route policy, resource estimates, expected outputs, output format validation, log truncation, and artifact registration. Pipeline RPC for enabled `bio_tools.*` operations returns a run handle; output artifact refs are produced by `ws.fetch_outputs(run)`. Full outputs and oversized logs must be stored as artifacts.
 
