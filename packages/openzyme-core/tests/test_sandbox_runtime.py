@@ -18,6 +18,7 @@ from openzyme_core import SandboxWorkspaceService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
+from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
@@ -804,6 +805,14 @@ def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
             "        'idempotency_key': 's12_prerequisite_policy',\n"
             "        'params_digest': 'sha256:params',\n"
             "    },\n"
+            "    'disabled': {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'bio_tools.hmmer_search_cli.disabled:v1',\n"
+            "        'sdk_module': 'bio_tools',\n"
+            "        'function_name': 'hmmer_search_cli',\n"
+            "        'idempotency_key': 's12_disabled_policy',\n"
+            "        'params_digest': 'sha256:params',\n"
+            "    },\n"
             "    'mismatch': {\n"
             "        'schema_version': 's12.adapter_envelope.v1',\n"
             "        'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
@@ -836,6 +845,7 @@ def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
 
     assert run.status is SandboxRunStatus.COMPLETED
     assert json.loads(str(run.stdout_summary)) == {
+        "disabled": "unsupported_in_s14",
         "fixture": "fixture_backend_forbidden",
         "mismatch": "adapter_schema_incompatible",
         "missing_policy": "route_policy_missing",
@@ -844,6 +854,33 @@ def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
     }
     assert repositories.approvals.list_by_session(session.session_id) == []
     assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+
+
+def test_sandbox_runtime_s14_bio_tool_route_policy_table_is_fail_closed() -> None:
+    enabled = {
+        "bio_tools.cdhit.hpc:v1": ("cdhit", "cdhit_4.8.1.hpc_apptainer_sif:v1"),
+        "bio_tools.mafft.hpc:v1": ("mafft", "mafft_7.525.hpc_apptainer_sif:v1"),
+        "bio_tools.hmmbuild.hpc:v1": ("hmmbuild", "hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1"),
+        "bio_tools.hmmalign.hpc:v1": ("hmmalign", "hmmer_3.4.hmmalign.hpc_apptainer_sif:v1"),
+    }
+    for route_policy_id, (function_name, toolchain_id) in enabled.items():
+        policy = S12_ROUTE_POLICIES[route_policy_id]
+        assert policy["sdk_module"] == "bio_tools"
+        assert policy["function_name"] == function_name
+        assert policy["selected_backend"] == "hpc"
+        assert policy["backend_category"] == "hpc_runner"
+        assert policy["runtime_packaging_id"] == "hpc_apptainer_sif.aox_hmm_2026_05_30"
+        assert policy["toolchain_id"] == toolchain_id
+        assert policy["status"] == "ok"
+        assert policy["evidence_ref"]
+        assert policy["parameter_inventory_ref"]
+
+    disabled = S12_ROUTE_POLICIES["bio_tools.hmmer_search_cli.disabled:v1"]
+    assert disabled["sdk_module"] == "bio_tools"
+    assert disabled["function_name"] == "hmmer_search_cli"
+    assert disabled["selected_backend"] == "disabled"
+    assert disabled["status"] == "disabled"
+    assert disabled["error_code"] == "unsupported_in_s14"
 
 
 def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent(

@@ -652,7 +652,10 @@ reference_fasta_remote = stage(reference_fasta_id, "inputs/reference.fasta")
 reference_cdhit90 = fetch(bio_tools.cdhit(
     input_fasta=reference_fasta_remote,
     placement=ws,
-    expected_outputs=[{{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}}],
+    expected_outputs=[
+        {{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}},
+        {{"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"}},
+    ],
     identity=0.9,
     mode="reference",
 ))
@@ -675,13 +678,6 @@ hmmalign = fetch(bio_tools.hmmalign(
     placement=ws,
     expected_outputs=[{{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence", "format": "fasta"}}],
 ))
-hmmer_cli = fetch(bio_tools.hmmer_search_cli(
-    hmm=hmm_remote,
-    target_fasta=reference_fasta_remote,
-    placement=ws,
-    expected_outputs=[{{"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result", "format": "csv"}}],
-    params={{"evalue": "1e-20"}},
-))
 hmmer_provider = bio.hmmer_search(
     hmm_artifact_id=hmm["registered_artifact_ids"][0],
     database="refprot",
@@ -691,7 +687,10 @@ hmmer_provider = bio.hmmer_search(
 candidate_cdhit85 = fetch(bio_tools.cdhit(
     input_fasta=reference_fasta_remote,
     placement=ws,
-    expected_outputs=[{{"path": "bio_tools/cdhit/candidate_cdhit85.fasta", "kind": "sequence", "format": "fasta"}}],
+    expected_outputs=[
+        {{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}},
+        {{"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"}},
+    ],
     identity=0.85,
     mode="candidate",
 ))
@@ -1090,7 +1089,10 @@ class AoxHmmFixtureSandboxRunner:
                 {
                     "input_fasta": reference_remote,
                     "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence"}],
+                    "expected_outputs": [
+                        {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"},
+                        {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
+                    ],
                     "identity": 0.9,
                     "mode": "reference",
                 },
@@ -1132,18 +1134,6 @@ class AoxHmmFixtureSandboxRunner:
                 },
             )
         )
-        fetch(
-            control_handler(
-                "bio_tools.hmmer_search_cli",
-                {
-                    "hmm": hmm_remote,
-                    "target_fasta": reference_remote,
-                    "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result"}],
-                    "params": {"evalue": "1e-20"},
-                },
-            )
-        )
         control_handler(
             "bio.hmmer_search",
             {
@@ -1159,7 +1149,10 @@ class AoxHmmFixtureSandboxRunner:
                 {
                     "input_fasta": reference_remote,
                     "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/cdhit/candidate_cdhit85.fasta", "kind": "sequence"}],
+                    "expected_outputs": [
+                        {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"},
+                        {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
+                    ],
                     "identity": 0.85,
                     "mode": "candidate",
                 },

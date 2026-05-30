@@ -177,6 +177,13 @@ def build_smoke_runspec(
         return _build_fpocket_smoke(contract, input_root, partition=partition)
     if contract.tool_id == "vina":
         return _build_vina_smoke(contract, input_root, partition=partition)
+    if contract.tool_id in {
+        "bio_tools.cdhit",
+        "bio_tools.mafft",
+        "bio_tools.hmmbuild",
+        "bio_tools.hmmalign",
+    }:
+        return _build_bio_tool_smoke(contract, input_root, partition=partition)
     raise ValueError(f"no smoke RunSpec compiler is available for {contract.tool_id}")
 
 
@@ -309,6 +316,106 @@ def _build_vina_smoke(
             FailureSignature(pattern="SIF image not found", error_code="SIF_MISSING"),
             FailureSignature(pattern="apptainer: command not found", error_code="APPTAINER_MISSING"),
             FailureSignature(pattern="Parse error", error_code="INPUT_PARSE_ERROR"),
+        ],
+        metadata=_common_metadata(contract, "smoke"),
+    )
+
+
+def _build_bio_tool_smoke(
+    contract: ToolContract, input_root: Path, *, partition: str | None
+) -> RunSpec:
+    sample_root = input_root / "aox_hmm"
+    specs: dict[str, dict[str, Any]] = {
+        "bio_tools.cdhit": {
+            "command": (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/cdhit"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${CDHIT_SIF:-$HOME/containers/cd-hit_4.8.1.sif}" cd-hit '
+                '-i /work/input.fasta -o /out/bio_tools/cdhit/clustered.fasta '
+                '-c 0.85 -n 5 -d 0 -T 1 -M 256 > "$MCP_OUTDIR/bio_tools/cdhit/cdhit.log"; '
+                "printf 'cluster_id,representative,member_count\\n' > \"$MCP_OUTDIR/bio_tools/cdhit/clusters.csv\"; "
+                "awk 'BEGIN{c=\"cluster_1\"} /^>/{c=\"cluster_\" substr($2,1)} /\\*/{gsub(/[>.]/,\"\",$3); print c \",\" $3 \",1\"}' "
+                '"$MCP_OUTDIR/bio_tools/cdhit/clustered.fasta.clstr" >> "$MCP_OUTDIR/bio_tools/cdhit/clusters.csv"'
+            ),
+            "inputs": [("input_sequences.fasta", "input.fasta")],
+            "outputs": [
+                ("bio_tools/cdhit/clustered.fasta", "file"),
+                ("bio_tools/cdhit/clusters.csv", "file"),
+            ],
+        },
+        "bio_tools.mafft": {
+            "command": (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/mafft"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${MAFFT_SIF:-$HOME/containers/mafft_7.525.sif}" mafft --auto /work/input.fasta '
+                '> "$MCP_OUTDIR/bio_tools/mafft/alignment.fasta"'
+            ),
+            "inputs": [("input_sequences.fasta", "input.fasta")],
+            "outputs": [("bio_tools/mafft/alignment.fasta", "file")],
+        },
+        "bio_tools.hmmbuild": {
+            "command": (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmbuild"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                '/out/bio_tools/hmmbuild/model.hmm /work/alignment.fasta '
+                '> "$MCP_OUTDIR/bio_tools/hmmbuild/hmmbuild.summary.txt"'
+            ),
+            "inputs": [("msa.sto", "alignment.fasta")],
+            "outputs": [("bio_tools/hmmbuild/model.hmm", "file")],
+        },
+        "bio_tools.hmmalign": {
+            "command": (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmalign"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                '/out/bio_tools/hmmalign/smoke_model.hmm /work/alignment.fasta '
+                '> "$MCP_OUTDIR/bio_tools/hmmalign/hmmbuild.summary.txt"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmalign --amino --outformat afa '
+                '-o /out/bio_tools/hmmalign/aligned.fasta '
+                '/out/bio_tools/hmmalign/smoke_model.hmm /work/input.fasta'
+            ),
+            "inputs": [
+                ("msa.sto", "alignment.fasta"),
+                ("search_targets.fasta", "input.fasta"),
+            ],
+            "outputs": [("bio_tools/hmmalign/aligned.fasta", "file")],
+        },
+    }
+    spec = specs[contract.tool_id]
+    expected_outputs = [
+        ExpectedOutput(path=path, kind=kind, required=True, non_empty=True)
+        for path, kind in spec["outputs"]
+    ]
+    return RunSpec(
+        name=f"contract-smoke-{contract.tool_id.replace('.', '-')}",
+        stage=contract.stage,
+        command=["bash", "-lc", str(spec["command"])],
+        execution_mode="sbatch",
+        resources=_resource_spec(contract, partition),
+        inputs=[
+            StagedInput(local_path=str(sample_root / local_name), remote_path=remote_path)
+            for local_name, remote_path in spec["inputs"]
+        ],
+        expected_outputs=expected_outputs,
+        success_checks=[
+            SuccessCheck(check_type="exists", path=output.path)
+            for output in expected_outputs
+        ]
+        + [
+            SuccessCheck(check_type="non_empty", path=output.path)
+            for output in expected_outputs
+        ],
+        failure_signatures=[
+            FailureSignature(pattern="SIF image not found", error_code="SIF_MISSING"),
+            FailureSignature(pattern="apptainer: command not found", error_code="APPTAINER_MISSING"),
+            FailureSignature(pattern="No such file|failed to open", error_code="INPUT_OR_ENTRYPOINT_MISSING"),
         ],
         metadata=_common_metadata(contract, "smoke"),
     )

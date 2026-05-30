@@ -98,6 +98,101 @@ _CONTRACTS: dict[str, ToolExecutionContract] = {
             "ligand": {"target_format": "pdbqt", "operations": ("smiles_to_3d", "prepare_ligand")},
         },
     ),
+    "bio_tools.cdhit": ToolExecutionContract(
+        tool_id="bio_tools.cdhit",
+        adapter_id="bio_tools.cdhit",
+        command_template_id="bio_tools_cdhit_sif_v1",
+        resources={"cpus": 2, "mem_mb": 4096, "gpus": 0, "time_minutes": 30, "partition": None},
+        input_slots=(
+            ToolInputSlot(slot_id="input_fasta", remote_path="input.fasta", accepted_formats=("fasta", "fa", "faa")),
+        ),
+        expected_outputs=(
+            ToolOutputContract(path="bio_tools/cdhit/clustered.fasta", kind="file", required=True, non_empty=True),
+            ToolOutputContract(path="bio_tools/cdhit/clusters.csv", kind="file", required=True, non_empty=True),
+        ),
+        success_checks=(
+            {"check_type": "exists", "path": "bio_tools/cdhit/clustered.fasta"},
+            {"check_type": "exists", "path": "bio_tools/cdhit/clusters.csv"},
+            {"check_type": "non_empty", "path": "bio_tools/cdhit/clustered.fasta"},
+        ),
+        failure_signatures=(
+            {"pattern": "SIF image not found", "error_code": "SIF_MISSING"},
+            {"pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING"},
+            {"pattern": "Fatal|No such file", "error_code": "INPUT_OR_ENTRYPOINT_MISSING"},
+        ),
+        parser_hints={"parser": "bio_tools_cdhit", "primary_output": "bio_tools/cdhit/clustered.fasta"},
+        preprocess_requirements={},
+    ),
+    "bio_tools.mafft": ToolExecutionContract(
+        tool_id="bio_tools.mafft",
+        adapter_id="bio_tools.mafft",
+        command_template_id="bio_tools_mafft_sif_v1",
+        resources={"cpus": 4, "mem_mb": 8192, "gpus": 0, "time_minutes": 60, "partition": None},
+        input_slots=(
+            ToolInputSlot(slot_id="input_fasta", remote_path="input.fasta", accepted_formats=("fasta", "fa", "faa")),
+        ),
+        expected_outputs=(
+            ToolOutputContract(path="bio_tools/mafft/alignment.fasta", kind="file", required=True, non_empty=True),
+        ),
+        success_checks=(
+            {"check_type": "exists", "path": "bio_tools/mafft/alignment.fasta"},
+            {"check_type": "non_empty", "path": "bio_tools/mafft/alignment.fasta"},
+        ),
+        failure_signatures=(
+            {"pattern": "SIF image not found", "error_code": "SIF_MISSING"},
+            {"pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING"},
+            {"pattern": "cannot open|No such file", "error_code": "INPUT_OR_ENTRYPOINT_MISSING"},
+        ),
+        parser_hints={"parser": "bio_tools_fasta", "primary_output": "bio_tools/mafft/alignment.fasta"},
+        preprocess_requirements={},
+    ),
+    "bio_tools.hmmbuild": ToolExecutionContract(
+        tool_id="bio_tools.hmmbuild",
+        adapter_id="bio_tools.hmmbuild",
+        command_template_id="bio_tools_hmmbuild_sif_v1",
+        resources={"cpus": 2, "mem_mb": 4096, "gpus": 0, "time_minutes": 30, "partition": None},
+        input_slots=(
+            ToolInputSlot(slot_id="alignment", remote_path="alignment.fasta", accepted_formats=("fasta", "fa", "afa", "sto")),
+        ),
+        expected_outputs=(
+            ToolOutputContract(path="bio_tools/hmmbuild/model.hmm", kind="file", required=True, non_empty=True),
+        ),
+        success_checks=(
+            {"check_type": "exists", "path": "bio_tools/hmmbuild/model.hmm"},
+            {"check_type": "non_empty", "path": "bio_tools/hmmbuild/model.hmm"},
+        ),
+        failure_signatures=(
+            {"pattern": "SIF image not found", "error_code": "SIF_MISSING"},
+            {"pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING"},
+            {"pattern": "No such file|failed to open", "error_code": "INPUT_OR_ENTRYPOINT_MISSING"},
+        ),
+        parser_hints={"parser": "bio_tools_hmm", "primary_output": "bio_tools/hmmbuild/model.hmm"},
+        preprocess_requirements={},
+    ),
+    "bio_tools.hmmalign": ToolExecutionContract(
+        tool_id="bio_tools.hmmalign",
+        adapter_id="bio_tools.hmmalign",
+        command_template_id="bio_tools_hmmalign_sif_v1",
+        resources={"cpus": 2, "mem_mb": 4096, "gpus": 0, "time_minutes": 30, "partition": None},
+        input_slots=(
+            ToolInputSlot(slot_id="hmm", remote_path="model.hmm", accepted_formats=("hmm",)),
+            ToolInputSlot(slot_id="fasta", remote_path="input.fasta", accepted_formats=("fasta", "fa", "faa")),
+        ),
+        expected_outputs=(
+            ToolOutputContract(path="bio_tools/hmmalign/aligned.fasta", kind="file", required=True, non_empty=True),
+        ),
+        success_checks=(
+            {"check_type": "exists", "path": "bio_tools/hmmalign/aligned.fasta"},
+            {"check_type": "non_empty", "path": "bio_tools/hmmalign/aligned.fasta"},
+        ),
+        failure_signatures=(
+            {"pattern": "SIF image not found", "error_code": "SIF_MISSING"},
+            {"pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING"},
+            {"pattern": "No such file|failed to open", "error_code": "INPUT_OR_ENTRYPOINT_MISSING"},
+        ),
+        parser_hints={"parser": "bio_tools_fasta", "primary_output": "bio_tools/hmmalign/aligned.fasta"},
+        preprocess_requirements={},
+    ),
 }
 
 

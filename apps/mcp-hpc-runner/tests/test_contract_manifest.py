@@ -35,7 +35,14 @@ def test_contract_manifest_loads_and_covers_configured_and_documented_tools() ->
         for contract in contracts
         if contract.support_status == "smoke_runnable"
     }
-    assert smoke == {"fpocket", "vina"}
+    assert smoke == {
+        "bio_tools.cdhit",
+        "bio_tools.hmmalign",
+        "bio_tools.hmmbuild",
+        "bio_tools.mafft",
+        "fpocket",
+        "vina",
+    }
 
 
 def test_contract_manifest_rejects_duplicate_tool_ids() -> None:
@@ -87,7 +94,17 @@ def test_contract_manifest_rejects_duplicate_tool_ids() -> None:
         validate_contract_manifest(payload)
 
 
-@pytest.mark.parametrize("tool_id", ["fpocket", "vina"])
+@pytest.mark.parametrize(
+    "tool_id",
+    [
+        "fpocket",
+        "vina",
+        "bio_tools.cdhit",
+        "bio_tools.mafft",
+        "bio_tools.hmmbuild",
+        "bio_tools.hmmalign",
+    ],
+)
 def test_smoke_runspec_generation_is_valid(tool_id: str) -> None:
     contract = next(
         contract for contract in load_contract_manifest() if contract.tool_id == tool_id

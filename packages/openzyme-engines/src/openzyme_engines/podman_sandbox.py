@@ -331,6 +331,8 @@ class _ControlSocketServer:
                     "stage": getattr(exc, "stage", None),
                     "retryable": getattr(exc, "retryable", None),
                     "hint": getattr(exc, "hint", None),
+                    "sdk_method": getattr(exc, "sdk_method", None),
+                    "hpc_failure": getattr(exc, "hpc_failure", None),
                     "details": getattr(exc, "details", None),
                 },
             }

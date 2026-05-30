@@ -206,6 +206,61 @@ def _render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[
                 "--out /out/vina_out.pdbqt --log /out/vina.log"
             ),
         ]
+    if contract.command_template_id == "bio_tools_cdhit_sif_v1":
+        identity = _number_arg(tool_inputs.get("identity"), 0.9)
+        word_size = _number_arg(tool_inputs.get("word_size"), 5)
+        return [
+            "bash",
+            "-lc",
+            (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/cdhit"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${CDHIT_SIF:-$HOME/containers/cd-hit_4.8.1.sif}" cd-hit '
+                f"-i /work/input.fasta -o /out/bio_tools/cdhit/clustered.fasta -c {identity} -n {word_size} -d 0 -T 1 -M 256 "
+                '> "$MCP_OUTDIR/bio_tools/cdhit/cdhit.log"; '
+                "printf 'cluster_id,representative,member_count\\n' > \"$MCP_OUTDIR/bio_tools/cdhit/clusters.csv\"; "
+                "awk 'BEGIN{c=\"cluster_1\"} /^>/{c=\"cluster_\" substr($2,1)} /\\*/{gsub(/[>.]/,\"\",$3); print c \",\" $3 \",1\"}' "
+                '"$MCP_OUTDIR/bio_tools/cdhit/clustered.fasta.clstr" >> "$MCP_OUTDIR/bio_tools/cdhit/clusters.csv"'
+            ),
+        ]
+    if contract.command_template_id == "bio_tools_mafft_sif_v1":
+        return [
+            "bash",
+            "-lc",
+            (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/mafft"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${MAFFT_SIF:-$HOME/containers/mafft_7.525.sif}" mafft --auto /work/input.fasta '
+                '> "$MCP_OUTDIR/bio_tools/mafft/alignment.fasta"'
+            ),
+        ]
+    if contract.command_template_id == "bio_tools_hmmbuild_sif_v1":
+        return [
+            "bash",
+            "-lc",
+            (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmbuild"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                "/out/bio_tools/hmmbuild/model.hmm /work/alignment.fasta "
+                '> "$MCP_OUTDIR/bio_tools/hmmbuild/hmmbuild.summary.txt"'
+            ),
+        ]
+    if contract.command_template_id == "bio_tools_hmmalign_sif_v1":
+        return [
+            "bash",
+            "-lc",
+            (
+                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmalign"; '
+                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
+                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
+                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmalign --amino --outformat afa '
+                "-o /out/bio_tools/hmmalign/aligned.fasta /work/model.hmm /work/input.fasta"
+            ),
+        ]
     raise ValueError(f"unsupported command template {contract.command_template_id!r}")
 
 
@@ -403,6 +458,13 @@ BIO_PROVIDER_ROUTE_POLICY_IDS = {
     "bio.ncbi_fetch_proteins": "bio.ncbi_fetch_proteins.provider:v1",
     "bio.uniprot_fetch": "bio.uniprot_fetch.provider:v1",
     "bio.hmmer_search": "bio.hmmer_search.provider:v1",
+}
+BIO_TOOL_ROUTE_POLICY_IDS = {
+    "bio_tools.cdhit": "bio_tools.cdhit.hpc:v1",
+    "bio_tools.mafft": "bio_tools.mafft.hpc:v1",
+    "bio_tools.hmmbuild": "bio_tools.hmmbuild.hpc:v1",
+    "bio_tools.hmmalign": "bio_tools.hmmalign.hpc:v1",
+    "bio_tools.hmmer_search_cli": "bio_tools.hmmer_search_cli.disabled:v1",
 }
 BIO_PROVIDER_NAMES = {
     "bio.ncbi_fetch_proteins": "ncbi",
@@ -2703,6 +2765,42 @@ class DefaultExecutionRequestCompiler:
                     "metadata": metadata,
                 },
             }
+        if handoff.catalog_tool_id.startswith("bio_tools."):
+            inputs: list[dict[str, Any]] = []
+            input_artifact_ids: list[str] = []
+            for index, slot in enumerate(contract.input_slots):
+                artifact = _find_required_artifact(
+                    resolved_required_artifacts,
+                    explicit_id=tool_inputs.get(f"{slot.slot_id}_artifact_id"),
+                    default_index=index,
+                    slot_name=f"{handoff.catalog_tool_id} {slot.slot_id}",
+                )
+                input_artifact_ids.append(artifact.artifact_id)
+                inputs.append(
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "local_path": artifact.storage_uri,
+                        "remote_path": _runner_relative_path(slot.remote_path),
+                        "required": slot.required,
+                        "stage_to": "work",
+                    }
+                )
+            metadata["input_artifact_ids"] = input_artifact_ids
+            return {
+                "tool_name": "exec.run",
+                "runspec": {
+                    "name": f"execution-{handoff.catalog_tool_id.removeprefix('bio_tools.')}-{subject_id}",
+                    "stage": "execution",
+                    "command": _render_contract_command(contract, tool_inputs),
+                    "execution_mode": handoff.execution_mode,
+                    "resources": dict(contract.resources),
+                    "inputs": inputs,
+                    "expected_outputs": _contract_outputs(contract),
+                    "success_checks": [dict(item) for item in contract.success_checks],
+                    "failure_signatures": [dict(item) for item in contract.failure_signatures],
+                    "metadata": metadata,
+                },
+            }
         return {
             "tool_name": "exec.run",
             "runspec": {
@@ -3676,7 +3774,7 @@ class ExecutionEngine:
         if method in {"bio.ncbi_fetch_proteins", "bio.uniprot_fetch", "bio.hmmer_search"}:
             return self._run_pipeline_bio(session=session, invocation=invocation, method=method, params=params)
         if method in {"bio_tools.cdhit", "bio_tools.mafft", "bio_tools.hmmbuild", "bio_tools.hmmalign", "bio_tools.hmmer_search_cli"}:
-            return self._run_pipeline_bio_tool(session=session, invocation=invocation, method=method, params=params)
+            return self._run_pipeline_bio_tool(session=session, task=task, invocation=invocation, method=method, params=params)
         if method == "hpc.workspace":
             return self._run_pipeline_hpc_workspace(invocation=invocation, params=params)
         if method == "hpc.stage_artifact":
@@ -4011,6 +4109,7 @@ class ExecutionEngine:
         drafts: tuple[BioArtifactDraft, ...] = (),
         execution_artifacts: tuple[ExecutionArtifactRef, ...] = (),
         raw_result: dict[str, Any] | None = None,
+        allow_synthetic_missing: bool = True,
     ) -> None:
         declared_by_path = {
             self._validate_hpc_workspace_path(str(item.get("path") or ""), sdk_method=sdk_method): dict(item)
@@ -4038,22 +4137,46 @@ class ExecutionEngine:
             relative_path = self._validate_hpc_workspace_path(artifact.relative_path, sdk_method=sdk_method)
             if declared_by_path and relative_path not in declared_by_path:
                 continue
+            if not allow_synthetic_missing and not Path(artifact.storage_uri).exists():
+                raise PipelineSdkFailure(
+                    error_type="declared_output_missing",
+                    message=f"{sdk_method} runner artifact {relative_path!r} was not fetched to a readable local path.",
+                    hint="Inspect runner fetch logs; do not synthesize missing declared outputs.",
+                    stage="bio_tools_output_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"missing_outputs": [relative_path]},
+                )
             seen_paths.add(relative_path)
             declared = declared_by_path.get(relative_path, {"path": relative_path})
+            artifact_metadata = dict(getattr(artifact, "metadata", None) or {})
             outputs.append(
                 {
                     "relative_path": relative_path,
                     "declared_output": declared,
                     "artifact_kind": artifact.kind.value,
-                    "format": declared.get("format") or dict(artifact.metadata or {}).get("format"),
+                    "format": declared.get("format") or artifact_metadata.get("format"),
                     "title": PurePosixPath(relative_path).name,
                     "source_uri": artifact.storage_uri,
-                    "metadata": dict(artifact.metadata or {}),
+                    "metadata": artifact_metadata,
                 }
             )
-        for relative_path, declared in declared_by_path.items():
-            if relative_path in seen_paths:
-                continue
+        missing_declared = [
+            (relative_path, declared)
+            for relative_path, declared in declared_by_path.items()
+            if relative_path not in seen_paths
+        ]
+        if missing_declared and not allow_synthetic_missing:
+            raise PipelineSdkFailure(
+                error_type="declared_output_missing",
+                message=f"{sdk_method} did not produce all declared outputs.",
+                hint="Inspect runner logs and command templates; do not synthesize missing declared outputs.",
+                stage="bio_tools_output_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"missing_outputs": [relative_path for relative_path, _ in missing_declared]},
+            )
+        for relative_path, declared in missing_declared:
             outputs.append(
                 {
                     "relative_path": relative_path,
@@ -4192,6 +4315,12 @@ class ExecutionEngine:
         workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         source_path = workspace_root / sandbox_workspace_id / "output" / relative_path
         self._write_hpc_pending_output_source(source_path, pending)
+        self._validate_hpc_pending_output_source(
+            source_path,
+            sdk_method=str(operation_payload.get("sdk_method") or "hpc.fetch_outputs"),
+            relative_path=relative_path,
+            declared=dict(pending.get("declared_output") or {}),
+        )
         output_digest = self._digest_hpc_output_source(source_path)
         fetch_ref_id = "fetch_" + hashlib.sha256(
             f"{hpc_workspace_id}:{run.run_id}:{relative_path}:{output_digest}".encode("utf-8")
@@ -4272,6 +4401,63 @@ class ExecutionEngine:
         if not isinstance(content, str):
             content = self._dummy_content_for_declared_output(pending)
         target.write_text(content, encoding="utf-8")
+
+    def _validate_hpc_pending_output_source(
+        self,
+        path: Path,
+        *,
+        sdk_method: str,
+        relative_path: str,
+        declared: dict[str, Any],
+    ) -> None:
+        if not sdk_method.startswith("bio_tools."):
+            return
+        if not path.exists():
+            raise PipelineSdkFailure(
+                error_type="declared_output_missing",
+                message=f"{sdk_method} declared output {relative_path!r} was not fetched.",
+                hint="Inspect runner fetch logs and command template output paths.",
+                stage="bio_tools_output_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"missing_outputs": [relative_path]},
+            )
+        if path.is_dir():
+            raise PipelineSdkFailure(
+                error_type="output_validation_failed",
+                message=f"{sdk_method} declared output {relative_path!r} must be a file.",
+                hint="Declare file outputs for S14 bio_tools routes.",
+                stage="bio_tools_output_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"path": relative_path},
+            )
+        content = path.read_text(encoding="utf-8", errors="replace")
+        format_value = str(declared.get("format") or "").lower()
+        if relative_path.endswith(".hmm") or format_value == "hmm":
+            valid = content.startswith("HMMER")
+        elif relative_path.endswith(".csv") or format_value == "csv":
+            lines = [line for line in content.splitlines() if line.strip()]
+            header = set(lines[0].split(",")) if lines else set()
+            valid = bool(lines) and (
+                {"cluster_id", "representative", "member_count"}.issubset(header)
+                or {"target", "accession", "evalue", "score"}.issubset(header)
+            )
+        elif relative_path.endswith((".fasta", ".fa", ".faa", ".afa")) or format_value in {"fasta", "fa", "faa", "afa"}:
+            records = sum(1 for line in content.splitlines() if line.startswith(">"))
+            valid = records >= (2 if sdk_method in {"bio_tools.mafft", "bio_tools.hmmalign"} else 1)
+        else:
+            valid = bool(content.strip())
+        if not valid:
+            raise PipelineSdkFailure(
+                error_type="output_validation_failed",
+                message=f"{sdk_method} declared output {relative_path!r} failed minimal format validation.",
+                hint="Check the S14 command template and normalize runner raw outputs before registering artifacts.",
+                stage="bio_tools_output_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"path": relative_path, "format": format_value or None},
+            )
 
     def _pending_output_is_directory(self, pending: dict[str, Any]) -> bool:
         declared = dict(pending.get("declared_output") or {})
@@ -4436,6 +4622,160 @@ class ExecutionEngine:
             )
         return {"route_policy_id": route_policy_id, **policy}
 
+    def _require_bio_tool_route_policy(self, method: str) -> dict[str, Any]:
+        route_policy_id = BIO_TOOL_ROUTE_POLICY_IDS.get(method)
+        policy = dict(S12_ROUTE_POLICIES.get(str(route_policy_id)) or {})
+        if not route_policy_id or not policy:
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} has no S14 bio tools route policy.",
+                hint="Register a versioned bio_tools route policy before executing this SDK operation.",
+                stage="bio_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"method": method},
+            )
+        if policy.get("status") == "disabled" or policy.get("error_code") == "unsupported_in_s14":
+            raise PipelineSdkFailure(
+                error_type="unsupported_in_s14",
+                message=(
+                    "bio_tools.hmmer_search_cli is disabled in Session 14; "
+                    "use bio.hmmer_search(..., database='refprot') for the AOX/HMM main route."
+                ),
+                hint="Do not retry through Host-local HMMER, fixture, or a sibling backend.",
+                stage="bio_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"route_policy_id": route_policy_id, "route_reason": policy.get("route_reason")},
+            )
+        if policy.get("status") != "ok" or policy.get("selected_backend") != "hpc":
+            raise PipelineSdkFailure(
+                error_type=str(policy.get("error_code") or "route_prerequisite_missing"),
+                message=f"{method} HPC route policy is not executable.",
+                hint="Fix the route policy evidence, runtime packaging, and toolchain linkage before running the tool.",
+                stage="bio_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"route_policy_id": route_policy_id, "policy": _sanitize_provider_value(policy)},
+            )
+        if not policy.get("runtime_packaging_id") or not policy.get("toolchain_id"):
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} route policy does not declare runtime packaging and toolchain ids.",
+                hint="Add runtime_packaging_id and toolchain_id to the route policy before executing the tool.",
+                stage="bio_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"route_policy_id": route_policy_id},
+            )
+        return {"route_policy_id": route_policy_id, **policy}
+
+    def _validate_bio_tool_fasta_artifact(
+        self,
+        artifact: SessionArtifactRecord,
+        *,
+        sdk_method: str,
+        min_records: int = 1,
+    ) -> None:
+        metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
+        suffix_ok = artifact.relative_path.lower().endswith((".fasta", ".fa", ".faa", ".afa"))
+        if metadata_format not in {"fasta", "fa", "faa", "afa"} and not suffix_ok:
+            raise PipelineSdkFailure(
+                error_type="invalid_fasta",
+                message=f"Artifact {artifact.artifact_id!r} must be a FASTA sequence artifact.",
+                hint="Provide a FASTA artifact generated by bio.* or bio_tools.*.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id, "format": metadata_format},
+            )
+        try:
+            content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PipelineSdkFailure(
+                error_type="artifact_not_available",
+                message=f"Artifact {artifact.artifact_id!r} could not be read for bio tool validation.",
+                hint="Use a visible artifact with stable sealed content.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id},
+            ) from exc
+        record_count = sum(1 for line in content.splitlines() if line.startswith(">"))
+        if record_count < min_records:
+            raise PipelineSdkFailure(
+                error_type="invalid_fasta",
+                message=f"Artifact {artifact.artifact_id!r} is empty or not valid FASTA.",
+                hint=f"Provide a FASTA with at least {min_records} sequence record(s).",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id, "record_count": record_count},
+            )
+
+    def _validate_bio_tool_alignment_artifact(self, artifact: SessionArtifactRecord, *, sdk_method: str) -> None:
+        metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
+        if metadata_format in {"sto", "stockholm"} or artifact.relative_path.lower().endswith((".sto", ".stockholm")):
+            try:
+                content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+            except OSError as exc:
+                raise PipelineSdkFailure(
+                    error_type="artifact_not_available",
+                    message=f"Alignment artifact {artifact.artifact_id!r} could not be read.",
+                    hint="Use a visible alignment artifact with stable sealed content.",
+                    stage="bio_tools_input_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"artifact_id": artifact.artifact_id},
+                ) from exc
+            if not content.startswith("# STOCKHOLM"):
+                raise PipelineSdkFailure(
+                    error_type="invalid_alignment",
+                    message=f"Alignment artifact {artifact.artifact_id!r} is not valid Stockholm format.",
+                    hint="Provide a FASTA/AFA or Stockholm alignment generated by MAFFT or another approved source.",
+                    stage="bio_tools_input_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"artifact_id": artifact.artifact_id},
+                )
+            return
+        self._validate_bio_tool_fasta_artifact(artifact, sdk_method=sdk_method)
+
+    def _validate_bio_tool_hmm_artifact(self, artifact: SessionArtifactRecord, *, sdk_method: str) -> None:
+        metadata_format = str((artifact.metadata or {}).get("format") or "").lower()
+        if metadata_format != "hmm" and not artifact.relative_path.lower().endswith(".hmm"):
+            raise PipelineSdkFailure(
+                error_type="invalid_hmm",
+                message=f"Artifact {artifact.artifact_id!r} must be an HMM artifact.",
+                hint="Provide an HMM artifact generated by bio_tools.hmmbuild.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id, "format": metadata_format},
+            )
+        try:
+            content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PipelineSdkFailure(
+                error_type="artifact_not_available",
+                message=f"HMM artifact {artifact.artifact_id!r} could not be read.",
+                hint="Use a visible HMM artifact with stable sealed content.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id},
+            ) from exc
+        if not content.startswith("HMMER"):
+            raise PipelineSdkFailure(
+                error_type="invalid_hmm",
+                message=f"Artifact {artifact.artifact_id!r} does not look like HMMER output.",
+                hint="Regenerate the HMM with bio_tools.hmmbuild.",
+                stage="bio_tools_input_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"artifact_id": artifact.artifact_id},
+            )
+
     def _normalize_bio_output_dir(self, value: Any, *, sdk_method: str) -> str:
         raw = "" if value is None else str(value).strip()
         if not raw:
@@ -4473,6 +4813,15 @@ class ExecutionEngine:
             return False
         return any(operation.get("method") == method for operation in list(plan.get("bio_operations") or []))
 
+    def _pipeline_bio_tool_covered_by_approved_plan(self, *, pipeline: dict[str, Any], method: str) -> bool:
+        plan = dict(pipeline.get("execution_plan") or {})
+        if not plan or pipeline.get("approved_plan_digest") != plan.get("plan_digest"):
+            return False
+        return any(
+            operation.get("method") == method and operation.get("selected_backend") == "hpc"
+            for operation in list(plan.get("bio_tool_operations") or [])
+        )
+
     def _bio_adapter_approval_envelope(
         self,
         *,
@@ -4495,6 +4844,38 @@ class ExecutionEngine:
             "planned_output_path_summary": {"output_dir": f"/workspace/output/{output_dir_relative}"},
             "params_digest": hashlib.sha256(
                 json.dumps(params, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _bio_tool_adapter_approval_envelope(
+        self,
+        *,
+        method: str,
+        params: dict[str, Any],
+        route_policy: dict[str, Any],
+        hpc_workspace_id: str,
+        stage_refs: list[dict[str, Any]],
+        declared_outputs: list[dict[str, Any]],
+        resource_estimate: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "adapter_envelope_schema_version": "s12.adapter_envelope.v1",
+            "sdk_module": "bio_tools",
+            "function_name": method.removeprefix("bio_tools."),
+            "route_policy_id": route_policy["route_policy_id"],
+            "selected_backend": route_policy.get("selected_backend"),
+            "route_reason": route_policy.get("route_reason"),
+            "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
+            "toolchain_id": route_policy.get("toolchain_id"),
+            "resource_estimate": dict(resource_estimate),
+            "expected_outputs": [dict(item) for item in declared_outputs],
+            "declared_outputs": [dict(item) for item in declared_outputs],
+            "approval_requirement": route_policy.get("approval_requirement") or {"required": True},
+            "hpc_workspace_id": hpc_workspace_id,
+            "stage_refs": [dict(item) for item in stage_refs],
+            "planned_fetch_intent": True,
+            "params_digest": hashlib.sha256(
+                json.dumps(params, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
             ).hexdigest(),
         }
 
@@ -4786,7 +5167,8 @@ class ExecutionEngine:
             pipeline=pipeline,
             method=method,
         )
-        if operation_key not in set(pipeline.get("approved_operation_keys") or []) and not covered_by_approved_plan:
+        approved_operation_keys = set(pipeline.get("approved_operation_keys") or [])
+        if operation_key not in approved_operation_keys and not covered_by_approved_plan:
             approval = self._request_pipeline_approval(
                 invocation=invocation,
                 method=method,
@@ -4800,6 +5182,13 @@ class ExecutionEngine:
                 operation_key=operation_key,
                 envelope=adapter_approval_envelope,
                 approval_source="execution_pipeline_plan",
+            )
+        elif operation_key in approved_operation_keys:
+            self._record_pipeline_adapter_approval_envelope(
+                invocation=invocation,
+                operation_key=operation_key,
+                envelope=adapter_approval_envelope,
+                approval_source="execution_pipeline_operation",
             )
         adapter = self.bio_adapter
         if adapter is None:
@@ -4999,160 +5388,249 @@ class ExecutionEngine:
         )
         return payload
 
+    def _bio_tool_slot_names(self, method: str) -> tuple[str, ...]:
+        return {
+            "bio_tools.cdhit": ("input_fasta",),
+            "bio_tools.mafft": ("input_fasta",),
+            "bio_tools.hmmbuild": ("alignment",),
+            "bio_tools.hmmalign": ("hmm", "fasta"),
+            "bio_tools.hmmer_search_cli": ("hmm", "target_fasta"),
+        }.get(method, ())
+
+    def _bio_tool_stage_refs(self, *, method: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        return [dict(params.get(slot_name) or {}) for slot_name in self._bio_tool_slot_names(method)]
+
+    def _bio_tool_runner_params(self, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        nested = dict(params.get("params") or {})
+        if nested:
+            raise PipelineSdkFailure(
+                error_type="forbidden_param",
+                message=f"{method} does not accept raw or nested params in S14.",
+                hint="Use the typed SDK parameters for this tool; raw args, paths and passthrough params are forbidden.",
+                stage="bio_tools_params_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"forbidden_params": sorted(nested)},
+            )
+        if method == "bio_tools.cdhit":
+            try:
+                identity = float(params.get("identity"))
+            except (TypeError, ValueError) as exc:
+                raise PipelineSdkFailure(
+                    error_type="invalid_params",
+                    message="bio_tools.cdhit identity must be numeric.",
+                    hint="Retry with an identity threshold such as 0.9.",
+                    stage="bio_tools_params_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"identity": params.get("identity")},
+                ) from exc
+            if identity <= 0 or identity > 1:
+                raise PipelineSdkFailure(
+                    error_type="invalid_params",
+                    message="bio_tools.cdhit identity must be in the range (0, 1].",
+                    hint="Retry with a CD-HIT identity threshold such as 0.85 or 0.9.",
+                    stage="bio_tools_params_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"identity": identity},
+                )
+            mode = str(params.get("mode") or "protein")
+            if mode not in {"protein", "reference", "candidate"}:
+                raise PipelineSdkFailure(
+                    error_type="invalid_params",
+                    message=f"bio_tools.cdhit mode {mode!r} is not supported in S14.",
+                    hint="Use mode='protein' for generic protein clustering, mode='reference' for AOX reference clustering, or mode='candidate' for AOX candidate clustering.",
+                    stage="bio_tools_params_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"mode": mode},
+                )
+            return {"identity": identity, "mode": mode}
+        return {}
+
+    def _validate_bio_tool_inputs(self, *, method: str, artifacts_by_slot: dict[str, SessionArtifactRecord]) -> None:
+        if method == "bio_tools.cdhit":
+            self._validate_bio_tool_fasta_artifact(artifacts_by_slot["input_fasta"], sdk_method=method)
+            return
+        if method == "bio_tools.mafft":
+            self._validate_bio_tool_fasta_artifact(artifacts_by_slot["input_fasta"], sdk_method=method, min_records=2)
+            return
+        if method == "bio_tools.hmmbuild":
+            self._validate_bio_tool_alignment_artifact(artifacts_by_slot["alignment"], sdk_method=method)
+            return
+        if method == "bio_tools.hmmalign":
+            self._validate_bio_tool_hmm_artifact(artifacts_by_slot["hmm"], sdk_method=method)
+            self._validate_bio_tool_fasta_artifact(artifacts_by_slot["fasta"], sdk_method=method)
+            return
+        raise ValueError(f"unsupported bio tools SDK operation {method!r}")
+
+    def _bio_tool_runner_failure(self, *, method: str, result: dict[str, Any]) -> PipelineSdkFailure:
+        raw = dict(result.get("runner_result") or result.get("raw_result") or {})
+        runner_code = str(raw.get("error_code") or result.get("error_code") or "")
+        if runner_code in {"APPTAINER_MISSING", "SIF_MISSING"}:
+            error_type = "container_runtime_missing"
+        elif runner_code == "COMMAND_TIMEOUT":
+            error_type = "timeout"
+        else:
+            error_type = "nonzero_exit" if result.get("exit_code") not in {None, 0} else "hpc_operation_failed"
+        return PipelineSdkFailure(
+            error_type=error_type,
+            message=f"{method} HPC runner execution failed.",
+            hint="Inspect the safe runner diagnostics and fix the S14 toolchain/runtime packaging before retrying.",
+            stage=str(raw.get("stage") or result.get("stage") or "remote_execution"),
+            retryable=False,
+            sdk_method=method,
+            hpc_failure=_hpc_failure_details(
+                {
+                    "status": result.get("status"),
+                    "run_id": result.get("run_id"),
+                    "runner_run_id": result.get("runner_run_id"),
+                    "execution_mode": result.get("execution_mode"),
+                    "exit_code": result.get("exit_code"),
+                    "runner_result": raw,
+                }
+            ),
+            details={"runner_error_code": runner_code or None},
+        )
+
     def _run_pipeline_bio_tool(
         self,
         *,
         session: Any,
+        task: Any,
         invocation: EngineInvocation,
         method: str,
         params: dict[str, Any],
     ) -> dict[str, Any]:
         operation_key = self._pipeline_operation_key(method, params)
+        route_policy = self._require_bio_tool_route_policy(method)
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
         completed = dict(pipeline.get("completed_operations") or {})
         if operation_key in completed:
             return dict(completed[operation_key])
-        adapter = self.bio_tools_adapter or DeterministicBioToolsAdapter()
-        retrieved_at = utc_now_iso()
         placement = self._require_hpc_workspace(params.get("placement"), sdk_method=method)
-        expected_outputs = self._require_declared_outputs(params, sdk_method=method)
+        declared_outputs = self._require_declared_outputs(params, sdk_method=method)
+        runner_params = self._bio_tool_runner_params(method=method, params=params)
         stage_refs: list[dict[str, Any]] = []
-
-        def staged_artifact(slot_name: str) -> SessionArtifactRecord:
+        artifacts_by_slot: dict[str, SessionArtifactRecord] = {}
+        required_artifact_ids: list[str] = []
+        tool_inputs: dict[str, Any] = dict(runner_params)
+        for slot_name in self._bio_tool_slot_names(method):
             ref = dict(params.get(slot_name) or {})
             stage_refs.append(ref)
-            return self._require_pipeline_artifact(
+            artifact_id = self._require_stage_ref_artifact_id(
+                ref,
+                placement=placement,
+                slot_name=slot_name,
+                sdk_method=method,
                 session_id=session.session_id,
-                artifact_id=self._require_stage_ref_artifact_id(
-                    ref,
-                    placement=placement,
-                    slot_name=slot_name,
-                    sdk_method=method,
-                    session_id=session.session_id,
-                ),
+            )
+            artifact = self._require_pipeline_artifact(
+                session_id=session.session_id,
+                artifact_id=artifact_id,
                 sdk_method=method,
             )
-
-        if method == "bio_tools.cdhit":
-            try:
-                identity = float(params.get("identity") or 0)
-            except (TypeError, ValueError) as exc:
-                raise PipelineSdkFailure(
-                    error_type="invalid_tool_parameter",
-                    message="bio_tools.cdhit identity must be numeric.",
-                    hint="Retry with an identity threshold such as 0.9.",
-                    stage="bio_tools_input_validation",
-                    retryable=False,
-                    sdk_method=method,
-                    details={"identity": params.get("identity")},
-                ) from exc
-            result = adapter.cdhit(
-                input_fasta=staged_artifact("input_fasta"),
-                identity=identity,
-                mode=str(params.get("mode") or "protein"),
-                retrieved_at=retrieved_at,
-            )
-        elif method == "bio_tools.mafft":
-            result = adapter.mafft(
-                input_fasta=staged_artifact("input_fasta"),
-                params=dict(params.get("params") or {}),
-                retrieved_at=retrieved_at,
-            )
-        elif method == "bio_tools.hmmbuild":
-            result = adapter.hmmbuild(
-                alignment=staged_artifact("alignment"),
-                params=dict(params.get("params") or {}),
-                retrieved_at=retrieved_at,
-            )
-        elif method == "bio_tools.hmmalign":
-            result = adapter.hmmalign(
-                hmm=staged_artifact("hmm"),
-                fasta=staged_artifact("fasta"),
-                params=dict(params.get("params") or {}),
-                retrieved_at=retrieved_at,
-            )
-        elif method == "bio_tools.hmmer_search_cli":
-            result = adapter.hmmer_search_cli(
-                hmm=staged_artifact("hmm"),
-                target_fasta=staged_artifact("target_fasta"),
-                params=dict(params.get("params") or {}),
-                retrieved_at=retrieved_at,
-            )
-        else:
-            raise ValueError(f"unsupported bio tools SDK operation {method!r}")
-        now = utc_now_iso()
-        run_id = f"run_{invocation.invocation_id}_{len(self.repositories.runs.list_by_invocation(session.session_id, invocation.invocation_id)) + 1}"
-        run = RunRecord(
-            run_id=run_id,
-            session_id=session.session_id,
-            task_id=invocation.task_id,
-            lane_id=invocation.lane_id,
-            invocation_id=invocation.invocation_id,
-            approval_id=invocation.approval_id,
-            engine_name=invocation.engine_name,
-            runner_run_id=operation_key,
-            status=RunStatus.SUCCEEDED,
-            execution_mode="hpc_placement",
-            remote_run_dir=f"hpc://{placement['hpc_workspace_id']}/{operation_key}",
-            created_at=now,
-            updated_at=now,
-            finished_at=now,
-            summary=f"{method} placement operation succeeded",
+            artifacts_by_slot[slot_name] = artifact
+            required_artifact_ids.append(artifact_id)
+            tool_inputs[f"{slot_name}_artifact_id"] = artifact_id
+        self._validate_bio_tool_inputs(method=method, artifacts_by_slot=artifacts_by_slot)
+        adapter_approval_envelope = self._bio_tool_adapter_approval_envelope(
+            method=method,
+            params=params,
+            route_policy=route_policy,
+            hpc_workspace_id=str(placement.get("hpc_workspace_id")),
+            stage_refs=stage_refs,
+            declared_outputs=declared_outputs,
+            resource_estimate=self._planned_bio_tool_resource_estimate(method),
         )
-        self.repositories.runs.save(run)
-        request_metadata = {
-            "pipeline_invocation_id": invocation.invocation_id,
-            "sdk_method": method,
-            "code_digest": pipeline.get("code_digest"),
-            "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
-            "source_code_digest": pipeline.get("source_code_digest"),
-            "source_code_version": pipeline.get("source_code_version"),
-            "pipeline_step_id": operation_key,
-            "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
-            "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
-            "bio_artifact_ids": list(pipeline.get("bio_artifact_ids") or []),
-            "hpc_workspace_id": placement.get("hpc_workspace_id"),
-            "stage_refs": stage_refs,
-            "declared_outputs": expected_outputs,
-        }
-        self._save_hpc_pending_outputs(
-            session_id=session.session_id,
+        covered_by_approved_plan = self._pipeline_bio_tool_covered_by_approved_plan(
+            pipeline=pipeline,
+            method=method,
+        )
+        if operation_key not in set(pipeline.get("approved_operation_keys") or []) and not covered_by_approved_plan:
+            approval = self._request_pipeline_approval(
+                invocation=invocation,
+                method=method,
+                params=params,
+                operation_key=operation_key,
+            )
+            raise PipelineApprovalRequired(approval)
+        if covered_by_approved_plan:
+            self._record_pipeline_adapter_approval_envelope(
+                invocation=invocation,
+                operation_key=operation_key,
+                envelope=adapter_approval_envelope,
+                approval_source="execution_pipeline_plan",
+            )
+        tool_inputs.update(
+            {
+                "route_policy_id": route_policy["route_policy_id"],
+                "route_reason": route_policy.get("route_reason"),
+                "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
+                "toolchain_id": route_policy.get("toolchain_id"),
+                "hpc_workspace_id": placement.get("hpc_workspace_id"),
+            }
+        )
+        handoff = ExecutionHandoff(
+            execution_goal=f"Run {method} from execution pipeline.",
+            required_artifact_ids=tuple(required_artifact_ids),
+            catalog_tool_id=method,
+            tool_inputs=tool_inputs,
+            execution_mode="ssh",
+            require_approval=False,
+        )
+        result = self._submit_pipeline_hpc_step(
+            session=session,
+            task=task,
             invocation=invocation,
-            run=run,
+            handoff=handoff,
             operation_key=operation_key,
             sdk_method=method,
             hpc_workspace_id=str(placement.get("hpc_workspace_id")),
             stage_refs=stage_refs,
-            declared_outputs=expected_outputs,
-            request_metadata=request_metadata,
-            drafts=result.artifacts,
-            raw_result={"provider": result.provider, "summary": result.summary},
+            declared_outputs=declared_outputs,
+            allow_synthetic_missing_outputs=False,
         )
-        payload = {
+        if result.get("status") != RunStatus.SUCCEEDED.value:
+            raise self._bio_tool_runner_failure(method=method, result=result)
+        run_handle = {
             "kind": "hpc_run_handle",
-            "tool_id": method,
-            "provider": result.provider,
-            "status": RunStatus.SUCCEEDED.value,
-            "run_id": run.run_id,
+            "tool_id": result.get("tool_id"),
+            "run_id": result.get("run_id"),
+            "runner_run_id": result.get("runner_run_id"),
+            "status": result.get("status"),
+            "execution_mode": result.get("execution_mode"),
+            "exit_code": result.get("exit_code"),
             "operation_key": operation_key,
             "placement": "hpc",
             "hpc_workspace_id": placement.get("hpc_workspace_id"),
+            "declared_outputs": declared_outputs,
             "stage_refs": stage_refs,
-            "declared_outputs": expected_outputs,
-            "summary": result.summary,
-            "warnings": list(result.warnings),
+            "route_policy_id": route_policy["route_policy_id"],
+            "selected_backend": route_policy.get("selected_backend"),
+            "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
+            "toolchain_id": route_policy.get("toolchain_id"),
+            "summary": f"{method} placement operation succeeded",
+            "warnings": [],
         }
-        self._record_pipeline_completed_operation(invocation, operation_key, payload)
+        parsed_result = result.get("parsed_result")
+        if isinstance(parsed_result, dict):
+            result_summary = str(parsed_result.get("result_summary") or "")
+            if result_summary:
+                run_handle["summary"] = result_summary
+                run_handle["parsed_result"] = parsed_result
+        self._record_pipeline_completed_operation(invocation, operation_key, dict(run_handle))
         self._emit(
             "execution.pipeline.step.completed",
             {
                 "invocation_id": invocation.invocation_id,
                 "operation": method,
                 "operation_key": operation_key,
-                "warning_count": len(result.warnings),
+                "run_id": result.get("run_id"),
             },
         )
-        return payload
+        return run_handle
 
     def _run_pipeline_hpc(
         self,
@@ -5339,6 +5817,7 @@ class ExecutionEngine:
         hpc_workspace_id: str,
         stage_refs: list[dict[str, Any]],
         declared_outputs: list[dict[str, Any]],
+        allow_synthetic_missing_outputs: bool = True,
     ) -> dict[str, Any]:
         required_artifacts = self._resolve_artifacts(session.session_id, handoff.required_artifact_ids)
         context_artifacts = self._resolve_artifacts(session.session_id, handoff.context_artifact_ids)
@@ -5355,19 +5834,35 @@ class ExecutionEngine:
         metadata.update(
             {
                 "pipeline_invocation_id": invocation.invocation_id,
+                "sdk_method": sdk_method,
                 "code_digest": pipeline.get("code_digest"),
                 "source_code_artifact_id": pipeline.get("source_code_artifact_id"),
                 "source_code_digest": pipeline.get("source_code_digest"),
                 "source_code_version": pipeline.get("source_code_version"),
                 "pipeline_step_id": operation_key,
                 "sandbox_status": "running",
+                "hpc_workspace_id": hpc_workspace_id,
+                "stage_refs": stage_refs,
+                "declared_outputs": declared_outputs,
             }
         )
         runspec["metadata"] = metadata
         request = dict(request)
         request["runspec"] = runspec
         self._validate_compiled_runspec_inputs(request=request, allowed_artifacts=(*required_artifacts, *context_artifacts))
-        outcome = self.runner.submit_execution(session.session_id, request)
+        try:
+            outcome = self.runner.submit_execution(session.session_id, request)
+        except Exception as exc:  # noqa: BLE001 - runner boundary errors must become SDK failures.
+            reason = _scrub_provider_text(str(exc))
+            raise PipelineSdkFailure(
+                error_type="hpc_staging_failed",
+                message=f"{sdk_method} HPC runner submission or staging failed.",
+                hint="Inspect the Host-supervised HPC runner configuration and connectivity; do not fall back to Host-local or sandbox binaries.",
+                stage="hpc_staging",
+                retryable=True,
+                sdk_method=sdk_method,
+                details={"reason": reason},
+            ) from exc
         now = utc_now_iso()
         run = RunRecord(
             run_id=f"run_{invocation.invocation_id}_{len(self.repositories.runs.list_by_invocation(session.session_id, invocation.invocation_id)) + 1}",
@@ -5388,7 +5883,9 @@ class ExecutionEngine:
         )
         self.repositories.runs.save(run)
         final_outcome = outcome
-        if final_outcome.status.is_terminal:
+        if final_outcome.status.is_terminal and (
+            final_outcome.status is RunStatus.SUCCEEDED or allow_synthetic_missing_outputs
+        ):
             self._save_hpc_pending_outputs(
                 session_id=session.session_id,
                 invocation=invocation,
@@ -5401,6 +5898,7 @@ class ExecutionEngine:
                 request_metadata=metadata,
                 execution_artifacts=final_outcome.artifacts,
                 raw_result=final_outcome.raw_result,
+                allow_synthetic_missing=allow_synthetic_missing_outputs,
             )
             run = RunRecord(
                 run_id=run.run_id,
@@ -5589,6 +6087,23 @@ class ExecutionEngine:
                     params=params,
                     route_policy=route_policy,
                     output_dir_relative=output_dir_relative,
+                )
+            except PipelineSdkFailure:
+                pass
+        if method in BIO_TOOL_ROUTE_POLICY_IDS:
+            try:
+                route_policy = self._require_bio_tool_route_policy(method)
+                placement = self._require_hpc_workspace(params.get("placement"), sdk_method=method)
+                declared_outputs = self._require_declared_outputs(params, sdk_method=method)
+                stage_refs = self._bio_tool_stage_refs(method=method, params=params)
+                pending_operation["adapter_approval_envelope"] = self._bio_tool_adapter_approval_envelope(
+                    method=method,
+                    params=params,
+                    route_policy=route_policy,
+                    hpc_workspace_id=str(placement.get("hpc_workspace_id")),
+                    stage_refs=stage_refs,
+                    declared_outputs=declared_outputs,
+                    resource_estimate=self._planned_bio_tool_resource_estimate(method),
                 )
             except PipelineSdkFailure:
                 pass
@@ -5824,8 +6339,30 @@ class ExecutionEngine:
             summary = "Pipeline failed."
         error_type = "sandbox_execution_failed"
         error_hint = "Read the log excerpts, correct the pipeline code, and retry execution.pipeline.start with declared inputs."
+        error_stage = None
+        error_retryable = False
+        error_sdk_method = next(
+            (
+                method
+                for method in (*BIO_TOOL_ROUTE_POLICY_IDS, "structure_tools.fpocket", "docking.vina")
+                if method in (failure_excerpt or "")
+            ),
+            None,
+        )
         hpc_failure = None
-        if failure_excerpt and "PipelineSdkError: " in failure_excerpt and " failed with status failed" in failure_excerpt:
+        if failure_excerpt and "PipelineSdkError: " in failure_excerpt and "error_code=" in failure_excerpt:
+            code_match = re.search(r"error_code=([a-zA-Z0-9_.:-]+)", failure_excerpt)
+            stage_match = re.search(r"stage=([a-zA-Z0-9_.:-]+)", failure_excerpt)
+            retryable_match = re.search(r"retryable=(True|False)", failure_excerpt)
+            if code_match:
+                error_type = code_match.group(1)
+                error_stage = None if stage_match is None else stage_match.group(1)
+                error_retryable = retryable_match is not None and retryable_match.group(1) == "True"
+                error_hint = (
+                    "The approved Host-supervised SDK operation failed before completion. "
+                    "Inspect the structured SDK error and do not fall back to Host-local or sandbox binaries."
+                )
+        elif failure_excerpt and "PipelineSdkError: " in failure_excerpt and " failed with status failed" in failure_excerpt:
             error_type = "hpc_operation_failed"
             error_hint = (
                 "The pipeline code reached the approved HPC operation, but the HPC runner returned failed. "
@@ -5847,17 +6384,18 @@ class ExecutionEngine:
                     "The Host-supervised HPC SDK call timed out while waiting on the runner or remote SSH/HPC boundary. "
                     "Treat this as an HPC runner timeout, not a Podman sandbox startup failure."
                 )
+                error_retryable = True
         error_payload = None
         if outcome.status is not RunStatus.SUCCEEDED:
             error_payload = {
                 "type": error_type,
-                "stage": None if hpc_failure is None else hpc_failure.get("stage"),
-                "retryable": error_type == "hpc_runner_timeout",
+                "stage": error_stage if hpc_failure is None else hpc_failure.get("stage"),
+                "retryable": error_retryable or error_type == "hpc_runner_timeout",
                 "message": summary,
                 "stderr_excerpt": stderr_excerpt,
                 "stdout_excerpt": stdout_excerpt,
                 "hint": error_hint,
-                "sdk_method": "structure_tools.fpocket" if "structure_tools.fpocket" in (failure_excerpt or "") else None,
+                "sdk_method": error_sdk_method,
             }
             if hpc_failure is not None:
                 error_payload["hpc_failure"] = hpc_failure
@@ -6790,10 +7328,16 @@ class ExecutionEngine:
         bio_tool_operations = [
             {
                 "method": str(item["operation"]),
-                "approval_required": single_plan_approval_required,
+                "approval_required": (
+                    self._planned_bio_tool_backend(str(item["operation"])) == "hpc"
+                    and self._planned_bio_tool_route_status(str(item["operation"])) == "ok"
+                ),
+                "route_policy_id": BIO_TOOL_ROUTE_POLICY_IDS.get(str(item["operation"])),
+                "selected_backend": self._planned_bio_tool_backend(str(item["operation"])),
+                "route_status": self._planned_bio_tool_route_status(str(item["operation"])),
                 "expected_outputs": self._planned_bio_tool_expected_outputs(str(item["operation"])),
                 "resource_estimate": self._planned_bio_tool_resource_estimate(str(item["operation"])),
-                "quota_estimate": {"local_tool_invocations": 1, "operation": str(item["operation"])},
+                "quota_estimate": self._planned_bio_tool_quota_estimate(str(item["operation"])),
                 "doc_keyword": item.get("doc_keyword"),
                 "doc_id": item.get("doc_id"),
             }
@@ -6851,7 +7395,22 @@ class ExecutionEngine:
                 }
                 for operation in hpc_operations
             ]
-            approval_requirements = [*bio_approval_requirements, *hpc_approval_requirements]
+            bio_tool_approval_requirements = [
+                {
+                    "kind": "hpc_operation",
+                    "method": operation["method"],
+                    "operation_key": f"{operation['method']}:hpc_policy",
+                    "route_policy_id": operation.get("route_policy_id"),
+                    "reason": "Bio tool HPC execution is approval-gated by S14 route policy.",
+                }
+                for operation in bio_tool_operations
+                if operation.get("approval_required")
+            ]
+            approval_requirements = [
+                *bio_approval_requirements,
+                *bio_tool_approval_requirements,
+                *hpc_approval_requirements,
+            ]
         plan_without_digest = {
             "code_digest": code_digest,
             **source_metadata,
@@ -7043,14 +7602,28 @@ class ExecutionEngine:
             "bio_tools.mafft": [{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}],
             "bio_tools.hmmbuild": [{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}],
             "bio_tools.hmmalign": [{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}],
-            "bio_tools.hmmer_search_cli": [
-                {"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result"},
-                {"path": "bio_tools/hmmer_search_cli/tool.log", "kind": "log"},
-            ],
+            "bio_tools.hmmer_search_cli": [],
         }.get(method, [])
 
+    def _planned_bio_tool_backend(self, method: str) -> str:
+        route_policy_id = BIO_TOOL_ROUTE_POLICY_IDS.get(method)
+        policy = dict(S12_ROUTE_POLICIES.get(str(route_policy_id)) or {})
+        return str(policy.get("selected_backend") or "unknown")
+
+    def _planned_bio_tool_route_status(self, method: str) -> str:
+        route_policy_id = BIO_TOOL_ROUTE_POLICY_IDS.get(method)
+        policy = dict(S12_ROUTE_POLICIES.get(str(route_policy_id)) or {})
+        return str(policy.get("status") or "missing")
+
+    def _planned_bio_tool_quota_estimate(self, method: str) -> dict[str, Any]:
+        if method == "bio_tools.hmmer_search_cli":
+            return {"local_tool_invocations": 0, "operation": method, "disabled_reason": "unsupported_in_s14"}
+        return {"local_tool_invocations": 1, "operation": method}
+
     def _planned_bio_tool_resource_estimate(self, method: str) -> dict[str, Any]:
-        if method in {"bio_tools.hmmer_search_cli", "bio_tools.mafft"}:
+        if method == "bio_tools.hmmer_search_cli":
+            return {"cpu": 0, "memory_gb": 0, "max_runtime_minutes": 0, "disabled_reason": "unsupported_in_s14"}
+        if method == "bio_tools.mafft":
             return {"cpu": 4, "memory_gb": 8, "max_runtime_minutes": 60}
         return {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 30}
 

@@ -153,6 +153,161 @@
       "notes": "Primary CPU pocket detector for the current executor path."
     },
     {
+      "tool_id": "bio_tools.cdhit",
+      "adapter_id": "bio_tools.cdhit",
+      "stage": "execution",
+      "deployment_mode": "sif",
+      "entrypoint": {
+        "kind": "sif",
+        "path": "~/containers/cd-hit_4.8.1.sif",
+        "entrypoint": "cd-hit",
+        "usage_args": ["-h"]
+      },
+      "resource_profile": {
+        "cpus": 2,
+        "mem_mb": 4096,
+        "gpus": 0,
+        "time_minutes": 30,
+        "partition": null
+      },
+      "required_inputs": [
+        { "name": "input_fasta", "path": "/work/input.fasta", "kind": "file" }
+      ],
+      "optional_params": ["identity", "mode"],
+      "expected_outputs": [
+        { "path": "bio_tools/cdhit/clustered.fasta", "kind": "file", "required": true, "non_empty": true },
+        { "path": "bio_tools/cdhit/clusters.csv", "kind": "file", "required": true, "non_empty": true }
+      ],
+      "success_checks": [
+        "command exits 0",
+        "clustered FASTA exists",
+        "cluster membership CSV exists"
+      ],
+      "known_failure_signatures": [
+        { "pattern": "SIF image not found", "error_code": "SIF_MISSING" },
+        { "pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING" },
+        { "pattern": "Fatal|No such file", "error_code": "INPUT_OR_ENTRYPOINT_MISSING" }
+      ],
+      "support_status": "smoke_runnable",
+      "executor_relevance": "compile_and_parse",
+      "notes": "S14 AOX/HMM CD-HIT product-route prerequisite smoke using committed tiny FASTA fixture."
+    },
+    {
+      "tool_id": "bio_tools.mafft",
+      "adapter_id": "bio_tools.mafft",
+      "stage": "execution",
+      "deployment_mode": "sif",
+      "entrypoint": {
+        "kind": "sif",
+        "path": "~/containers/mafft_7.525.sif",
+        "entrypoint": "mafft",
+        "usage_args": ["--help"]
+      },
+      "resource_profile": {
+        "cpus": 4,
+        "mem_mb": 8192,
+        "gpus": 0,
+        "time_minutes": 60,
+        "partition": null
+      },
+      "required_inputs": [
+        { "name": "input_fasta", "path": "/work/input.fasta", "kind": "file" }
+      ],
+      "optional_params": [],
+      "expected_outputs": [
+        { "path": "bio_tools/mafft/alignment.fasta", "kind": "file", "required": true, "non_empty": true }
+      ],
+      "success_checks": [
+        "command exits 0",
+        "alignment FASTA exists"
+      ],
+      "known_failure_signatures": [
+        { "pattern": "SIF image not found", "error_code": "SIF_MISSING" },
+        { "pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING" },
+        { "pattern": "cannot open|No such file", "error_code": "INPUT_OR_ENTRYPOINT_MISSING" }
+      ],
+      "support_status": "smoke_runnable",
+      "executor_relevance": "compile_and_parse",
+      "notes": "S14 AOX/HMM MAFFT product-route prerequisite smoke using committed tiny FASTA fixture."
+    },
+    {
+      "tool_id": "bio_tools.hmmbuild",
+      "adapter_id": "bio_tools.hmmbuild",
+      "stage": "execution",
+      "deployment_mode": "sif",
+      "entrypoint": {
+        "kind": "sif",
+        "path": "~/containers/hmmer_3.4.sif",
+        "entrypoint": "hmmbuild",
+        "usage_args": ["-h"]
+      },
+      "resource_profile": {
+        "cpus": 2,
+        "mem_mb": 4096,
+        "gpus": 0,
+        "time_minutes": 30,
+        "partition": null
+      },
+      "required_inputs": [
+        { "name": "alignment", "path": "/work/alignment.fasta", "kind": "file" }
+      ],
+      "optional_params": [],
+      "expected_outputs": [
+        { "path": "bio_tools/hmmbuild/model.hmm", "kind": "file", "required": true, "non_empty": true }
+      ],
+      "success_checks": [
+        "command exits 0",
+        "HMMER3 model exists"
+      ],
+      "known_failure_signatures": [
+        { "pattern": "SIF image not found", "error_code": "SIF_MISSING" },
+        { "pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING" },
+        { "pattern": "No such file|failed to open", "error_code": "INPUT_OR_ENTRYPOINT_MISSING" }
+      ],
+      "support_status": "smoke_runnable",
+      "executor_relevance": "compile_and_parse",
+      "notes": "S14 AOX/HMM hmmbuild product-route prerequisite smoke using committed tiny Stockholm fixture."
+    },
+    {
+      "tool_id": "bio_tools.hmmalign",
+      "adapter_id": "bio_tools.hmmalign",
+      "stage": "execution",
+      "deployment_mode": "sif",
+      "entrypoint": {
+        "kind": "sif",
+        "path": "~/containers/hmmer_3.4.sif",
+        "entrypoint": "hmmalign",
+        "usage_args": ["-h"]
+      },
+      "resource_profile": {
+        "cpus": 2,
+        "mem_mb": 4096,
+        "gpus": 0,
+        "time_minutes": 30,
+        "partition": null
+      },
+      "required_inputs": [
+        { "name": "alignment", "path": "/work/alignment.fasta", "kind": "file" },
+        { "name": "fasta", "path": "/work/input.fasta", "kind": "file" }
+      ],
+      "optional_params": [],
+      "expected_outputs": [
+        { "path": "bio_tools/hmmalign/aligned.fasta", "kind": "file", "required": true, "non_empty": true }
+      ],
+      "success_checks": [
+        "command exits 0",
+        "aligned FASTA exists"
+      ],
+      "known_failure_signatures": [
+        { "pattern": "SIF image not found", "error_code": "SIF_MISSING" },
+        { "pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING" },
+        { "pattern": "No such file|failed to open", "error_code": "INPUT_OR_ENTRYPOINT_MISSING" }
+      ],
+      "support_status": "smoke_runnable",
+      "executor_relevance": "compile_and_parse",
+      "notes": "S14 AOX/HMM hmmalign product-route prerequisite smoke using committed tiny FASTA/Stockholm fixtures."
+    },
+    {
       "tool_id": "jackhmmer",
       "adapter_id": "jackhmmer",
       "stage": "evidence",

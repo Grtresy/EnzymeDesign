@@ -19,7 +19,16 @@ class PipelineSdkError(RuntimeError):
         hint: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(message)
+        context = []
+        if error_code:
+            context.append(f"error_code={error_code}")
+        if stage:
+            context.append(f"stage={stage}")
+        if retryable is not None:
+            context.append(f"retryable={retryable}")
+        display_message = message if not context else f"{message} ({', '.join(context)})"
+        super().__init__(display_message)
+        self.message = message
         self.error_code = error_code
         self.stage = stage
         self.retryable = retryable
