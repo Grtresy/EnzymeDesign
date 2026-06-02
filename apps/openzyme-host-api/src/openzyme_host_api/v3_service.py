@@ -468,17 +468,18 @@ class V3HostApiService:
                 raise KeyError(f"session {session_id!r} does not exist")
             context = self._build_runtime_context(session_id)
             scheduler = self._build_scheduler(context, worker_id=worker_id)
-            outcomes = await scheduler.run_once(
-                session_id,
-                max_signals=max_signals,
-                max_steps_per_agent=max_steps_per_agent,
-            )
-            events = [event.to_dict() for event in context.event_sink.events]
+        outcomes = await scheduler.run_once(
+            session_id,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+        )
+        events = [event.to_dict() for event in context.event_sink.events]
+        with self.operation_lock:
             self._touch_session(session_id)
             self._extend_with_trace_events(session_id, events)
             self._extend_with_activity_events(session_id, events)
             self.event_store.append(session_id, events)
-            return [outcome.to_dict() for outcome in outcomes]
+        return [outcome.to_dict() for outcome in outcomes]
 
     def _build_scheduler(
         self, context: SessionRuntimeContext, *, worker_id: str
@@ -523,23 +524,8 @@ class V3HostApiService:
         auto_enqueue_ready_tasks: bool = False,
     ) -> V3CommandResult:
         with self.operation_lock:
-            return self._drain_runtime_locked(
-                session_id=session_id,
-                max_signals=max_signals,
-                max_steps_per_agent=max_steps_per_agent,
-                auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
-            )
-
-    def _drain_runtime_locked(
-        self,
-        *,
-        session_id: str,
-        max_signals: int = 3,
-        max_steps_per_agent: int = 8,
-        auto_enqueue_ready_tasks: bool = False,
-    ) -> V3CommandResult:
-        if self.repositories.sessions.get(session_id) is None:
-            raise KeyError(f"session {session_id!r} does not exist")
+            if self.repositories.sessions.get(session_id) is None:
+                raise KeyError(f"session {session_id!r} does not exist")
         events: list[dict[str, Any]] = []
         outcomes = self._drain_pending_agent_signals(
             session_id,
@@ -548,37 +534,35 @@ class V3HostApiService:
             max_steps_per_agent=max_steps_per_agent,
             auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
-        has_pending_approval = bool(
-            self.repositories.approvals.list_pending_by_session(session_id)
-        )
-        if has_pending_approval or self._outcomes_include_waiting_approval(outcomes):
-            response_status = HarnessStatus.WAITING_APPROVAL
-        elif self._outcomes_include_failure(outcomes):
-            response_status = HarnessStatus.FAILED
-        else:
-            response_status = HarnessStatus.COMPLETED
-        master_outputs = tuple(
-            output
-            for outcome in outcomes
-            if isinstance(outcome.get("agent"), dict)
-            and outcome["agent"].get("agent_id") == "agent:master"
-            for output in outcome.get("outputs", ())
-        )
-        response_outputs = (
-            ()
-            if has_pending_approval
-            else master_outputs
-        )
-        self._touch_session(session_id)
-        self._extend_with_trace_events(session_id, events)
-        self._extend_with_activity_events(session_id, events)
-        self.event_store.append(session_id, events)
+        with self.operation_lock:
+            has_pending_approval = bool(
+                self.repositories.approvals.list_pending_by_session(session_id)
+            )
+            if has_pending_approval or self._outcomes_include_waiting_approval(outcomes):
+                response_status = HarnessStatus.WAITING_APPROVAL
+            elif self._outcomes_include_failure(outcomes):
+                response_status = HarnessStatus.FAILED
+            else:
+                response_status = HarnessStatus.COMPLETED
+            master_outputs = tuple(
+                output
+                for outcome in outcomes
+                if isinstance(outcome.get("agent"), dict)
+                and outcome["agent"].get("agent_id") == "agent:master"
+                for output in outcome.get("outputs", ())
+            )
+            response_outputs = () if has_pending_approval else master_outputs
+            self._touch_session(session_id)
+            self._extend_with_trace_events(session_id, events)
+            self._extend_with_activity_events(session_id, events)
+            self.event_store.append(session_id, events)
+            workspace = self.workspace(session_id)
         return V3CommandResult(
             session_id=session_id,
             status=response_status.value,
             outputs=response_outputs,
             events=events,
-            workspace=self.workspace(session_id),
+            workspace=workspace,
         )
 
     def _terminal_teammate_outcomes(

@@ -416,10 +416,8 @@ def create_app(
         session_id: str, replay: bool = True, follow: bool = False
     ) -> StreamingResponse:
         service = dependencies.build_v3_service()
-        try:
-            service.workspace(session_id)
-        except Exception as exc:  # pragma: no cover - normalized below
-            raise _as_http_error(exc) from exc
+        if service.repositories.sessions.get(session_id) is None:
+            raise _as_http_error(KeyError(f"session {session_id!r} does not exist"))
 
         async def event_stream() -> Any:
             next_index = 0

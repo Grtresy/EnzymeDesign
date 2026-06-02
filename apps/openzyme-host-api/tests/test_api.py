@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -15,6 +16,8 @@ from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_host_api.app import PostV3MessageRequest
+from openzyme_host_api.background_runtime import RuntimeSignalNotifier
+from openzyme_host_api.background_runtime import V3BackgroundRuntimeService
 from openzyme_runtime import ConstraintItem
 from openzyme_runtime import ConstraintSet
 from openzyme_runtime import DesignBriefDraft
@@ -48,6 +51,7 @@ from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -1496,6 +1500,169 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
         assert signals[0]["claimed_by"] == "host-api:background-runtime"
 
 
+def test_v3_background_runtime_tick_does_not_block_event_loop() -> None:
+    order: list[str] = []
+
+    class FakeRuntimeSignals:
+        def list_claimable_session_ids(self) -> list[str]:
+            return ["sess_bg_runtime"]
+
+    class FakeRepositories:
+        runtime_signals = FakeRuntimeSignals()
+
+    class BlockingService:
+        repositories = FakeRepositories()
+        model_factory = object()
+
+        async def run_background_runtime_once(
+            self,
+            *,
+            session_id: str,
+            worker_id: str,
+            max_signals: int,
+            max_steps_per_agent: int,
+        ) -> list[dict[str, object]]:
+            assert session_id == "sess_bg_runtime"
+            assert worker_id == "host-api:background-runtime"
+            assert max_signals == 3
+            assert max_steps_per_agent == 8
+            time.sleep(0.2)
+            order.append("runtime_done")
+            return [{"status": "completed"}]
+
+    async def run_check() -> None:
+        service = V3BackgroundRuntimeService(
+            build_service=BlockingService,
+            notifier=RuntimeSignalNotifier(),
+            enabled=True,
+        )
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.05)
+            order.append("event_loop_alive")
+
+        await asyncio.gather(service.run_tick(), heartbeat())
+
+    asyncio.run(run_check())
+
+    assert order == ["event_loop_alive", "runtime_done"]
+
+
+def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session(
+            session_id="sess_bg_lock",
+            project_id="proj_001",
+            title="Background lock",
+            objective="Exercise runtime lock release.",
+            status=SessionStatus.ACTIVE,
+            created_at="2026-05-31T00:00:00+00:00",
+            updated_at="2026-05-31T00:00:00+00:00",
+        )
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class Outcome:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "completed"}
+
+    class BlockingScheduler:
+        async def run_once(
+            self,
+            session_id: str,
+            *,
+            max_signals: int,
+            max_steps_per_agent: int,
+        ) -> list[Outcome]:
+            assert session_id == "sess_bg_lock"
+            assert max_signals == 1
+            assert max_steps_per_agent == 1
+            entered.set()
+            await release.wait()
+            return [Outcome()]
+
+    class LockAwareService(V3HostApiService):
+        def _build_scheduler(self, context, *, worker_id):
+            del context, worker_id
+            return BlockingScheduler()
+
+    service = LockAwareService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=object(),
+    )
+
+    async def run_check() -> None:
+        task = asyncio.create_task(
+            service.run_background_runtime_once(
+                session_id="sess_bg_lock",
+                max_signals=1,
+                max_steps_per_agent=1,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        acquired = service.operation_lock.acquire(blocking=False)
+        assert acquired is True
+        service.operation_lock.release()
+        release.set()
+        assert await task == [{"status": "completed"}]
+
+    asyncio.run(run_check())
+
+
+def test_v3_drain_runtime_releases_operation_lock_while_scheduler_runs() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session(
+            session_id="sess_drain_lock",
+            project_id="proj_001",
+            title="Drain lock",
+            objective="Exercise drain lock release.",
+            status=SessionStatus.ACTIVE,
+            created_at="2026-05-31T00:00:00+00:00",
+            updated_at="2026-05-31T00:00:00+00:00",
+        )
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    result_holder: dict[str, object] = {}
+
+    class LockAwareService(V3HostApiService):
+        def _drain_pending_agent_signals(self, *args, **kwargs):
+            del args, kwargs
+            entered.set()
+            assert release.wait(timeout=2)
+            return []
+
+    service = LockAwareService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=object(),
+    )
+
+    def run_drain() -> None:
+        result_holder["result"] = service.drain_runtime(
+            session_id="sess_drain_lock",
+            max_signals=1,
+            max_steps_per_agent=1,
+        )
+
+    thread = threading.Thread(target=run_drain)
+    thread.start()
+    assert entered.wait(timeout=1)
+    acquired = service.operation_lock.acquire(blocking=False)
+    assert acquired is True
+    service.operation_lock.release()
+    release.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    result = result_holder["result"]
+    assert result.status == "completed"
+
+
 def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_drain(
     monkeypatch,
 ) -> None:
@@ -1919,6 +2086,12 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
         updated_at="2026-05-03T15:59:04+00:00",
     )
     repositories.continuation_states.save(continuation)
+
+    pending_projection = service.workspace("sess_sdk_approval")["pending_approvals"][0]
+    assert pending_projection["approval_id"] == approval.approval_id
+    assert pending_projection["operation"]["operation_id"] == operation.operation_id
+    assert pending_projection["operation"]["logical_operation_key"] == "fake.controlled"
+    assert pending_projection["sandbox_run"]["sandbox_run_id"] == run.sandbox_run_id
 
     result = service.resolve_approval(
         approval.approval_id,

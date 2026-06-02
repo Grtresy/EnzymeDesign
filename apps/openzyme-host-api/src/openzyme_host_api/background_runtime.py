@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from dataclasses import field
+import inspect
 from typing import Any
 from typing import Callable
 
@@ -10,6 +11,25 @@ from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import llm_debug_context
 
 from .v3_service import V3HostApiService
+
+
+def _run_background_runtime_once_in_worker(
+    service: V3HostApiService,
+    *,
+    session_id: str,
+    worker_id: str,
+    max_signals: int,
+    max_steps_per_agent: int,
+) -> list[dict[str, Any]]:
+    result = service.run_background_runtime_once(
+        session_id=session_id,
+        worker_id=worker_id,
+        max_signals=max_signals,
+        max_steps_per_agent=max_steps_per_agent,
+    )
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result
 
 
 @dataclass(slots=True)
@@ -131,7 +151,9 @@ class V3BackgroundRuntimeService:
                     session_id=session_id,
                     actor="scheduler",
                 ):
-                    session_outcomes = await service.run_background_runtime_once(
+                    session_outcomes = await asyncio.to_thread(
+                        _run_background_runtime_once_in_worker,
+                        service,
                         session_id=session_id,
                         worker_id=self.worker_id,
                         max_signals=remaining,

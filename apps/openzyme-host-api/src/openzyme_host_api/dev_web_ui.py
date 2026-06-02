@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shutil
+import subprocess
 
 import uvicorn
 
@@ -14,6 +16,10 @@ from .foundation import build_local_eval_foundation
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import sandbox_image_record
+
+
+DEFAULT_SANDBOX_IMAGE_REF = "localhost/openzyme-pipeline-sandbox:dev"
 
 
 def _default_ui_dist() -> Path:
@@ -33,6 +39,46 @@ def _build_v3_repositories(sqlite_db_path: Path) -> CoreRepositories:
     connection = connect_v3_sqlite(str(sqlite_db_path))
     apply_v3_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+def _register_existing_sandbox_image(
+    repositories: CoreRepositories,
+    *,
+    image_ref: str = DEFAULT_SANDBOX_IMAGE_REF,
+    podman_binary: str = "podman",
+) -> None:
+    if shutil.which(podman_binary) is None:
+        return
+    try:
+        exists = subprocess.run(
+            [podman_binary, "image", "exists", image_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if exists.returncode != 0:
+        return
+    try:
+        inspect = subprocess.run(
+            [podman_binary, "image", "inspect", image_ref, "--format", "{{.Id}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    image_digest = inspect.stdout.strip()
+    if inspect.returncode != 0 or not image_digest:
+        return
+    if not image_digest.startswith("sha256:"):
+        image_digest = f"sha256:{image_digest}"
+    repositories.sandbox_images.save(
+        sandbox_image_record(image_ref=image_ref, image_digest=image_digest)
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,10 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         build_configured_foundation if args.configured else build_local_eval_foundation
     )
     foundation = foundation_builder(sqlite_db_path=args.sqlite_db)
+    v3_repositories = _build_v3_repositories(args.v3_sqlite_db)
+    if args.configured:
+        _register_existing_sandbox_image(v3_repositories)
     app = create_app(
         HostApiDependencies(
             foundation=foundation,
-            v3_repositories=_build_v3_repositories(args.v3_sqlite_db),
+            v3_repositories=v3_repositories,
         ),
         ui_dist_dir=ui_dist,
     )
