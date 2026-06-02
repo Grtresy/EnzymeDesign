@@ -10,6 +10,8 @@ function ensureWorkspace(workspace) {
   workspace.pending_approvals ??= [];
   workspace.activity_feed ??= [];
   workspace.artifacts ??= [];
+  workspace.artifact_index ??= [];
+  workspace.sandbox_runs ??= [];
   workspace.report_drafts ??= [];
   workspace.reports ??= [];
   workspace.capabilities ??= {};
@@ -62,6 +64,7 @@ export function eventRequiresWorkspaceRefresh(event) {
     "engine.invocation.updated",
     "engine.invocation.completed",
     "artifact.recorded",
+    "sandbox.run.updated",
     "report_draft.updated",
     "report.generated",
     "report.updated",
@@ -199,6 +202,7 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "engine.invocation.updated":
     case "engine.invocation.completed":
     case "artifact.recorded":
+    case "sandbox.run.updated":
     case "report_draft.updated":
     case "report.generated":
     case "report.updated":
@@ -274,7 +278,7 @@ export function buildInitialViewState() {
     selectedArtifactId: "",
     sidebarExpandedSessionIds: [],
     sessionSummaries: [],
-    workspace: null,
+      workspace: null,
     sidebarBusy: false,
     messageBusy: false,
     refreshingWorkspace: false,

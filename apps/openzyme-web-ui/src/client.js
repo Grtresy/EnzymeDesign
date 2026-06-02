@@ -38,6 +38,7 @@ const v3EventTypes = [
   "engine.invocation.updated",
   "engine.invocation.completed",
   "artifact.recorded",
+  "sandbox.run.updated",
   "report_draft.updated",
   "report.generated",
   "report.updated",

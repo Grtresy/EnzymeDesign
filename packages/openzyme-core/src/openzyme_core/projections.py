@@ -93,7 +93,9 @@ class SessionWorkspaceProjection:
     agent_traces: dict[str, list[dict[str, Any]]]
     activity_feed: tuple[dict[str, Any], ...]
     artifacts: tuple[dict[str, Any], ...]
+    artifact_index: tuple[dict[str, Any], ...]
     sandbox_workspaces: tuple[dict[str, Any], ...]
+    sandbox_runs: tuple[dict[str, Any], ...]
     report_drafts: tuple[dict[str, Any], ...]
     reports: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
@@ -111,7 +113,9 @@ class SessionWorkspaceProjection:
             "agent_traces": self.agent_traces,
             "activity_feed": list(self.activity_feed),
             "artifacts": list(self.artifacts),
+            "artifact_index": list(self.artifact_index),
             "sandbox_workspaces": list(self.sandbox_workspaces),
+            "sandbox_runs": list(self.sandbox_runs),
             "report_drafts": list(self.report_drafts),
             "reports": list(self.reports),
             "capabilities": self.capabilities,
@@ -129,16 +133,24 @@ class SessionProjectionBuilder:
         task_board = TaskBoardService(self.repositories).build_projection(session_id).to_dict()
         lane_board = LaneManager(self.repositories).build_projection(session_id).to_dict()
         conversation = tuple(entry.to_dict() for entry in build_conversation_projection(self.repositories, session_id))
-        approvals = tuple(approval.to_dict() for approval in self.repositories.approvals.list_pending_by_session(session_id))
+        approvals = tuple(
+            self._project_pending_approval(approval)
+            for approval in self.repositories.approvals.list_pending_by_session(session_id)
+        )
         inbox = tuple(message.to_dict() for message in self.repositories.inbox.list_by_session(session_id))
         memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
         delegation = self.build_delegation_projection(session_id).to_dict()
         agent_traces = self.build_agent_traces_projection(session_id)
         activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
         artifacts = tuple(self._project_workspace_artifact(artifact) for artifact in self.repositories.artifacts.list_by_session(session_id))
+        artifact_index = tuple(self._build_artifact_index(artifacts))
         sandbox_workspaces = tuple(
             workspace.to_dict()
             for workspace in self.repositories.sandbox_workspaces.list_by_session(session_id)
+        )
+        sandbox_runs = tuple(
+            self._project_sandbox_run(run)
+            for run in self.repositories.sandbox_runs.list_by_session(session_id)
         )
         report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
         reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
@@ -155,11 +167,92 @@ class SessionProjectionBuilder:
             agent_traces=agent_traces,
             activity_feed=activity_feed,
             artifacts=artifacts,
+            artifact_index=artifact_index,
             sandbox_workspaces=sandbox_workspaces,
+            sandbox_runs=sandbox_runs,
             report_drafts=report_drafts,
             reports=reports,
             capabilities=capabilities,
         )
+
+    def _project_pending_approval(self, approval: Any) -> dict[str, Any]:
+        projected = approval.to_dict()
+        if approval.kind == "sdk_controlled_operation":
+            operation = self.repositories.controlled_operations.get_by_approval_id(
+                approval.approval_id
+            )
+            if operation is not None:
+                projected["operation"] = self._project_operation_summary(operation)
+                run = self.repositories.sandbox_runs.get(operation.sandbox_run_id)
+                if run is not None:
+                    projected["sandbox_run"] = self._project_sandbox_run(run)
+        return projected
+
+    def _project_operation_summary(self, operation: Any) -> dict[str, Any]:
+        return self._sanitize_execution_projection(
+            {
+                "operation_id": operation.operation_id,
+                "logical_operation_key": operation.logical_operation_key,
+                "operation_digest": operation.operation_digest,
+                "status": operation.status.value,
+                "approval_id": operation.approval_id,
+                "approval_state": operation.approval_state,
+                "sandbox_workspace_id": operation.sandbox_workspace_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "backend_category": operation.backend_category,
+                "route_policy_id": operation.route_policy_id,
+                "selected_backend": operation.selected_backend,
+                "resource_estimate": operation.resource_estimate or {},
+                "expected_outputs_summary": operation.expected_outputs_summary or {},
+                "source_snapshot_artifact_id": operation.source_snapshot_artifact_id,
+                "error_code": operation.error_code,
+                "error_summary": operation.error_summary,
+                "created_at": operation.created_at,
+                "updated_at": operation.updated_at,
+            }
+        )
+
+    def _project_sandbox_run(self, run: Any) -> dict[str, Any]:
+        operations = self.repositories.controlled_operations.list_by_run(run.sandbox_run_id)
+        payload = run.to_dict()
+        payload["operation_ids"] = [operation.operation_id for operation in operations]
+        payload["operation_statuses"] = {
+            operation.operation_id: operation.status.value for operation in operations
+        }
+        return self._sanitize_execution_projection(payload)
+
+    def _build_artifact_index(
+        self, artifacts: tuple[dict[str, Any], ...]
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for artifact in artifacts:
+            relative_path = str(artifact.get("relative_path") or artifact.get("artifact_id") or "")
+            if not relative_path:
+                continue
+            grouped.setdefault(relative_path, []).append(artifact)
+        index: list[dict[str, Any]] = []
+        for relative_path, versions in grouped.items():
+            ordered = sorted(
+                versions,
+                key=lambda item: (
+                    str(item.get("created_at") or ""),
+                    str(item.get("artifact_id") or ""),
+                ),
+            )
+            latest = ordered[-1]
+            index.append(
+                {
+                    "relative_path": relative_path,
+                    "latest_artifact_id": latest.get("artifact_id"),
+                    "artifact_ids": [item.get("artifact_id") for item in ordered],
+                    "version_count": len(ordered),
+                    "kind": latest.get("kind"),
+                    "title": latest.get("title"),
+                    "created_at": latest.get("created_at"),
+                    "latest": latest,
+                }
+            )
+        return sorted(index, key=lambda item: str(item["relative_path"]))
 
     def build_agent_traces_projection(
         self, session_id: str
@@ -401,6 +494,14 @@ class SessionProjectionBuilder:
                     event_type="sdk_controlled_operation.updated",
                     created_at=operation.updated_at,
                     payload=self._sanitize_execution_projection(operation.to_dict()),
+                )
+            )
+        for sandbox_run in self.repositories.sandbox_runs.list_by_session(session_id):
+            items.append(
+                ActivityFeedItem(
+                    event_type="sandbox.run.updated",
+                    created_at=sandbox_run.updated_at,
+                    payload=self._project_sandbox_run(sandbox_run),
                 )
             )
         for draft in self.repositories.report_drafts.list_by_session(session_id):

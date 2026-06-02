@@ -96,7 +96,7 @@ function renderArtifactTreeNode(node, selectedArtifactId) {
             data-artifact-id="${escapeHtml(artifactId)}"
           >
             <strong>${escapeHtml(fileName)}</strong>
-            <span>${escapeHtml(artifact.kind ?? "artifact")} · ${escapeHtml(artifactId)}</span>
+            <span>${escapeHtml(artifact.kind ?? "artifact")} · ${escapeHtml(artifactId)}${artifact.version_count > 1 ? ` · ${escapeHtml(artifact.version_count)} versions` : ""}</span>
           </button>
         </li>
       `;
@@ -250,7 +250,10 @@ export function renderV3Approvals(workspace, viewState) {
     <div class="approval-stack" aria-label="Pending approvals">
       ${approvals
         .map(
-          (approval) => `
+          (approval) => {
+            const operation = approval.operation ?? {};
+            const sandboxRun = approval.sandbox_run ?? {};
+            return `
             <article class="approval-card">
               <p class="eyebrow">${escapeHtml(approval.kind ?? "approval")}</p>
               <h4>${escapeHtml(approval.requested_action ?? "Review requested action")}</h4>
@@ -258,6 +261,9 @@ export function renderV3Approvals(workspace, viewState) {
                 <div><dt>Approval</dt><dd>${escapeHtml(approval.approval_id)}</dd></div>
                 <div><dt>Task</dt><dd>${escapeHtml(approval.task_id ?? "none")}</dd></div>
                 <div><dt>Lane</dt><dd>${escapeHtml(approval.lane_id ?? "none")}</dd></div>
+                <div><dt>Operation</dt><dd>${escapeHtml(operation.logical_operation_key ?? operation.operation_id ?? "none")}</dd></div>
+                <div><dt>Backend</dt><dd>${escapeHtml(operation.selected_backend ?? operation.backend_category ?? "unknown")}</dd></div>
+                <div><dt>Run</dt><dd>${escapeHtml(sandboxRun.sandbox_run_id ?? operation.sandbox_run_id ?? "none")}</dd></div>
               </dl>
               ${renderPanelError(viewState.errors.approvals?.[approval.approval_id] ?? "")}
               <div class="action-row">
@@ -275,7 +281,8 @@ export function renderV3Approvals(workspace, viewState) {
                 >Reject</button>
               </div>
             </article>
-          `,
+          `;
+          },
         )
         .join("")}
     </div>
@@ -387,7 +394,8 @@ export function renderV3Capabilities(workspace) {
   const entries = Object.entries(workspace.capabilities ?? {}).flatMap(([capabilityKey, items]) =>
     (items ?? []).map((item) => ({ capabilityKey, item })),
   );
-  if (!entries.length) {
+  const sandboxRuns = workspace.sandbox_runs ?? [];
+  if (!entries.length && !sandboxRuns.length) {
     return `<p class="empty-copy">No capability invocations yet.</p>`;
   }
   return `
@@ -397,7 +405,23 @@ export function renderV3Capabilities(workspace) {
           ({ capabilityKey, item }) => `
             <li>
               <strong>${escapeHtml(capabilityKey)}</strong>
-              <span>${escapeHtml(item.invocation_id ?? "invocation")} · ${escapeHtml(item.status ?? "unknown")}</span>
+              <span>${escapeHtml(item.invocation_id ?? item.operation_id ?? "invocation")} · ${escapeHtml(item.status ?? "unknown")}</span>
+              ${
+                item.logical_operation_key
+                  ? `<small>${escapeHtml(item.logical_operation_key)} · ${escapeHtml(item.selected_backend ?? item.backend_category ?? "backend")}</small>`
+                  : ""
+              }
+            </li>
+          `,
+        )
+        .join("")}
+      ${sandboxRuns
+        .map(
+          (run) => `
+            <li>
+              <strong>sandbox.run</strong>
+              <span>${escapeHtml(run.sandbox_run_id ?? "run")} · ${escapeHtml(run.status ?? "unknown")}</span>
+              <small>${escapeHtml(run.error_code ?? run.cwd ?? "")}</small>
             </li>
           `,
         )
@@ -407,7 +431,16 @@ export function renderV3Capabilities(workspace) {
 }
 
 export function renderV3Outputs(workspace, viewState = {}) {
-  const artifacts = workspace.artifacts ?? [];
+  const artifactIndex = workspace.artifact_index ?? [];
+  const artifacts = artifactIndex.length
+    ? artifactIndex.map((entry) => ({
+        ...(entry.latest ?? {}),
+        artifact_id: entry.latest_artifact_id ?? entry.latest?.artifact_id,
+        relative_path: entry.relative_path,
+        version_count: entry.version_count,
+        artifact_ids: entry.artifact_ids,
+      }))
+    : workspace.artifacts ?? [];
   const drafts = workspace.report_drafts ?? [];
   const reports = workspace.reports ?? [];
   const selectedArtifact = artifacts.find((artifact) => artifact.artifact_id === viewState.selectedArtifactId) ?? artifacts[0] ?? null;
@@ -721,6 +754,7 @@ export function renderMainColumn(viewState) {
         <header class="panel conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
         <section class="panel conversation-panel">
           <div id="conversation-list-root">${renderTeammateTrace(workspace, viewState.selectedTeammateAgentId)}</div>
+          <div id="approval-stack-root">${renderV3Approvals(workspace, viewState)}</div>
         </section>
       </section>
     `;
