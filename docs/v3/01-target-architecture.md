@@ -304,7 +304,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `bio.*` SDK 调用默认由 Host supervisor 执行 provider 配置、网络访问、分页、quota、artifact 登记和 provenance；sandbox 不直接联网；Host provider cache 只能作为私有优化，不能替代真实 provider/live prerequisite 证据
 - `bio_tools.*` SDK 调用默认由 Host supervisor 执行 tool preflight、静态 route policy、declared output 校验、artifact 登记和 provenance；AOX/HMM S14 启用 route 是 HPC-only，sandbox 不直接 shell/subprocess 调 CLI
 - `execution` 默认仍以 tool contract 编译 `command / inputs / expected_outputs / checks`；HPC-heavy 流程通过 explicit placement workspace、`stage_artifact` 和 `fetch_outputs` 声明文件流，避免每个 substep 隐式上传下载，也避免把远端 workspace 误建模为本地 sandbox mirror
-- AOX/HMM live cutover 默认产出 sealed `evidence_bundle_id`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer
+- AOX/HMM live cutover 默认在 S15 eval result 中产出 sealed inline evidence payload 与 `evidence_bundle_digest`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer；该证据不进入顶层 control-plane canonical state
 - preprocess 默认作为 pipeline SDK 能力存在，至少覆盖格式转换、Vina receptor/ligand PDBQT 准备与 SMILES 到 3D ligand
 - 顶层 LLM 默认最大单回合 tool call 并发上限为 `3`
 - research / execution / reporting 这类具体工作默认由 teammate agent 推进，而不是长期由 master 直接亲自完成

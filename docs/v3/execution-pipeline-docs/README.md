@@ -14,6 +14,7 @@ Useful search keywords:
 - `bio ncbi uniprot hmmer`
 - `bio_tools mafft cdhit hmmbuild hmmalign hmmsearch`
 - `aox hmm prompt e2e single_plan approval`
+- `aox hmm live fixed deliverables`
 - `preprocess prepare_receptor prepare_ligand`
 - `tool adapter external bridge`
 - `hpc placement`
@@ -26,6 +27,7 @@ Useful search keywords:
 Recommended reading paths:
 
 - New executor authoring: `sandbox-rules.md`, then `sdk-overview.md`
+- AOX/HMM live cutover: `aox-hmm-live.md`
 - Moving files between catalog and sandbox: `artifacts.md`
 - Bio database fetch/search: `bio.md`
 - Sequence-mining toolchain: `bio-tools.md`

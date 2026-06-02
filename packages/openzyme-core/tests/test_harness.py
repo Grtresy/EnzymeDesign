@@ -569,6 +569,9 @@ def test_harness_infers_lane_from_bound_task_for_tools_and_engines() -> None:
 
 
 class DocsReadDriver:
+    def __init__(self, doc_id: str = "hpc-vina") -> None:
+        self.doc_id = doc_id
+
     def plan(
         self,
         context: SessionRuntimeContext,
@@ -582,7 +585,7 @@ class DocsReadDriver:
                     ToolInvocation(
                         call_id="call_docs",
                         tool_name="docs.read",
-                        arguments={"doc_id": "hpc-vina"},
+                        arguments={"doc_id": self.doc_id},
                         task_id="task_001",
                     ),
                 ),
@@ -604,6 +607,45 @@ def test_harness_docs_read_uses_controlled_registry() -> None:
 
     assert result.outputs == ("docs:hpc-vina",)
     assert "openzyme_pipeline" in result.tool_results[0].content
+
+
+def test_harness_docs_read_exposes_aox_hmm_live_recipe() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id),
+        driver=DocsReadDriver(doc_id="aox-hmm-live"),
+    )
+
+    assert result.outputs == ("docs:aox-hmm-live",)
+    payload = json.loads(result.tool_results[0].content)
+    content = payload["content"]
+    assert "bio.ncbi_fetch_proteins" in content
+    assert "bio_tools.hmmbuild" in content
+    assert '"AAC72747.1"' in content
+    assert '"CAQ19344.1"' in content
+    assert "bio_tools/cdhit/clustered.fasta" in content
+    assert "bio_tools/cdhit/clusters.csv" in content
+    assert "bio_tools/mafft/alignment.fasta" in content
+    assert "bio_tools/hmmbuild/model.hmm" in content
+    assert "bio_tools/hmmalign/aligned.fasta" in content
+    assert "aox_hmm/execution_summary.json" in content
+    assert "adapter_result_envelope" in content
+    assert "artifact_payload = artifacts.get(artifact_id)" in content
+    assert 'artifact_payload.get("artifact") or artifact_payload' in content
+    assert "INPUT_TMP = Path(\"/workspace/input/aox_hmm_tmp\")" in content
+    assert "BIO_OUTPUT_BASE = f\"/workspace/output/bio/aox_hmm_runs/{RUN_TAG}\"" in content
+    assert "Host artifact materialization creates" in content
+    assert "TMP.mkdir" not in content
+    assert "INPUT_TMP.mkdir" not in content
+    assert "pseudo-HMMs" in content
+    assert "dependency installs" in content
+    assert "bio_tools/cdhit/reference90.fasta" not in content
+    assert "bio_tools/mafft/AOX_ref21.aligned.fasta" not in content
+    assert "bio_tools/hmmbuild/AOX_ref.hmm" not in content
+    assert "bio_tools/hmmalign/AOX_ref21.hmmaligned.fasta" not in content
 
 
 class ExplicitCompactionDriver:
@@ -1161,6 +1203,74 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     assert signals[0].reason is AgentRuntimeSignalReason.INBOX_UNREAD
     assert signals[0].source_ref == delegation_message.message_id
     assert "agent.delegated" in {event.event_type for event in result.events}
+
+
+def test_delegate_executor_aox_task_persists_mandatory_recipe_instructions() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject="Run AOX/HMM mining pipeline",
+            description="Execute AOX HMM refprot sequence-mining from fixed accessions.",
+            status=TaskStatus.TODO,
+            priority=task.priority,
+            kind="execution",
+            assigned_ref=None,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+
+    class DelegateAoxExecutorDriver:
+        def plan(
+            self,
+            context: SessionRuntimeContext,
+            harness_input: HarnessInput,
+            tool_results: tuple[object, ...],
+        ) -> HarnessStep:
+            del context, harness_input
+            if not tool_results:
+                return HarnessStep(
+                    tool_invocations=(
+                        ToolInvocation(
+                            call_id="call_delegate_aox",
+                            tool_name="task.delegate",
+                            arguments={
+                                "task_id": "task_001",
+                                "agent_role": "executor",
+                                "instructions": "Run the assigned computational workflow.",
+                            },
+                        ),
+                    )
+                )
+            return HarnessStep(assistant_message="delegated")
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="delegate AOX execution"),
+        driver=DelegateAoxExecutorDriver(),
+    )
+
+    assert result.outputs == ("delegated",)
+    delegation_message = next(
+        message
+        for message in repositories.inbox.list_by_session(session.session_id)
+        if message.message_type == "delegation_request"
+    )
+    assert delegation_message.payload_ref is not None
+    payload = repositories.engine_documents.get(delegation_message.payload_ref).payload
+    instructions = str(payload["instructions"])
+    assert "Run the assigned computational workflow." in instructions
+    assert 'docs.read doc_id="aox-hmm-live"' in instructions
+    assert "sandbox.workspace.status" in instructions
+    assert "sandbox.exec" in instructions
+    assert "direct MAFFT/CD-HIT/HMMER binaries" in instructions
+    assert "fixed aox_hmm/* deliverables are registered" in instructions
 
 
 def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_when_ready() -> None:
@@ -2005,6 +2115,12 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "Protocol threads available via protocol.thread:" in prompt
     assert "Teammate agents are internal workers" in prompt
     assert "fpocket" in prompt
+    assert 'docs.read doc_id="aox-hmm-live"' in prompt
+    assert "controlled SDK recipe" in prompt
+    assert "ClustalW" in prompt
+    assert "MUSCLE" in prompt
+    assert "direct MAFFT/CD-HIT/HMMER binaries" in prompt
+    assert "synthetic hits" in prompt
 
 
 def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> (
@@ -2380,8 +2496,13 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     assert "runner-backed hpc tool shorthand" not in prompt
     assert "first use docs.search or docs.read" in prompt
     assert "sandbox.workspace.status" in prompt
-    assert "persistent sandbox workspace foundation" in prompt
+    assert "Author source with sandbox.file.* and run it with sandbox.exec" in prompt
+    assert "Host-supervised SDK from inside that sandbox run" in prompt
     assert "Do not treat execution.pipeline.start as the required authoring path" in prompt
+    assert 'docs.read doc_id="aox-hmm-live"' in prompt
+    assert "fixed aox_hmm/* deliverables are registered" in prompt
+    assert "never substitute sandbox-local pseudo-HMMs" in prompt
+    assert "direct provider raw-file parsing" in prompt
 
 
 def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (

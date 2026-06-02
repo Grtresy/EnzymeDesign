@@ -167,4 +167,6 @@ def test_live_v3_eval_generates_design_task_plan() -> None:
     assert summary["failed"] == 0
     result = summary["results"][0]
     assert result["scenario_id"] == "v3_live_design_task_plan"
+    assert summary["passed"] == 1
     assert result["task_count"] >= 3
+    assert {"Extract design goals", "Run execution screen", "Draft final report"} <= set(result["subjects"])

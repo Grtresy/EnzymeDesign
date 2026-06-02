@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -14,6 +17,9 @@ from fastapi.testclient import TestClient
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import sandbox_image_record
+from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
+from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
@@ -29,6 +35,10 @@ from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import ExecutionArtifactRef
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
+from openzyme_runtime import live_e2e_skip_reason
+from openzyme_runtime import live_hpc_skip_reason
+from openzyme_runtime import live_llm_skip_reason
+from openzyme_runtime import live_tavily_skip_reason
 
 from .app import HostApiDependencies
 from .app import create_app
@@ -582,6 +592,976 @@ AOX_HMM_ACCESSIONS = (
     "CAQ19344.1",
 )
 
+S15_AOX_HMM_SCENARIO_ID = "v3_aox_hmm_cutover_live_e2e"
+S15_AOX_HMM_FIXTURE_SCENARIO_ID = "v3_aox_hmm_prompt_fixture"
+S15_AOX_HMM_FIXED_PROMPT = (
+    "Run AOX/HMM mining from only this prompt. Use these 13 AOX accessions: "
+    + ", ".join(AOX_HMM_ACCESSIONS)
+    + ". Build a reference HMM, search EBI HMMER refprot with bio.hmmer_search, "
+    "filter hits to length 650-700 and HMM score >200, score with reference coordinate "
+    "AAB57849.1 using activity score threshold 33.6, deduplicate at similarity threshold 0.85, "
+    "and export normalized deliverables under aox_hmm/: AOX_ref21.fasta, target.fasta, "
+    "AOX_ref.hmm, hits_raw.csv, hits_len650_700_200.csv, scored_ref_plus_hits.csv, "
+    "AOX_candidates.fasta, AOX_candidates_cdhit85.fasta, nodes.csv, "
+    "edges_similarity.csv, and execution_summary.json."
+)
+S15_AOX_HMM_FIXED_DELIVERABLES = {
+    "aox_hmm/AOX_ref21.fasta",
+    "aox_hmm/target.fasta",
+    "aox_hmm/AOX_ref.hmm",
+    "aox_hmm/hits_raw.csv",
+    "aox_hmm/hits_len650_700_200.csv",
+    "aox_hmm/scored_ref_plus_hits.csv",
+    "aox_hmm/AOX_candidates.fasta",
+    "aox_hmm/AOX_candidates_cdhit85.fasta",
+    "aox_hmm/nodes.csv",
+    "aox_hmm/edges_similarity.csv",
+    "aox_hmm/execution_summary.json",
+}
+S15_AOX_HMM_OLD_DELIVERABLES = {
+    "aox_hmm/filtered.fasta",
+    "aox_hmm/filtered.csv",
+    "aox_hmm/scoring.csv",
+    "aox_hmm/candidates.fasta",
+    "aox_hmm/candidates.csv",
+    "aox_hmm/candidate_cdhit85.fasta",
+}
+S15_AOX_HMM_REQUIRED_CSV_COLUMNS = {
+    "aox_hmm/hits_raw.csv": {"target", "uniprot_accession", "hmm_score", "evalue", "length"},
+    "aox_hmm/hits_len650_700_200.csv": {
+        "target",
+        "uniprot_accession",
+        "hmm_score",
+        "evalue",
+        "length",
+        "sequence",
+    },
+    "aox_hmm/scored_ref_plus_hits.csv": {
+        "id",
+        "seq_score",
+        "pass_rule",
+        "activity_score",
+        "reference_coordinate",
+    },
+    "aox_hmm/nodes.csv": {"node_id", "label", "score", "cluster_id"},
+    "aox_hmm/edges_similarity.csv": {"source", "target", "similarity"},
+}
+S15_AOX_HMM_REQUIRED_SUMMARY_FIELDS = {
+    "accession_count",
+    "candidate_count",
+    "length_filter",
+    "hmm_score_threshold",
+    "activity_score_threshold",
+    "similarity_threshold",
+    "hmmer_database",
+    "provider_status",
+    "tool_status",
+    "warning_count",
+    "artifact_ids",
+    "normalized_final_deliverable_paths",
+}
+
+
+def _s15_aox_required_artifact_paths() -> set[str]:
+    return set(S15_AOX_HMM_FIXED_DELIVERABLES)
+
+
+def _s15_aox_missing_required_paths(artifact_paths: set[str]) -> list[str]:
+    return sorted(S15_AOX_HMM_FIXED_DELIVERABLES - artifact_paths)
+
+
+def _s15_aox_legacy_paths_present(artifact_paths: set[str]) -> list[str]:
+    return sorted(S15_AOX_HMM_OLD_DELIVERABLES & artifact_paths)
+
+
+def _s15_aox_validate_final_artifacts(
+    artifact_paths: set[str],
+    artifact_text_by_path: dict[str, str],
+    artifact_metadata_by_path: dict[str, dict[str, object]] | None = None,
+) -> dict[str, object]:
+    missing = _s15_aox_missing_required_paths(artifact_paths)
+    legacy_paths = _s15_aox_legacy_paths_present(artifact_paths)
+    metadata_by_path = artifact_metadata_by_path or {}
+    execution_summary: dict[str, object] = {}
+    errors: list[dict[str, object]] = []
+    if missing:
+        errors.append({"error_code": "live_artifact_missing", "missing_paths": missing})
+    for path in legacy_paths:
+        errors.append({"error_code": "legacy_artifact_path_forbidden", "path": path})
+
+    summary_text = artifact_text_by_path.get("aox_hmm/execution_summary.json", "")
+    if "aox_hmm/execution_summary.json" in artifact_paths:
+        try:
+            loaded_summary = json.loads(summary_text)
+        except json.JSONDecodeError:
+            errors.append({"error_code": "invalid_json", "path": "aox_hmm/execution_summary.json"})
+        else:
+            if isinstance(loaded_summary, dict):
+                execution_summary = loaded_summary
+            else:
+                errors.append({"error_code": "invalid_json", "path": "aox_hmm/execution_summary.json"})
+
+    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES):
+        if path not in artifact_paths:
+            continue
+        text = artifact_text_by_path.get(path, "")
+        if path == "aox_hmm/target.fasta" and not text.strip():
+            warning_count = execution_summary.get("warning_count")
+            if not isinstance(warning_count, int) or warning_count <= 0:
+                errors.append({"error_code": "empty_target_warning_missing", "path": path})
+        elif path.endswith(".fasta") and not text.lstrip().startswith(">"):
+            errors.append({"error_code": "invalid_fasta", "path": path})
+        if path in {"aox_hmm/AOX_candidates.fasta", "aox_hmm/AOX_candidates_cdhit85.fasta"} and not text.strip():
+            candidate_count = execution_summary.get("candidate_count")
+            if candidate_count not in {0, "0"}:
+                errors.append({"error_code": "candidate_fasta_empty_inconsistent", "path": path})
+        if path == "aox_hmm/AOX_ref.hmm" and not text.startswith("HMMER3"):
+            errors.append({"error_code": "invalid_hmm", "path": path})
+        if path == "aox_hmm/AOX_ref.hmm":
+            metadata = metadata_by_path.get(path, {})
+            for key in ("source_reference_fasta_artifact_id", "mafft_artifact_ids", "hmmbuild_artifact_ids"):
+                if metadata.get(key) in (None, "", [], {}):
+                    errors.append(
+                        {
+                            "error_code": "hmm_provenance_incomplete",
+                            "path": path,
+                            "missing_metadata": key,
+                        }
+                    )
+        if path == "aox_hmm/AOX_ref21.fasta":
+            metadata = metadata_by_path.get(path, {})
+            if metadata.get("accession_count") != len(AOX_HMM_ACCESSIONS):
+                errors.append(
+                    {
+                        "error_code": "invalid_accession_count",
+                        "path": path,
+                        "accession_count": metadata.get("accession_count"),
+                    }
+                )
+            if metadata.get("provider_request_ids") in (None, "", [], {}):
+                errors.append(
+                    {
+                        "error_code": "provider_provenance_incomplete",
+                        "path": path,
+                        "missing_metadata": "provider_request_ids",
+                    }
+                )
+        required_columns = S15_AOX_HMM_REQUIRED_CSV_COLUMNS.get(path)
+        if required_columns:
+            header = set(text.splitlines()[0].split(",")) if text.splitlines() else set()
+            missing_columns = sorted(required_columns - header)
+            if missing_columns:
+                errors.append(
+                    {
+                        "error_code": "invalid_csv_columns",
+                        "path": path,
+                        "missing_columns": missing_columns,
+                    }
+                )
+        if path == "aox_hmm/execution_summary.json":
+            if not execution_summary:
+                continue
+            missing_fields = sorted(S15_AOX_HMM_REQUIRED_SUMMARY_FIELDS - set(execution_summary))
+            if missing_fields:
+                errors.append(
+                    {
+                        "error_code": "invalid_execution_summary",
+                        "path": path,
+                        "missing_fields": missing_fields,
+                    }
+                )
+            expected_values = {
+                "accession_count": len(AOX_HMM_ACCESSIONS),
+                "length_filter": [650, 700],
+                "hmm_score_threshold": 200,
+                "activity_score_threshold": 33.6,
+                "similarity_threshold": 0.85,
+                "hmmer_database": "refprot",
+            }
+            for key, expected in expected_values.items():
+                if execution_summary.get(key) != expected:
+                    errors.append(
+                        {
+                            "error_code": "invalid_execution_summary_value",
+                            "path": path,
+                            "field": key,
+                            "expected": expected,
+                            "actual": execution_summary.get(key),
+                        }
+                    )
+            if sorted(execution_summary.get("normalized_final_deliverable_paths") or []) != sorted(
+                S15_AOX_HMM_FIXED_DELIVERABLES
+            ):
+                errors.append(
+                    {
+                        "error_code": "invalid_normalized_final_deliverable_paths",
+                        "path": path,
+                    }
+                )
+            if not isinstance(execution_summary.get("artifact_ids"), list) or not execution_summary.get("artifact_ids"):
+                errors.append({"error_code": "invalid_artifact_ids", "path": path})
+            if not execution_summary.get("provider_status") or not execution_summary.get("tool_status"):
+                errors.append({"error_code": "invalid_execution_status_summary", "path": path})
+
+    return {
+        "passed": not errors,
+        "missing_paths": missing,
+        "legacy_paths": legacy_paths,
+        "errors": errors,
+    }
+
+
+S15_ROUTE_POLICY_IDS = {
+    "bio.ncbi_fetch_proteins": "bio.ncbi_fetch_proteins.provider:v1",
+    "bio.uniprot_fetch": "bio.uniprot_fetch.provider:v1",
+    "bio.hmmer_search": "bio.hmmer_search.provider:v1",
+    "bio_tools.cdhit": "bio_tools.cdhit.hpc:v1",
+    "bio_tools.mafft": "bio_tools.mafft.hpc:v1",
+    "bio_tools.hmmbuild": "bio_tools.hmmbuild.hpc:v1",
+    "bio_tools.hmmalign": "bio_tools.hmmalign.hpc:v1",
+    "bio_tools.hmmer_search_cli": "bio_tools.hmmer_search_cli.disabled:v1",
+}
+
+
+def _s15_prerequisite_entry(
+    *,
+    name: str,
+    status: str,
+    required: bool = True,
+    error_code: str | None = None,
+    hint: str | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    entry: dict[str, object] = {"name": name, "status": status, "required": required}
+    if error_code is not None:
+        entry["error_code"] = error_code
+    if hint is not None:
+        entry["hint"] = hint
+    entry.update({key: value for key, value in extra.items() if value not in (None, "", [], {})})
+    return entry
+
+
+def _s15_route_policy_prerequisite(
+    *,
+    name: str,
+    route_policy_id: str,
+    required: bool = True,
+    forced_missing_hint: str | None = None,
+) -> dict[str, object]:
+    policy = S12_ROUTE_POLICIES.get(route_policy_id)
+    if policy is None:
+        return _s15_prerequisite_entry(
+            name=name,
+            status="prerequisite_missing",
+            required=required,
+            error_code="live_prerequisite_missing",
+            hint=f"Route policy {route_policy_id!r} is not registered.",
+            route_policy_id=route_policy_id,
+        )
+    if forced_missing_hint is not None:
+        return _s15_prerequisite_entry(
+            name=name,
+            status="prerequisite_missing",
+            required=required,
+            error_code="live_prerequisite_missing",
+            hint=forced_missing_hint,
+            route_policy_id=route_policy_id,
+            selected_backend=policy.get("selected_backend"),
+            route_reason=policy.get("route_reason"),
+            provider_config_digest=policy.get("provider_config_digest"),
+            runtime_packaging_id=policy.get("runtime_packaging_id"),
+            toolchain_id=policy.get("toolchain_id"),
+            evidence_ref=policy.get("evidence_ref"),
+        )
+    status = str(policy.get("status") or "prerequisite_missing")
+    if status == "ok":
+        return _s15_prerequisite_entry(
+            name=name,
+            status="ok",
+            required=required,
+            route_policy_id=route_policy_id,
+            selected_backend=policy.get("selected_backend"),
+            route_reason=policy.get("route_reason"),
+            provider_config_digest=policy.get("provider_config_digest"),
+            runtime_packaging_id=policy.get("runtime_packaging_id"),
+            toolchain_id=policy.get("toolchain_id"),
+            evidence_ref=policy.get("evidence_ref"),
+            parameter_inventory_ref=policy.get("parameter_inventory_ref"),
+        )
+    error_code = str(policy.get("error_code") or "live_prerequisite_missing")
+    return _s15_prerequisite_entry(
+        name=name,
+        status=status,
+        required=required,
+        error_code=error_code,
+        hint=str(policy.get("route_reason") or error_code),
+        route_policy_id=route_policy_id,
+        selected_backend=policy.get("selected_backend"),
+        route_reason=policy.get("route_reason"),
+        runtime_packaging_id=policy.get("runtime_packaging_id"),
+        toolchain_id=policy.get("toolchain_id"),
+        evidence_ref=policy.get("evidence_ref"),
+    )
+
+
+def _s15_sandbox_image_prerequisite(
+    *,
+    image_ref: str = DEFAULT_SANDBOX_IMAGE_REF,
+    podman_binary: str = "podman",
+) -> dict[str, object]:
+    podman_path = shutil.which(podman_binary)
+    if podman_path is None:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint="Install rootless podman and register the configured sandbox image before S15 live AOX/HMM.",
+            image_ref=image_ref,
+        )
+    try:
+        rootless = subprocess.run(
+            [podman_binary, "info", "--format", "{{.Host.Security.Rootless}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=f"Podman rootless preflight failed: {exc}",
+            image_ref=image_ref,
+        )
+    if rootless.returncode != 0 or rootless.stdout.strip() != "true":
+        detail = rootless.stderr.strip() or rootless.stdout.strip() or "rootless podman is not available"
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=f"Podman rootless preflight failed: {detail}",
+            image_ref=image_ref,
+        )
+    try:
+        image = subprocess.run(
+            [podman_binary, "image", "exists", image_ref],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=f"Sandbox image preflight failed: {exc}",
+            image_ref=image_ref,
+        )
+    if image.returncode != 0:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=(
+                f"Sandbox image {image_ref!r} is not present; run "
+                "`uv run python -m openzyme_pipeline.sandbox_image build`."
+            ),
+            image_ref=image_ref,
+        )
+    try:
+        inspect = subprocess.run(
+            [podman_binary, "image", "inspect", image_ref, "--format", "{{.Id}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=f"Sandbox image digest inspection failed: {exc}",
+            image_ref=image_ref,
+        )
+    image_digest = inspect.stdout.strip()
+    if inspect.returncode != 0 or not image_digest:
+        detail = inspect.stderr.strip() or inspect.stdout.strip() or "image digest is empty"
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_missing",
+            hint=f"Sandbox image digest inspection failed: {detail}",
+            image_ref=image_ref,
+        )
+    if not image_digest.startswith("sha256:"):
+        image_digest = f"sha256:{image_digest}"
+    return _s15_prerequisite_entry(
+        name="sandbox_image",
+        status="ok",
+        image_ref=image_ref,
+        image_digest=image_digest,
+        podman_binary=podman_path,
+        selected_backend="podman",
+        evidence_ref="podman image inspect",
+        cutover_grade="@" in image_ref,
+    )
+
+
+def _s15_bootstrap_live_sandbox_image(
+    repositories: CoreRepositories,
+    prerequisite_report: dict[str, object],
+) -> None:
+    checks = prerequisite_report.get("checks")
+    if not isinstance(checks, list):
+        return
+    image_check = next(
+        (
+            check
+            for check in checks
+            if isinstance(check, dict) and check.get("name") == "sandbox_image"
+        ),
+        None,
+    )
+    if not isinstance(image_check, dict) or image_check.get("status") != "ok":
+        return
+    image_ref = str(image_check.get("image_ref") or DEFAULT_SANDBOX_IMAGE_REF)
+    image_digest = image_check.get("image_digest")
+    if not image_digest:
+        return
+    repositories.sandbox_images.save(
+        sandbox_image_record(
+            image_ref=image_ref,
+            image_digest=str(image_digest),
+        )
+    )
+
+
+def _s15_live_prerequisite_report() -> dict[str, object]:
+    settings = get_settings()
+    checks: list[dict[str, object]] = []
+    e2e_reason = live_e2e_skip_reason(settings)
+    checks.append(
+        _s15_prerequisite_entry(
+            name="live_e2e",
+            status="ok" if e2e_reason is None else "prerequisite_missing",
+            error_code=None if e2e_reason is None else "live_prerequisite_missing",
+            hint=e2e_reason,
+        )
+    )
+    llm_reason = live_llm_skip_reason(settings)
+    checks.append(
+        _s15_prerequisite_entry(
+            name="llm",
+            status="ok" if llm_reason is None else "prerequisite_missing",
+            error_code=None if llm_reason is None else "live_prerequisite_missing",
+            hint=llm_reason,
+        )
+    )
+    tavily_reason = live_tavily_skip_reason(settings)
+    checks.append(
+        _s15_prerequisite_entry(
+            name="tavily",
+            status="ok" if tavily_reason is None else "prerequisite_missing",
+            error_code=None if tavily_reason is None else "live_prerequisite_missing",
+            hint=tavily_reason,
+        )
+    )
+    hpc_reason = live_hpc_skip_reason(settings)
+    checks.append(
+        _s15_prerequisite_entry(
+            name="hpc_runner_config",
+            status="ok" if hpc_reason is None else "prerequisite_missing",
+            error_code=None if hpc_reason is None else "live_prerequisite_missing",
+            hint=hpc_reason,
+            selected_backend=settings.execution.backend,
+            config_present=bool(settings.execution.hpc_runner_config),
+        )
+    )
+    checks.append(_s15_sandbox_image_prerequisite())
+    ncbi_identity_hint = None
+    if not os.getenv("OPENZYME_NCBI_EMAIL") and not os.getenv("NCBI_EMAIL"):
+        ncbi_identity_hint = "Set OPENZYME_NCBI_EMAIL or NCBI_EMAIL before live AOX/HMM."
+    checks.append(
+        _s15_prerequisite_entry(
+            name="ncbi_identity",
+            status="ok" if ncbi_identity_hint is None else "prerequisite_missing",
+            error_code=None if ncbi_identity_hint is None else "live_prerequisite_missing",
+            hint=ncbi_identity_hint,
+        )
+    )
+    checks.extend(
+        [
+            _s15_route_policy_prerequisite(
+                name="bio.ncbi_fetch_proteins",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio.ncbi_fetch_proteins"],
+                forced_missing_hint=ncbi_identity_hint,
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio.uniprot_fetch",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio.uniprot_fetch"],
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio.hmmer_search_refprot",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio.hmmer_search"],
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio_tools.cdhit",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio_tools.cdhit"],
+                forced_missing_hint=hpc_reason,
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio_tools.mafft",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio_tools.mafft"],
+                forced_missing_hint=hpc_reason,
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio_tools.hmmbuild",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio_tools.hmmbuild"],
+                forced_missing_hint=hpc_reason,
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio_tools.hmmalign",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio_tools.hmmalign"],
+                forced_missing_hint=hpc_reason,
+            ),
+            _s15_prerequisite_entry(
+                name="staging_fetch_output_validation",
+                status="ok" if hpc_reason is None else "prerequisite_missing",
+                error_code=None if hpc_reason is None else "live_prerequisite_missing",
+                hint=hpc_reason,
+                evidence_ref="docs/v3/sessions/14-real-bio-tools-local-hpc-backends.md#测试验收",
+            ),
+            _s15_route_policy_prerequisite(
+                name="bio_tools.hmmer_search_cli",
+                route_policy_id=S15_ROUTE_POLICY_IDS["bio_tools.hmmer_search_cli"],
+                required=False,
+            ),
+        ]
+    )
+    missing = [
+        check
+        for check in checks
+        if check.get("required") is not False and check.get("status") != "ok"
+    ]
+    status = "ok" if not missing else "prerequisite_missing"
+    return {
+        "scenario_report_key": "s15_aox_hmm_current",
+        "status": status,
+        "required": [
+            "llm",
+            "tavily",
+            "ncbi_identity",
+            "uniprot_http",
+            "ebi_hmmer_rest_refprot",
+            "s14_hpc_bio_tools",
+            "hpc_runner_config",
+            "sandbox_image",
+            "staging_fetch_output_validation",
+        ],
+        "missing": missing,
+        "checks": checks,
+        "selected_backend": {
+            "bio.hmmer_search": "provider_http",
+            "bio_tools.cdhit": "hpc",
+            "bio_tools.mafft": "hpc",
+            "bio_tools.hmmbuild": "hpc",
+            "bio_tools.hmmalign": "hpc",
+            "bio_tools.hmmer_search_cli": "disabled/unsupported_in_s14",
+        },
+        "route_policies": {
+            name: S12_ROUTE_POLICIES.get(policy_id, {})
+            for name, policy_id in S15_ROUTE_POLICY_IDS.items()
+        },
+    }
+
+
+def _s15_digest(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _s15_prompt_digest() -> str:
+    return f"sha256:{hashlib.sha256(S15_AOX_HMM_FIXED_PROMPT.encode('utf-8')).hexdigest()}"
+
+
+def _s15_config_snapshot_digest(
+    *,
+    scenario_id: str,
+    prerequisite_report: dict[str, object],
+) -> str:
+    return _s15_digest(
+        {
+            "scenario_id": scenario_id,
+            "prompt_digest": _s15_prompt_digest(),
+            "prerequisite_report": prerequisite_report,
+        }
+    )
+
+
+def _s15_non_empty_unique(values: list[str | None]) -> list[str]:
+    return sorted({value for value in values if value})
+
+
+def _s15_find_payload_values(payload: object, key: str) -> list[str]:
+    values: list[str] = []
+    if isinstance(payload, dict):
+        for item_key, item_value in payload.items():
+            if item_key == key and item_value not in (None, "", [], {}):
+                values.append(str(item_value))
+            else:
+                values.extend(_s15_find_payload_values(item_value, key))
+    elif isinstance(payload, list):
+        for item in payload:
+            values.extend(_s15_find_payload_values(item, key))
+    return values
+
+
+def _s15_final_answer(workspace: dict[str, Any]) -> str | None:
+    for message in reversed(workspace.get("conversation") or []):
+        if message.get("role") == "assistant" and message.get("content"):
+            return str(message["content"])
+    return None
+
+
+def _s15_expected_output_paths(summary: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    items = summary.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("path"):
+                paths.append(str(item["path"]))
+    elif summary.get("path"):
+        paths.append(str(summary["path"]))
+    declared = summary.get("declared_outputs")
+    if isinstance(declared, list):
+        for item in declared:
+            if isinstance(item, dict) and item.get("path"):
+                paths.append(str(item["path"]))
+    return sorted(set(paths))
+
+
+def _s15_build_evidence_bundle(
+    repositories: CoreRepositories,
+    *,
+    scenario_id: str,
+    session_id: str,
+    prompt: str,
+    prerequisite_report: dict[str, object],
+    workspace: dict[str, Any],
+    artifacts: list[SessionArtifactRecord],
+    required_paths: set[str],
+    final_output_validation: dict[str, object],
+) -> dict[str, object]:
+    approvals = repositories.approvals.list_by_session(session_id)
+    operations = repositories.controlled_operations.list_by_session(session_id)
+    sandbox_workspaces = repositories.sandbox_workspaces.list_by_session(session_id)
+    sandbox_runs = repositories.sandbox_runs.list_by_session(session_id)
+    final_answer = _s15_final_answer(workspace)
+    operation_trace: list[dict[str, object]] = []
+    backend_run_ids: list[str | None] = []
+    for operation in operations:
+        backend_run_ids.extend(_s15_find_payload_values(operation.result_summary or {}, "backend_run_id"))
+        backend_run_ids.extend(_s15_find_payload_values(operation.adapter_result_envelope or {}, "backend_run_id"))
+        operation_trace.append(
+            {
+                "operation_id": operation.operation_id,
+                "operation_digest": operation.operation_digest,
+                "status": operation.status.value,
+                "approval_id": operation.approval_id,
+                "approval_state": operation.approval_state,
+                "sandbox_workspace_id": operation.sandbox_workspace_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "source_snapshot_artifact_id": operation.source_snapshot_artifact_id,
+                "source_snapshot_digest": operation.source_snapshot_digest,
+                "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
+                "sdk_module": operation.sdk_module,
+                "function_name": operation.function_name,
+                "route_policy_id": operation.route_policy_id,
+                "selected_backend": operation.selected_backend,
+                "backend_category": operation.backend_category,
+                "route_reason": operation.route_reason,
+                "placement": operation.placement,
+                "hpc_workspace_id": operation.hpc_workspace_id,
+                "runtime_packaging_id": operation.runtime_packaging_id,
+                "toolchain_id": operation.toolchain_id,
+                "provider_config_digest": operation.provider_config_digest,
+                "expected_output_paths": _s15_expected_output_paths(
+                    operation.expected_outputs_summary or {}
+                ),
+                "stage_ref_count": len(operation.stage_refs),
+                "planned_fetch_intent_digest": _s15_digest(operation.planned_fetch_intent or {}),
+                "adapter_approval_envelope_digest": _s15_digest(
+                    operation.adapter_approval_envelope or {}
+                ),
+                "adapter_result_envelope_digest": _s15_digest(
+                    operation.adapter_result_envelope or {}
+                ),
+                "error_code": operation.error_code,
+            }
+        )
+    source_snapshot_artifact_ids = _s15_non_empty_unique(
+        [operation.source_snapshot_artifact_id for operation in operations]
+        + [sandbox_run.source_snapshot_artifact_id for sandbox_run in sandbox_runs]
+    )
+    source_snapshot_digests = _s15_non_empty_unique(
+        [operation.source_snapshot_digest for operation in operations]
+        + [sandbox_run.source_tree_digest for sandbox_run in sandbox_runs]
+    )
+    sandbox_workspace_ids = [workspace_record.sandbox_workspace_id for workspace_record in sandbox_workspaces]
+    evidence_bundle: dict[str, object] = {
+        "fixed_prompt_digest": f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}",
+        "config_snapshot_digest": _s15_config_snapshot_digest(
+            scenario_id=scenario_id,
+            prerequisite_report=prerequisite_report,
+        ),
+        "session_id": session_id,
+        "sandbox_workspace_id": sandbox_workspace_ids[0] if sandbox_workspace_ids else None,
+        "sandbox_workspaces": [
+            {
+                "sandbox_workspace_id": sandbox_workspace.sandbox_workspace_id,
+                "agent_member_id": sandbox_workspace.agent_member_id,
+                "status": sandbox_workspace.status.value,
+                "image_digest": sandbox_workspace.image_digest,
+                "image_version": sandbox_workspace.image_version,
+                "sandbox_protocol_version": sandbox_workspace.sandbox_protocol_version,
+                "manifest_version": sandbox_workspace.manifest_version,
+                "source_code_artifact_ids": list(sandbox_workspace.source_code_artifact_ids),
+                "registered_artifact_ids": list(sandbox_workspace.registered_artifact_ids),
+            }
+            for sandbox_workspace in sandbox_workspaces
+        ],
+        "sandbox_image_digests": _s15_non_empty_unique(
+            [sandbox_workspace.image_digest for sandbox_workspace in sandbox_workspaces]
+        ),
+        "sandbox_runs": [
+            {
+                "sandbox_run_id": sandbox_run.sandbox_run_id,
+                "sandbox_workspace_id": sandbox_run.sandbox_workspace_id,
+                "status": sandbox_run.status.value,
+                "argv_digest": sandbox_run.argv_digest,
+                "source_snapshot_artifact_id": sandbox_run.source_snapshot_artifact_id,
+                "source_tree_digest": sandbox_run.source_tree_digest,
+                "exit_code": sandbox_run.exit_code,
+                "duration_ms": sandbox_run.duration_ms,
+                "stdout_summary": sandbox_run.stdout_summary,
+                "stderr_summary": sandbox_run.stderr_summary,
+                "changed_files_summary": sandbox_run.changed_files_summary,
+                "log_artifact_ref": sandbox_run.log_artifact_ref,
+                "error_code": sandbox_run.error_code,
+            }
+            for sandbox_run in sandbox_runs
+        ],
+        "adapter_schema_versions": _s15_non_empty_unique(
+            [operation.adapter_envelope_schema_version for operation in operations]
+        ),
+        "route_policy_ids": _s15_non_empty_unique([operation.route_policy_id for operation in operations]),
+        "toolchain_ids": _s15_non_empty_unique([operation.toolchain_id for operation in operations]),
+        "runtime_packaging_ids": _s15_non_empty_unique(
+            [operation.runtime_packaging_id for operation in operations]
+        ),
+        "provider_config_digests": _s15_non_empty_unique(
+            [operation.provider_config_digest for operation in operations]
+        ),
+        "selected_backends": _s15_non_empty_unique([operation.selected_backend for operation in operations]),
+        "approval_ids": _s15_non_empty_unique([approval.approval_id for approval in approvals]),
+        "approval_trace": [
+            {
+                "approval_id": approval.approval_id,
+                "kind": approval.kind,
+                "status": approval.status.value,
+                "task_id": approval.task_id,
+                "lane_id": approval.lane_id,
+                "request_ref": approval.request_ref,
+                "resolution_ref": approval.resolution_ref,
+            }
+            for approval in approvals
+        ],
+        "operation_trace": operation_trace,
+        "operation_digests": _s15_non_empty_unique(
+            [operation.operation_digest for operation in operations]
+        ),
+        "source_snapshot_artifact_ids": source_snapshot_artifact_ids,
+        "source_snapshot_digests": source_snapshot_digests,
+        "backend_run_ids": _s15_non_empty_unique(backend_run_ids),
+        "registered_artifact_ids": [artifact.artifact_id for artifact in artifacts],
+        "normalized_final_deliverable_paths": sorted(required_paths),
+        "final_output_validation": final_output_validation,
+        "warning_summary": [],
+        "error_summary": [
+            operation.error_code for operation in operations if operation.error_code
+        ],
+        "final_answer_available": final_answer is not None,
+        "final_answer_digest": None if final_answer is None else _s15_digest({"content": final_answer}),
+    }
+    return evidence_bundle
+
+
+def _s15_validate_evidence_bundle(evidence_bundle: dict[str, object]) -> dict[str, object]:
+    required_non_empty = {
+        "fixed_prompt_digest",
+        "config_snapshot_digest",
+        "session_id",
+        "sandbox_workspace_id",
+        "sandbox_image_digests",
+        "adapter_schema_versions",
+        "route_policy_ids",
+        "toolchain_ids",
+        "provider_config_digests",
+        "approval_ids",
+        "operation_trace",
+        "operation_digests",
+        "source_snapshot_artifact_ids",
+        "source_snapshot_digests",
+        "backend_run_ids",
+        "registered_artifact_ids",
+        "normalized_final_deliverable_paths",
+        "final_answer_digest",
+    }
+    missing_fields = sorted(
+        key for key in required_non_empty if evidence_bundle.get(key) in (None, "", [], {})
+    )
+    errors: list[dict[str, object]] = []
+    if missing_fields:
+        errors.append({"error_code": "live_evidence_incomplete", "missing_fields": missing_fields})
+    operation_trace = evidence_bundle.get("operation_trace")
+    if isinstance(operation_trace, list):
+        for operation in operation_trace:
+            if not isinstance(operation, dict):
+                errors.append({"error_code": "live_evidence_incomplete", "invalid_operation_trace": True})
+                continue
+            for required_key in (
+                "operation_id",
+                "operation_digest",
+                "approval_id",
+                "sandbox_workspace_id",
+                "source_snapshot_artifact_id",
+                "source_snapshot_digest",
+                "route_policy_id",
+                "selected_backend",
+            ):
+                if operation.get(required_key) in (None, "", [], {}):
+                    errors.append(
+                        {
+                            "error_code": "live_evidence_incomplete",
+                            "operation_id": operation.get("operation_id"),
+                            "missing_operation_field": required_key,
+                        }
+                    )
+    else:
+        errors.append({"error_code": "live_evidence_incomplete", "invalid_operation_trace": True})
+    return {"passed": not errors, "missing_fields": missing_fields, "errors": errors}
+
+
+def _s15_validate_live_product_path(
+    evidence_bundle: dict[str, object],
+    *,
+    workspace: dict[str, Any],
+    has_legacy_execution_pipeline: bool,
+) -> dict[str, object]:
+    errors: list[dict[str, object]] = []
+    if has_legacy_execution_pipeline:
+        errors.append({"error_code": "live_legacy_pipeline_forbidden"})
+    if workspace.get("pending_approvals"):
+        errors.append({"error_code": "live_approval_still_pending"})
+    sandbox_runs = evidence_bundle.get("sandbox_runs")
+    if not isinstance(sandbox_runs, list) or not sandbox_runs:
+        errors.append({"error_code": "live_sandbox_exec_missing"})
+    else:
+        completed_runs = [
+            run
+            for run in sandbox_runs
+            if isinstance(run, dict)
+            and run.get("status") == "completed"
+            and run.get("source_snapshot_artifact_id")
+            and run.get("source_tree_digest")
+        ]
+        if not completed_runs:
+            errors.append({"error_code": "live_sandbox_exec_missing_source_snapshot"})
+    approval_trace = evidence_bundle.get("approval_trace")
+    approved_ids = {
+        item.get("approval_id")
+        for item in approval_trace
+        if isinstance(item, dict) and item.get("status") == "approved"
+    } if isinstance(approval_trace, list) else set()
+    if not approved_ids:
+        errors.append({"error_code": "live_sdk_approval_missing"})
+    operation_trace = evidence_bundle.get("operation_trace")
+    if not isinstance(operation_trace, list) or not operation_trace:
+        errors.append({"error_code": "live_sdk_operation_missing"})
+    else:
+        completed_operations = [
+            operation
+            for operation in operation_trace
+            if isinstance(operation, dict)
+            and operation.get("status") == "completed"
+            and operation.get("approval_id") in approved_ids
+        ]
+        if not completed_operations:
+            errors.append({"error_code": "live_sdk_operation_not_continued"})
+    required_route_policy_ids = {
+        S15_ROUTE_POLICY_IDS["bio.ncbi_fetch_proteins"],
+        S15_ROUTE_POLICY_IDS["bio.uniprot_fetch"],
+        S15_ROUTE_POLICY_IDS["bio.hmmer_search"],
+        S15_ROUTE_POLICY_IDS["bio_tools.cdhit"],
+        S15_ROUTE_POLICY_IDS["bio_tools.mafft"],
+        S15_ROUTE_POLICY_IDS["bio_tools.hmmbuild"],
+        S15_ROUTE_POLICY_IDS["bio_tools.hmmalign"],
+    }
+    observed_route_policy_ids = set(evidence_bundle.get("route_policy_ids") or [])
+    missing_route_policy_ids = sorted(required_route_policy_ids - observed_route_policy_ids)
+    if missing_route_policy_ids:
+        errors.append(
+            {
+                "error_code": "live_evidence_incomplete",
+                "missing_route_policy_ids": missing_route_policy_ids,
+            }
+        )
+    return {"passed": not errors, "errors": errors}
+
+
+def _s15_event_text_has_legacy_execution_pipeline(event_text: str) -> bool:
+    return any(
+        marker in event_text
+        for marker in (
+            '"tool_name":"execution.pipeline.start"',
+            '"tool_name": "execution.pipeline.start"',
+            '"name":"execution.pipeline.start"',
+            '"name": "execution.pipeline.start"',
+        )
+    )
+
+
+def _s15_inline_evidence_refs(
+    *,
+    scenario_id: str,
+    session_id: str | None,
+    status: str,
+    prerequisite_report: dict[str, object],
+    evidence_payload: dict[str, object] | None,
+    safe_summary: dict[str, object],
+) -> dict[str, object]:
+    prompt_digest = _s15_prompt_digest()
+    config_snapshot_digest = _s15_config_snapshot_digest(
+        scenario_id=scenario_id,
+        prerequisite_report=prerequisite_report,
+    )
+    prerequisite_report_digest = _s15_digest(prerequisite_report)
+    evidence_bundle_digest: str | None = None
+    if evidence_payload is not None:
+        evidence_bundle_digest = _s15_digest(evidence_payload)
+    return {
+        "fixed_prompt_digest": prompt_digest,
+        "config_snapshot_digest": config_snapshot_digest,
+        "prerequisite_report_digest": prerequisite_report_digest,
+        "evidence_bundle_digest": evidence_bundle_digest,
+        "evidence_sealed": evidence_payload is not None,
+        "safe_summary": safe_summary,
+        "evidence_status": status,
+    }
+
 
 def _aox_hmm_draft_source() -> str:
     return (
@@ -696,54 +1676,73 @@ candidate_cdhit85 = fetch(bio_tools.cdhit(
 ))
 
 candidates = AOX_ACCESSIONS[:5]
-filtered_rows = ["accession,evalue,score,passed_filter"]
-scoring_rows = ["accession,score,active_site_score,cluster_id"]
-candidate_rows = ["accession,score,evalue,cluster_id"]
+hits_raw_rows = ["target,uniprot_accession,hmm_score,evalue,length"]
+hits_filtered_rows = ["target,uniprot_accession,hmm_score,evalue,length,sequence"]
+scoring_rows = ["id,seq_score,pass_rule,activity_score,reference_coordinate"]
 nodes = ["node_id,label,score,cluster_id"]
 edges = ["source,target,similarity"]
 for index, accession in enumerate(candidates, start=1):
-    score = 120 - index
-    filtered_rows.append(f"{{accession}},1e-{{20 + index}},{{score}},true")
-    scoring_rows.append(f"{{accession}},{{score}},{{score - 10}},cluster_1")
-    candidate_rows.append(f"{{accession}},{{score}},1e-{{20 + index}},cluster_1")
-    nodes.append(f"{{accession}},candidate {{index}},{{score}},cluster_1")
+    hmm_score = 240 - index
+    seq_score = 40 - index
+    sequence = f"MSEQUENCE{{index}}AOX"
+    hits_raw_rows.append(f"target_{{index}},{{accession}},{{hmm_score}},1e-{{20 + index}},{{650 + index}}")
+    hits_filtered_rows.append(f"target_{{index}},{{accession}},{{hmm_score}},1e-{{20 + index}},{{650 + index}},{{sequence}}")
+    scoring_rows.append(f"{{accession}},{{seq_score}},true,{{seq_score}},AAB57849.1")
+    nodes.append(f"{{accession}},candidate {{index}},{{seq_score}},cluster_1")
 for left, right in zip(candidates, candidates[1:]):
     edges.append(f"{{left}},{{right}},0.91")
 
-filtered_fasta = register_text(
-    "filtered.fasta",
+reference_fasta = register_text(
+    "AOX_ref21.fasta",
+    fasta_for(AOX_ACCESSIONS),
+    kind="sequence",
+    format="fasta",
+    metadata={{"accession_count": len(AOX_ACCESSIONS), "provider_request_ids": reference.get("artifact_ids", [])}},
+)
+target_fasta = register_text(
+    "target.fasta",
     fasta_for(candidates),
     kind="sequence",
     format="fasta",
-    metadata={{"validation_profile": "aox_filtered_fasta"}},
+    metadata={{"warning_policy": "empty_target_requires_structured_warning"}},
 )
-filtered_csv = register_text(
-    "filtered.csv",
-    "\\n".join(filtered_rows) + "\\n",
+reference_hmm = register_text(
+    "AOX_ref.hmm",
+    "HMMER3/f [aox_ref]\\nNAME AOX_ref\\n//\\n",
+    format="hmm",
+    metadata={{
+        "source_reference_fasta_artifact_id": reference_fasta["artifact_id"],
+        "mafft_artifact_ids": alignment["registered_artifact_ids"],
+        "hmmbuild_artifact_ids": hmm["registered_artifact_ids"],
+    }},
+)
+hits_raw_csv = register_text(
+    "hits_raw.csv",
+    "\\n".join(hits_raw_rows) + "\\n",
     format="csv",
-    required_columns=["accession", "evalue", "score", "passed_filter"],
+    required_columns=["target", "uniprot_accession", "hmm_score", "evalue", "length"],
 )
-scoring_csv = register_text(
-    "scoring.csv",
+hits_filtered_csv = register_text(
+    "hits_len650_700_200.csv",
+    "\\n".join(hits_filtered_rows) + "\\n",
+    format="csv",
+    required_columns=["target", "uniprot_accession", "hmm_score", "evalue", "length", "sequence"],
+)
+scored_csv = register_text(
+    "scored_ref_plus_hits.csv",
     "\\n".join(scoring_rows) + "\\n",
     format="csv",
-    required_columns=["accession", "score", "active_site_score", "cluster_id"],
+    required_columns=["id", "seq_score", "pass_rule"],
 )
 candidate_fasta = register_text(
-    "candidates.fasta",
+    "AOX_candidates.fasta",
     fasta_for(candidates[:3]),
     kind="sequence",
     format="fasta",
-    metadata={{"validation_profile": "aox_candidate_fasta"}},
-)
-candidate_csv = register_text(
-    "candidates.csv",
-    "\\n".join(candidate_rows[:4]) + "\\n",
-    format="csv",
-    required_columns=["accession", "score", "evalue", "cluster_id"],
+    metadata={{"activity_score_threshold": 33.6}},
 )
 candidate_cdhit85_fasta = register_text(
-    "candidate_cdhit85.fasta",
+    "AOX_candidates_cdhit85.fasta",
     fasta_for(candidates[:3]),
     kind="sequence",
     format="fasta",
@@ -766,33 +1765,57 @@ edges_csv = register_text(
     required_columns=["source", "target", "similarity"],
 )
 summary = {{
+    "accession_count": len(AOX_ACCESSIONS),
     "candidate_count": len(candidates),
-    "filter": "evalue <= 1e-20 and score >= 100",
+    "length_filter": [650, 700],
+    "hmm_score_threshold": 200,
+    "activity_score_threshold": 33.6,
+    "similarity_threshold": 0.85,
+    "hmmer_database": "refprot",
+    "provider_status": "ok",
+    "tool_status": "ok",
+    "warning_count": 0,
     "reference_fasta_artifact_id": reference_fasta_id,
     "reference_metadata_artifact_id": reference_metadata_id,
     "cdhit90_artifact_ids": reference_cdhit90["registered_artifact_ids"],
     "alignment_artifact_ids": alignment["registered_artifact_ids"],
     "hmm_artifact_ids": hmm["registered_artifact_ids"],
     "hmmalign_artifact_ids": hmmalign["registered_artifact_ids"],
-    "hmmer_cli_artifact_ids": hmmer_cli["registered_artifact_ids"],
     "hmmer_provider_artifact_ids": hmmer_provider["artifact_ids"],
     "candidate_cdhit85_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     "derived_artifact_ids": [
-        filtered_fasta["artifact_id"],
-        filtered_csv["artifact_id"],
-        scoring_csv["artifact_id"],
+        reference_fasta["artifact_id"],
+        target_fasta["artifact_id"],
+        reference_hmm["artifact_id"],
+        hits_raw_csv["artifact_id"],
+        hits_filtered_csv["artifact_id"],
+        scored_csv["artifact_id"],
         candidate_fasta["artifact_id"],
-        candidate_csv["artifact_id"],
         candidate_cdhit85_fasta["artifact_id"],
         nodes_csv["artifact_id"],
         edges_csv["artifact_id"],
     ],
+    "artifact_ids": [],
+    "normalized_final_deliverable_paths": [
+        "aox_hmm/AOX_ref21.fasta",
+        "aox_hmm/target.fasta",
+        "aox_hmm/AOX_ref.hmm",
+        "aox_hmm/hits_raw.csv",
+        "aox_hmm/hits_len650_700_200.csv",
+        "aox_hmm/scored_ref_plus_hits.csv",
+        "aox_hmm/AOX_candidates.fasta",
+        "aox_hmm/AOX_candidates_cdhit85.fasta",
+        "aox_hmm/nodes.csv",
+        "aox_hmm/edges_similarity.csv",
+        "aox_hmm/execution_summary.json",
+    ],
 }}
+summary["artifact_ids"] = list(summary["derived_artifact_ids"]) + [summary["execution_summary_artifact_id"]] if "execution_summary_artifact_id" in summary else list(summary["derived_artifact_ids"])
 register_text(
     "execution_summary.json",
     __import__("json").dumps(summary, sort_keys=True, indent=2) + "\\n",
     format="json",
-    metadata={{"candidate_count": len(candidates), "filter": summary["filter"]}},
+    metadata={{"candidate_count": len(candidates), "hmmer_database": "refprot"}},
 )
 '''
 
@@ -870,7 +1893,13 @@ class V3AOXHMMEvalInvoker:
                         "args": {
                             "task_id": task_id,
                             "code_artifact_id": patched_ref[0],
-                            "inputs": {"approval_policy": "single_plan"},
+                            "inputs": {
+                                "approval_policy": "single_plan",
+                                "expected_outputs": [
+                                    {"path": path}
+                                    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES)
+                                ],
+                            },
                         },
                     }
                 ],
@@ -885,7 +1914,13 @@ class V3AOXHMMEvalInvoker:
                         "args": {
                             "task_id": task_id,
                             "code_artifact_id": patched_ref[0],
-                            "inputs": {"approval_policy": "single_plan"},
+                            "inputs": {
+                                "approval_policy": "single_plan",
+                                "expected_outputs": [
+                                    {"path": path}
+                                    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES)
+                                ],
+                            },
                             "dry_run": True,
                         },
                     }
@@ -1188,49 +2223,88 @@ class AoxHmmFixtureSandboxRunner:
                 metadata=metadata_payload,
             )
 
-        filtered_rows = ["accession,evalue,score,passed_filter"]
-        scoring_rows = ["accession,score,active_site_score,cluster_id"]
-        candidate_rows = ["accession,score,evalue,cluster_id"]
+        hits_raw_rows = ["target,uniprot_accession,hmm_score,evalue,length"]
+        hits_filtered_rows = ["target,uniprot_accession,hmm_score,evalue,length,sequence"]
+        scoring_rows = ["id,seq_score,pass_rule,activity_score,reference_coordinate"]
         nodes = ["node_id,label,score,cluster_id"]
         edges = ["source,target,similarity"]
         for index, accession in enumerate(candidates, start=1):
-            score = 120 - index
-            filtered_rows.append(f"{accession},1e-{20 + index},{score},true")
-            scoring_rows.append(f"{accession},{score},{score - 10},cluster_1")
-            candidate_rows.append(f"{accession},{score},1e-{20 + index},cluster_1")
-            nodes.append(f"{accession},candidate {index},{score},cluster_1")
+            hmm_score = 240 - index
+            seq_score = 40 - index
+            sequence = f"MSEQUENCE{index}AOX"
+            hits_raw_rows.append(
+                f"target_{index},{accession},{hmm_score},1e-{20 + index},{650 + index}"
+            )
+            hits_filtered_rows.append(
+                f"target_{index},{accession},{hmm_score},1e-{20 + index},{650 + index},{sequence}"
+            )
+            scoring_rows.append(f"{accession},{seq_score},true,{seq_score},AAB57849.1")
+            nodes.append(f"{accession},candidate {index},{seq_score},cluster_1")
         for left, right in zip(candidates, candidates[1:]):
             edges.append(f"{left},{right},0.91")
         artifacts = (
             write_artifact(
-                "filtered.fasta",
+                "AOX_ref21.fasta",
+                fasta_for(AOX_HMM_ACCESSIONS),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={
+                    "format": "fasta",
+                    "accession_count": len(AOX_HMM_ACCESSIONS),
+                    "provider_request_ids": list(reference["artifact_ids"]),
+                },
+            ),
+            write_artifact(
+                "target.fasta",
                 fasta_for(candidates),
                 kind=ArtifactKind.SEQUENCE,
-                metadata={"format": "fasta"},
+                metadata={"format": "fasta", "warning_policy": "empty_target_requires_structured_warning"},
             ),
             write_artifact(
-                "filtered.csv",
-                "\n".join(filtered_rows) + "\n",
-                metadata={"format": "csv", "required_columns": ["accession", "evalue", "score", "passed_filter"]},
+                "AOX_ref.hmm",
+                "HMMER3/f [fixture]\nNAME AOX_ref\n//\n",
+                metadata={
+                    "format": "hmm",
+                    "source_reference_fasta_artifact_id": reference_fasta_id,
+                    "mafft_artifact_ids": list(alignment["registered_artifact_ids"]),
+                    "hmmbuild_artifact_ids": list(hmm["registered_artifact_ids"]),
+                },
             ),
             write_artifact(
-                "scoring.csv",
+                "hits_raw.csv",
+                "\n".join(hits_raw_rows) + "\n",
+                metadata={
+                    "format": "csv",
+                    "required_columns": ["target", "uniprot_accession", "hmm_score", "evalue", "length"],
+                },
+            ),
+            write_artifact(
+                "hits_len650_700_200.csv",
+                "\n".join(hits_filtered_rows) + "\n",
+                metadata={
+                    "format": "csv",
+                    "required_columns": [
+                        "target",
+                        "uniprot_accession",
+                        "hmm_score",
+                        "evalue",
+                        "length",
+                        "sequence",
+                    ],
+                },
+            ),
+            write_artifact(
+                "scored_ref_plus_hits.csv",
                 "\n".join(scoring_rows) + "\n",
-                metadata={"format": "csv", "required_columns": ["accession", "score", "active_site_score", "cluster_id"]},
+                metadata={"format": "csv", "required_columns": ["id", "seq_score", "pass_rule"]},
             ),
             write_artifact(
-                "candidates.fasta",
+                "AOX_candidates.fasta",
                 fasta_for(candidates[:3]),
                 kind=ArtifactKind.SEQUENCE,
-                metadata={"format": "fasta"},
+                metadata={"format": "fasta", "activity_score_threshold": 33.6},
             ),
             write_artifact(
-                "candidates.csv",
-                "\n".join(candidate_rows[:4]) + "\n",
-                metadata={"format": "csv", "required_columns": ["accession", "score", "evalue", "cluster_id"]},
-            ),
-            write_artifact(
-                "candidate_cdhit85.fasta",
+                "AOX_candidates_cdhit85.fasta",
                 fasta_for(candidates[:3]),
                 kind=ArtifactKind.SEQUENCE,
                 metadata={
@@ -1254,11 +2328,21 @@ class AoxHmmFixtureSandboxRunner:
                 "execution_summary.json",
                 json.dumps(
                     {
+                        "accession_count": len(AOX_HMM_ACCESSIONS),
                         "candidate_count": len(candidates),
-                        "filter": "evalue <= 1e-20 and score >= 100",
+                        "length_filter": [650, 700],
+                        "hmm_score_threshold": 200,
+                        "activity_score_threshold": 33.6,
+                        "similarity_threshold": 0.85,
+                        "hmmer_database": "refprot",
+                        "provider_status": "fixture",
+                        "tool_status": "fixture",
+                        "warning_count": 0,
                         "reference_artifact_ids": list(reference["artifact_ids"]),
                         "cdhit90_artifact_ids": list(cdhit90["registered_artifact_ids"]),
                         "candidate_cdhit85_artifact_ids": list(cdhit85["registered_artifact_ids"]),
+                        "artifact_ids": [],
+                        "normalized_final_deliverable_paths": sorted(S15_AOX_HMM_FIXED_DELIVERABLES),
                     },
                     sort_keys=True,
                     indent=2,
@@ -1409,6 +2493,81 @@ def _poll_v3_background_workspace(
     return workspace, event_text, runtime_status
 
 
+S15_TASK_TERMINAL_STATUS_VALUES = {"completed", "failed", "cancelled"}
+S15_SANDBOX_RUN_TERMINAL_STATUS_VALUES = {
+    "completed",
+    "failed",
+    "timeout",
+    "resource_exceeded",
+    "cancelled",
+}
+S15_CONTROLLED_OPERATION_TERMINAL_STATUS_VALUES = {
+    "completed",
+    "failed",
+    "recovery_failed",
+}
+
+
+def _s15_aox_execution_task_status(workspace: dict[str, Any]) -> str | None:
+    for item in (workspace.get("task_board") or {}).get("items", []):
+        task = item.get("task") if isinstance(item, dict) else None
+        if isinstance(task, dict) and task.get("task_id") == "task_aox_hmm_execution":
+            status = task.get("status")
+            return None if status is None else str(status)
+    return None
+
+
+def _s15_fixture_workspace_ready(workspace: dict[str, Any]) -> bool:
+    return (
+        not workspace.get("pending_approvals")
+        and _s15_aox_execution_task_status(workspace) == "completed"
+        and "execution" in workspace["capabilities"]
+        and any(
+            item.get("status") == "succeeded"
+            for item in workspace["capabilities"]["execution"]
+        )
+        and any(
+            message.get("role") == "assistant"
+            and "AOX/HMM mining completed" in str(message.get("content") or "")
+            for message in workspace["conversation"]
+        )
+    )
+
+
+def _s15_live_workspace_ready(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    workspace: dict[str, Any],
+) -> bool:
+    if workspace.get("pending_approvals"):
+        return False
+    task_status = _s15_aox_execution_task_status(workspace)
+    if task_status not in S15_TASK_TERMINAL_STATUS_VALUES:
+        return False
+    artifact_paths = {
+        artifact.relative_path
+        for artifact in repositories.artifacts.list_by_session(session_id)
+    }
+    fixed_outputs_ready = S15_AOX_HMM_FIXED_DELIVERABLES <= artifact_paths
+    sandbox_terminal = any(
+        run.status.value in S15_SANDBOX_RUN_TERMINAL_STATUS_VALUES
+        for run in repositories.sandbox_runs.list_by_session(session_id)
+    )
+    operations = repositories.controlled_operations.list_by_session(session_id)
+    operations_terminal = bool(operations) and all(
+        operation.status.value in S15_CONTROLLED_OPERATION_TERMINAL_STATUS_VALUES
+        for operation in operations
+    )
+    final_answer_seen = _s15_final_answer(workspace) is not None
+    return bool(
+        fixed_outputs_ready
+        or sandbox_terminal
+        or operations_terminal
+        or final_answer_seen
+    )
+
+
 def _run_v3_design_cutover_scenario(
     *,
     foundation_builder: FoundationBuilder,
@@ -1547,11 +2706,17 @@ def _run_v3_aox_hmm_prompt_scenario(
     foundation_builder: FoundationBuilder,
     model_factory: Any | None,
     upload_results: bool = False,
-    scenario_id: str = "v3_aox_hmm_prompt_e2e",
+    scenario_id: str = S15_AOX_HMM_SCENARIO_ID,
+    scenario_class: str = "live",
+    use_fixture_dependencies: bool = False,
+    prerequisite_report: dict[str, object] | None = None,
 ) -> dict[str, Any]:
+    if scenario_class == "live" and use_fixture_dependencies:
+        raise ValueError("S15 live AOX/HMM scenario cannot use fixture dependencies")
     objective = (
         "Run AOX/HMM mining from a natural language prompt using V3 task delegation, "
-        "versioned source artifacts, dry-run approval, sandbox execution, and workspace artifacts."
+        "persistent sandbox source execution, SDK approval, Host-supervised providers/tools, "
+        "artifact catalog registration, and final answer evidence."
     )
     session_id = "sess_eval_aox_hmm"
     with tempfile.TemporaryDirectory(prefix="openzyme-v3-aox-hmm-eval-") as temp_dir:
@@ -1559,16 +2724,22 @@ def _run_v3_aox_hmm_prompt_scenario(
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
         v3_repositories = build_v3_eval_repositories()
-        app = create_app(
-            HostApiDependencies(
-                foundation=foundation,
-                v3_repositories=v3_repositories,
-                v3_background_runtime_enabled=True,
-                v3_pipeline_sandbox_runner=AoxHmmFixtureSandboxRunner(),
-                v3_bio_adapter=DeterministicBioDatabaseAdapter(),
-                v3_allow_bio_fixture_adapter=True,
+        if scenario_class == "live" and prerequisite_report is not None:
+            _s15_bootstrap_live_sandbox_image(v3_repositories, prerequisite_report)
+        dependencies_kwargs: dict[str, Any] = {
+            "foundation": foundation,
+            "v3_repositories": v3_repositories,
+            "v3_background_runtime_enabled": True,
+        }
+        if use_fixture_dependencies:
+            dependencies_kwargs.update(
+                {
+                    "v3_pipeline_sandbox_runner": AoxHmmFixtureSandboxRunner(),
+                    "v3_bio_adapter": DeterministicBioDatabaseAdapter(),
+                    "v3_allow_bio_fixture_adapter": True,
+                }
             )
-        )
+        app = create_app(HostApiDependencies(**dependencies_kwargs))
         with TestClient(app) as client:
             created = client.post(
                 "/v3/sessions",
@@ -1580,16 +2751,10 @@ def _run_v3_aox_hmm_prompt_scenario(
                 },
             )
             created.raise_for_status()
-            prompt = (
-                "Run AOX/HMM mining from only this prompt. Use these 13 AOX accessions: "
-                + ", ".join(AOX_HMM_ACCESSIONS)
-                + ". Build a reference HMM, search a target protein library, filter candidates, "
-                "export candidate FASTA/CSV, scoring CSV, candidate clusters, nodes.csv, "
-                "edges_similarity.csv, and summarize candidate count and warnings."
-            )
+            prompt = S15_AOX_HMM_FIXED_PROMPT
             with workflow_trace(
                 "openzyme.v3_aox_hmm_prompt_eval",
-                action="v3_local_eval" if model_factory is not None else "v3_live_eval",
+                action="v3_fixture_eval" if scenario_class == "fixture" else "v3_live_eval",
                 project_id="proj_001",
                 phase="evaluation",
                 inputs={"scenario_id": scenario_id, "objective": objective},
@@ -1600,26 +2765,18 @@ def _run_v3_aox_hmm_prompt_scenario(
                     json={"message": prompt},
                 )
                 first_turn.raise_for_status()
+                poll_timeout_seconds = 45.0 if scenario_class == "fixture" else 900.0
                 workspace, event_text, runtime_status = _poll_v3_background_workspace(
                     client,
                     session_id=session_id,
-                    timeout_seconds=45.0,
-                    is_ready=lambda workspace: (
-                        not workspace.get("pending_approvals")
-                        and any(
-                            item["task"]["task_id"] == "task_aox_hmm_execution"
-                            and item["task"]["status"] == "completed"
-                            for item in workspace["task_board"]["items"]
-                        )
-                        and "execution" in workspace["capabilities"]
-                        and any(
-                            item.get("status") == "succeeded"
-                            for item in workspace["capabilities"]["execution"]
-                        )
-                        and any(
-                            message.get("role") == "assistant"
-                            and "AOX/HMM mining completed" in str(message.get("content") or "")
-                            for message in workspace["conversation"]
+                    timeout_seconds=poll_timeout_seconds,
+                    is_ready=(
+                        _s15_fixture_workspace_ready
+                        if scenario_class == "fixture"
+                        else lambda workspace: _s15_live_workspace_ready(
+                            v3_repositories,
+                            session_id=session_id,
+                            workspace=workspace,
                         )
                     ),
                 )
@@ -1663,29 +2820,45 @@ def _run_v3_aox_hmm_prompt_scenario(
                     and artifact.relative_path != "logs/stderr.log"
                 ]
                 projected_text = json.dumps(workspace, sort_keys=True)
-                required_paths = {
-                    "bio/ncbi/provider_request.json",
-                    "bio/ncbi/provider_observation.json",
-                    "bio/ncbi/provider_parsed/proteins.fasta",
-                    "bio/ncbi/provider_parsed/proteins.metadata.json",
-                    "bio_tools/cdhit/clustered.fasta",
-                    "bio_tools/mafft/alignment.fasta",
-                    "bio_tools/hmmbuild/model.hmm",
-                    "bio/hmmer/provider_request.json",
-                    "bio/hmmer/provider_observation.json",
-                    "bio/hmmer/provider_raw/raw_hits.json",
-                    "bio/hmmer/provider_parsed/parsed_hits.csv",
-                    "aox_hmm/filtered.fasta",
-                    "aox_hmm/filtered.csv",
-                    "aox_hmm/scoring.csv",
-                    "aox_hmm/candidates.fasta",
-                    "aox_hmm/candidates.csv",
-                    "aox_hmm/candidate_cdhit85.fasta",
-                    "aox_hmm/nodes.csv",
-                    "aox_hmm/edges_similarity.csv",
-                    "aox_hmm/execution_summary.json",
-                }
+                artifact_text_by_path: dict[str, str] = {}
+                artifact_metadata_by_path: dict[str, dict[str, object]] = {}
+                for artifact in artifacts:
+                    if artifact.relative_path not in S15_AOX_HMM_FIXED_DELIVERABLES:
+                        continue
+                    artifact_metadata_by_path[artifact.relative_path] = dict(artifact.metadata or {})
+                    try:
+                        artifact_text_by_path[artifact.relative_path] = Path(artifact.storage_uri).read_text(
+                            encoding="utf-8"
+                        )
+                    except OSError:
+                        artifact_text_by_path[artifact.relative_path] = ""
+                final_output_validation = _s15_aox_validate_final_artifacts(
+                    artifact_paths,
+                    artifact_text_by_path,
+                    artifact_metadata_by_path,
+                )
+                required_paths = _s15_aox_required_artifact_paths()
                 plan = next((payload for payload in plan_payloads if isinstance(payload, dict)), {})
+                evidence_bundle = _s15_build_evidence_bundle(
+                    v3_repositories,
+                    scenario_id=scenario_id,
+                    session_id=session_id,
+                    prompt=prompt,
+                    prerequisite_report=prerequisite_report or {"status": "ok", "required": []},
+                    workspace=workspace,
+                    artifacts=artifacts,
+                    required_paths=required_paths,
+                    final_output_validation=final_output_validation,
+                )
+                evidence_bundle_validation = _s15_validate_evidence_bundle(evidence_bundle)
+                has_legacy_execution_pipeline = bool(
+                    execution_invocations
+                ) or _s15_event_text_has_legacy_execution_pipeline(event_text)
+                live_product_path_validation = _s15_validate_live_product_path(
+                    evidence_bundle,
+                    workspace=workspace,
+                    has_legacy_execution_pipeline=has_legacy_execution_pipeline,
+                )
                 checks = {
                     "single_user_prompt": sum(1 for item in workspace["conversation"] if item["role"] == "user") == 1,
                     "delegated_executor": any(
@@ -1693,54 +2866,137 @@ def _run_v3_aox_hmm_prompt_scenario(
                         for item in workspace["delegation"]["agents"]
                     )
                     and "task.delegate" in event_text,
-                    "source_artifact_versions": sorted(
+                    "source_artifact_versions": scenario_class == "live" or sorted(
                         int((artifact.metadata or {}).get("version") or 0)
                         for artifact in code_artifacts
                     )
                     == [1, 2],
-                    "source_diff_recorded": "artifact.diff_text" in event_text,
-                    "dry_run_plan": bool(dry_run_invocations)
+                    "source_diff_recorded": scenario_class == "live" or "artifact.diff_text" in event_text,
+                    "dry_run_plan": scenario_class == "live" or bool(dry_run_invocations)
                     and bool(plan.get("bio_operations"))
                     and bool(plan.get("bio_tool_operations"))
                     and bool(plan.get("approval_requirements")),
-                    "approval_resolved": "event: approval.requested" in event_text
-                    and "event: approval.resolved" in event_text,
-                    "execution_completed": bool(terminal_invocations)
+                    "approval_resolved": (
+                        "event: approval.requested" in event_text
+                        and "event: approval.resolved" in event_text
+                    )
+                    if scenario_class == "fixture"
+                    else bool(evidence_bundle.get("approval_ids"))
+                    and not workspace.get("pending_approvals"),
+                    "execution_completed": (
+                        bool(live_product_path_validation["passed"])
+                        if scenario_class == "live"
+                        else bool(terminal_invocations)
+                    )
                     and any(
                         item.get("status") == "succeeded"
                         for item in workspace["capabilities"].get("execution", [])
-                    ),
+                    )
+                    if scenario_class == "fixture"
+                    else bool(live_product_path_validation["passed"]),
                     "required_artifacts": required_paths <= artifact_paths,
+                    "legacy_artifacts_excluded": not _s15_aox_legacy_paths_present(artifact_paths),
                     "candidate85_artifact": any(
-                        artifact.relative_path == "aox_hmm/candidate_cdhit85.fasta"
+                        artifact.relative_path == "aox_hmm/AOX_candidates_cdhit85.fasta"
                         and (artifact.metadata or {}).get("identity") == 0.85
                         for artifact in artifacts
                     ),
-                    "output_provenance": bool(output_artifacts)
-                    and all(
-                        (artifact.metadata or {}).get("source_code_artifact_id")
-                        and (artifact.metadata or {}).get("source_code_digest")
-                        for artifact in output_artifacts
-                    ),
+                    "final_output_validation": bool(final_output_validation["passed"]),
+                    "output_provenance": (
+                        bool(output_artifacts)
+                        and all(
+                            (artifact.metadata or {}).get("source_code_artifact_id")
+                            and (artifact.metadata or {}).get("source_code_digest")
+                            for artifact in output_artifacts
+                        )
+                    )
+                    if scenario_class == "fixture"
+                    else bool(evidence_bundle.get("source_snapshot_digests"))
+                    and bool(evidence_bundle.get("registered_artifact_ids")),
                     "safe_projection": "storage_uri" not in projected_text
                     and str(Path(temp_dir)) not in projected_text,
-                    "final_answer": any(
-                        message.get("role") == "assistant"
-                        and "candidate_count=5" in str(message.get("content") or "")
-                        for message in workspace["conversation"]
+                    "final_answer": (
+                        any(
+                            message.get("role") == "assistant"
+                            and "candidate_count=5" in str(message.get("content") or "")
+                            for message in workspace["conversation"]
+                        )
+                        if scenario_class == "fixture"
+                        else bool(evidence_bundle.get("final_answer_available"))
                     ),
                     "background_runtime": runtime_status.get("worker_id") == "host-api:background-runtime"
                     and int(runtime_status.get("processed_signal_count") or 0) > 0,
+                    "legacy_pipeline_not_used": scenario_class == "fixture"
+                    or not has_legacy_execution_pipeline,
+                    "sandbox_product_path": scenario_class == "fixture"
+                    or bool(live_product_path_validation["passed"]),
+                    "evidence_bundle_complete": bool(evidence_bundle_validation["passed"]),
                 }
+                live_cutover_check_names = {
+                    "required_artifacts",
+                    "candidate85_artifact",
+                    "final_output_validation",
+                    "evidence_bundle_complete",
+                    "legacy_pipeline_not_used",
+                    "sandbox_product_path",
+                }
+                passed = (
+                    all(checks.values())
+                    if scenario_class == "live"
+                    else all(
+                        value
+                        for key, value in checks.items()
+                        if key not in live_cutover_check_names
+                    )
+                )
+                safe_summary = {
+                    "artifact_count": len(artifacts),
+                    "required_artifact_count": len(required_paths),
+                    "warning_count": len(evidence_bundle.get("warning_summary") or []),
+                    "final_answer_available": evidence_bundle["final_answer_available"],
+                    "sandbox_workspace_id": evidence_bundle.get("sandbox_workspace_id"),
+                    "status": "passed" if passed else "failed",
+                    "evidence_validation": evidence_bundle_validation,
+                    "live_product_path_validation": live_product_path_validation,
+                }
+                live_evidence_refs: dict[str, object] = {
+                    "fixed_prompt_digest": f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}",
+                    "config_snapshot_digest": None,
+                    "prerequisite_report_digest": None,
+                    "evidence_bundle_digest": None,
+                    "evidence_sealed": False,
+                    "safe_summary": safe_summary,
+                    "evidence_status": "passed" if passed else "failed",
+                }
+                if scenario_class == "live":
+                    live_evidence_refs = _s15_inline_evidence_refs(
+                        scenario_id=scenario_id,
+                        session_id=session_id,
+                        status="passed" if passed else "failed",
+                        prerequisite_report=prerequisite_report or {"status": "ok", "required": []},
+                        evidence_payload=evidence_bundle,
+                        safe_summary=safe_summary,
+                    )
                 result = {
                     "scenario_id": scenario_id,
+                    "scenario_class": scenario_class,
+                    "status": "passed" if passed else "failed",
+                    "live_cutover_eligible": scenario_class == "live" and all(checks.values()),
+                    **live_evidence_refs,
                     "session_id": session_id,
                     "task_count": len(workspace["task_board"]["items"]),
                     "artifact_count": len(artifacts),
+                    "artifact_paths": sorted(artifact_paths),
                     "required_artifact_count": len(required_paths),
+                    "required_artifacts": sorted(required_paths),
+                    "legacy_artifacts": _s15_aox_legacy_paths_present(artifact_paths),
                     "candidate_count": 5,
+                    "final_output_validation": final_output_validation,
+                    "evidence_bundle": evidence_bundle,
+                    "evidence_bundle_validation": evidence_bundle_validation,
+                    "live_product_path_validation": live_product_path_validation,
                     "checks": checks,
-                    "passed": all(checks.values()),
+                    "passed": passed,
                 }
                 if run is not None:
                     run.end(outputs=result)
@@ -1757,6 +3013,9 @@ def run_v3_local_evals(*, upload_results: bool = False) -> dict[str, Any]:
         foundation_builder=build_local_eval_runtime,
         model_factory=V3AOXHMMEvalModelFactory(),
         upload_results=upload_results,
+        scenario_id=S15_AOX_HMM_FIXTURE_SCENARIO_ID,
+        scenario_class="fixture",
+        use_fixture_dependencies=True,
     )
     results = [design_result, aox_result]
     passed = sum(1 for result in results if result["passed"])
@@ -1867,12 +3126,84 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
                 return result
 
 
+def _s15_aox_prerequisite_missing_result(
+    *,
+    upload_results: bool = False,
+    prerequisite_report: dict[str, object] | None = None,
+) -> dict[str, Any]:
+    prerequisite_report = prerequisite_report or _s15_live_prerequisite_report()
+    safe_summary = {
+        "artifact_count": 0,
+        "required_artifact_count": len(S15_AOX_HMM_FIXED_DELIVERABLES),
+        "warning_count": len(list(prerequisite_report.get("missing") or [])),
+        "final_answer_available": False,
+        "sandbox_workspace_id": None,
+        "status": "prerequisite_missing",
+    }
+    live_evidence_refs = _s15_inline_evidence_refs(
+        scenario_id=S15_AOX_HMM_SCENARIO_ID,
+        session_id=None,
+        status="prerequisite_missing",
+        prerequisite_report=prerequisite_report,
+        evidence_payload=None,
+        safe_summary=safe_summary,
+    )
+    return {
+        "scenario_id": S15_AOX_HMM_SCENARIO_ID,
+        "scenario_class": "live",
+        "status": "prerequisite_missing",
+        "passed": False,
+        **live_evidence_refs,
+        "upload_results": upload_results,
+        "required_artifacts": sorted(S15_AOX_HMM_FIXED_DELIVERABLES),
+        "prerequisite_report": prerequisite_report,
+        "evidence_bundle": None,
+        "checks": {
+            "live_prerequisites": False,
+            "fixture_dependencies_forbidden": True,
+            "fixed_prompt": True,
+            "fixed_deliverable_contract": True,
+            "legacy_artifacts_excluded": True,
+        },
+    }
+
+
 def run_v3_live_evals(*, upload_results: bool = False) -> dict[str, Any]:
     result = _run_v3_live_task_plan_scenario(upload_results=upload_results)
     return {
         "scenario_count": 1,
         "passed": 1 if result["passed"] else 0,
         "failed": 0 if result["passed"] else 1,
+        "upload_results": upload_results,
+        "results": [result],
+    }
+
+
+def run_v3_s15_live_evals(*, upload_results: bool = False) -> dict[str, Any]:
+    prerequisite_report = _s15_live_prerequisite_report()
+    if prerequisite_report["status"] == "prerequisite_missing":
+        result = _s15_aox_prerequisite_missing_result(
+            upload_results=upload_results,
+            prerequisite_report=prerequisite_report,
+        )
+    else:
+        result = _run_v3_aox_hmm_prompt_scenario(
+            foundation_builder=build_live_eval_foundation,
+            model_factory=None,
+            upload_results=upload_results,
+            scenario_id=S15_AOX_HMM_SCENARIO_ID,
+            scenario_class="live",
+            use_fixture_dependencies=False,
+            prerequisite_report=prerequisite_report,
+        )
+        result["prerequisite_report"] = prerequisite_report
+    prerequisite_missing = 1 if result.get("status") == "prerequisite_missing" else 0
+    failed = 1 if result.get("status") == "failed" else 0
+    return {
+        "scenario_count": 1,
+        "passed": 1 if result["passed"] else 0,
+        "failed": failed,
+        "prerequisite_missing": prerequisite_missing,
         "upload_results": upload_results,
         "results": [result],
     }
@@ -1888,16 +3219,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Use configured live providers for the selected eval path",
     )
     parser.add_argument(
+        "--scenario",
+        choices=("default", S15_AOX_HMM_SCENARIO_ID),
+        default="default",
+        help="Select the live eval scenario; default keeps the generic V3 live smoke.",
+    )
+    parser.add_argument(
         "--upload-results",
         action="store_true",
         help="Enable LangSmith trace upload for eval scenario runs",
     )
     args = parser.parse_args(argv)
-    summary = (
-        run_v3_live_evals(upload_results=args.upload_results)
-        if args.live
-        else run_v3_local_evals(upload_results=args.upload_results)
-    )
+    if not args.live:
+        summary = run_v3_local_evals(upload_results=args.upload_results)
+    elif args.scenario == S15_AOX_HMM_SCENARIO_ID:
+        summary = run_v3_s15_live_evals(upload_results=args.upload_results)
+    else:
+        summary = run_v3_live_evals(upload_results=args.upload_results)
     print(summary)
     return 0 if summary["failed"] == 0 else 1
 

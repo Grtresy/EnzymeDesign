@@ -397,7 +397,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - 远端输出只有在 declared `expected_outputs` 中声明后才会下载并登记为 artifact
 - 对 HPC-heavy 流程，Host 维护独立的 HPC placement workspace；`hpc_workspace_id` 按 `sandbox_workspace_id + normalized_label` 复用，executor 通过 `hpc.workspace`、`stage_artifact` 和 `fetch_outputs` 声明文件流，Host supervisor 负责真实 staging/fetch 和 artifact registration，不能把该远端工作区描述成 sandbox workspace 的 mirror，也不能把 remote path 暴露给 executor
 - Provider cache 只能作为 Host-private optimization；cache key/digest 可进 provenance，但 cache hit 不能替代当前真实 provider/live prerequisite 证据
-- AOX/HMM live cutover passed 必须生成 sealed `evidence_bundle_id`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer
+- AOX/HMM live cutover passed 必须在 S15 eval result 中生成 sealed inline evidence payload 与 `evidence_bundle_digest`，回链 prompt、配置 snapshot、image/toolchain/route/provider digest、approval、operation trace、artifact ids 和 final answer；该证据不是新的顶层 control-plane 真状态
 
 ### 8.3 Report Draft 与 Report
 
