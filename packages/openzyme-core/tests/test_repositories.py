@@ -51,6 +51,14 @@ from openzyme_core import LaneLifecycleEventRecord
 from openzyme_core import OwnershipError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core.repositories import _coerce_inbox_participant_kind
+
+
+def test_inbox_participant_kind_coercion_handles_legacy_missing_values() -> None:
+    assert _coerce_inbox_participant_kind(None, "agent:executor") is InboxParticipantKind.AGENT
+    assert _coerce_inbox_participant_kind("", "user") is InboxParticipantKind.USER
+    assert _coerce_inbox_participant_kind("agent", "harness") is InboxParticipantKind.AGENT
+    assert _coerce_inbox_participant_kind("bogus", "harness") is InboxParticipantKind.HARNESS
 
 
 def test_core_repositories_persist_v3_control_plane_records() -> None:

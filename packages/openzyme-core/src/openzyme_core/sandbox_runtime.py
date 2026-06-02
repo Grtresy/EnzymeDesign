@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -34,6 +35,7 @@ from openzyme_domain.control_plane import utc_now_iso
 
 from .artifact_boundary import ArtifactBoundaryError
 from .artifact_boundary import ArtifactBoundaryService
+from .artifact_projection import project_artifact_for_agent
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -60,6 +62,8 @@ EXEC_MAX_TIMEOUT_SECONDS = 900
 EXEC_POLICY_VERSION = "s09.exec_policy.v1"
 S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
 S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
+SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
+SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
     "host_path",
     "sandbox_host_path",
@@ -485,6 +489,9 @@ class _ControlSocketServer:
     source_tree_digest: str
     task_id: str | None = None
     lane_id: str | None = None
+    workspace_root: Path | None = None
+    adapter_executor: SandboxAdapterExecutor | None = None
+    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
 
@@ -543,6 +550,14 @@ class _ControlSocketServer:
                 return self._handle_transport_smoke(request, params)
             if method == "s10.controlled_operation":
                 return self._handle_controlled_operation(request, params)
+            if method.startswith("artifacts."):
+                return self._handle_artifact_boundary(request, method, params)
+            if method == "hpc.workspace":
+                return self._handle_hpc_workspace(request, params)
+            if method == "hpc.stage_artifact":
+                return self._handle_hpc_stage_artifact(request, params)
+            if method == "hpc.fetch_outputs":
+                return self._handle_hpc_fetch_outputs(request, params)
             raise SandboxRuntimeError("sandbox_transport_method_forbidden", "control socket only supports supervised sandbox calls")
         except Exception as exc:
             return {
@@ -569,6 +584,253 @@ class _ControlSocketServer:
             "status": "ok",
         }
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _artifact_boundary_service(self) -> ArtifactBoundaryService:
+        return ArtifactBoundaryService(
+            self.repositories,
+            workspace_root=self.workspace_root,
+        )
+
+    def _handle_artifact_boundary(
+        self,
+        request: dict[str, Any],
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            if method == "artifacts.get":
+                artifact = self.repositories.artifacts.get(str(params.get("artifact_id") or ""))
+                if artifact is None or artifact.session_id != self.session_id:
+                    raise ArtifactBoundaryError("artifact_scope_forbidden", "artifact is not available in this session")
+                result = project_artifact_for_agent(artifact)
+            elif method == "artifacts.materialize":
+                result = self._artifact_boundary_service().materialize(
+                    session_id=self.session_id,
+                    sandbox_workspace_id=self.sandbox_workspace_id,
+                    artifact_id=str(params.get("artifact_id") or ""),
+                    target=None if params.get("target") in {None, ""} else str(params.get("target")),
+                    mode=str(params.get("mode") or "copy"),
+                ).to_payload()
+            elif method == "artifacts.register":
+                result = self._artifact_boundary_service().register(
+                    session_id=self.session_id,
+                    sandbox_workspace_id=self.sandbox_workspace_id,
+                    path=str(params.get("path") or ""),
+                    kind=str(params.get("kind") or "result"),
+                    format=None if params.get("format") in {None, ""} else str(params.get("format")),
+                    metadata=dict(params.get("metadata") or {}),
+                ).to_payload()
+            elif method == "artifacts.register_many":
+                items = params.get("items") or []
+                if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+                    raise ArtifactBoundaryError("invalid_tool_arguments", "artifacts.register_many items must be objects")
+                service = self._artifact_boundary_service()
+                result = [
+                    service.register(
+                        session_id=self.session_id,
+                        sandbox_workspace_id=self.sandbox_workspace_id,
+                        path=str(item.get("path") or ""),
+                        kind=str(item.get("kind") or "result"),
+                        format=None if item.get("format") in {None, ""} else str(item.get("format")),
+                        metadata=dict(item.get("metadata") or {}),
+                    ).to_payload()
+                    for item in items
+                ]
+            elif method == "artifacts.snapshot_code":
+                result = self._artifact_boundary_service().snapshot_code(
+                    session_id=self.session_id,
+                    sandbox_workspace_id=self.sandbox_workspace_id,
+                    paths=params.get("paths"),
+                    entrypoint=str(params.get("entrypoint") or ""),
+                    metadata=dict(params.get("metadata") or {}),
+                ).to_payload()
+            else:
+                raise SandboxRuntimeError("sandbox_transport_method_forbidden", "artifact method is not supported by the sandbox control socket")
+        except ArtifactBoundaryError as exc:
+            raise SandboxRuntimeError(exc.error_code, str(exc), hint=exc.hint, details=exc.details) from exc
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _normalize_hpc_workspace_label(self, label: str) -> str:
+        normalized = "".join(char if char.isalnum() or char in "._-" else "-" for char in label.strip()).strip("-._")
+        if normalized in {"", ".", ".."} or len(normalized) > 80:
+            raise SandboxRuntimeError(
+                "hpc_workspace_label_invalid",
+                "HPC workspace label is invalid",
+                details={"label": label},
+            )
+        return normalized
+
+    def _handle_hpc_workspace(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        label = str(params.get("label") or "")
+        normalized = self._normalize_hpc_workspace_label(label)
+        digest = hashlib.sha256(f"{self.sandbox_workspace_id}:{normalized}".encode("utf-8")).hexdigest()[:16]
+        result = {
+            "kind": "hpc_workspace",
+            "hpc_workspace_id": f"hpcws_{digest}",
+            "label": label,
+            "normalized_label": normalized,
+            "sandbox_workspace_id": self.sandbox_workspace_id,
+            "placement_profile_id": "default",
+        }
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _handle_hpc_stage_artifact(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        workspace = params.get("hpc_workspace")
+        if not isinstance(workspace, dict) or not workspace.get("hpc_workspace_id"):
+            raise SandboxRuntimeError("hpc_workspace_forbidden", "hpc.stage_artifact requires hpc_workspace")
+        hpc_workspace_id = str(workspace["hpc_workspace_id"])
+        artifact_id = str(params.get("artifact_id") or "")
+        artifact = self.repositories.artifacts.get(artifact_id)
+        if artifact is None or artifact.session_id != self.session_id:
+            raise SandboxRuntimeError(
+                "hpc_workspace_forbidden",
+                "artifact is not available for staging in this session",
+                details={"artifact_id": artifact_id},
+            )
+        metadata = dict(artifact.metadata or {})
+        artifact_digest = str(
+            metadata.get("sealed_digest")
+            or metadata.get("content_digest")
+            or metadata.get("tree_digest")
+            or metadata.get("source_tree_digest")
+            or ""
+        )
+        if not artifact_digest:
+            raise SandboxRuntimeError(
+                "hpc_stage_digest_missing",
+                "artifact does not expose a sealed digest for HPC staging",
+                details={"artifact_id": artifact_id},
+            )
+        workspace_relative_path = self._validated_hpc_workspace_path(str(params.get("workspace_path") or ""))
+        stage_ref_id = "stage_" + hashlib.sha256(
+            f"{hpc_workspace_id}:{artifact_id}:{artifact_digest}:{workspace_relative_path}".encode("utf-8")
+        ).hexdigest()[:16]
+        result = {
+            "kind": "hpc_stage_ref",
+            "stage_ref_id": stage_ref_id,
+            "hpc_workspace_id": hpc_workspace_id,
+            "artifact_id": artifact_id,
+            "artifact_digest": artifact_digest,
+            "workspace_relative_path": workspace_relative_path,
+            "source": "artifact_catalog",
+            "sandbox_workspace_id": self.sandbox_workspace_id,
+        }
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _handle_hpc_fetch_outputs(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        workspace = params.get("hpc_workspace")
+        if not isinstance(workspace, dict) or not workspace.get("hpc_workspace_id"):
+            raise SandboxRuntimeError("hpc_workspace_forbidden", "hpc.fetch_outputs requires hpc_workspace")
+        run_id = str(params.get("run_id") or "")
+        if not run_id:
+            raise SandboxRuntimeError(
+                "hpc_fetch_not_declared",
+                "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
+                details={"run_id": run_id},
+            )
+        operation = self._hpc_fetch_operation(params)
+        if self.hpc_fetch_executor is None:
+            raise SandboxRuntimeError(
+                "hpc_fetch_not_declared",
+                "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
+                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id},
+            )
+        try:
+            result = self.hpc_fetch_executor(
+                {
+                    **dict(params),
+                    "session_id": self.session_id,
+                    "sandbox_workspace_id": self.sandbox_workspace_id,
+                    "sandbox_run_id": self.sandbox_run_id,
+                    "task_id": self.task_id,
+                    "lane_id": self.lane_id,
+                }
+            )
+        except Exception as exc:
+            error_code, error_summary, hint, details = self._adapter_execution_error(exc)
+            raise SandboxRuntimeError(
+                error_code,
+                error_summary,
+                hint=hint,
+                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id, **details},
+            ) from exc
+        if not isinstance(result, dict):
+            raise SandboxRuntimeError(
+                "hpc_fetch_result_invalid",
+                "Host fetch executor returned a non-object result.",
+                details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id},
+            )
+        if operation is not None:
+            self._record_hpc_fetch_result(operation, dict(result))
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+
+    def _hpc_fetch_operation(self, params: dict[str, Any]) -> ControlledOperation | None:
+        operation_id = str(params.get("operation_id") or "")
+        if not operation_id:
+            return None
+        operation = self.repositories.controlled_operations.get(operation_id)
+        if (
+            operation is None
+            or operation.session_id != self.session_id
+            or operation.sandbox_workspace_id != self.sandbox_workspace_id
+            or operation.sandbox_run_id != self.sandbox_run_id
+        ):
+            raise SandboxRuntimeError(
+                "hpc_fetch_not_declared",
+                "hpc.fetch_outputs operation is not available in this sandbox run",
+                details={"operation_id": operation_id},
+            )
+        operation_digest = str(params.get("operation_digest") or "")
+        if operation_digest and operation_digest != operation.operation_digest:
+            raise SandboxRuntimeError(
+                "operation_drift_detected",
+                "hpc.fetch_outputs operation digest does not match the approved operation",
+                details={
+                    "operation_id": operation.operation_id,
+                    "operation_digest": operation.operation_digest,
+                    "fetch_operation_digest": operation_digest,
+                },
+            )
+        hpc_workspace = params.get("hpc_workspace")
+        hpc_workspace_id = str(dict(hpc_workspace).get("hpc_workspace_id") or "") if isinstance(hpc_workspace, dict) else ""
+        if operation.hpc_workspace_id and hpc_workspace_id and operation.hpc_workspace_id != hpc_workspace_id:
+            raise SandboxRuntimeError(
+                "hpc_fetch_not_declared",
+                "hpc.fetch_outputs workspace does not match the approved operation",
+                details={
+                    "operation_id": operation.operation_id,
+                    "operation_hpc_workspace_id": operation.hpc_workspace_id,
+                    "fetch_hpc_workspace_id": hpc_workspace_id,
+                },
+            )
+        return operation
+
+    def _record_hpc_fetch_result(self, operation: ControlledOperation, result: dict[str, Any]) -> None:
+        adapter_result = dict(operation.adapter_result_envelope or {})
+        fetch_refs = [dict(item) for item in list(result.get("fetch_refs") or []) if isinstance(item, dict)]
+        registered_artifact_ids = [str(value) for value in list(result.get("registered_artifact_ids") or [])]
+        if not fetch_refs and not registered_artifact_ids:
+            return
+        adapter_result["fetch_refs"] = fetch_refs
+        adapter_result["registered_artifact_ids"] = registered_artifact_ids
+        adapter_result["output_artifact_ids"] = [str(value) for value in list(result.get("output_artifact_ids") or registered_artifact_ids)]
+        bounded_summary = dict(adapter_result.get("bounded_summary") or operation.result_summary or {})
+        bounded_summary.update(
+            {
+                "fetch_status": result.get("status"),
+                "fetch_ref_count": len(fetch_refs),
+                "registered_artifact_ids": registered_artifact_ids,
+            }
+        )
+        adapter_result["bounded_summary"] = bounded_summary
+        self.repositories.controlled_operations.save(
+            replace(
+                operation,
+                adapter_result_envelope=adapter_result,
+                result_summary=bounded_summary,
+                updated_at=utc_now_iso(),
+            )
+        )
 
     def _handle_controlled_operation(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         envelope = self._validated_s10_envelope(params)
@@ -600,12 +862,27 @@ class _ControlSocketServer:
             operation = self._create_operation(
                 envelope,
                 operation_digest=operation_digest,
-                status=ControlledOperationStatus.COMPLETED,
+                status=ControlledOperationStatus.RUNNING,
                 approval_id=reusable.approval_id,
                 approval_state=ApprovalRequestStatus.APPROVED.value,
-                result_summary=dict(envelope.get("result_summary") or {"status": "completed"}),
             )
-            return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._operation_response(operation)}
+            if (
+                operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA
+                and not envelope.get("adapter_result")
+                and reusable.status is ControlledOperationStatus.COMPLETED
+                and reusable.adapter_result_envelope
+            ):
+                envelope = {
+                    **envelope,
+                    "adapter_result": dict(reusable.adapter_result_envelope),
+                    "result_summary": dict(
+                        reusable.result_summary
+                        or dict(reusable.adapter_result_envelope).get("bounded_summary")
+                        or {"status": "completed"}
+                    ),
+                }
+            result = self._complete_running_operation(operation, envelope)
+            return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
         operation = self._create_operation(
             envelope,
@@ -629,24 +906,12 @@ class _ControlSocketServer:
                 updated_at=utc_now_iso(),
             )
             self.repositories.controlled_operations.save(operation)
-        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
-        completed = replace(
+        result = self._complete_running_operation(
             operation,
-            status=ControlledOperationStatus.COMPLETED,
-            result_summary=result_summary,
-            error_code=None,
-            error_summary=None,
-            updated_at=utc_now_iso(),
+            envelope,
+            continuation_id=claimed.continuation_id,
         )
-        if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
-            completed = replace(
-                completed,
-                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
-            )
-        operation = completed
-        self.repositories.controlled_operations.save(operation)
-        self.repositories.continuation_states.complete(claimed.continuation_id)
-        return {"jsonrpc": "2.0", "id": request.get("id"), "result": self._operation_response(operation)}
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
     def _validated_s10_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
         schema_version = str(params.get("schema_version") or "")
@@ -752,6 +1017,19 @@ class _ControlSocketServer:
                 "invalid_tool_arguments",
                 "idempotency_key and params_digest are required",
             )
+        adapter_params: dict[str, Any] | None = None
+        if "params" in params:
+            raw_adapter_params = params.get("params")
+            if not isinstance(raw_adapter_params, dict):
+                raise SandboxRuntimeError("invalid_tool_arguments", "adapter params must be an object")
+            if _json_digest(raw_adapter_params) != params_digest:
+                raise SandboxRuntimeError(
+                    "adapter_params_digest_mismatch",
+                    "adapter params do not match params_digest",
+                    details={"params_digest": params_digest},
+                )
+            scrubbed_params = _scrub_private_adapter_payload(raw_adapter_params)
+            adapter_params = dict(scrubbed_params) if isinstance(scrubbed_params, dict) else {}
         input_artifact_ids = params.get("input_artifact_ids") or []
         input_artifact_digests = params.get("input_artifact_digests") or []
         stage_refs = params.get("stage_refs") or []
@@ -823,6 +1101,7 @@ class _ControlSocketServer:
             "resource_estimate": resource_estimate,
             "result_summary": result_summary,
             "adapter_result": adapter_result,
+            "adapter_params": adapter_params,
         }
 
     def _route_policy(self, route_policy_id: str) -> dict[str, Any]:
@@ -1160,6 +1439,154 @@ class _ControlSocketServer:
         self.repositories.continuation_states.save(continuation)
         return continuation
 
+    def _complete_running_operation(
+        self,
+        operation: ControlledOperation,
+        envelope: dict[str, Any],
+        *,
+        continuation_id: str | None = None,
+    ) -> dict[str, Any]:
+        envelope = self._execute_adapter_or_fail(
+            operation,
+            envelope,
+            continuation_id=continuation_id,
+        )
+        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
+        completed = replace(
+            operation,
+            status=ControlledOperationStatus.COMPLETED,
+            approval_state=ApprovalRequestStatus.APPROVED.value,
+            result_summary=result_summary,
+            error_code=None,
+            error_summary=None,
+            updated_at=utc_now_iso(),
+        )
+        if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
+            completed = replace(
+                completed,
+                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
+            )
+        self.repositories.controlled_operations.save(completed)
+        if continuation_id is not None:
+            self.repositories.continuation_states.complete(continuation_id)
+        return self._operation_response(completed)
+
+    def _execute_adapter_or_fail(
+        self,
+        operation: ControlledOperation,
+        envelope: dict[str, Any],
+        *,
+        continuation_id: str | None,
+    ) -> dict[str, Any]:
+        if operation.adapter_envelope_schema_version != S12_ADAPTER_ENVELOPE_SCHEMA:
+            return envelope
+        if envelope.get("adapter_result"):
+            return envelope
+        if self.adapter_executor is None:
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_execution_unavailable",
+                error_summary="S12 adapter operation was approved, but no Host adapter executor is configured.",
+            )
+            raise SandboxRuntimeError(
+                "adapter_execution_unavailable",
+                "S12 adapter operation was approved, but no Host adapter executor is configured.",
+                details={"operation_id": operation.operation_id},
+            )
+        if not isinstance(envelope.get("adapter_params"), dict):
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_execution_unavailable",
+                error_summary="S12 adapter operation was approved, but adapter params are unavailable.",
+            )
+            raise SandboxRuntimeError(
+                "adapter_execution_unavailable",
+                "S12 adapter operation was approved, but adapter params are unavailable.",
+                details={"operation_id": operation.operation_id},
+            )
+        try:
+            execution = self.adapter_executor(operation, dict(envelope))
+        except Exception as exc:
+            error_code, error_summary, hint, details = self._adapter_execution_error(exc)
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code=error_code,
+                error_summary=error_summary,
+            )
+            raise SandboxRuntimeError(
+                error_code,
+                error_summary,
+                hint=hint,
+                details={"operation_id": operation.operation_id, **details},
+            ) from exc
+        if not isinstance(execution, dict):
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_result_invalid",
+                error_summary="Host adapter executor returned a non-object result.",
+            )
+            raise SandboxRuntimeError(
+                "adapter_result_invalid",
+                "Host adapter executor returned a non-object result.",
+                details={"operation_id": operation.operation_id},
+            )
+        adapter_result = execution.get("adapter_result")
+        if adapter_result is None:
+            adapter_result = execution
+        if not isinstance(adapter_result, dict) or not adapter_result:
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_result_invalid",
+                error_summary="Host adapter executor did not provide an adapter_result object.",
+            )
+            raise SandboxRuntimeError(
+                "adapter_result_invalid",
+                "Host adapter executor did not provide an adapter_result object.",
+                details={"operation_id": operation.operation_id},
+            )
+        result_summary = execution.get("result_summary") or adapter_result.get("bounded_summary") or {"status": "completed"}
+        if not isinstance(result_summary, dict):
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_result_invalid",
+                error_summary="Host adapter executor returned a non-object result_summary.",
+            )
+            raise SandboxRuntimeError(
+                "adapter_result_invalid",
+                "Host adapter executor returned a non-object result_summary.",
+                details={"operation_id": operation.operation_id},
+            )
+        return {
+            **envelope,
+            "adapter_result": dict(adapter_result),
+            "result_summary": dict(result_summary),
+        }
+
+    def _adapter_execution_error(self, exc: Exception) -> tuple[str, str, str | None, dict[str, Any]]:
+        error_code = str(
+            getattr(exc, "error_code", None)
+            or getattr(exc, "error_type", None)
+            or "adapter_execution_failed"
+        )
+        error_summary = str(getattr(exc, "message", None) or str(exc) or "Host adapter execution failed.")
+        hint = getattr(exc, "hint", None)
+        details = getattr(exc, "details", None)
+        safe_details = dict(details) if isinstance(details, dict) else {}
+        stage = getattr(exc, "stage", None)
+        retryable = getattr(exc, "retryable", None)
+        if stage is not None:
+            safe_details["stage"] = str(stage)
+        if retryable is not None:
+            safe_details["retryable"] = bool(retryable)
+        scrubbed = _scrub_private_adapter_payload(safe_details)
+        return error_code, error_summary, None if hint is None else str(hint), dict(scrubbed) if isinstance(scrubbed, dict) else {}
+
     def _resume_or_return(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
         if operation.status is ControlledOperationStatus.COMPLETED:
             return self._operation_response(operation)
@@ -1171,22 +1598,60 @@ class _ControlSocketServer:
                 details={"operation_id": operation.operation_id},
             )
         claimed = self._wait_for_approval_and_claim(continuation.continuation_id)
-        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
-        completed = replace(
+        return self._complete_running_operation(
             operation,
-            status=ControlledOperationStatus.COMPLETED,
+            envelope,
+            continuation_id=claimed.continuation_id,
+        )
+
+    def _fail_adapter_operation(
+        self,
+        operation: ControlledOperation,
+        continuation_id: str | None,
+        *,
+        error_code: str,
+        error_summary: str,
+    ) -> None:
+        if continuation_id is not None:
+            self._fail_claimed_operation(
+                operation,
+                continuation_id,
+                error_code=error_code,
+                error_summary=error_summary,
+            )
+            return
+        failed = replace(
+            operation,
+            status=ControlledOperationStatus.FAILED,
             approval_state=ApprovalRequestStatus.APPROVED.value,
-            result_summary=result_summary,
+            error_code=error_code,
+            error_summary=error_summary,
             updated_at=utc_now_iso(),
         )
-        if completed.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA:
-            completed = replace(
-                completed,
-                adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
-            )
-        self.repositories.controlled_operations.save(completed)
-        self.repositories.continuation_states.complete(claimed.continuation_id)
-        return self._operation_response(completed)
+        self.repositories.controlled_operations.save(failed)
+
+    def _fail_claimed_operation(
+        self,
+        operation: ControlledOperation,
+        continuation_id: str,
+        *,
+        error_code: str,
+        error_summary: str,
+    ) -> None:
+        failed = replace(
+            operation,
+            status=ControlledOperationStatus.FAILED,
+            approval_state=ApprovalRequestStatus.APPROVED.value,
+            error_code=error_code,
+            error_summary=error_summary,
+            updated_at=utc_now_iso(),
+        )
+        self.repositories.controlled_operations.save(failed)
+        self.repositories.continuation_states.fail(
+            continuation_id,
+            error_code=error_code,
+            error_message=error_summary,
+        )
 
     def _wait_for_approval_and_claim(self, continuation_id: str) -> ContinuationState:
         while not self._stop.is_set():
@@ -1300,6 +1765,26 @@ class SandboxRuntimeService:
     log_root: Path | None = None
     execution_backend: str = "podman"
     podman_binary: str = "podman"
+    adapter_executor: SandboxAdapterExecutor | None = None
+    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
+
+    def _local_pipeline_sdk_src(self) -> Path | None:
+        candidate = Path(__file__).resolve().parents[3] / "openzyme-pipeline" / "src"
+        if (candidate / "openzyme_pipeline").is_dir():
+            return candidate
+        return None
+
+    def _prepare_pipeline_sdk_src(self, *, workspace_path: Path) -> Path | None:
+        sdk_src = self._local_pipeline_sdk_src()
+        if sdk_src is None:
+            return None
+        runtime_src = workspace_path / "sdk_src"
+        if runtime_src.exists():
+            shutil.rmtree(runtime_src)
+        shutil.copytree(sdk_src, runtime_src)
+        for path in (runtime_src, *runtime_src.rglob("*")):
+            path.chmod(0o755 if path.is_dir() else 0o644)
+        return runtime_src
 
     def list_files(
         self,
@@ -1589,6 +2074,9 @@ class SandboxRuntimeService:
             source_tree_digest=str(run.source_tree_digest),
             task_id=task_id,
             lane_id=lane_id,
+            workspace_root=self.workspace_root,
+            adapter_executor=self.adapter_executor,
+            hpc_fetch_executor=self.hpc_fetch_executor,
         )
         completed: subprocess.CompletedProcess[str] | None = None
         started = time.monotonic()
@@ -1603,6 +2091,9 @@ class SandboxRuntimeService:
                 timeout_seconds=timeout_seconds,
                 user_env=user_env,
                 socket_path=socket_path,
+                session_id=session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                sandbox_run_id=run.sandbox_run_id,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
             return self._finish_run(
@@ -1863,22 +2354,47 @@ class SandboxRuntimeService:
             raise SandboxRuntimeError("sandbox_env_forbidden", f"environment key {text_key!r} is not allowlisted")
         return safe
 
-    def _subprocess_env(self, user_env: dict[str, str], socket_path: Path) -> dict[str, str]:
+    def _subprocess_env(
+        self,
+        user_env: dict[str, str],
+        socket_path: Path,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        sandbox_run_id: str,
+    ) -> dict[str, str]:
         env = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
             "OPENZYME_CONTROL_SOCKET": str(socket_path),
             "OPENZYME_SANDBOX_MODE": "s10",
+            "OPENZYME_SESSION_ID": session_id,
+            "OPENZYME_SANDBOX_WORKSPACE_ID": sandbox_workspace_id,
+            "OPENZYME_SANDBOX_RUN_ID": sandbox_run_id,
         }
         env.update(user_env)
         return env
 
-    def _container_env(self, user_env: dict[str, str]) -> dict[str, str]:
+    def _container_env(
+        self,
+        user_env: dict[str, str],
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        sandbox_run_id: str,
+    ) -> dict[str, str]:
         env = {
             "OPENZYME_CONTROL_SOCKET": "/openzyme/control.sock",
+            "PYTHONPATH": "/openzyme/sdk",
             "OPENZYME_SANDBOX_MODE": "s10",
+            "OPENZYME_SESSION_ID": session_id,
+            "OPENZYME_SANDBOX_WORKSPACE_ID": sandbox_workspace_id,
+            "OPENZYME_SANDBOX_RUN_ID": sandbox_run_id,
         }
+        user_pythonpath = user_env.get("PYTHONPATH")
         env.update(user_env)
+        if user_pythonpath:
+            env["PYTHONPATH"] = f"/openzyme/sdk:{user_pythonpath}"
         return env
 
     def _run_process(
@@ -1892,21 +2408,28 @@ class SandboxRuntimeService:
         timeout_seconds: int,
         user_env: dict[str, str],
         socket_path: Path,
+        session_id: str,
+        sandbox_workspace_id: str,
+        sandbox_run_id: str,
     ) -> subprocess.CompletedProcess[str]:
         if self.execution_backend == "local":
-            return subprocess.run(
+            return self._run_process_with_active_timeout(
                 list(argv),
                 cwd=str(cwd_host),
-                env=self._subprocess_env(user_env, socket_path),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
+                env=self._subprocess_env(
+                    user_env,
+                    socket_path,
+                    session_id=session_id,
+                    sandbox_workspace_id=sandbox_workspace_id,
+                    sandbox_run_id=sandbox_run_id,
+                ),
+                timeout_seconds=timeout_seconds,
+                sandbox_run_id=sandbox_run_id,
             )
         if self.execution_backend == "podman":
             if shutil.which(self.podman_binary) is None:
                 raise SandboxRuntimeError("sandbox_image_missing", "podman binary is not available for sandbox.exec")
-            return subprocess.run(
+            return self._run_process_with_active_timeout(
                 self._podman_command(
                     workspace=workspace,
                     workspace_path=workspace_path,
@@ -1914,13 +2437,93 @@ class SandboxRuntimeService:
                     cwd_public=cwd_public,
                     user_env=user_env,
                     socket_path=socket_path,
+                    session_id=session_id,
+                    sandbox_workspace_id=sandbox_workspace_id,
+                    sandbox_run_id=sandbox_run_id,
                 ),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
+                timeout_seconds=timeout_seconds,
+                sandbox_run_id=sandbox_run_id,
             )
         raise SandboxRuntimeError("invalid_tool_arguments", f"unknown sandbox execution backend {self.execution_backend!r}")
+
+    def _run_process_with_active_timeout(
+        self,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int,
+        sandbox_run_id: str,
+    ) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def _drain_output(stream: Any, chunks: list[str]) -> None:
+            try:
+                for chunk in iter(lambda: stream.read(8192), ""):
+                    if not chunk:
+                        break
+                    chunks.append(str(chunk))
+            finally:
+                stream.close()
+
+        stdout_thread = threading.Thread(target=_drain_output, args=(process.stdout, stdout_chunks), daemon=True)
+        stderr_thread = threading.Thread(target=_drain_output, args=(process.stderr, stderr_chunks), daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        started = time.monotonic()
+        paused_started: float | None = None
+        paused_seconds = 0.0
+        while process.poll() is None:
+            now = time.monotonic()
+            if self._sandbox_run_waiting_for_user_approval(sandbox_run_id):
+                if paused_started is None:
+                    paused_started = now
+            elif paused_started is not None:
+                paused_seconds += now - paused_started
+                paused_started = None
+            current_pause = 0.0 if paused_started is None else now - paused_started
+            active_elapsed = now - started - paused_seconds - current_pause
+            if active_elapsed > timeout_seconds:
+                process.kill()
+                process.wait()
+                stdout_thread.join()
+                stderr_thread.join()
+                raise subprocess.TimeoutExpired(
+                    argv,
+                    timeout_seconds,
+                    output="".join(stdout_chunks),
+                    stderr="".join(stderr_chunks),
+                )
+            time.sleep(0.05)
+        process.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+        return subprocess.CompletedProcess(
+            argv,
+            process.returncode,
+            stdout="".join(stdout_chunks),
+            stderr="".join(stderr_chunks),
+        )
+
+    def _sandbox_run_waiting_for_user_approval(self, sandbox_run_id: str) -> bool:
+        for operation in self.repositories.controlled_operations.list_by_run(sandbox_run_id):
+            if operation.status is not ControlledOperationStatus.WAITING_APPROVAL:
+                continue
+            if operation.approval_id is None:
+                continue
+            approval = self.repositories.approvals.get(operation.approval_id)
+            if approval is not None and approval.status is ApprovalRequestStatus.PENDING:
+                return True
+        return False
 
     def _podman_command(
         self,
@@ -1931,10 +2534,20 @@ class SandboxRuntimeService:
         cwd_public: PurePosixPath,
         user_env: dict[str, str],
         socket_path: Path,
+        session_id: str,
+        sandbox_workspace_id: str,
+        sandbox_run_id: str,
     ) -> list[str]:
         env_args = [
             item
-            for key, value in sorted(self._container_env(user_env).items())
+            for key, value in sorted(
+                self._container_env(
+                    user_env,
+                    session_id=session_id,
+                    sandbox_workspace_id=sandbox_workspace_id,
+                    sandbox_run_id=sandbox_run_id,
+                ).items()
+            )
             for item in ("--env", f"{key}={value}")
         ]
         mounts = [
@@ -1945,8 +2558,13 @@ class SandboxRuntimeService:
             f"{workspace_path / 'logs'}:/workspace/logs:Z",
             f"{workspace_path / 'input'}:/workspace/input:ro,Z",
             f"{workspace_path / 'manifest'}:/workspace/manifest:ro,Z",
+            f"{workspace_path / 'input'}:/openzyme/input:ro,Z",
+            f"{workspace_path / 'output'}:/openzyme/output:Z",
+            f"{workspace_path / 'work'}:/openzyme/work:Z",
             f"{socket_path}:/openzyme/control.sock:Z",
         ]
+        if sdk_src := self._prepare_pipeline_sdk_src(workspace_path=workspace_path):
+            mounts.append(f"{sdk_src}:/openzyme/sdk:ro,Z")
         mount_args = [item for mount in mounts for item in ("-v", mount)]
         return [
             self.podman_binary,
@@ -2117,9 +2735,19 @@ def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolRes
     )
 
 
-def register_sandbox_runtime_tools(registry: ToolRegistry, *, agent_id: str | None = None) -> None:
+def register_sandbox_runtime_tools(
+    registry: ToolRegistry,
+    *,
+    agent_id: str | None = None,
+    adapter_executor: SandboxAdapterExecutor | None = None,
+    hpc_fetch_executor: SandboxHpcFetchExecutor | None = None,
+) -> None:
     def _service(context: SessionRuntimeContext) -> SandboxRuntimeService:
-        return SandboxRuntimeService(context.repositories)
+        return SandboxRuntimeService(
+            context.repositories,
+            adapter_executor=adapter_executor,
+            hpc_fetch_executor=hpc_fetch_executor,
+        )
 
     def _workspace_id(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
         raw = invocation.arguments.get("sandbox_workspace_id")

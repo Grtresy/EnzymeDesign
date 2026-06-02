@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+from http import client as http_client
 import json
 from pathlib import Path
 
 import pytest
 
 from openzyme_core import CoreRepositories
+from openzyme_core import ArtifactBoundaryService
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
+from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolInvocation
@@ -16,14 +19,21 @@ from openzyme_core import ToolRegistry
 from openzyme_core import ProtocolService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import ArtifactKind
+from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import RunStatus
+from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
@@ -120,6 +130,12 @@ def _call_vina(control_handler, artifact_id: str = "art_001") -> dict[str, objec
 
 def _content_digest(content: str) -> str:
     return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+
+
+def _payload_digest(payload: object) -> str:
+    return "sha256:" + hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _artifact_digest(repositories: CoreRepositories, artifact_id: str) -> str:
@@ -850,6 +866,75 @@ def _save_fasta_artifact(repositories: CoreRepositories, artifact_id: str = "art
         )
     )
     return artifact_id
+
+
+def _seed_sandbox_adapter_workspace(repositories: CoreRepositories, sandbox_workspace_id: str = "sws_adapter_001") -> str:
+    source_root = Path("/tmp/art_source_snapshot")
+    source_root.mkdir(parents=True, exist_ok=True)
+    (source_root / "pipeline.py").write_text("from openzyme_pipeline import bio_tools\n", encoding="utf-8")
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_source_snapshot",
+            session_id="sess_001",
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.CODE,
+            storage_uri=str(source_root),
+            relative_path="code/sws_adapter_001/source",
+            title="source snapshot",
+            description="Sandbox source tree snapshot",
+            metadata={
+                "semantic_type": "pipeline_source_snapshot",
+                "format": "source_tree",
+                "source_tree_digest": "sha256:source",
+            },
+            created_at="2026-04-20T12:00:05+00:00",
+        )
+    )
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:sandbox-adapter",
+            session_id="sess_001",
+            lane_id="lane_001",
+            task_id="task_001",
+            name="Sandbox adapter",
+            role="executor",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-20T12:00:05+00:00",
+            updated_at="2026-04-20T12:00:05+00:00",
+            idle_since="2026-04-20T12:00:05+00:00",
+            member_id="member_sandbox_adapter",
+        )
+    )
+    repositories.sandbox_workspaces.save(
+        SandboxWorkspaceRecord(
+            sandbox_workspace_id=sandbox_workspace_id,
+            session_id="sess_001",
+            agent_member_id="member_sandbox_adapter",
+            agent_id="agent:sandbox-adapter",
+            focus_task_id="task_001",
+            focus_lane_id="lane_001",
+            status=SandboxWorkspaceStatus.READY,
+            image_ref="openzyme-pipeline-sandbox:s15-test",
+            image_digest="sha256:s15-test",
+            image_version="s15-test",
+            sandbox_protocol_version="s15",
+            image_compatibility=SandboxImageCompatibility.COMPATIBLE,
+            manifest_version="s15.workspace_manifest.v1",
+            volume_digest="",
+            quota_summary={},
+            directory_summary={},
+            materialized_input_artifact_ids=(),
+            registered_artifact_ids=(),
+            source_code_artifact_ids=("art_source_snapshot",),
+            created_at="2026-04-20T12:00:05+00:00",
+            last_attached_at="2026-04-20T12:00:05+00:00",
+        )
+    )
+    return sandbox_workspace_id
 
 
 def _approve_request(repositories: CoreRepositories, approval: ApprovalRequest) -> None:
@@ -1697,6 +1782,193 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     assert "P12345" not in str(status.get("sandbox_outcome", {}))
 
 
+def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = AgentMember(
+        agent_id="agent:executor",
+        session_id=session.session_id,
+        lane_id="lane_001",
+        task_id="task_001",
+        name="executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-05-31T00:00:00+00:00",
+        updated_at="2026-05-31T00:00:00+00:00",
+        member_id="member_executor",
+    )
+    repositories.agents.save(agent)
+    workspace_root = tmp_path / "workspaces"
+    workspace = SandboxWorkspaceService(repositories, workspace_root=workspace_root).create_or_get(
+        session_id=session.session_id,
+        agent_member_id="member_executor",
+        focus_task_id="task_001",
+        focus_lane_id="lane_001",
+    )
+    source_path = workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    source_path.write_text("from openzyme_pipeline import bio\n", encoding="utf-8")
+    snapshot = ArtifactBoundaryService(repositories, workspace_root=workspace_root).snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths=["pipeline.py"],
+        entrypoint="pipeline.py",
+        metadata={"producer": "test"},
+    )
+    params = {
+        "accessions": ["AAB57849.1"],
+        "fields": ["definition"],
+        "output_dir": "/workspace/output/bio/ncbi",
+    }
+    operation = ControlledOperation(
+        operation_id="op_sandbox_provider",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_provider",
+        logical_operation_key="bio.ncbi_fetch_proteins",
+        operation_digest="sha256:operation",
+        params_digest=_payload_digest(params),
+        backend_category="provider_http",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_id="appr_sandbox_provider",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        source_snapshot_artifact_id=snapshot.artifact.artifact_id,
+        source_snapshot_digest=snapshot.source_tree_digest,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio",
+        function_name="ncbi_fetch_proteins",
+        route_policy_id="bio.ncbi_fetch_proteins.provider:v1",
+        placement="provider",
+        selected_backend="provider_http",
+        resource_class="network_io",
+        runtime_packaging_id="provider_http:v1",
+        provider_config_digest="provider_config:ncbi:v1",
+        expected_outputs_summary={"output_dir": "/workspace/output/bio/ncbi"},
+        resource_estimate={"network_io": True},
+        idempotency_key="bio.ncbi_fetch_proteins:" + _payload_digest(params),
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+        sandbox_workspace_root=workspace_root,
+    )
+
+    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+
+    adapter_result = result["adapter_result"]
+    assert adapter_result["provider_request_id"].startswith("provider_req_")
+    assert adapter_result["bounded_summary"]["record_count"] == 1
+    artifact_ids = adapter_result["registered_artifact_ids"]
+    assert len(artifact_ids) == 4
+    artifacts = [repositories.artifacts.get(artifact_id) for artifact_id in artifact_ids]
+    assert all(artifact is not None for artifact in artifacts)
+    relative_paths = {artifact.relative_path for artifact in artifacts if artifact is not None}
+    assert relative_paths == {
+        "bio/ncbi/provider_request.json",
+        "bio/ncbi/provider_observation.json",
+        "bio/ncbi/provider_parsed/proteins.fasta",
+        "bio/ncbi/provider_parsed/proteins.metadata.json",
+    }
+    fasta_artifact = next(
+        artifact
+        for artifact in artifacts
+        if artifact is not None and artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
+    )
+    assert fasta_artifact.metadata is not None
+    assert fasta_artifact.metadata["controlled_operation_id"] == operation.operation_id
+    assert fasta_artifact.metadata["source_code_artifact_id"] == snapshot.artifact.artifact_id
+    assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">AAB57849.1")
+
+
+def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
+    fasta_artifact_id = _save_fasta_artifact(repositories, "art_sandbox_hpc_fasta")
+    workspace = _workspace_payload("sandbox_hpc")
+    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    params = {
+        "input_fasta": staged_fasta,
+        "placement": workspace,
+        "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+        "params": {},
+    }
+    operation = ControlledOperation(
+        operation_id="op_sandbox_hpc_mafft",
+        session_id="sess_001",
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_hpc_mafft",
+        logical_operation_key="bio_tools.mafft",
+        operation_digest="sha256:operation-hpc",
+        params_digest=_payload_digest(params),
+        backend_category="hpc",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        input_artifact_ids=(fasta_artifact_id,),
+        input_artifact_digests=(_artifact_digest(repositories, fasta_artifact_id),),
+        source_snapshot_artifact_id="art_source_snapshot",
+        source_snapshot_digest="sha256:source",
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio_tools",
+        function_name="mafft",
+        route_policy_id="bio_tools.mafft.hpc:v1",
+        placement="hpc",
+        hpc_workspace_id=str(workspace["hpc_workspace_id"]),
+        selected_backend="hpc",
+        resource_class="hpc_batch_small",
+        runtime_packaging_id="hpc_apptainer_sif.aox_hmm_2026_05_30",
+        toolchain_id="mafft_7.520.hpc_apptainer_sif:v1",
+        stage_refs=(staged_fasta,),
+        expected_outputs_summary={"declared_outputs": _bio_tool_outputs("bio_tools.mafft")},
+        resource_estimate={"placement": "hpc", "resource_class": "hpc_batch_small"},
+        idempotency_key="bio_tools.mafft:" + _payload_digest(params),
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+
+    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+
+    run_handle = result["result_summary"]
+    assert run_handle["kind"] == "hpc_run_handle"
+    assert run_handle["operation_id"] == operation.operation_id
+    assert run_handle["runner_run_id"].startswith("runner_run_")
+    adapter_result = result["adapter_result"]
+    assert adapter_result["backend_run_id"] == run_handle["runner_run_id"]
+    assert adapter_result["registered_artifact_ids"] == []
+    fetch = engine.fetch_sandbox_hpc_outputs(
+        {
+            "session_id": "sess_001",
+            "sandbox_workspace_id": sandbox_workspace_id,
+            "hpc_workspace": workspace,
+            "run_id": run_handle["run_id"],
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+        }
+    )
+
+    assert fetch["kind"] == "hpc_fetch_result"
+    assert fetch["registered_artifact_ids"]
+    artifacts = repositories.artifacts.list_by_run(str(run_handle["run_id"]))
+    assert {artifact.artifact_id for artifact in artifacts} == set(fetch["registered_artifact_ids"])
+    assert {artifact.relative_path for artifact in artifacts} == {"bio_tools/mafft/alignment.fasta"}
+    artifact = artifacts[0]
+    assert artifact.metadata is not None
+    assert artifact.metadata["source"] == "sandbox_artifact_boundary"
+    assert artifact.metadata["pipeline_invocation_id"] == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
+    assert artifact.metadata["sdk_method"] == "bio_tools.mafft"
+
+
 def test_pipeline_bio_requires_output_dir_before_approval() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
@@ -2074,6 +2346,89 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
     parsed = next(artifact for artifact in result.artifacts if artifact.relative_path == "provider_parsed/parsed_hits.csv")
     assert "hit1,HIT001,1e-42,1834.7" in parsed.content
     assert "hit2,A0A_TEST,0.0,3153.7" in parsed.content
+
+
+def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    hmm_artifact = repositories.artifacts.get(_save_hmm_artifact(repositories))
+    assert hmm_artifact is not None
+    calls: list[str] = []
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        url = request.full_url
+        calls.append(url)
+        if request.get_method() == "POST":
+            return FakeHttpResponse(body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}')
+        assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
+        return FakeHttpResponse(
+            body=json.dumps(
+                {
+                    "status": "SUCCESS",
+                    "database": "refprot",
+                    "page_count": 4,
+                    "result": {
+                        "hits": [
+                            {"name": "hit1", "acc": "HIT001", "evalue": 1e-42, "score": 1834.7},
+                            {"name": "hit2", "acc": "HIT002", "evalue": 1e-30, "score": 1200.0},
+                            {"name": "hit3", "acc": "HIT003", "evalue": 1e-10, "score": 300.0},
+                        ]
+                    },
+                }
+            )
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ebi_hmmer_email="operator@example.test"),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    result = adapter.hmmer_search(
+        hmm_artifact=hmm_artifact,
+        database="refprot",
+        params={"max_hits": 2, "page_size": 2},
+        retrieved_at="2026-05-30T00:00:00+00:00",
+    )
+
+    assert not any("?format=json" in url for url in calls)
+    assert result.summary["hit_count"] == 2
+    assert result.summary["pagination"]["truncated"] is True
+    assert result.summary["pagination"]["max_hits"] == 2
+    assert result.summary["pagination"]["page_size"] == 2
+    assert any(item["warning_code"] == "provider_result_truncated" for item in result.warnings)
+    parsed = next(artifact for artifact in result.artifacts if artifact.relative_path == "provider_parsed/parsed_hits.csv")
+    assert "hit1,HIT001,1e-42,1834.7" in parsed.content
+    assert "hit2,HIT002,1e-30,1200.0" in parsed.content
+    assert "hit3" not in parsed.content
+
+
+def test_provider_http_adapter_retries_remote_disconnect() -> None:
+    calls = 0
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise http_client.RemoteDisconnected("remote closed")
+        return FakeHttpResponse(body=">seq\nMSEQ\n")
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ncbi_email="operator@example.test"),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    result = adapter.ncbi_fetch_proteins(
+        accessions=("NP_001230.1",),
+        fields=(),
+        retrieved_at="2026-05-30T00:00:00+00:00",
+    )
+
+    assert calls == 2
+    assert result.summary["accession_count"] == 1
 
 
 def test_pipeline_bio_hmmer_search_persists_raw_and_parsed_hits() -> None:

@@ -34,13 +34,18 @@ class HpcWorkspace:
 
     def fetch_outputs(self, run: dict[str, Any] | str) -> dict[str, Any]:
         run_id = run if isinstance(run, str) else str(run.get("run_id") or "")
+        run_payload = {} if isinstance(run, str) else dict(run)
+        params: dict[str, Any] = {
+            "hpc_workspace": self.to_dict(),
+            "run_id": run_id,
+        }
+        for key in ("operation_id", "operation_digest", "adapter_result_envelope"):
+            if key in run_payload:
+                params[key] = run_payload[key]
         return dict(
             call(
                 "hpc.fetch_outputs",
-                {
-                    "hpc_workspace": self.to_dict(),
-                    "run_id": run_id,
-                },
+                params,
             )
         )
 

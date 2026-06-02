@@ -774,6 +774,24 @@ class ApprovalRequestRepository:
         ]
 
 
+def _coerce_inbox_participant_kind(value: Any, participant: Any) -> InboxParticipantKind:
+    if value not in {None, ""}:
+        try:
+            return InboxParticipantKind(str(value))
+        except ValueError:
+            pass
+    participant_text = str(participant or "")
+    if participant_text.startswith("agent:"):
+        return InboxParticipantKind.AGENT
+    if participant_text.startswith("user:") or participant_text == "user":
+        return InboxParticipantKind.USER
+    if participant_text == "harness":
+        return InboxParticipantKind.HARNESS
+    if participant_text == "system":
+        return InboxParticipantKind.SYSTEM
+    return InboxParticipantKind.SYSTEM
+
+
 @dataclass(slots=True)
 class InboxMessageRepository:
     connection: sqlite3.Connection
@@ -890,9 +908,9 @@ class InboxMessageRepository:
             message_id=row["message_id"],
             session_id=row["session_id"],
             sender=row["sender"],
-            sender_kind=InboxParticipantKind(row["sender_kind"]),
+            sender_kind=_coerce_inbox_participant_kind(row["sender_kind"], row["sender"]),
             recipient=row["recipient"],
-            recipient_kind=InboxParticipantKind(row["recipient_kind"]),
+            recipient_kind=_coerce_inbox_participant_kind(row["recipient_kind"], row["recipient"]),
             message_type=row["message_type"],
             correlation_id=row["correlation_id"],
             payload_ref=row["payload_ref"],
@@ -1881,6 +1899,8 @@ class ContinuationStateRepository:
         existing = self.get_by_approval_id(approval_id)
         if existing is None:
             return None
+        if decision == "approved" and existing.status is ContinuationStateStatus.CLAIMED:
+            return existing
         if existing.status.is_terminal:
             return existing
         status = (

@@ -4,6 +4,7 @@ import json
 import os
 import socket
 from dataclasses import dataclass
+import hashlib
 from typing import Any
 from uuid import uuid4
 
@@ -81,4 +82,62 @@ def call(method: str, params: dict[str, Any]) -> Any:
     return ControlClient().call(method, params)
 
 
-__all__ = ["ControlClient", "PipelineSdkError", "call"]
+def supervised_sandbox_mode() -> bool:
+    return os.environ.get("OPENZYME_SANDBOX_MODE") in {"s10", "s12"}
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def controlled_operation(
+    *,
+    sdk_module: str,
+    function_name: str,
+    route_policy_id: str,
+    params: dict[str, Any],
+    expected_outputs: Any,
+    resource_estimate: dict[str, Any] | None = None,
+    input_artifact_ids: list[str] | None = None,
+    input_artifact_digests: list[str] | None = None,
+    placement: str = "provider",
+    hpc_workspace_id: str | None = None,
+    stage_refs: list[dict[str, Any]] | None = None,
+    planned_fetch_intent: dict[str, Any] | None = None,
+    adapter_result: dict[str, Any] | None = None,
+    result_summary: dict[str, Any] | None = None,
+) -> Any:
+    params_digest = canonical_digest(params)
+    envelope: dict[str, Any] = {
+        "schema_version": "s12.adapter_envelope.v1",
+        "sdk_module": sdk_module,
+        "function_name": function_name,
+        "route_policy_id": route_policy_id,
+        "idempotency_key": f"{sdk_module}.{function_name}:{params_digest}",
+        "params_digest": params_digest,
+        "params": dict(params),
+        "input_artifact_ids": list(input_artifact_ids or []),
+        "input_artifact_digests": list(input_artifact_digests or []),
+        "expected_outputs": expected_outputs,
+        "resource_estimate": dict(resource_estimate or {}),
+        "placement": placement,
+        "stage_refs": [dict(item) for item in stage_refs or []],
+        "planned_fetch_intent": dict(planned_fetch_intent or {}),
+        "adapter_result": dict(adapter_result or {}),
+    }
+    if hpc_workspace_id:
+        envelope["hpc_workspace_id"] = hpc_workspace_id
+    if result_summary is not None:
+        envelope["result_summary"] = dict(result_summary)
+    return call("s10.controlled_operation", envelope)
+
+
+__all__ = [
+    "ControlClient",
+    "PipelineSdkError",
+    "call",
+    "canonical_digest",
+    "controlled_operation",
+    "supervised_sandbox_mode",
+]

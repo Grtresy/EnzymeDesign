@@ -109,12 +109,16 @@ def _service(
     *,
     workspace_root: Path,
     log_root: Path,
+    adapter_executor=None,
+    hpc_fetch_executor=None,
 ) -> SandboxRuntimeService:
     return SandboxRuntimeService(
         repositories,
         workspace_root=workspace_root,
         log_root=log_root,
         execution_backend="local",
+        adapter_executor=adapter_executor,
+        hpc_fetch_executor=hpc_fetch_executor,
     )
 
 
@@ -452,6 +456,59 @@ def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: P
     assert completed_continuation.claimed_by == f"sandbox-supervisor:{run.sandbox_run_id}"
 
 
+def test_sandbox_exec_timeout_excludes_pending_approval_wait(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s10_wait.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import call\n"
+            "result = call('s10.controlled_operation', {\n"
+            "    'schema_version': 's10.supervised_rpc.v1',\n"
+            "    'idempotency_key': 'op_wait_001',\n"
+            "    'logical_operation_key': 'fake.wait_for_human',\n"
+            "    'params_digest': 'sha256:params-wait',\n"
+            "    'backend_category': 'provider_http',\n"
+            "    'expected_outputs_summary': {'kind': 'json'},\n"
+            "    'resource_estimate': {'seconds': 1},\n"
+            "    'result_summary': {'message': 'approved after wait'},\n"
+            "})\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s10_wait.py"],
+            timeout_seconds=2,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    time.sleep(2.25)
+    assert thread.is_alive()
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["result_summary"] == {"message": "approved after wait"}
+
+
 def test_sandbox_exec_controlled_operation_reject_returns_sdk_error(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
@@ -761,6 +818,419 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.adapter_result_envelope == result_envelope
+
+
+def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_bio_sdk.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline import bio\n"
+            "result = bio.ncbi_fetch_proteins(\n"
+            "    accessions=['AAB57849.1'],\n"
+            "    output_dir='/workspace/output/bio/ncbi',\n"
+            "    fields=['definition'],\n"
+            ")\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_bio_sdk.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    assert operation.adapter_envelope_schema_version == "s12.adapter_envelope.v1"
+    assert operation.sdk_module == "bio"
+    assert operation.function_name == "ncbi_fetch_proteins"
+    assert operation.route_policy_id == "bio.ncbi_fetch_proteins.provider:v1"
+    assert operation.selected_backend == "provider_http"
+    assert operation.provider_config_digest == "provider_config:ncbi:v1"
+    assert operation.expected_outputs_summary == {"output_dir": "/workspace/output/bio/ncbi"}
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.FAILED
+    assert run.error_code == "sandbox_exec_nonzero"
+    assert "adapter_execution_unavailable" in run.stderr_summary
+    assert "sandbox_transport_method_forbidden" not in run.stderr_summary
+    persisted = repositories.controlled_operations.get(operation.operation_id)
+    assert persisted is not None
+    assert persisted.status is ControlledOperationStatus.FAILED
+    assert persisted.error_code == "adapter_execution_unavailable"
+
+
+def test_sandbox_exec_public_bio_sdk_uses_adapter_executor_after_approval(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        calls.append({"operation_id": operation.operation_id, "params": dict(envelope["adapter_params"])})
+        return {
+            "adapter_result": {
+                "status": "succeeded",
+                "provider_request_id": "provider_req_core",
+                "registered_artifact_ids": ["artifact_provider_core"],
+                "output_artifact_ids": ["artifact_provider_core"],
+                "validation_results": {"artifact_provider_core": {"passed": True}},
+                "bounded_summary": {"provider": "ncbi", "record_count": 1},
+                "warnings": [],
+            },
+            "result_summary": {"provider": "ncbi", "record_count": 1},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_bio_sdk.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline import bio\n"
+            "result = bio.ncbi_fetch_proteins(\n"
+            "    accessions=['AAB57849.1'],\n"
+            "    output_dir='/workspace/output/bio/ncbi',\n"
+            "    fields=['definition'],\n"
+            ")\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_bio_sdk.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["adapter_result_envelope"]["provider_request_id"] == "provider_req_core"
+    assert payload["adapter_result_envelope"]["registered_artifact_ids"] == ["artifact_provider_core"]
+    assert calls == [
+        {
+            "operation_id": operation.operation_id,
+            "params": {
+                "accessions": ["AAB57849.1"],
+                "fields": ["definition"],
+                "output_dir": "/workspace/output/bio/ncbi",
+            },
+        }
+    ]
+    persisted = repositories.controlled_operations.get(operation.operation_id)
+    assert persisted is not None
+    assert persisted.status is ControlledOperationStatus.COMPLETED
+    assert persisted.error_code is None
+
+
+def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    adapter_calls: list[dict[str, object]] = []
+    fetch_calls: list[dict[str, object]] = []
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        params = dict(envelope["adapter_params"])
+        adapter_calls.append({"operation_id": operation.operation_id, "params": params})
+        run_handle = {
+            "kind": "hpc_run_handle",
+            "run_id": "run_hpc_core",
+            "runner_run_id": "runner_hpc_core",
+            "status": "succeeded",
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "hpc_workspace_id": operation.hpc_workspace_id,
+            "declared_outputs": list(params["expected_outputs"]),
+            "summary": "bio_tools.mafft placement operation succeeded",
+            "warnings": [],
+        }
+        return {
+            "adapter_result": {
+                "status": "succeeded",
+                "backend_run_id": "runner_hpc_core",
+                "fetch_refs": [],
+                "registered_artifact_ids": [],
+                "output_artifact_ids": [],
+                "bounded_summary": run_handle,
+                "warnings": [],
+            },
+            "result_summary": run_handle,
+        }
+
+    def _hpc_fetch_executor(params: dict[str, object]) -> dict[str, object]:
+        fetch_calls.append(dict(params))
+        return {
+            "kind": "hpc_fetch_result",
+            "run_id": params["run_id"],
+            "status": "succeeded",
+            "registered_artifact_ids": ["artifact_alignment_core"],
+            "fetch_refs": [
+                {
+                    "fetch_ref_id": "fetch_alignment_core",
+                    "run_id": params["run_id"],
+                    "declared_output_path": "bio_tools/mafft/alignment.fasta",
+                    "registered_artifact_id": "artifact_alignment_core",
+                    "output_digest": "sha256:alignment",
+                }
+            ],
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+        hpc_fetch_executor=_hpc_fetch_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_bio_tools_fetch.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts, bio_tools, hpc\n"
+            "path = Path('output/inputs/reference.fasta')\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "path.write_text('>one\\nMSEQONE\\n>two\\nMSEQTWO\\n', encoding='utf-8')\n"
+            "registered = artifacts.register('/workspace/output/inputs/reference.fasta', kind='sequence', format='fasta')\n"
+            "ws = hpc.workspace('aox_hmm')\n"
+            "stage_ref = ws.stage_artifact(registered['artifact']['artifact_id'], workspace_path='inputs/reference.fasta')\n"
+            "run = bio_tools.mafft(\n"
+            "    input_fasta=stage_ref,\n"
+            "    placement=ws,\n"
+            "    expected_outputs=[{'path': 'bio_tools/mafft/alignment.fasta', 'kind': 'sequence', 'format': 'fasta'}],\n"
+            ")\n"
+            "fetch = ws.fetch_outputs(run)\n"
+            "print(json.dumps({'run': run, 'fetch': fetch}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_bio_tools_fetch.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["run"]["kind"] == "hpc_run_handle"
+    assert payload["run"]["run_id"] == "run_hpc_core"
+    assert payload["run"]["operation_id"] == operation.operation_id
+    assert payload["fetch"]["registered_artifact_ids"] == ["artifact_alignment_core"]
+    assert adapter_calls[0]["operation_id"] == operation.operation_id
+    assert fetch_calls[0]["operation_id"] == operation.operation_id
+    assert fetch_calls[0]["operation_digest"] == operation.operation_digest
+    persisted = repositories.controlled_operations.get(operation.operation_id)
+    assert persisted is not None
+    assert persisted.status is ControlledOperationStatus.COMPLETED
+    assert persisted.adapter_result_envelope is not None
+    assert persisted.adapter_result_envelope["registered_artifact_ids"] == ["artifact_alignment_core"]
+    assert persisted.adapter_result_envelope["fetch_refs"][0]["fetch_ref_id"] == "fetch_alignment_core"
+
+
+def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_bio_tools_sdk.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts, bio_tools, hpc\n"
+            "path = Path('output/inputs/reference.fasta')\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "path.write_text('>one\\nMSEQONE\\n>two\\nMSEQTWO\\n', encoding='utf-8')\n"
+            "registered = artifacts.register('/workspace/output/inputs/reference.fasta', kind='sequence', format='fasta')\n"
+            "artifact_id = registered['artifact']['artifact_id']\n"
+            "ws = hpc.workspace('aox_hmm')\n"
+            "stage_ref = ws.stage_artifact(artifact_id, workspace_path='inputs/reference.fasta')\n"
+            "result = bio_tools.mafft(\n"
+            "    input_fasta=stage_ref,\n"
+            "    placement=ws,\n"
+            "    expected_outputs=[{'path': 'bio_tools/mafft/alignment.fasta', 'kind': 'sequence', 'format': 'fasta'}],\n"
+            ")\n"
+            "print(json.dumps({'registered': registered, 'stage_ref': stage_ref, 'result': result}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_bio_tools_sdk.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    assert operation.adapter_envelope_schema_version == "s12.adapter_envelope.v1"
+    assert operation.sdk_module == "bio_tools"
+    assert operation.function_name == "mafft"
+    assert operation.route_policy_id == "bio_tools.mafft.hpc:v1"
+    assert operation.selected_backend == "hpc"
+    assert operation.placement == "hpc"
+    assert operation.hpc_workspace_id
+    assert len(operation.stage_refs) == 1
+    assert operation.stage_refs[0]["kind"] == "hpc_stage_ref"
+    assert operation.stage_refs[0]["artifact_id"]
+    assert operation.planned_fetch_intent == {
+        "declared_outputs": [
+            {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence", "format": "fasta"}
+        ]
+    }
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.FAILED
+    assert run.error_code == "sandbox_exec_nonzero"
+    assert "adapter_execution_unavailable" in run.stderr_summary
+    registered_artifacts = [
+        artifact for artifact in repositories.artifacts.list_by_session(session.session_id)
+        if artifact.relative_path == "inputs/reference.fasta"
+    ]
+    assert registered_artifacts
+    assert "sandbox_transport_method_forbidden" not in run.stderr_summary
+    persisted = repositories.controlled_operations.get(operation.operation_id)
+    assert persisted is not None
+    assert persisted.status is ControlledOperationStatus.FAILED
+    assert persisted.error_code == "adapter_execution_unavailable"
+
+
+def test_sandbox_exec_public_hpc_fetch_outputs_fails_structured_without_run(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_hpc_fetch.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline import hpc\n"
+            "from openzyme_pipeline.client import PipelineSdkError\n"
+            "ws = hpc.workspace('aox_hmm')\n"
+            "try:\n"
+            "    ws.fetch_outputs({'run_id': 'run_missing'})\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({'error_code': exc.error_code, 'message': exc.message}, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected hpc.fetch_outputs to fail')\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/public_hpc_fetch.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == {
+        "error_code": "hpc_fetch_not_declared",
+        "message": "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
+    }
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
 
 
 def test_sandbox_exec_s12_route_policy_failures_do_not_create_operations(
@@ -1385,19 +1855,20 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
 
     monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
 
-    def fake_run(
+    def fake_active_timeout(
+        self: SandboxRuntimeService,
         command: list[str],
         *,
-        capture_output: bool,
-        text: bool,
-        timeout: int,
-        check: bool,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int,
+        sandbox_run_id: str,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, timeout, check
+        del self, cwd, env, timeout_seconds, sandbox_run_id
         captured["command"] = command
         return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(SandboxRuntimeService, "_run_process_with_active_timeout", fake_active_timeout)
 
     run = service.exec_command(
         session_id=session.session_id,
@@ -1415,5 +1886,7 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     assert "--pids-limit=256" in command
     assert any(item.endswith(":/workspace:ro,Z") for item in command)
     assert any(item.endswith(":/workspace/input:ro,Z") for item in command)
+    assert any(item.endswith(":/openzyme/sdk:ro,Z") for item in command)
+    assert "PYTHONPATH=/openzyme/sdk" in command
     assert "/openzyme/control.sock" in " ".join(command)
     assert command[-3:] == [workspace.image_ref, "python", "src/podman.py"]

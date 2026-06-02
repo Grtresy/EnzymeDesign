@@ -508,12 +508,27 @@ def build_teammate_registry(
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
+    adapter_executor = None
+    hpc_fetch_executor = None
+    if engine_registry is not None:
+        execution_engine = engine_registry.get("execution")
+        candidate = getattr(execution_engine, "execute_sandbox_adapter_operation", None)
+        if callable(candidate):
+            adapter_executor = candidate
+        candidate = getattr(execution_engine, "fetch_sandbox_hpc_outputs", None)
+        if callable(candidate):
+            hpc_fetch_executor = candidate
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
     register_artifact_boundary_tools(registry)
     register_sandbox_workspace_tools(registry, agent_id=agent_id)
-    register_sandbox_runtime_tools(registry, agent_id=agent_id)
+    register_sandbox_runtime_tools(
+        registry,
+        agent_id=agent_id,
+        adapter_executor=adapter_executor,
+        hpc_fetch_executor=hpc_fetch_executor,
+    )
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
     return registry

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from http import client as http_client
 import hashlib
 import json
 import os
@@ -32,6 +33,7 @@ from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ArtifactKind
+from openzyme_domain import ControlledOperation
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import MemoryEntry
@@ -1346,6 +1348,18 @@ class ProviderHttpBioDatabaseAdapter:
                 details={"provider": "ebi_hmmer", "database": database},
             )
         hmm_text = Path(hmm_artifact.storage_uri).read_text(encoding="utf-8", errors="replace")
+        max_hits = self._hmmer_positive_int_param(
+            params,
+            key="max_hits",
+            default=self.config.hmmer_max_hits,
+            cap=self.config.hmmer_max_hits,
+        )
+        page_size = self._hmmer_positive_int_param(
+            params,
+            key="page_size",
+            default=self.config.hmmer_page_size,
+            cap=self.config.hmmer_page_size,
+        )
         request_payload = {"input": hmm_text, "database": normalized_database}
         if "evalue" in params and "E" not in params and params["evalue"] is not None:
             request_payload["E"] = str(params["evalue"])
@@ -1384,14 +1398,17 @@ class ProviderHttpBioDatabaseAdapter:
             base,
             job_id,
             first_payload=status_payload,
+            page_size=page_size,
+            max_hits=max_hits,
         )
-        hits = [
+        raw_hits = [
             hit
             for payload in result_payloads
             for hit in list(dict(payload.get("result") or {}).get("hits") or [])
         ]
-        truncated = len(hits) > self.config.hmmer_max_hits
-        hits = hits[: self.config.hmmer_max_hits]
+        page_count = self._hmmer_page_count(result_payloads[-1].get("page_count")) if result_payloads else None
+        truncated = len(raw_hits) > max_hits or (page_count is not None and len(result_payloads) < page_count)
+        hits = raw_hits[:max_hits]
         warnings: list[dict[str, Any]] = []
         if not hits:
             warnings.append(
@@ -1424,7 +1441,12 @@ class ProviderHttpBioDatabaseAdapter:
             "hit_count": len(hits),
             "warning_count": len(warnings),
             "provider_job_id": job_id,
-            "pagination": {"page_count": len(result_payloads), "truncated": truncated},
+            "pagination": {
+                "page_count": len(result_payloads),
+                "truncated": truncated,
+                "page_size": page_size,
+                "max_hits": max_hits,
+            },
         }
         return BioSdkResult(
             provider="ebi_hmmer",
@@ -1446,7 +1468,12 @@ class ProviderHttpBioDatabaseAdapter:
                     *status_requests,
                     *result_requests,
                 ],
-                "pagination": {"page_count": len(result_payloads), "truncated": truncated},
+                "pagination": {
+                    "page_count": len(result_payloads),
+                    "truncated": truncated,
+                    "page_size": page_size,
+                    "max_hits": max_hits,
+                },
             },
             artifacts=(
                 self._draft(
@@ -1539,7 +1566,55 @@ class ProviderHttpBioDatabaseAdapter:
                     retryable=True,
                     details={"reason": _scrub_provider_text(str(exc.reason))},
                 ) from exc
+            except (http_client.RemoteDisconnected, ConnectionError, OSError) as exc:
+                if attempt < attempts - 1:
+                    self._sleep(self._retry_delay(attempt))
+                    continue
+                raise self._provider_failure(
+                    sdk_method,
+                    "provider_unavailable",
+                    "Provider endpoint was unavailable.",
+                    "Retry after provider recovery.",
+                    stage,
+                    retryable=True,
+                    details={"reason": _scrub_provider_text(str(exc))},
+                ) from exc
         raise AssertionError("unreachable provider request retry loop")
+
+    def _hmmer_positive_int_param(
+        self,
+        params: dict[str, Any],
+        *,
+        key: str,
+        default: int,
+        cap: int,
+    ) -> int:
+        value = params.get(key)
+        if value in {None, ""}:
+            return max(1, int(default))
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message=f"bio.hmmer_search params.{key} must be a positive integer.",
+                hint=f"Retry with params.{key} omitted or set to a positive integer.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", key: str(value)},
+            ) from exc
+        if parsed <= 0:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message=f"bio.hmmer_search params.{key} must be a positive integer.",
+                hint=f"Retry with params.{key} omitted or set to a positive integer.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={"provider": "ebi_hmmer", key: str(value)},
+            )
+        return min(parsed, max(1, int(cap)))
 
     def _http_failure(
         self,
@@ -1811,11 +1886,15 @@ class ProviderHttpBioDatabaseAdapter:
         job_id: str,
         *,
         first_payload: dict[str, Any] | None = None,
+        page_size: int,
+        max_hits: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         payloads: list[dict[str, Any]] = []
         requests: list[dict[str, Any]] = []
         if first_payload is not None and isinstance(dict(first_payload.get("result") or {}).get("hits"), list):
             payloads.append(first_payload)
+            if self._hmmer_payload_hit_count(payloads) >= max_hits:
+                return payloads, requests
         page = 1
         while True:
             if page == 1 and payloads:
@@ -1826,7 +1905,7 @@ class ProviderHttpBioDatabaseAdapter:
                 continue
             result_url = (
                 f"{base}/result/{urllib_parse.quote(job_id)}?"
-                + urllib_parse.urlencode({"format": "json", "page": page, "page_size": self.config.hmmer_page_size})
+                + urllib_parse.urlencode({"format": "json", "page": page, "page_size": page_size})
             )
             response = self._http_request("GET", result_url, sdk_method="bio.hmmer_search", stage="provider_results")
             try:
@@ -1845,12 +1924,15 @@ class ProviderHttpBioDatabaseAdapter:
                     "page": page,
                 }
             )
+            if self._hmmer_payload_hit_count(payloads) >= max_hits:
+                return payloads, requests
             page_count = self._hmmer_page_count(payload.get("page_count"))
             if page_count is None or page >= page_count:
                 return payloads, requests
-            if len(payloads) * self.config.hmmer_page_size >= self.config.hmmer_max_hits:
-                return payloads, requests
             page += 1
+
+    def _hmmer_payload_hit_count(self, payloads: list[dict[str, Any]]) -> int:
+        return sum(len(list(dict(payload.get("result") or {}).get("hits") or [])) for payload in payloads)
 
     def _hmmer_page_count(self, page_count: Any) -> int | None:
         if page_count in {None, ""}:
@@ -2867,6 +2949,7 @@ class ExecutionEngine:
     event_emitter: Any | None = None
     sandbox_runner: Any | None = None
     allow_bio_fixture_adapter: bool = False
+    sandbox_workspace_root: Path | None = None
 
     @property
     def descriptor(self) -> EngineDescriptor:
@@ -2890,6 +2973,261 @@ class ExecutionEngine:
 
     def register_tools(self, registry: ToolRegistry) -> None:
         register_execution_tools(registry, self)
+
+    def execute_sandbox_adapter_operation(
+        self,
+        operation: ControlledOperation,
+        envelope: dict[str, Any],
+    ) -> dict[str, Any]:
+        method = f"{operation.sdk_module}.{operation.function_name}"
+        params = envelope.get("adapter_params")
+        if not isinstance(params, dict):
+            raise PipelineSdkFailure(
+                error_type="adapter_execution_unavailable",
+                message="S12 adapter operation is missing typed adapter params.",
+                hint="Use the public openzyme_pipeline SDK so typed params are included in the S12 envelope.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        if operation.sdk_module == "bio" and operation.selected_backend == "provider_http":
+            return self._execute_sandbox_bio_provider_operation(
+                operation=operation,
+                method=method,
+                params=dict(params),
+            )
+        if operation.sdk_module == "bio_tools" and operation.selected_backend == "hpc":
+            return self._execute_sandbox_bio_tool_hpc_operation(
+                operation=operation,
+                method=method,
+                params=dict(params),
+            )
+        raise PipelineSdkFailure(
+            error_type="adapter_execution_unavailable",
+            message=f"{method} does not have a Host adapter executor for selected backend {operation.selected_backend!r}.",
+            hint="Implement the selected backend executor before treating this S15 operation as live-ready.",
+            stage="adapter_route_dispatch",
+            retryable=False,
+            sdk_method=method,
+            details={
+                "operation_id": operation.operation_id,
+                "route_policy_id": operation.route_policy_id,
+                "selected_backend": operation.selected_backend,
+            },
+        )
+
+    def fetch_sandbox_hpc_outputs(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(params.get("session_id") or "")
+        sandbox_workspace_id = str(params.get("sandbox_workspace_id") or "")
+        run_id = str(params.get("run_id") or "")
+        if not session_id or not sandbox_workspace_id or not run_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message="hpc.fetch_outputs requires session, sandbox workspace, and run ids.",
+                hint="Pass the run handle returned by an approved Host-supervised HPC placement operation.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"run_id": run_id, "sandbox_workspace_id": sandbox_workspace_id},
+            )
+        session = self._require_session(session_id)
+        run = self.repositories.runs.get(run_id)
+        if run is None or run.session_id != session_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"HPC run {run_id!r} is not available in this session.",
+                hint="Pass the run handle returned by the approved HPC placement operation.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"run_id": run_id},
+            )
+        invocation = self.repositories.invocations.get(run.invocation_id)
+        if invocation is None or invocation.session_id != session_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"HPC run {run_id!r} is missing its supervising invocation.",
+                hint="Retry through the public openzyme_pipeline bio_tools SDK.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"run_id": run_id, "invocation_id": run.invocation_id},
+            )
+        if self._pipeline_sandbox_workspace_id(invocation) != sandbox_workspace_id:
+            raise PipelineSdkFailure(
+                error_type="hpc_fetch_not_declared",
+                message=f"HPC run {run_id!r} belongs to a different sandbox workspace.",
+                hint="Fetch only the run handle returned in the current sandbox workspace.",
+                stage="hpc_fetch_validation",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={
+                    "run_id": run_id,
+                    "run_sandbox_workspace_id": self._pipeline_sandbox_workspace_id(invocation),
+                    "sandbox_workspace_id": sandbox_workspace_id,
+                },
+            )
+        result = self._run_pipeline_hpc_fetch_outputs(
+            session=session,
+            invocation=invocation,
+            params={
+                "hpc_workspace": dict(params.get("hpc_workspace") or {}),
+                "run_id": run_id,
+            },
+        )
+        return {
+            **result,
+            "operation_id": params.get("operation_id"),
+            "operation_digest": params.get("operation_digest"),
+            "output_artifact_ids": list(result.get("registered_artifact_ids") or []),
+        }
+
+    def _execute_sandbox_bio_tool_hpc_operation(
+        self,
+        *,
+        operation: ControlledOperation,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        route_policy = self._require_bio_tool_route_policy(method)
+        if operation.route_policy_id != route_policy["route_policy_id"]:
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} route policy does not match the approved S12 operation.",
+                hint="Retry through the public SDK so route_policy_id and function name are consistent.",
+                stage="bio_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "operation_id": operation.operation_id,
+                    "operation_route_policy_id": operation.route_policy_id,
+                    "expected_route_policy_id": route_policy["route_policy_id"],
+                },
+            )
+        if operation.task_id is None:
+            raise PipelineSdkFailure(
+                error_type="adapter_execution_unavailable",
+                message=f"{method} sandbox adapter operation is not bound to a task.",
+                hint="Run bio_tools from a task-scoped sandbox teammate.",
+                stage="adapter_context_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        session = self._require_session(operation.session_id)
+        task = self._require_task(operation.session_id, operation.task_id)
+        invocation, operation_key = self._sandbox_adapter_invocation(
+            operation=operation,
+            method=method,
+            params=params,
+        )
+        run_handle = self._run_pipeline_bio_tool(
+            session=session,
+            task=task,
+            invocation=invocation,
+            method=method,
+            params=params,
+        )
+        run_handle = {
+            **run_handle,
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "operation_key": operation_key,
+        }
+        adapter_result = {
+            "status": run_handle.get("status"),
+            "backend_run_id": run_handle.get("runner_run_id") or run_handle.get("run_id"),
+            "fetch_refs": [],
+            "registered_artifact_ids": [],
+            "output_artifact_ids": [],
+            "bounded_summary": run_handle,
+            "warnings": list(run_handle.get("warnings") or []),
+        }
+        self._emit(
+            "sandbox.adapter_operation.hpc_submitted",
+            {
+                "operation_id": operation.operation_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "operation": method,
+                "run_id": run_handle.get("run_id"),
+                "runner_run_id": run_handle.get("runner_run_id"),
+            },
+        )
+        return {"adapter_result": adapter_result, "result_summary": run_handle}
+
+    def _sandbox_adapter_invocation(
+        self,
+        *,
+        operation: ControlledOperation,
+        method: str,
+        params: dict[str, Any],
+    ) -> tuple[EngineInvocation, str]:
+        operation_key = self._pipeline_operation_key(method, params)
+        invocation_id = f"inv_sandbox_adapter_{operation.operation_id}"
+        input_id = f"eng_in_sandbox_adapter_{hashlib.sha256(invocation_id.encode('utf-8')).hexdigest()[:20]}"
+        now = utc_now_iso()
+        invocation = self.repositories.invocations.get(invocation_id)
+        if invocation is None:
+            invocation = EngineInvocation(
+                invocation_id=invocation_id,
+                session_id=operation.session_id,
+                task_id=operation.task_id,
+                lane_id=operation.lane_id,
+                engine_name="sandbox_adapter",
+                status=EngineInvocationStatus.RUNNING,
+                input_ref=input_id,
+                output_ref=None,
+                approval_id=operation.approval_id,
+                idempotency_key=f"sandbox-adapter:{operation.operation_id}",
+                started_at=now,
+            )
+            self.repositories.invocations.save(invocation)
+        pipeline = {
+            "sandbox_workspace_id": operation.sandbox_workspace_id,
+            "source_code_artifact_id": operation.source_snapshot_artifact_id,
+            "source_code_digest": operation.source_snapshot_digest,
+            "source_code_version": None,
+            "code_digest": operation.source_snapshot_digest,
+            "inputs": {
+                "artifact_ids": list(operation.input_artifact_ids),
+                "context_artifact_ids": [],
+            },
+            "approved_operation_keys": [operation_key],
+            "completed_operations": {},
+            "approval_id": operation.approval_id,
+            "sandbox_status": "running",
+            "adapter_operation_id": operation.operation_id,
+        }
+        document = self.repositories.engine_documents.get(input_id)
+        if document is not None:
+            current_payload = dict(document.payload)
+            current_pipeline = dict(current_payload.get("pipeline") or {})
+            completed = dict(current_pipeline.get("completed_operations") or {})
+            approved = list(current_pipeline.get("approved_operation_keys") or [])
+            if operation_key not in approved:
+                approved.append(operation_key)
+            pipeline["completed_operations"] = completed
+            pipeline["approved_operation_keys"] = approved
+            created_at = document.created_at
+        else:
+            created_at = now
+        self.repositories.engine_documents.save(
+            self._document_record(
+                document_id=input_id,
+                session_id=operation.session_id,
+                invocation_id=invocation.invocation_id,
+                document_kind="execution_input",
+                payload={
+                    "task_id": operation.task_id,
+                    "lane_id": operation.lane_id,
+                    "pipeline": pipeline,
+                },
+                created_at=created_at,
+                updated_at=now,
+            )
+        )
+        return invocation, operation_key
 
     def _load_pipeline_source(self, *, session_id: str, code_artifact_id: str) -> PipelineSource:
         artifact = self.repositories.artifacts.get(code_artifact_id)
@@ -4221,7 +4559,7 @@ class ExecutionEngine:
         invocation: EngineInvocation,
     ) -> ArtifactBoundaryService:
         sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
-        workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         workspace_path = workspace_root / sandbox_workspace_id
         for directory in ("src", "input", "work", "output", "logs", "manifest"):
             (workspace_path / directory).mkdir(parents=True, exist_ok=True)
@@ -4312,7 +4650,7 @@ class ExecutionEngine:
             sdk_method="hpc.fetch_outputs",
         )
         sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
-        workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         source_path = workspace_root / sandbox_workspace_id / "output" / relative_path
         self._write_hpc_pending_output_source(source_path, pending)
         self._validate_hpc_pending_output_source(
@@ -4920,6 +5258,28 @@ class ExecutionEngine:
         ).hexdigest()[:16]
         return f"provider_req_{digest}"
 
+    def _sandbox_bio_provider_request_id(
+        self,
+        *,
+        operation: ControlledOperation,
+        output_dir_relative: str,
+        retrieved_at: str,
+    ) -> str:
+        digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "operation_id": operation.operation_id,
+                    "operation_digest": operation.operation_digest,
+                    "sandbox_run_id": operation.sandbox_run_id,
+                    "output_dir": output_dir_relative,
+                    "retrieved_at": retrieved_at,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"provider_req_{digest}"
+
     def _bio_request_metadata(
         self,
         *,
@@ -4960,6 +5320,46 @@ class ExecutionEngine:
             "pipeline_step_id": operation_key,
             "input_artifact_ids": list((pipeline.get("inputs") or {}).get("artifact_ids") or []),
             "preprocess_artifact_ids": list(pipeline.get("preprocess_artifact_ids") or []),
+        }
+
+    def _sandbox_bio_request_metadata(
+        self,
+        *,
+        operation: ControlledOperation,
+        method: str,
+        params: dict[str, Any],
+        output_dir_relative: str,
+        provider_request_id: str,
+        route_policy: dict[str, Any],
+        retrieved_at: str,
+    ) -> dict[str, Any]:
+        return {
+            "sandbox_run_id": operation.sandbox_run_id,
+            "sandbox_workspace_id": operation.sandbox_workspace_id,
+            "controlled_operation_id": operation.operation_id,
+            "sdk_method": method,
+            "provider": BIO_PROVIDER_NAMES.get(method, "unknown"),
+            "provider_request_id": provider_request_id,
+            "route_policy_id": route_policy["route_policy_id"],
+            "selected_backend": route_policy.get("selected_backend"),
+            "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
+            "provider_config_digest": route_policy.get("provider_config_digest"),
+            "evidence_ref": route_policy.get("evidence_ref"),
+            "parameter_inventory_ref": route_policy.get("parameter_inventory_ref"),
+            "approval_requirement": dict(route_policy.get("approval_requirement") or {}),
+            "operation_key": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "params_digest": operation.params_digest,
+            "params": _sanitize_provider_value(params),
+            "output_dir": f"/workspace/output/{output_dir_relative}",
+            "output_dir_relative": output_dir_relative,
+            "retrieved_at": retrieved_at,
+            "source_code_artifact_id": operation.source_snapshot_artifact_id,
+            "source_code_digest": operation.source_snapshot_digest,
+            "source_code_version": None,
+            "pipeline_step_id": operation.operation_id,
+            "input_artifact_ids": list(operation.input_artifact_ids),
+            "preprocess_artifact_ids": [],
         }
 
     def _bio_provider_request_draft(self, request_metadata: dict[str, Any]) -> BioArtifactDraft:
@@ -5141,6 +5541,199 @@ class ExecutionEngine:
                 for record in records
             ],
         }
+
+    def _execute_sandbox_bio_provider_operation(
+        self,
+        *,
+        operation: ControlledOperation,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        route_policy = self._require_bio_route_policy(method)
+        if operation.route_policy_id != route_policy["route_policy_id"]:
+            raise PipelineSdkFailure(
+                error_type="provider_not_configured",
+                message=f"{method} route policy does not match the approved S12 operation.",
+                hint="Retry through the public SDK so route_policy_id and function name are consistent.",
+                stage="provider_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "operation_id": operation.operation_id,
+                    "operation_route_policy_id": operation.route_policy_id,
+                    "expected_route_policy_id": route_policy["route_policy_id"],
+                },
+            )
+        output_dir_relative = self._normalize_bio_output_dir(params.get("output_dir"), sdk_method=method)
+        adapter = self.bio_adapter
+        if adapter is None:
+            raise PipelineSdkFailure(
+                error_type="provider_not_configured",
+                message=f"{method} has no configured real bio provider adapter.",
+                hint="Configure the Host bio provider adapter; do not rely on fixture provider success.",
+                stage="provider_config_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "route_policy_id": route_policy["route_policy_id"],
+                    "selected_backend": route_policy["selected_backend"],
+                    "provider_config_digest": route_policy["provider_config_digest"],
+                },
+            )
+        if isinstance(adapter, DeterministicBioDatabaseAdapter) and not self.allow_bio_fixture_adapter:
+            raise PipelineSdkFailure(
+                error_type="provider_not_configured",
+                message=f"{method} resolved to the deterministic fixture bio adapter.",
+                hint="Use a real Host provider adapter for product execution, or enable the fixture only in focused tests.",
+                stage="provider_config_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "route_policy_id": route_policy["route_policy_id"],
+                    "selected_backend": "fixture",
+                    "required_backend": route_policy["selected_backend"],
+                },
+            )
+        if self.repositories.sessions.get(operation.session_id) is None:
+            raise PipelineSdkFailure(
+                error_type="adapter_execution_unavailable",
+                message=f"Session {operation.session_id!r} is not available for sandbox adapter execution.",
+                hint="Retry in an active session.",
+                stage="adapter_context_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        retrieved_at = utc_now_iso()
+        provider_request_id = self._sandbox_bio_provider_request_id(
+            operation=operation,
+            output_dir_relative=output_dir_relative,
+            retrieved_at=retrieved_at,
+        )
+        request_metadata = self._sandbox_bio_request_metadata(
+            operation=operation,
+            method=method,
+            params=params,
+            output_dir_relative=output_dir_relative,
+            provider_request_id=provider_request_id,
+            route_policy=route_policy,
+            retrieved_at=retrieved_at,
+        )
+        request_draft = self._bio_provider_request_draft(request_metadata)
+        try:
+            if method == "bio.ncbi_fetch_proteins":
+                result = adapter.ncbi_fetch_proteins(
+                    accessions=tuple(str(value) for value in list(params.get("accessions") or [])),
+                    fields=tuple(str(value) for value in list(params.get("fields") or [])),
+                    retrieved_at=retrieved_at,
+                )
+            elif method == "bio.uniprot_fetch":
+                batch_size_value = params.get("batch_size")
+                try:
+                    batch_size = None if batch_size_value is None else int(batch_size_value)
+                except (TypeError, ValueError) as exc:
+                    raise PipelineSdkFailure(
+                        error_type="invalid_batch_size",
+                        message="bio.uniprot_fetch batch_size must be an integer.",
+                        hint="Retry with batch_size omitted or set to a positive integer.",
+                        stage="bio_input_validation",
+                        retryable=False,
+                        sdk_method=method,
+                        details={"batch_size": batch_size_value},
+                    ) from exc
+                result = adapter.uniprot_fetch(
+                    accessions=tuple(str(value) for value in list(params.get("accessions") or [])),
+                    fields=tuple(str(value) for value in list(params.get("fields") or [])),
+                    batch_size=batch_size,
+                    retrieved_at=retrieved_at,
+                )
+            elif method == "bio.hmmer_search":
+                hmm_artifact_id = str(params.get("hmm_artifact_id") or "")
+                hmm_artifact = self.repositories.artifacts.get(hmm_artifact_id)
+                if hmm_artifact is None or hmm_artifact.session_id != operation.session_id:
+                    raise PipelineSdkFailure(
+                        error_type="invalid_hmm_artifact",
+                        message=f"HMM artifact {hmm_artifact_id!r} is not available in this session.",
+                        hint="Pass an existing HMM artifact id produced or uploaded in this session.",
+                        stage="bio_input_validation",
+                        retryable=False,
+                        sdk_method=method,
+                        details={"hmm_artifact_id": hmm_artifact_id},
+                    )
+                hmm_format = str((hmm_artifact.metadata or {}).get("format") or "").lower()
+                if hmm_format != "hmm" and not hmm_artifact.relative_path.lower().endswith(".hmm"):
+                    raise PipelineSdkFailure(
+                        error_type="invalid_hmm_artifact",
+                        message=f"HMM artifact {hmm_artifact_id!r} must declare format=hmm or use a .hmm relative path.",
+                        hint="Pass an HMM artifact produced by bio_tools.hmmbuild or an uploaded HMM file.",
+                        stage="bio_input_validation",
+                        retryable=False,
+                        sdk_method=method,
+                        details={"hmm_artifact_id": hmm_artifact_id, "format": hmm_format},
+                    )
+                result = adapter.hmmer_search(
+                    hmm_artifact=hmm_artifact,
+                    database=str(params.get("database") or ""),
+                    params=dict(params.get("params") or {}),
+                    retrieved_at=retrieved_at,
+                )
+            else:
+                raise PipelineSdkFailure(
+                    error_type="provider_not_configured",
+                    message=f"Unsupported bio SDK operation {method!r}.",
+                    hint="Use one of the registered bio provider SDK functions.",
+                    stage="provider_route_policy_validation",
+                    retryable=False,
+                    sdk_method=method,
+                    details={"method": method},
+                )
+        except PipelineSdkFailure as exc:
+            raise self._normalize_bio_failure(exc) from exc
+        observation_draft = self._bio_provider_observation_draft(
+            request_metadata=request_metadata,
+            result=result,
+            warnings=list(result.warnings),
+            error=None,
+        )
+        records = self._persist_sandbox_bio_artifacts(
+            operation=operation,
+            output_dir_relative=output_dir_relative,
+            operation_key=operation.operation_id,
+            drafts=(request_draft, *result.artifacts, observation_draft),
+            request_metadata=request_metadata,
+        )
+        transcript_manifest = self._bio_transcript_manifest(
+            output_dir_relative=output_dir_relative,
+            records=records,
+            provider_request_id=provider_request_id,
+            route_policy=route_policy,
+        )
+        bounded_summary = {**dict(result.summary), "transcript_manifest": transcript_manifest}
+        adapter_result = {
+            "status": RunStatus.SUCCEEDED.value,
+            "provider_request_id": provider_request_id,
+            "registered_artifact_ids": [record.artifact_id for record in records],
+            "output_artifact_ids": [record.artifact_id for record in records],
+            "validation_results": {
+                record.artifact_id: dict((record.metadata or {}).get("validation") or {})
+                for record in records
+            },
+            "bounded_summary": bounded_summary,
+            "warnings": list(result.warnings),
+            "safe_diagnostics_ref": f"artifact://{provider_request_id}/provider_observation.json",
+        }
+        self._emit(
+            "sandbox.adapter_operation.completed",
+            {
+                "operation_id": operation.operation_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "operation": method,
+                "provider_request_id": provider_request_id,
+                "artifact_ids": [record.artifact_id for record in records],
+                "warning_count": len(result.warnings),
+            },
+        )
+        return {"adapter_result": adapter_result, "result_summary": bounded_summary}
 
     def _run_pipeline_bio(
         self,
@@ -6552,6 +7145,13 @@ class ExecutionEngine:
             request = dict(request)
             runspec = dict(request.get("runspec") or {})
             runspec["metadata"] = metadata
+            declared_outputs = [
+                dict(item)
+                for item in list(pipeline.get("expected_outputs") or [])
+                if isinstance(item, dict) and item.get("path")
+            ]
+            if declared_outputs:
+                runspec["expected_outputs"] = declared_outputs
             request["runspec"] = runspec
         self._update_input_document(invocation, request=request)
         outcome = self.runner.submit_execution(session.session_id, request)
@@ -6902,6 +7502,99 @@ class ExecutionEngine:
                     metadata=metadata,
                     invocation_id=invocation.invocation_id,
                     run_id=run_id,
+                )
+            except ArtifactBoundaryError as exc:
+                raise PipelineSdkFailure(
+                    error_type="provider_artifactization_failed",
+                    message=f"Bio provider output {workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
+                    hint=exc.hint or "Inspect the provider transcript and retry after fixing the adapter output.",
+                    stage="bio_artifact_registration",
+                    retryable=False,
+                    sdk_method=request_metadata.get("sdk_method"),
+                    details={"boundary_error_code": exc.error_code, **exc.details},
+                ) from exc
+            record = result.artifact
+            self._emit(
+                "artifact.recorded",
+                {
+                    "artifact_id": record.artifact_id,
+                    "session_id": record.session_id,
+                    "relative_path": record.relative_path,
+                    "source": "sandbox_artifact_boundary",
+                },
+            )
+            persisted.append(record)
+        return tuple(persisted)
+
+    def _persist_sandbox_bio_artifacts(
+        self,
+        *,
+        operation: ControlledOperation,
+        output_dir_relative: str,
+        operation_key: str,
+        drafts: tuple[BioArtifactDraft, ...],
+        request_metadata: dict[str, Any],
+    ) -> tuple[SessionArtifactRecord, ...]:
+        persisted: list[SessionArtifactRecord] = []
+        workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        output_root = workspace_root / operation.sandbox_workspace_id / "output" / output_dir_relative
+        boundary = ArtifactBoundaryService(self.repositories, workspace_root=workspace_root)
+        for draft in drafts:
+            relative = PurePosixPath(draft.relative_path)
+            relative_path = relative.as_posix()
+            if relative.is_absolute() or not relative_path or any(part in {"", ".", ".."} for part in relative.parts):
+                raise PipelineSdkFailure(
+                    error_type="provider_artifactization_failed",
+                    message=f"Bio SDK generated invalid artifact path {draft.relative_path!r}.",
+                    hint="Retry after fixing the Host bio provider adapter.",
+                    stage="bio_artifact_registration",
+                    retryable=False,
+                    sdk_method=request_metadata.get("sdk_method"),
+                )
+            storage_path = output_root / relative_path
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
+            safe_content = _sanitize_provider_content(draft.content)
+            storage_path.write_text(safe_content, encoding="utf-8")
+            workspace_relative_path = PurePosixPath(output_dir_relative) / relative_path
+            content_digest = _sha256_text(safe_content)
+            self._reject_bio_output_conflict(
+                session_id=operation.session_id,
+                relative_path=workspace_relative_path.as_posix(),
+                content_digest=content_digest,
+                sdk_method=str(request_metadata.get("sdk_method") or ""),
+            )
+            metadata = {
+                **_sanitize_provider_value(draft.metadata),
+                "producer": "host_supervised_bio_provider",
+                "controlled_operation_id": operation.operation_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "sandbox_workspace_id": operation.sandbox_workspace_id,
+                "sdk_method": request_metadata.get("sdk_method"),
+                "provider": request_metadata.get("provider"),
+                "provider_request_id": request_metadata.get("provider_request_id"),
+                "route_policy_id": request_metadata.get("route_policy_id"),
+                "selected_backend": request_metadata.get("selected_backend"),
+                "runtime_packaging_id": request_metadata.get("runtime_packaging_id"),
+                "provider_config_digest": request_metadata.get("provider_config_digest"),
+                "source_code_artifact_id": request_metadata.get("source_code_artifact_id"),
+                "source_code_digest": request_metadata.get("source_code_digest"),
+                "source_code_version": request_metadata.get("source_code_version"),
+                "pipeline_step_id": operation_key,
+                "input_artifact_ids": list(request_metadata.get("input_artifact_ids") or []),
+                "preprocess_artifact_ids": [],
+                "output_dir": request_metadata.get("output_dir"),
+                "content_digest": content_digest,
+            }
+            try:
+                result = boundary.register(
+                    session_id=operation.session_id,
+                    sandbox_workspace_id=operation.sandbox_workspace_id,
+                    path=f"/workspace/output/{workspace_relative_path.as_posix()}",
+                    kind=draft.kind,
+                    format=draft.format,
+                    metadata=metadata,
+                    invocation_id=None,
+                    run_id=None,
                 )
             except ArtifactBoundaryError as exc:
                 raise PipelineSdkFailure(
@@ -7295,6 +7988,11 @@ class ExecutionEngine:
         }
         artifact_ids = [str(value) for value in list(inputs.get("artifact_ids") or [])]
         context_artifact_ids = [str(value) for value in list(inputs.get("context_artifact_ids") or [])]
+        declared_pipeline_outputs = [
+            dict(item)
+            for item in list(inputs.get("expected_outputs") or [])
+            if isinstance(item, dict) and item.get("path")
+        ]
         artifact_reads = [
             {"artifact_id": artifact_id, "scope": "required"}
             for artifact_id in artifact_ids
@@ -7425,7 +8123,8 @@ class ExecutionEngine:
                 output
                 for operation in [*bio_operations, *bio_tool_operations, *hpc_operations]
                 for output in operation["expected_outputs"]
-            ],
+            ]
+            + declared_pipeline_outputs,
             "resource_quota_estimate": {
                 "hpc_operation_count": len(hpc_operations),
                 "bio_operation_count": len(bio_operations),
