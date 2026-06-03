@@ -127,6 +127,15 @@ V3 默认失败策略是显式失败传播，而不是隐藏 fallback。
 - 不得通过隐藏 fallback 重新打开 blocked action、替换用户目标、默认选择可运行工具或合成虚假 plan
 - bounded loop 到达上限可以标记 runtime signal/agent failure，但不能据此推断业务 task 已完成或失败
 
+### 3.5 本地 V3 SQLite State 的兼容策略
+
+开发与本地手动测试使用的 V3 SQLite 文件是 runtime/control-plane state，不是长期归档格式。当前主线只支持两类启动输入：
+
+- fresh empty SQLite：启动时按当前 migration 列表初始化，并写入 `PRAGMA user_version`
+- current-version SQLite：启动时校验关键表存在后复用
+
+旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式迁移、修复、备份或删除；启动路径必须 fail fast，并提示 operator 手动删除旧库或指定新的 `--v3-sqlite-db` 路径。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
+
 ---
 
 ## 4. 顶层架构

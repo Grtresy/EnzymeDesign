@@ -11,6 +11,14 @@ V3 control plane 负责保存所有**跨对话、跨压缩、跨后台执行**�
 - 能驱动行为的状态，要么是 canonical object，要么是它的派生 projection
 - 能并发恢复的 capability execution，不得只靠 engine 内部状态识别
 
+SQLite schema 兼容策略：
+
+- 本地 V3 SQLite 是开发/runtime control-plane state，不是长期兼容的归档格式
+- 空库按当前 migration 列表初始化，并写入 `PRAGMA user_version`
+- `user_version` 等于当前 schema version 的库只做关键表校验后复用
+- 旧版本、未知版本、非空但 `user_version = 0` 的库 fail fast
+- Host 不做隐式 migration、自动修复、自动删除或自动备份；operator 需要手动删除旧库，或指定新的 `--v3-sqlite-db` 路径
+
 ## 2. Canonical Objects
 
 ### 2.1 Session

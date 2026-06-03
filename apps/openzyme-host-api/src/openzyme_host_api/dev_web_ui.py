@@ -14,6 +14,7 @@ from .app import create_app
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
 from openzyme_core import CoreRepositories
+from openzyme_core import SQLiteSchemaMismatchError
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_core import sandbox_image_record
@@ -37,7 +38,17 @@ def _default_v3_sqlite_db() -> Path:
 def _build_v3_repositories(sqlite_db_path: Path) -> CoreRepositories:
     sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = connect_v3_sqlite(str(sqlite_db_path))
-    apply_v3_sqlite_migrations(connection)
+    try:
+        apply_v3_sqlite_migrations(connection)
+    except SQLiteSchemaMismatchError as exc:
+        connection.close()
+        msg = (
+            f"V3 SQLite database is not compatible: {sqlite_db_path}. "
+            "Old or unmarked V3 SQLite runtime state is not automatically "
+            "migrated. Manually delete the database file or pass a fresh "
+            f"--v3-sqlite-db path. Details: {exc}"
+        )
+        raise SystemExit(msg) from exc
     return CoreRepositories.from_connection(connection)
 
 

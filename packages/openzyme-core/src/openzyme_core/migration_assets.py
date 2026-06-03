@@ -23,6 +23,24 @@ MIGRATION_IDS: tuple[str, ...] = (
     "016_v3_sdk_supervisor_bridge",
     "017_v3_s12_adapter_envelope",
 )
+CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
+
+_REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
+    {
+        "sessions",
+        "tasks",
+        "agent_members",
+        "agent_runtime_signals",
+        "session_artifact_records",
+        "sandbox_workspace_records",
+        "controlled_operation_records",
+        "continuation_state_records",
+    }
+)
+
+
+class SQLiteSchemaMismatchError(RuntimeError):
+    """Raised when a SQLite database is not compatible with this code version."""
 
 
 def get_migration_sql(migration_id: str) -> str:
@@ -34,21 +52,64 @@ def get_migration_sql(migration_id: str) -> str:
 
 
 def apply_sqlite_migrations(connection: sqlite3.Connection) -> None:
+    user_version = _sqlite_user_version(connection)
+    if user_version == 0:
+        if _has_user_schema_objects(connection):
+            msg = (
+                "SQLite database has schema objects but PRAGMA user_version is 0; "
+                "unmarked or legacy V3 SQLite databases are not supported for "
+                "automatic compatibility."
+            )
+            raise SQLiteSchemaMismatchError(msg)
+        _initialize_empty_sqlite_database(connection)
+        return
+    if user_version != CURRENT_SQLITE_SCHEMA_VERSION:
+        msg = (
+            "SQLite database schema version "
+            f"{user_version} does not match current version "
+            f"{CURRENT_SQLITE_SCHEMA_VERSION}; automatic migration is not supported."
+        )
+        raise SQLiteSchemaMismatchError(msg)
+    _verify_current_sqlite_schema(connection)
+
+
+def _initialize_empty_sqlite_database(connection: sqlite3.Connection) -> None:
     for migration_id in MIGRATION_IDS:
-        if migration_id == "012_v3_session_scoped_agent_members" and _agent_members_are_session_scoped(connection):
-            continue
         connection.executescript(get_migration_sql(migration_id))
+    connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION}")
     connection.commit()
 
 
-def _agent_members_are_session_scoped(connection: sqlite3.Connection) -> bool:
-    table = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_members'"
+def _sqlite_user_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("PRAGMA user_version").fetchone()
+    return int(row[0])
+
+
+def _has_user_schema_objects(connection: sqlite3.Connection) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%'
+          AND type IN ('table', 'index', 'trigger', 'view')
+        LIMIT 1
+        """
     ).fetchone()
-    if table is None:
-        return False
-    columns = {
-        row[1]
-        for row in connection.execute("PRAGMA table_info(agent_members)").fetchall()
+    return row is not None
+
+
+def _verify_current_sqlite_schema(connection: sqlite3.Connection) -> None:
+    table_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
     }
-    return "member_id" in columns
+    missing_tables = sorted(_REQUIRED_CURRENT_SCHEMA_TABLES - table_names)
+    if missing_tables:
+        msg = (
+            "SQLite database declares current schema version "
+            f"{CURRENT_SQLITE_SCHEMA_VERSION} but is missing required tables: "
+            f"{', '.join(missing_tables)}"
+        )
+        raise SQLiteSchemaMismatchError(msg)

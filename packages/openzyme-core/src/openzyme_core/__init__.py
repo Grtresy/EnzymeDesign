@@ -31,7 +31,9 @@ from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
 from .harness import run_agent_harness_loop
+from .migration_assets import CURRENT_SQLITE_SCHEMA_VERSION
 from .migration_assets import MIGRATION_IDS
+from .migration_assets import SQLiteSchemaMismatchError
 from .migration_assets import apply_sqlite_migrations
 from .migration_assets import get_migration_sql
 from .lane_manager import LaneManager
@@ -142,6 +144,7 @@ __all__ = [
     "CommandLogArtifactRepository",
     "ControlledOperationRepository",
     "ContinuationStateRepository",
+    "CURRENT_SQLITE_SCHEMA_VERSION",
     "register_bio_research_tools",
     "CapabilityEngine",
     "CorrelationStatus",
@@ -201,6 +204,7 @@ __all__ = [
     "SandboxWorkspaceService",
     "SessionReportDraftRepository",
     "SessionReportRepository",
+    "SQLiteSchemaMismatchError",
     "RestoreFocus",
     "ResumeDecision",
     "ResumeEnvelope",

@@ -1,4 +1,8 @@
+import pytest
+
+from openzyme_core import CURRENT_SQLITE_SCHEMA_VERSION
 from openzyme_core import MIGRATION_IDS
+from openzyme_core import SQLiteSchemaMismatchError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import get_migration_sql
@@ -73,6 +77,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
 
+    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    assert user_version == CURRENT_SQLITE_SCHEMA_VERSION
     table_names = {
         row[0]
         for row in connection.execute(
@@ -141,3 +147,37 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "adapter_approval_envelope_json",
         "adapter_result_envelope_json",
     }.issubset(operation_columns)
+
+
+def test_sqlite_migrations_are_idempotent_for_current_connection() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+
+    apply_sqlite_migrations(connection)
+
+    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+    assert user_version == CURRENT_SQLITE_SCHEMA_VERSION
+
+
+def test_sqlite_migrations_reject_unmarked_non_empty_database() -> None:
+    connection = connect_sqlite(":memory:")
+    connection.execute("CREATE TABLE legacy_state (id TEXT PRIMARY KEY)")
+
+    with pytest.raises(SQLiteSchemaMismatchError, match="user_version is 0"):
+        apply_sqlite_migrations(connection)
+
+
+def test_sqlite_migrations_reject_old_schema_version() -> None:
+    connection = connect_sqlite(":memory:")
+    connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION - 1}")
+
+    with pytest.raises(SQLiteSchemaMismatchError, match="does not match"):
+        apply_sqlite_migrations(connection)
+
+
+def test_sqlite_migrations_reject_current_version_with_missing_tables() -> None:
+    connection = connect_sqlite(":memory:")
+    connection.execute(f"PRAGMA user_version = {CURRENT_SQLITE_SCHEMA_VERSION}")
+
+    with pytest.raises(SQLiteSchemaMismatchError, match="missing required tables"):
+        apply_sqlite_migrations(connection)

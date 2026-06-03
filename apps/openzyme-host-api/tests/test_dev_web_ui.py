@@ -5,6 +5,7 @@ import subprocess
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_host_api.dev_web_ui import _build_v3_repositories
 from openzyme_host_api.dev_web_ui import _register_existing_sandbox_image
 
 
@@ -51,3 +52,36 @@ def test_configured_web_ui_does_not_build_missing_sandbox_image(monkeypatch) -> 
     _register_existing_sandbox_image(repositories)
 
     assert repositories.sandbox_images.get_default() is None
+
+
+def test_build_v3_repositories_reports_legacy_sqlite_database(tmp_path) -> None:
+    sqlite_db_path = tmp_path / "legacy-v3.sqlite3"
+    connection = connect_sqlite(str(sqlite_db_path))
+    connection.execute("CREATE TABLE legacy_state (id TEXT PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+
+    try:
+        _build_v3_repositories(sqlite_db_path)
+    except SystemExit as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected legacy V3 SQLite startup to fail")
+
+    assert str(sqlite_db_path) in message
+    assert "--v3-sqlite-db" in message
+    assert "Manually delete the database file" in message
+    assert sqlite_db_path.exists()
+
+    verify = connect_sqlite(str(sqlite_db_path))
+    table_names = {
+        row[0]
+        for row in verify.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    user_version = verify.execute("PRAGMA user_version").fetchone()[0]
+    verify.close()
+    assert "legacy_state" in table_names
+    assert "sessions" not in table_names
+    assert user_version == 0
