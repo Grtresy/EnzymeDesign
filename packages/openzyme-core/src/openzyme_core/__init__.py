@@ -49,6 +49,16 @@ from .projections import DelegationProjection
 from .projections import DelegationProjectionItem
 from .projections import SessionProjectionBuilder
 from .projections import SessionWorkspaceProjection
+from .prompt_budget import ModelContextProfile
+from .prompt_budget import PromptBudgetAction
+from .prompt_budget import PromptBudgetConfig
+from .prompt_budget import PromptBudgetDecision
+from .prompt_budget import PromptTokenEstimate
+from .prompt_budget import PromptTokenEstimator
+from .prompt_budget import decide_prompt_budget
+from .prompt_budget import estimate_and_decide_prompt_budget
+from .prompt_budget import model_context_profile_from_env_or_factory
+from .prompt_budget import prompt_budget_config_from_env
 from .protocols import BackgroundCompletion
 from .protocols import CorrelationStatus
 from .protocols import CorrelationThread
@@ -183,8 +193,14 @@ __all__ = [
     "MemoryEventBus",
     "MemoryService",
     "MemoryEntryRepository",
+    "ModelContextProfile",
     "OwnershipError",
     "ProtocolService",
+    "PromptBudgetAction",
+    "PromptBudgetConfig",
+    "PromptBudgetDecision",
+    "PromptTokenEstimate",
+    "PromptTokenEstimator",
     "register_report_draft_tools",
     "register_artifact_tools",
     "register_artifact_boundary_tools",
@@ -239,10 +255,14 @@ __all__ = [
     "build_conversation_projection",
     "builtin_tool_descriptors",
     "connect_sqlite",
+    "decide_prompt_budget",
     "derive_sandbox_workspace_id",
+    "estimate_and_decide_prompt_budget",
     "get_migration_sql",
     "load_recent_conversation",
+    "model_context_profile_from_env_or_factory",
     "persist_conversation_message",
+    "prompt_budget_config_from_env",
     "register_memory_tools",
     "register_docs_tools",
     "register_skill_tools",

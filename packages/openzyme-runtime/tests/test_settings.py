@@ -27,6 +27,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",
         "OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
         "OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+        "OPENZYME_LLM_CONTEXT_WINDOW_TOKENS",
+        "OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS",
+        "OPENZYME_LLM_CONTEXT_WARN_RATIO",
+        "OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO",
+        "OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO",
+        "OPENZYME_LLM_TOKENIZER_ENABLED",
         "OPENZYME_LLM_REPORT_REVIEW_TIMEOUT",
         "OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS",
         "OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD",
@@ -97,6 +103,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         == DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
     )
     assert settings.llm.purpose_policies == {}
+    assert settings.llm.context_window_tokens is None
+    assert settings.llm.default_output_tokens is None
+    assert settings.llm.context_warn_ratio == 0.80
+    assert settings.llm.context_auto_compact_ratio == 0.85
+    assert settings.llm.context_emergency_ratio == 0.90
+    assert settings.llm.tokenizer_enabled is False
     assert settings.research.max_units == 3
     assert settings.research.tavily_timeout_seconds == 30.0
     assert settings.host_cli.base_url == DEFAULT_HOST_BASE_URL
@@ -132,6 +144,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD", "json_mode")
     monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS", "4")
     monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "2.5")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", "123456")
+    monkeypatch.setenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", "6543")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_WARN_RATIO", "0.70")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO", "0.75")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO", "0.80")
+    monkeypatch.setenv("OPENZYME_LLM_TOKENIZER_ENABLED", "true")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_TIMEOUT", "90")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS", "300")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD", "function_calling")
@@ -188,6 +206,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.llm.structured_output_method == "json_mode"
     assert settings.llm.structured_output_max_attempts == 4
     assert settings.llm.structured_output_retry_backoff_seconds == 2.5
+    assert settings.llm.context_window_tokens == 123456
+    assert settings.llm.default_output_tokens == 6543
+    assert settings.llm.context_warn_ratio == 0.70
+    assert settings.llm.context_auto_compact_ratio == 0.75
+    assert settings.llm.context_emergency_ratio == 0.80
+    assert settings.llm.tokenizer_enabled is True
     report_review_policy = settings.llm.policy_for_purpose("report_review")
     assert report_review_policy.max_tokens == 300
     assert report_review_policy.timeout == 90.0

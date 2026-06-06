@@ -150,6 +150,12 @@ class LlmSettings:
     structured_output_max_attempts: int
     structured_output_retry_backoff_seconds: float
     purpose_policies: dict[str, LlmPurposePolicy]
+    context_window_tokens: int | None = None
+    default_output_tokens: int | None = None
+    context_warn_ratio: float = 0.80
+    context_auto_compact_ratio: float = 0.85
+    context_emergency_ratio: float = 0.90
+    tokenizer_enabled: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -217,6 +223,32 @@ class LlmSettings:
                 DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS,
             ),
             purpose_policies=_load_llm_purpose_policies(),
+            context_window_tokens=(
+                None
+                if os.getenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS"), 0)
+            ),
+            default_output_tokens=(
+                None
+                if os.getenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS") in {None, ""}
+                else _parse_int(os.getenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS"), 0)
+            ),
+            context_warn_ratio=_parse_float(
+                os.getenv("OPENZYME_LLM_CONTEXT_WARN_RATIO"),
+                0.80,
+            ),
+            context_auto_compact_ratio=_parse_float(
+                os.getenv("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO"),
+                0.85,
+            ),
+            context_emergency_ratio=_parse_float(
+                os.getenv("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO"),
+                0.90,
+            ),
+            tokenizer_enabled=_parse_bool(
+                os.getenv("OPENZYME_LLM_TOKENIZER_ENABLED"),
+                False,
+            ),
         )
 
 

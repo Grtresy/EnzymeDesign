@@ -222,6 +222,57 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     }
 
 
+def test_openai_compatible_factory_counts_bigmodel_prompt_tokens(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+    factory = OpenAICompatibleChatModelFactory(
+        model="glm-5.1",
+        api_key="llm-key",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        tokenizer_enabled=True,
+    )
+
+    def fake_post(_self, payload: dict[str, object]) -> dict[str, object]:
+        observed["payload"] = payload
+        return {"usage": {"prompt_tokens": 123}}
+
+    monkeypatch.setattr(OpenAICompatibleChatModelFactory, "_post_tokenizer_payload", fake_post)
+
+    result = factory.count_prompt_tokens(
+        system_prompt="You are master.",
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[{"type": "function", "function": {"name": "task.list"}}],
+    )
+
+    payload = observed["payload"]
+    assert result == {"available": True, "prompt_tokens": 123}
+    assert payload["model"] == "glm-5.1"
+    assert payload["messages"][0] == {"role": "system", "content": "You are master."}
+    assert payload["tools"] == [{"type": "function", "function": {"name": "task.list"}}]
+
+
+def test_openai_compatible_factory_tokenizer_failure_is_unavailable(monkeypatch) -> None:
+    factory = OpenAICompatibleChatModelFactory(
+        model="glm-5.1",
+        api_key="llm-key",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        tokenizer_enabled=True,
+    )
+
+    def fail_post(_self, _payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("tokenizer offline")
+
+    monkeypatch.setattr(OpenAICompatibleChatModelFactory, "_post_tokenizer_payload", fail_post)
+
+    result = factory.count_prompt_tokens(
+        system_prompt="system",
+        messages=[],
+        tools=[],
+    )
+
+    assert result["available"] is False
+    assert result["error"] == "tokenizer offline"
+
+
 def test_diagnostic_structured_invoker_wraps_provider_call_with_stage_timeout(monkeypatch) -> None:
     observed: list[tuple[str, float, bool]] = []
 

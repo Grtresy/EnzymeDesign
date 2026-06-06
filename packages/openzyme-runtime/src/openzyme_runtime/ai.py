@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
@@ -388,6 +390,9 @@ class OpenAICompatibleChatModelFactory:
     purpose_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     limiter_registry: LimiterRegistry | None = None
     diagnostic_label: str | None = None
+    context_window_tokens: int | None = None
+    default_output_tokens: int | None = None
+    tokenizer_enabled: bool = False
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
         try:
@@ -477,6 +482,96 @@ class OpenAICompatibleChatModelFactory:
                 self.structured_output_retry_backoff_seconds,
             ),
         }
+
+    def count_prompt_tokens(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[Any],
+    ) -> dict[str, Any]:
+        if not self.tokenizer_enabled:
+            return {"available": False, "error": "tokenizer_disabled"}
+        if "open.bigmodel.cn" not in self.base_url and not self.model.startswith("glm-"):
+            return {"available": False, "error": "tokenizer_not_supported_for_provider"}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                *serialize_llm_payload(messages),
+            ],
+            "tools": tools,
+        }
+        try:
+            response = self._post_tokenizer_payload(payload)
+        except Exception as exc:
+            return {
+                "available": False,
+                "error": str(exc) or exc.__class__.__name__,
+            }
+        token_count = _extract_tokenizer_count(response)
+        if token_count is None:
+            return {
+                "available": False,
+                "error": "tokenizer_response_missing_token_count",
+                "response": response,
+            }
+        return {"available": True, "prompt_tokens": token_count}
+
+    def _post_tokenizer_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        endpoint = self.base_url.rstrip("/") + "/tokenizer"
+        body = json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(  # nosec B310 - endpoint is explicit provider config.
+                request,
+                timeout=self.timeout or 30.0,
+            ) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise RuntimeError(str(exc)) from exc
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"raw": parsed}
+
+
+def _extract_tokenizer_count(response: dict[str, Any]) -> int | None:
+    candidates: list[Any] = [
+        response.get("total_tokens"),
+        response.get("prompt_tokens"),
+        response.get("tokens"),
+        response.get("token_count"),
+    ]
+    usage = response.get("usage")
+    if isinstance(usage, dict):
+        candidates.extend(
+            [
+                usage.get("prompt_tokens"),
+                usage.get("total_tokens"),
+                usage.get("input_tokens"),
+            ]
+        )
+    data = response.get("data")
+    if isinstance(data, dict):
+        candidates.extend(
+            [
+                data.get("total_tokens"),
+                data.get("prompt_tokens"),
+                data.get("tokens"),
+                data.get("token_count"),
+            ]
+        )
+    for candidate in candidates:
+        if isinstance(candidate, int) and candidate >= 0:
+            return candidate
+    return None
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:

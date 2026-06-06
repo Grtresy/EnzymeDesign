@@ -219,6 +219,9 @@ def build_model_factory_from_settings(
         structured_output_method=settings.llm.structured_output_method,
         structured_output_max_attempts=settings.llm.structured_output_max_attempts,
         structured_output_retry_backoff_seconds=settings.llm.structured_output_retry_backoff_seconds,
+        context_window_tokens=settings.llm.context_window_tokens,
+        default_output_tokens=settings.llm.default_output_tokens,
+        tokenizer_enabled=settings.llm.tokenizer_enabled,
         purpose_policies={
             purpose: {
                 "timeout": policy.timeout,
