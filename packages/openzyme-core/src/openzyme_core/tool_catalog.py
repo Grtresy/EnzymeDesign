@@ -30,13 +30,29 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="artifact.list",
             description=(
                 "List safe session artifact records or artifacts scoped to a task/invocation. "
-                "Results never include Host storage_uri or local paths."
+                "Results are paginated and never include Host storage_uri or local paths."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "invocation_id": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "code",
+                            "log",
+                            "sequence",
+                            "structure",
+                            "report",
+                            "research_dossier",
+                            "result",
+                            "cache",
+                            "other",
+                        ],
+                    },
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
                 },
                 "additionalProperties": False,
             },

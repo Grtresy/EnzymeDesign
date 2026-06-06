@@ -180,6 +180,10 @@ def _clamped_limit(arguments: dict[str, Any]) -> int:
     return max(0, min(MAX_PAGE_LIMIT, limit))
 
 
+def _clamped_offset(arguments: dict[str, Any]) -> int:
+    return max(0, int(arguments.get("offset", 0)))
+
+
 def _output_ref_from_artifact(artifact: Any) -> str | None:
     metadata = dict(artifact.metadata or {})
     output_ref = metadata.get("output_ref")
@@ -446,6 +450,35 @@ def _default_payload(root: dict[str, Any]) -> dict[str, Any]:
         if key in root:
             payload[key] = root[key]
     output_payload = root.get("output_payload")
+    output_document = root.get("output_document")
+    document_kind = (
+        output_document.get("document_kind")
+        if isinstance(output_document, dict)
+        else None
+    )
+    if isinstance(output_payload, dict) and document_kind == "tool_result_full":
+        tool_result = output_payload.get("tool_result")
+        payload["output_payload"] = {
+            "status": output_payload.get("status"),
+            "reason": output_payload.get("reason"),
+            "token_estimate": output_payload.get("token_estimate"),
+            "tool_name": output_payload.get("tool_name"),
+            "call_id": output_payload.get("call_id"),
+            "original_tool_ok": output_payload.get("original_tool_ok"),
+            "original_status": output_payload.get("original_status"),
+            "tool_result_status": (
+                tool_result.get("status") if isinstance(tool_result, dict) else None
+            ),
+            "tool_result_summary": (
+                _preview(tool_result.get("summary"))
+                if isinstance(tool_result, dict)
+                else None
+            ),
+        }
+        payload["omitted_fields"].append(
+            _omitted_field("output_payload.tool_result", tool_result)
+        )
+        return payload
     if isinstance(output_payload, dict):
         counts: dict[str, int] = {}
         for field in ("evidence_items", "source_refs", "unresolved_gaps", "artifacts", "raw_notes", "recent_turns"):
@@ -921,17 +954,44 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
         session_id = context.snapshot.session.session_id
         task_id = invocation.arguments.get("task_id")
         invocation_id = invocation.arguments.get("invocation_id")
+        kind_raw = invocation.arguments.get("kind")
         if task_id is not None:
             artifacts = context.repositories.artifacts.list_by_task(session_id, str(task_id))
         elif invocation_id is not None:
             artifacts = context.repositories.artifacts.list_by_invocation(session_id, str(invocation_id))
         else:
             artifacts = context.repositories.artifacts.list_by_session(session_id)
+        if kind_raw is not None:
+            try:
+                kind = ArtifactKind(str(kind_raw))
+            except ValueError:
+                return _artifact_error(
+                    invocation,
+                    content={
+                        "error": f"unknown artifact kind {kind_raw!r}",
+                        "error_code": "invalid_artifact_kind",
+                        "valid_kinds": [item.value for item in ArtifactKind],
+                    },
+                    error_code="invalid_artifact_kind",
+                    hint="Use one of the ArtifactKind values exposed in the artifact catalog.",
+                )
+            artifacts = [artifact for artifact in artifacts if artifact.kind is kind]
+        offset = _clamped_offset(invocation.arguments)
+        limit = _clamped_limit(invocation.arguments)
+        page = artifacts[offset : offset + limit]
+        next_offset = offset + len(page) if offset + len(page) < len(artifacts) else None
+        payload = {
+            "artifacts": project_artifacts_for_agent(page),
+            "total_count": len(artifacts),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset,
+        }
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(project_artifacts_for_agent(artifacts), sort_keys=True),
+            content=json.dumps(payload, sort_keys=True),
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
         )
@@ -947,7 +1007,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             payload = _default_payload(root)
             ok = True
         else:
-            offset = max(0, int(invocation.arguments.get("offset", 0)))
+            offset = _clamped_offset(invocation.arguments)
             limit = _clamped_limit(invocation.arguments)
             include_full = bool(invocation.arguments.get("include_full", False))
             ok, payload = _path_payload(

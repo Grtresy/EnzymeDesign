@@ -315,6 +315,115 @@ def test_artifact_catalog_tools_do_not_return_storage_uri(tmp_path: Path) -> Non
     assert "source_storage_uri" not in json.dumps(fetched)
 
 
+def test_artifact_list_paginates_and_filters_by_kind(tmp_path: Path) -> None:
+    repositories, context = _build_context()
+    for index in range(3):
+        path = tmp_path / f"result_{index}.json"
+        path.write_text("{}", encoding="utf-8")
+        _save_file_artifact(
+            repositories,
+            path=path,
+            artifact_id=f"art_result_{index}",
+            relative_path=f"results/{index}.json",
+            kind=ArtifactKind.RESULT,
+            metadata={"format": "json"},
+        )
+    log_path = tmp_path / "run.log"
+    log_path.write_text("ok", encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=log_path,
+        artifact_id="art_log",
+        relative_path="logs/run.log",
+        kind=ArtifactKind.LOG,
+        metadata={"format": "log"},
+    )
+
+    first = _dispatch(
+        context,
+        {"kind": "result", "offset": 0, "limit": 2},
+        tool_name="artifact.list",
+    )
+    second = _dispatch(
+        context,
+        {"kind": "result", "offset": first["next_offset"], "limit": 2},
+        tool_name="artifact.list",
+    )
+
+    assert first["total_count"] == 3
+    assert first["offset"] == 0
+    assert first["limit"] == 2
+    assert first["next_offset"] == 2
+    assert [item["kind"] for item in first["artifacts"]] == ["result", "result"]
+    assert second["next_offset"] is None
+    assert [item["artifact_id"] for item in second["artifacts"]] == ["art_result_2"]
+
+
+def test_artifact_get_summarizes_tool_result_full_artifact_by_default() -> None:
+    repositories, context = _build_context()
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="eng_tool_result",
+            session_id=context.snapshot.session.session_id,
+            invocation_id=None,
+            document_kind="tool_result_full",
+            payload={
+                "status": "persisted",
+                "reason": "next_prompt_over_budget",
+                "token_estimate": 12000,
+                "tool_name": "huge.tool",
+                "call_id": "call_huge",
+                "original_tool_ok": True,
+                "original_status": "ok",
+                "tool_result": {
+                    "ok": True,
+                    "status": "ok",
+                    "summary": "large result",
+                    "content": "x" * 5000,
+                },
+            },
+            created_at="2026-04-20T12:04:00+00:00",
+            updated_at="2026-04-20T12:04:00+00:00",
+        )
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_tool_result",
+            session_id=context.snapshot.session.session_id,
+            task_id=None,
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri="engine-document://eng_tool_result",
+            relative_path="tool_results/call_huge.json",
+            title="Full tool result",
+            description=None,
+            metadata={"output_ref": "eng_tool_result", "document_kind": "tool_result_full"},
+            created_at="2026-04-20T12:04:01+00:00",
+        )
+    )
+
+    default_payload = _dispatch(context, {"artifact_id": "art_tool_result"})
+    full_page = _dispatch(
+        context,
+        {
+            "artifact_id": "art_tool_result",
+            "path": "output_payload.tool_result",
+            "offset": 0,
+            "limit": 30,
+        },
+    )
+
+    assert default_payload["output_payload"]["original_tool_ok"] is True
+    assert default_payload["output_payload"]["tool_result_summary"] == "large result"
+    assert "tool_result" not in default_payload["output_payload"]
+    assert {
+        item["path"] for item in default_payload["omitted_fields"]
+    } == {"output_payload.tool_result"}
+    assert full_page["value"]["content"] == "x" * 5000
+
+
 def test_artifact_tools_reject_cross_session_artifact(tmp_path: Path) -> None:
     repositories, context = _build_context()
     other_path = tmp_path / "other.md"
