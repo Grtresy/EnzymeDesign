@@ -228,11 +228,16 @@ create session
 POST /v3/sessions/{session_id}/messages
   -> persist user message
   -> build restore context
+  -> preflight token budget against model context profile
+       warn at 80%
+       auto compact session/lane at 85% and rebuild restore context
+       fail with context_budget_exceeded at 90%, without provider call
   -> call top-level tool-calling model
   -> if tool calls exist:
        dispatch tools
        persist tool side effects
-       feed tool results into the next model turn
+       artifactize over-budget tool results as RESULT artifacts
+       feed bounded observations into the next model turn
   -> else if assistant output exists:
        persist assistant message
        auto compact

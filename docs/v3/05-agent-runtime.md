@@ -176,7 +176,9 @@ runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `t
 
 master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。
 
-master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
+restore context 受统一 token budget 管理。每次 master / teammate 模型调用前都必须估算完整 prompt；达到 80% 只记录 warning，达到 85% 写 bounded session/lane compaction 并刷新 restore context，达到 90% 显式 `context_budget_exceeded` 失败并停止 provider call。最新 session-scope `MemoryKind.COMPACTION` 且 `source_range="auto:prompt_budget"` 的记录是 LLM restore prompt 的 recent-conversation cutoff：后续 restore 只加载该 compaction 之后创建的 conversation entries；`auto:harness_run` 不触发这个剪枝。自动 compaction 只做上下文治理，不改变 task、approval、lane、conversation、workspace conversation projection 或 protocol 的 canonical 状态。
+
+master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。`artifact.list` 必须分页返回 catalog；`artifact.get` 必须支持对 large output 和 `tool_result_full` 的 `path` / `offset` / `limit` 分页读取。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
 
 ## 7. Failure And Recovery Defaults
 

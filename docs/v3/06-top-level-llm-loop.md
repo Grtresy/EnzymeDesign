@@ -29,9 +29,14 @@ user message
   -> enqueue agent:master wakeup signal
   -> scheduler claims signal
   -> build restore context
+  -> preflight prompt budget
+       >= 85% -> bounded compaction -> rebuild restore context
+       >= 90% after rebuild -> structured context_budget_exceeded failure, no provider call
   -> call top-level master-agent model with V3 tool catalog
   -> tool calls?
-       yes -> dispatch tools -> persist side effects -> feed tool results back into model
+       yes -> dispatch tools -> persist side effects
+              -> artifactize over-budget tool results if needed
+              -> feed bounded tool observations back into model
        no  -> persist assistant output and end turn
   -> waiting state?
        approval / delegation -> persist wait state and return
@@ -104,12 +109,24 @@ After every tool call, master must first read the tool-result envelope fields `o
 
 ## 7. Compaction 规则
 
-- auto compaction 默认写入 `session` scope
-- 有 focused lane 时同时写入 `lane` scope
-- `task` scope compaction 仍保留显式 tool 或高价值触发
-- compaction 不得替代 canonical conversation / task / approval / lane state
+- 每次 master / teammate 发起 tool-calling provider 调用前，harness 必须按模型 profile 估算完整待发送 payload：system prompt、messages、tools schema 和待回灌 tool observation。
+- 默认阈值是 context window 的 `80% / 85% / 90%`：达到 80% 记录 `llm.context_budget.warning`；达到 85% 写入 bounded auto compaction 并刷新 restore context；达到 90% 返回结构化 `context_budget_exceeded`，不得调用 provider。
+- GLM-5.1 默认 profile 为 `context_window_tokens=200000`、默认输出预留 `65536`、最大输出 `131072`。未知模型必须使用显式 env override，否则使用保守 fallback 并在事件中标记 profile unknown。
+- auto compaction 默认写入 `session` scope；有 focused lane 时同时写入 `lane` scope；`task` scope compaction 仍保留显式 tool 或高价值触发。
+- auto compaction 后必须重建待发送 provider payload：重新读取 restore context、重建 system prompt 与 seed messages，再追加本轮已经 budgeted 的 tool observations。provider 调用必须使用这个 rebuilt payload，不能继续使用 compaction 前的 in-memory messages。
+- 最新 session-scope `source_range="auto:prompt_budget"` compaction 会改变后续 LLM restore prompt projection：recent conversation 只取 compaction 之后的 conversation entries。它不删除或改写持久 conversation，也不影响 `workspace.conversation`；普通 `auto:harness_run` compaction 不作为 recent-conversation cutoff。
+- compaction summary 必须 bounded：不得嵌入完整 tool result、完整 conversation、完整 docs 或完整 artifact list；只保留 id、status、summary、artifact refs 和下一步读取 hint。
+- compaction 不得替代 canonical conversation / task / approval / lane state，也不得替 agent 选择业务策略。
 
-## 8. 测试
+## 8. Tool Result Context Boundary
+
+- 工具正常执行后，如果单个 tool result 或加入该 result 后的下一轮 prompt 达到 context budget 降载阈值，harness 必须把完整结果保存为 `engine_documents(document_kind="tool_result_full")`。
+- 同步创建 `SessionArtifactRecord(kind=ArtifactKind.RESULT, storage_uri="engine-document://<document_id>", relative_path="tool_results/<call_id>.json")`。
+- 回灌给 LLM 的 observation 必须很小，并且外层 `ok=false`、`status/error_code="tool_result_context_over_budget"`，同时包含 `original_tool_ok`、`original_status`、`artifact_id` 和 `read_hint`。
+- `original_tool_ok=true` 不得被改写为工具业务失败；外层 `ok=false` 只表示本次 observation 被 context budget 降载，需要 agent 通过 artifact 工具按需读取完整结果。
+- harness 不自动摘要原始 payload，也不替 agent 判断业务成功；完整读取入口是 `artifact.get artifact_id=<artifact_id> path="output_payload.tool_result" offset=0 limit=...`。
+
+## 9. 测试
 
 - 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler claim 后运行真实顶层 LLM driver。配置化 Host 默认由 FastAPI background runtime worker 自动推进；`/runtime/drain` 只用于 debug/operator/manual recovery
 - live LLM smoke 至少覆盖一次真实 tool call

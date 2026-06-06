@@ -127,7 +127,13 @@ V3 默认失败策略是显式失败传播，而不是隐藏 fallback。
 - 不得通过隐藏 fallback 重新打开 blocked action、替换用户目标、默认选择可运行工具或合成虚假 plan
 - bounded loop 到达上限可以标记 runtime signal/agent failure，但不能据此推断业务 task 已完成或失败
 
-### 3.5 本地 V3 SQLite State 的兼容策略
+### 3.5 Token-Budgeted Harness
+
+V3 master / teammate LLM 调用必须先经过统一 token budget preflight。harness 按模型 profile 估算完整 prompt，包括 system prompt、conversation/messages、tools schema 和 tool observation；达到 80% 记录 warning，达到 85% 自动写 bounded session/lane compaction 并刷新 restore context，达到 90% 显式返回 `context_budget_exceeded`，不得把超限 prompt 交给 provider。prompt-budget compaction 改变的是后续 LLM restore prompt projection，不删除或改写持久 conversation history，也不改变 workspace conversation read model。
+
+当工具结果本身或加入该结果后的下一轮 prompt 超预算时，完整 tool result 写入 `engine_documents(document_kind="tool_result_full")`，并登记为 `ArtifactKind.RESULT` artifact。LLM 只收到小型 observation，包含 `tool_result_context_over_budget`、`original_tool_ok`、`original_status`、`artifact_id` 和 `read_hint`。这不是业务失败判定，也不自动摘要原始 payload；agent 需要时通过 `artifact.get` 分页读取完整结果。
+
+### 3.6 本地 V3 SQLite State 的兼容策略
 
 开发与本地手动测试使用的 V3 SQLite 文件是 runtime/control-plane state，不是长期归档格式。当前主线只支持两类启动输入：
 
@@ -179,6 +185,8 @@ Agent Harness Kernel
   +--> top-level master loop
   +--> role-scoped teammate restore context
   +--> tool registry and tool result envelope
+  +--> token budget preflight / bounded compaction
+  +--> over-budget tool result artifactization
   +--> docs.search / docs.read
   +--> protocol.send / protocol.thread
   +--> task.delegate / task.update

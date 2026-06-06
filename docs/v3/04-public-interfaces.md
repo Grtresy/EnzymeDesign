@@ -101,6 +101,18 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
 
+当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
+
+- 外层 `ok=false`
+- `status="tool_result_context_over_budget"`
+- `error_code="tool_result_context_over_budget"`
+- `details.original_tool_ok` / payload `original_tool_ok` 记录原始工具语义是否成功
+- `original_status` 记录原始工具 status
+- `artifact_id` 指向完整结果保存的 `ArtifactKind.RESULT`
+- `read_hint` 指示使用 `artifact.get` 分页读取
+
+这个 envelope 不表示原始工具业务失败；它只表示 observation 被降载。agent 必须先读取 `original_tool_ok` / `original_status`，再按需要通过 artifact 工具恢复完整 payload。
+
 默认 research direct-tool surface 还应允许 provider-specific 轻量动作：
 
 - `pubmed.search`
@@ -177,8 +189,9 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `artifacts[].provenance` 是 projection-derived 展示对象，不是新的 canonical DB 字段。稳定输出字段为 `task_id`、`lane_id`、`invocation_id`、`run_id`、`produced_by`、`source`、`format`、`provider`、`external_id`、`source_locator`、`source_artifact_ids`、`input_artifact_ids`、`preprocess_artifact_ids`、`runner_run_id`、`pipeline_invocation_id`、`code_digest` 与 `tool_contract`
 - `ArtifactKind.CODE` 表示 agent-authored pipeline source 的 canonical 审计快照。兼容 catalog 单文件源码版本使用 `metadata.format="python"`、`metadata.semantic_type="pipeline_source"`、`content_digest`、`lineage_root_artifact_id`、`version` 与 `parent_artifact_id`；sandbox source tree snapshot 使用 `metadata.format="source_tree"`、`metadata.semantic_type="pipeline_source_snapshot"`，并记录 `sandbox_workspace_id`、`entrypoint`、`source_tree_digest`、file digest manifest 与 parent snapshot
 - 普通 artifact browser 只展示 metadata/provenance 摘要；内容读取和源码版本化由受控 agent tools 提供，不通过 workspace projection 直接返回文件内容，也不提供 delete/rename/move/edit 语义
-- `artifact.list` 返回当前 session 内的安全 artifact catalog，可按 task / invocation 过滤
+- `artifact.list` 返回当前 session 内的安全 artifact catalog，可按 task / invocation / kind 过滤，并默认分页返回 `{artifacts,total_count,offset,limit,next_offset}`，避免 artifact 数量增长后撑爆上下文
 - `artifact.get` 返回单个 artifact 的安全 catalog record 及关联 invocation / output document 摘要；大字段通过 `path`、`offset`、`limit` 分页读取
+- `tool_result_full` result artifact 默认只返回 `tool_name`、`call_id`、`original_tool_ok`、`original_status`、`tool_result_summary` 和 omitted field hint；完整结果通过 `path="output_payload.tool_result"` 分页读取
 - `artifact.preview`、`artifact.read_text`、`artifact.range` 只读取 UTF-8 文本类 artifact，适合 FASTA、PDB、log、JSON、Markdown 等；二进制或不可读内容返回结构化 tool error
 - `artifact.create_text` 创建不可变 Python pipeline source artifact，并写入 SHA-256 `content_digest` 与 version 1 lineage metadata；只接受安全 `.py` basename，不接受 Host path 或目录路径。它是兼容/直接 catalog 编辑面，不是 executor 在 persistent sandbox 中日常 authoring 的主路径
 - `artifact.patch_text` 基于 `base_artifact_id + base_content_digest + content` 创建新的不可变源码版本；digest 不匹配、非 code artifact、非法文件名、非 UTF-8 或超限内容必须返回结构化 tool error，不得覆盖旧 artifact。它保留为受控源码版本工具，不替代 sandbox file CRUD
