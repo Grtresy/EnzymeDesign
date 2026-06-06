@@ -90,8 +90,13 @@ def load_recent_conversation(
     session_id: str,
     *,
     limit: int = 12,
+    after_created_at: str | None = None,
 ) -> tuple[ConversationEntry, ...]:
     conversation = build_conversation_projection(repositories, session_id)
+    if after_created_at is not None:
+        conversation = tuple(
+            entry for entry in conversation if entry.created_at > after_created_at
+        )
     if limit <= 0:
         return ()
     return conversation[-limit:]

@@ -52,6 +52,9 @@ from openzyme_core import ProtocolService
 from openzyme_core import register_subagent_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
+from openzyme_core.harness import budget_tool_results_for_prompt
+from openzyme_core.harness import ensure_prompt_budget_before_model_call
+from openzyme_core.harness import PromptPayload
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
 
@@ -60,6 +63,42 @@ class RateLimitedBioResearchService(DeterministicBioResearchService):
     def search_semantic_scholar(self, *, query: str, limit: int = 5):
         del query, limit
         raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+
+class RecordingToolInvoker:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": list(messages),
+                "tools": list(tools),
+            }
+        )
+        if not self.responses:
+            return {"content": "done", "tool_calls": []}
+        return self.responses.pop(0)
+
+
+class BudgetTestModelFactory:
+    def __init__(
+        self,
+        invoker: RecordingToolInvoker,
+        *,
+        context_window_tokens: int = 100_000,
+        default_output_tokens: int = 0,
+    ) -> None:
+        self.model = "budget-test-model"
+        self.context_window_tokens = context_window_tokens
+        self.default_output_tokens = default_output_tokens
+        self.invoker = invoker
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        del purpose
+        return self.invoker
 
 
 def _build_repositories() -> CoreRepositories:
@@ -192,6 +231,174 @@ def test_runtime_context_can_build_restore_context_with_skills() -> None:
     assert restore.lane_memory is not None
     assert restore.lane_memory.continuity.memory_id == "mem_lane"
     assert [skill.skill_key for skill in restore.skill_documents] == ["vina"]
+
+
+def test_llm_preflight_auto_compacts_before_provider_call(monkeypatch) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    invoker = RecordingToolInvoker([{"content": "done", "tool_calls": []}])
+    factory = BudgetTestModelFactory(invoker)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            message="x" * 300_000,
+            max_steps=1,
+        ),
+        driver=LlmConversationDriver(factory),
+        model_factory=factory,
+    )
+
+    compactions = [
+        memory
+        for memory in repositories.memory.list_by_session(session.session_id)
+        if memory.kind is MemoryKind.COMPACTION
+        and memory.source_range == "auto:prompt_budget"
+    ]
+    assert result.status is HarnessStatus.COMPLETED
+    assert len(invoker.calls) == 1
+    assert compactions
+    assert "auto_compact before model call" in compactions[-1].summary
+    assert any(
+        event.event_type == "llm.context_budget.after_compaction"
+        for event in result.events
+    )
+
+
+def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatch) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=BudgetTestModelFactory(RecordingToolInvoker([])),
+    )
+    context.refresh_restore_context()
+    original = ToolResult(
+        call_id="call_huge",
+        tool_name="huge.tool",
+        ok=True,
+        content=json.dumps({"tool_result": "x" * 340_000}),
+        status="ok",
+        summary="huge result completed",
+    )
+    budgeted = budget_tool_results_for_prompt(
+        context,
+        (original,),
+        system_prompt="system",
+        messages=[],
+        tools=[],
+    )
+
+    artifacts = [
+        artifact
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+        if artifact.kind is ArtifactKind.RESULT
+        and artifact.relative_path == "tool_results/call_huge.json"
+    ]
+    observation = budgeted[0]
+    observation_prompt = observation.to_tool_message_content()
+    assert artifacts
+    assert observation.ok is False
+    assert observation.status == "tool_result_context_over_budget"
+    assert observation.details["original_tool_ok"] is True
+    assert "tool_result_context_over_budget" in observation_prompt
+    assert artifacts[0].artifact_id in observation_prompt
+    assert "x" * 1000 not in observation_prompt
+    persisted = repositories.engine_documents.get(
+        str(dict(artifacts[0].metadata or {})["output_ref"])
+    )
+    assert persisted is not None
+    assert persisted.document_kind == "tool_result_full"
+    assert persisted.payload["original_tool_ok"] is True
+
+
+def test_tool_result_artifact_observation_survives_prompt_compaction_rebuild(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_WARN_RATIO", "0.45")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO", "0.50")
+    monkeypatch.setenv("OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO", "0.95")
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    invoker = RecordingToolInvoker([])
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=BudgetTestModelFactory(invoker),
+    )
+    context.refresh_restore_context()
+    marker = "raw-tool-payload-marker"
+    original = ToolResult(
+        call_id="call_huge_after_compaction",
+        tool_name="huge.tool",
+        ok=True,
+        content=json.dumps({"tool_result": marker + ("x" * 340_000)}),
+        status="ok",
+        summary="huge result completed",
+    )
+    budgeted = budget_tool_results_for_prompt(
+        context,
+        (original,),
+        system_prompt="system",
+        messages=[],
+        tools=[],
+    )
+    observation_content = budgeted[0].to_tool_message_content()
+    messages = [
+        {"role": "user", "content": "prior-large-context-" + ("y" * 260_000)},
+        {
+            "role": "tool",
+            "name": budgeted[0].tool_name,
+            "content": observation_content,
+        },
+    ]
+
+    def rebuild_payload() -> PromptPayload:
+        return PromptPayload(
+            system_prompt="system after compaction",
+            messages=[
+                {
+                    "role": "tool",
+                    "name": budgeted[0].tool_name,
+                    "content": observation_content,
+                }
+            ],
+            tools=[],
+        )
+
+    preflight = ensure_prompt_budget_before_model_call(
+        context,
+        actor_ref="harness",
+        system_prompt="system",
+        messages=messages,
+        tools=[],
+        recent_tool_result=budgeted[0],
+        rebuild_payload=rebuild_payload,
+    )
+
+    rebuilt_prompt = "\n".join(
+        _message_content(message) for message in preflight.payload.messages
+    )
+    assert preflight.compacted is True
+    assert preflight.final_decision.action.value == "ok"
+    assert budgeted[0].details["original_tool_ok"] is True
+    assert budgeted[0].details["artifact_id"] in rebuilt_prompt
+    assert "read_hint" in rebuilt_prompt
+    assert marker not in rebuilt_prompt
+    assert "prior-large-context-" in rebuilt_prompt
+    assert "y" * 2_000 not in rebuilt_prompt
 
 
 class ToolLoopDriver:

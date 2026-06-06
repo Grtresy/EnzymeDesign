@@ -5,6 +5,7 @@ from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
+from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
@@ -16,6 +17,7 @@ from openzyme_core import CoreRepositories
 from openzyme_core import MemoryService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core import persist_conversation_message
 
 
 def _build_repositories() -> CoreRepositories:
@@ -124,6 +126,50 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     return session
 
 
+def _persist_conversation_entry(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    message_id: str,
+    role: str,
+    content: str,
+    created_at: str,
+) -> None:
+    payload_ref = persist_conversation_message(
+        repositories,
+        session_id=session_id,
+        message_id=message_id,
+        role=role,
+        content=content,
+        created_at=created_at,
+    )
+    repositories.inbox.save(
+        InboxMessage(
+            message_id=message_id,
+            session_id=session_id,
+            sender="user:alice" if role == "user" else "agent:master",
+            sender_kind=(
+                InboxParticipantKind.USER
+                if role == "user"
+                else InboxParticipantKind.AGENT
+            ),
+            recipient="agent:master" if role == "user" else "user:alice",
+            recipient_kind=(
+                InboxParticipantKind.AGENT
+                if role == "user"
+                else InboxParticipantKind.USER
+            ),
+            message_type=(
+                "user_message" if role == "user" else "assistant_message"
+            ),
+            correlation_id=None,
+            payload_ref=payload_ref,
+            status=InboxStatus.DELIVERED,
+            created_at=created_at,
+        )
+    )
+
+
 def test_memory_service_records_continuity_and_compaction_events() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -227,3 +273,80 @@ def test_restore_context_infers_lane_from_task_binding() -> None:
     assert context.focused_lane_id == "lane_001"
     assert context.lane_memory is not None
     assert context.lane_memory.compaction.memory_id == "mem_lane_1"
+
+
+def test_restore_context_prunes_recent_conversation_after_prompt_budget_compaction() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = MemoryService(repositories)
+    _persist_conversation_entry(
+        repositories,
+        session_id=session.session_id,
+        message_id="msg_large_before",
+        role="user",
+        content="large-before-" + ("x" * 1000),
+        created_at="2026-04-17T11:01:00+00:00",
+    )
+    repositories.memory.save(
+        MemoryEntry(
+            memory_id="mem_prompt_budget_compaction",
+            session_id=session.session_id,
+            scope_kind=MemoryScopeKind.SESSION,
+            scope_ref=session.session_id,
+            kind=MemoryKind.COMPACTION,
+            summary="Prompt budget compacted large history.",
+            source_range="auto:prompt_budget",
+            importance=5,
+            created_at="2026-04-17T11:02:00+00:00",
+        )
+    )
+    _persist_conversation_entry(
+        repositories,
+        session_id=session.session_id,
+        message_id="msg_small_after",
+        role="user",
+        content="small after compaction",
+        created_at="2026-04-17T11:03:00+00:00",
+    )
+
+    context = service.build_restore_context(session.session_id)
+
+    assert [entry.message_id for entry in context.recent_conversation] == [
+        "msg_small_after"
+    ]
+    assert "large-before-" not in "\n".join(
+        entry.content for entry in context.recent_conversation
+    )
+
+
+def test_restore_context_does_not_prune_conversation_after_harness_run_compaction() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = MemoryService(repositories)
+    _persist_conversation_entry(
+        repositories,
+        session_id=session.session_id,
+        message_id="msg_before_harness_compaction",
+        role="user",
+        content="message before harness compaction",
+        created_at="2026-04-17T11:01:00+00:00",
+    )
+    repositories.memory.save(
+        MemoryEntry(
+            memory_id="mem_harness_compaction",
+            session_id=session.session_id,
+            scope_kind=MemoryScopeKind.SESSION,
+            scope_ref=session.session_id,
+            kind=MemoryKind.COMPACTION,
+            summary="Harness compacted run state.",
+            source_range="auto:harness_run",
+            importance=5,
+            created_at="2026-04-17T11:02:00+00:00",
+        )
+    )
+
+    context = service.build_restore_context(session.session_id)
+
+    assert [entry.message_id for entry in context.recent_conversation] == [
+        "msg_before_harness_compaction"
+    ]

@@ -239,7 +239,20 @@ class MemoryService:
         continuity = restore_context.session_memory.continuity.summary if restore_context.session_memory.continuity else "none"
         recent_tool_summary = "none"
         if recent_tool_result is not None:
-            recent_tool_summary = f"{recent_tool_result.tool_name}:{recent_tool_result.content}"
+            tool_summary = (
+                getattr(recent_tool_result, "summary", None)
+                or getattr(recent_tool_result, "status", None)
+                or "tool result"
+            )
+            if len(str(tool_summary)) > 800:
+                tool_summary = str(tool_summary)[:800] + "... [truncated]"
+            recent_tool_summary = (
+                f"{recent_tool_result.tool_name} "
+                f"call_id={recent_tool_result.call_id} "
+                f"ok={recent_tool_result.ok} "
+                f"status={recent_tool_result.status or 'unknown'} "
+                f"summary={tool_summary}"
+            )
         lines = [
             f"Session {restore_context.session.session_id}: {restore_context.session.title}",
             f"Objective: {restore_context.session.objective}",
@@ -287,12 +300,29 @@ class MemoryService:
         session_memory = self.summarize_scope(session_id, MemoryScopeKind.SESSION, session_id)
         lane_memory = None if lane_id is None else self.summarize_scope(session_id, MemoryScopeKind.LANE, lane_id)
         task_memory = None if task_id is None else self.summarize_scope(session_id, MemoryScopeKind.TASK, task_id)
+        prompt_budget_compaction = next(
+            (
+                entry
+                for entry in reversed(session_memory.entries)
+                if entry.kind is MemoryKind.COMPACTION
+                and entry.source_range == "auto:prompt_budget"
+            ),
+            None,
+        )
         registry = skill_registry
         skill_documents: tuple[SkillDocument, ...] = ()
         if skill_keys:
             registry = registry or SkillRegistry()
             skill_documents = registry.load_skills(skill_keys)
-        recent_conversation = load_recent_conversation(self.repositories, session_id)
+        recent_conversation = load_recent_conversation(
+            self.repositories,
+            session_id,
+            after_created_at=(
+                None
+                if prompt_budget_compaction is None
+                else prompt_budget_compaction.created_at
+            ),
+        )
         from .protocols import ProtocolService
 
         protocol = ProtocolService(self.repositories)

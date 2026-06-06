@@ -13,7 +13,7 @@ from .models import SourceRefKind
 
 
 def utc_now_iso() -> str:
-    return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    return datetime.now(tz=UTC).isoformat()
 
 
 CONTROL_PLANE_ENTITY_NAMES = (

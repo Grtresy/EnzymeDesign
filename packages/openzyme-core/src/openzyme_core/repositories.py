@@ -3205,7 +3205,7 @@ class SessionArtifactRepository:
             ).fetchall()
         expected = {} if metadata_filter is None else dict(metadata_filter)
         for row in rows:
-            metadata = json.loads(row["metadata_json"])
+            metadata = _json_loads_object(row["metadata_json"]) or {}
             if metadata.get(key) != value:
                 continue
             if any(metadata.get(filter_key) != filter_value for filter_key, filter_value in expected.items()):
@@ -3228,7 +3228,7 @@ class SessionArtifactRepository:
             relative_path=row["relative_path"],
             title=row["title"],
             description=row["description"],
-            metadata=json.loads(row["metadata_json"]),
+            metadata=_json_loads_object(row["metadata_json"]) or {},
             created_at=row["created_at"],
         )
 

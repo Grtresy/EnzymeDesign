@@ -21,12 +21,15 @@ from .harness import HarnessStatus
 from .harness import HarnessStep
 from .harness import LlmTraceStep
 from .harness import LlmTraceToolCall
+from .harness import PromptPayload
 from .harness import RestoreFocus
 from .harness import ResumeEnvelope
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .harness import budget_tool_results_for_prompt
+from .harness import ensure_prompt_budget_before_model_call
 from .harness import run_agent_harness_loop
 from .lane_manager import register_lane_tools
 from .llm_driver import _sanitize_public_args
@@ -610,6 +613,29 @@ def _tool_messages(tool_results: tuple[ToolResult, ...]) -> list[Any]:
     return messages
 
 
+def _assistant_tool_call_messages_for_results(
+    messages: list[Any], tool_results: tuple[ToolResult, ...]
+) -> list[Any]:
+    if not tool_results:
+        return []
+    call_ids = {result.call_id for result in tool_results}
+    selected: list[Any] = []
+    matched: set[str] = set()
+    for message in reversed(messages):
+        message_call_ids = {
+            str(tool_call.get("id"))
+            for tool_call in _extract_tool_calls(message)
+            if tool_call.get("id") is not None
+        }
+        if not message_call_ids.intersection(call_ids - matched):
+            continue
+        selected.append(message)
+        matched.update(message_call_ids)
+        if call_ids <= matched:
+            break
+    return list(reversed(selected))
+
+
 @dataclass(slots=True)
 class TeammateConversationDriver(HarnessDriver):
     model_factory: Any
@@ -623,10 +649,22 @@ class TeammateConversationDriver(HarnessDriver):
     _messages: list[Any] = field(default_factory=list)
     _initialized: bool = False
     _call_index: int = 0
+    _instructions_compacted: bool = False
 
-    def _system_prompt(self, context: SessionRuntimeContext) -> str:
+    def _instructions_for_prompt(self, *, compact: bool = False) -> str:
+        if not compact or len(self.instructions) <= 1200:
+            return self.instructions
+        return (
+            self.instructions[:1200]
+            + "\n[delegated instructions truncated by prompt budget compaction; use task/protocol/artifact tools for exact recoverable details]"
+        )
+
+    def _system_prompt(
+        self, context: SessionRuntimeContext, *, compact_instructions: bool = False
+    ) -> str:
         restore = context.restore_context
         assert restore is not None
+        instructions = self._instructions_for_prompt(compact=compact_instructions)
         artifact_bits = (
             ", ".join(
                 f"{artifact.artifact_id} kind={artifact.kind.value} title={artifact.title or 'untitled'}"
@@ -662,7 +700,7 @@ class TeammateConversationDriver(HarnessDriver):
                 "AOX/HMM execution tasks: read docs.read doc_id=\"aox-hmm-live\" before authoring source, follow that recipe exactly, and do not mark task completed until the fixed aox_hmm/* deliverables are registered or a structured failure is recorded. If the recipe SDK path fails, fix the SDK call or report the structured error; never substitute sandbox-local pseudo-HMMs, local clustering, dependency installs, direct provider raw-file parsing, direct binaries, or synthetic hits for the required Host-supervised SDK operations.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
-                f"Instructions: {self.instructions}",
+                f"Instructions: {instructions}",
                 f"Session objective: {context.snapshot.session.objective}",
                 f"Focused task: {restore.focused_task_id or 'none'}",
                 f"Focused lane: {restore.focused_lane_id or 'none'}",
@@ -676,14 +714,21 @@ class TeammateConversationDriver(HarnessDriver):
         )
 
     def _seed_messages(
-        self, context: SessionRuntimeContext, harness_input: HarnessInput
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        *,
+        compact_instructions: bool = False,
     ) -> list[Any]:
         del harness_input
         try:
             from langchain_core.messages import HumanMessage
         except ImportError:
             HumanMessage = None  # type: ignore[assignment]
-        payload_lines = [f"Task {self.task_id}: {self.instructions}"]
+        payload_lines = [
+            f"Task {self.task_id}: "
+            f"{self._instructions_for_prompt(compact=compact_instructions)}"
+        ]
         if context.restore_context is not None:
             for thread in context.restore_context.protocol_threads:
                 if thread.get("correlation_id") == self.correlation_id:
@@ -801,20 +846,74 @@ class TeammateConversationDriver(HarnessDriver):
     ) -> HarnessStep:
         initial_prompt = None
         if not self._initialized:
-            self._messages = self._seed_messages(context, harness_input)
+            self._messages = self._seed_messages(
+                context,
+                harness_input,
+                compact_instructions=self._instructions_compacted,
+            )
             initial_prompt = self._initial_prompt_projection(context, self._messages)
             self._initialized = True
-        if tool_results:
-            self._messages.extend(_tool_messages(tool_results))
-        invoker = self.model_factory.create_tool_calling_invoker(
-            purpose=f"v3_teammate_loop:{self.role}"
-        )
         tools = [
             descriptor.to_openai_tool()
             for descriptor in self._allowed_tools(context)
         ]
+        system_prompt = self._system_prompt(
+            context, compact_instructions=self._instructions_compacted
+        )
+        if tool_results:
+            tool_results = budget_tool_results_for_prompt(
+                context,
+                tool_results,
+                system_prompt=system_prompt,
+                messages=list(self._messages),
+                tools=tools,
+            )
+            system_prompt = self._system_prompt(
+                context, compact_instructions=self._instructions_compacted
+            )
+            self._messages.extend(_tool_messages(tool_results))
+
+        def rebuild_payload() -> PromptPayload:
+            self._instructions_compacted = True
+            rebuilt_messages = self._seed_messages(
+                context,
+                harness_input,
+                compact_instructions=True,
+            )
+            if tool_results:
+                rebuilt_messages.extend(
+                    _assistant_tool_call_messages_for_results(
+                        self._messages, tool_results
+                    )
+                )
+                rebuilt_messages.extend(_tool_messages(tool_results))
+            return PromptPayload(
+                system_prompt=self._system_prompt(
+                    context, compact_instructions=True
+                ),
+                messages=rebuilt_messages,
+                tools=tools,
+            )
+
+        preflight = ensure_prompt_budget_before_model_call(
+            context,
+            actor_ref=self.agent_id,
+            system_prompt=system_prompt,
+            messages=list(self._messages),
+            tools=tools,
+            recent_tool_result=tool_results[-1] if tool_results else None,
+            rebuild_payload=rebuild_payload,
+        )
+        if preflight.compacted:
+            self._instructions_compacted = True
+        self._messages = list(preflight.payload.messages)
+        system_prompt = preflight.payload.system_prompt
+        tools = preflight.payload.tools
+        invoker = self.model_factory.create_tool_calling_invoker(
+            purpose=f"v3_teammate_loop:{self.role}"
+        )
         response = invoker.invoke_with_tools(
-            system_prompt=self._system_prompt(context),
+            system_prompt=system_prompt,
             messages=list(self._messages),
             tools=tools,
         )

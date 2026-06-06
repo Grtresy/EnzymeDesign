@@ -247,6 +247,47 @@ class FakeHarnessModelFactory:
         return self.invokers[purpose]
 
 
+class PressureHarnessInvoker:
+    def __init__(self, responses: list[dict[str, object]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "messages": list(messages),
+                "tools": list(tools),
+            }
+        )
+        if not self.responses:
+            return {"content": "pressure test complete", "tool_calls": []}
+        return self.responses.pop(0)
+
+
+class PressureHarnessModelFactory:
+    def __init__(
+        self,
+        responses: list[dict[str, object]],
+        *,
+        model: str = "pressure-test-model",
+        context_window_tokens: int | None = 100_000,
+        default_output_tokens: int | None = 0,
+    ) -> None:
+        self.model = model
+        self.context_window_tokens = context_window_tokens
+        self.default_output_tokens = default_output_tokens
+        self.invokers: dict[str, PressureHarnessInvoker] = {}
+        self._responses = list(responses)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> PressureHarnessInvoker:
+        if purpose not in self.invokers:
+            self.invokers[purpose] = PressureHarnessInvoker(self._responses)
+        return self.invokers[purpose]
+
+
 class FakePhaseBStructuredInvoker:
     def __init__(self, purpose: str) -> None:
         self.purpose = purpose
@@ -1105,6 +1146,72 @@ def _build_v3_engine_repositories() -> CoreRepositories:
     connection = connect_v3_sqlite(":memory:")
     apply_v3_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+def _build_v3_pressure_client(
+    monkeypatch,
+    model_factory: PressureHarnessModelFactory,
+) -> tuple[TestClient, CoreRepositories, PressureHarnessModelFactory]:
+    client, foundation = _build_client(monkeypatch)
+    del client
+    v3_repositories = _build_v3_engine_repositories()
+    return (
+        TestClient(
+            create_app(
+                HostApiDependencies(
+                    foundation=replace(foundation, model_factory=model_factory),
+                    v3_repositories=v3_repositories,
+                )
+            )
+        ),
+        v3_repositories,
+        model_factory,
+    )
+
+
+def _clear_context_budget_env(monkeypatch) -> None:
+    for name in (
+        "OPENZYME_LLM_CONTEXT_WINDOW_TOKENS",
+        "OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS",
+        "OPENZYME_LLM_CONTEXT_WARN_RATIO",
+        "OPENZYME_LLM_CONTEXT_AUTO_COMPACT_RATIO",
+        "OPENZYME_LLM_CONTEXT_EMERGENCY_RATIO",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _seed_large_text_artifact(
+    repositories: CoreRepositories,
+    session_id: str,
+    tmp_path: Path,
+) -> str:
+    line = "stress-observation-" + ("x" * 720)
+    content = "\n".join(f"{index:03d}:{line}" for index in range(500)) + "\n"
+    path = tmp_path / "large_tool_source.txt"
+    path.write_text(content, encoding="utf-8")
+    artifact_id = "art_pressure_large_text"
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=artifact_id,
+            session_id=session_id,
+            task_id=None,
+            lane_id=None,
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.LOG,
+            storage_uri=str(path),
+            relative_path="large_tool_source.txt",
+            title="large_tool_source.txt",
+            description="Large text artifact used by the pressure conversation.",
+            metadata={
+                "source": "pressure_test",
+                "format": "txt",
+                "content_digest": f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}",
+            },
+            created_at="2026-06-04T10:00:00+00:00",
+        )
+    )
+    return artifact_id
 
 
 def _wait_for_background_runtime(
@@ -2576,6 +2683,332 @@ def test_v3_session_message_events_task_and_lane(monkeypatch) -> None:
     updated = client.patch("/v3/tasks/task_v3_001", json={"status": "in_progress"})
     assert updated.status_code == 200
     assert updated.json()["task"]["status"] == "in_progress"
+
+
+def test_v3_pressure_user_message_triggers_budget_compaction_via_message_loop(
+    monkeypatch,
+) -> None:
+    _clear_context_budget_env(monkeypatch)
+    model_factory = PressureHarnessModelFactory(
+        [{"content": "pressure message handled", "tool_calls": []}],
+        context_window_tokens=105_000,
+    )
+    client, repositories, model_factory = _build_v3_pressure_client(
+        monkeypatch, model_factory
+    )
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_pressure_compact",
+            "project_id": "proj_001",
+            "objective": "Pressure test prompt compaction",
+        },
+    )
+    assert created.status_code == 200
+
+    message = client.post(
+        "/v3/sessions/sess_pressure_compact/messages",
+        json={"message": "正常用户消息：" + ("x" * 320_000)},
+    )
+    assert message.status_code == 200
+    assert message.json()["outputs"] == []
+
+    drained = client.post(
+        "/v3/sessions/sess_pressure_compact/runtime/drain",
+        json={"max_steps_per_agent": 1},
+    )
+    assert drained.status_code == 200
+    payload = drained.json()
+    event_types = [event["event_type"] for event in payload["events"]]
+
+    assert payload["status"] == "completed"
+    assert payload["outputs"] == ["pressure message handled"]
+    assert len(model_factory.invokers["v3_harness_loop"].calls) == 1
+    assert "llm.context_budget.warning" in event_types
+    assert "llm.context_budget.after_compaction" in event_types
+    assert "llm.context_budget.exceeded" not in event_types
+    assert event_types.index("llm.context_budget.after_compaction") < event_types.index(
+        "llm.response.created"
+    )
+    prompt_compactions = [
+        memory
+        for memory in repositories.memory.list_by_session("sess_pressure_compact")
+        if memory.kind.value == "compaction"
+        and memory.source_range == "auto:prompt_budget"
+    ]
+    assert prompt_compactions
+    assert "auto_compact before model call" in prompt_compactions[-1].summary
+
+
+def test_v3_prompt_budget_compaction_cuts_off_prior_conversation_for_later_drains(
+    monkeypatch,
+) -> None:
+    _clear_context_budget_env(monkeypatch)
+    large_marker = "large-round-one-marker"
+    model_factory = PressureHarnessModelFactory(
+        [
+            {"content": f"round {round_index} handled", "tool_calls": []}
+            for round_index in range(1, 6)
+        ],
+        context_window_tokens=105_000,
+    )
+    client, repositories, model_factory = _build_v3_pressure_client(
+        monkeypatch, model_factory
+    )
+    session_id = "sess_pressure_multiround"
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": session_id,
+            "project_id": "proj_001",
+            "objective": "Pressure test prompt compaction reuse",
+        },
+    )
+    assert created.status_code == 200
+
+    message = client.post(
+        f"/v3/sessions/{session_id}/messages",
+        json={"message": large_marker + ":" + ("x" * 320_000)},
+    )
+    assert message.status_code == 200
+    drained = client.post(
+        f"/v3/sessions/{session_id}/runtime/drain",
+        json={"max_steps_per_agent": 1},
+    )
+    assert drained.status_code == 200
+    first_payload = drained.json()
+    first_event_types = [event["event_type"] for event in first_payload["events"]]
+    first_warning = [
+        event["payload"]
+        for event in first_payload["events"]
+        if event["event_type"] == "llm.context_budget.warning"
+    ][-1]
+    first_after_compaction = [
+        event["payload"]
+        for event in first_payload["events"]
+        if event["event_type"] == "llm.context_budget.after_compaction"
+    ][-1]
+
+    assert first_payload["outputs"] == ["round 1 handled"]
+    assert "llm.response.created" in first_event_types
+    assert first_warning["action"] == "auto_compact"
+    assert first_after_compaction["ratio"] < first_warning["ratio"]
+
+    invoker = model_factory.invokers["v3_harness_loop"]
+    for round_index in range(2, 6):
+        message = client.post(
+            f"/v3/sessions/{session_id}/messages",
+            json={"message": f"small round {round_index}"},
+        )
+        assert message.status_code == 200
+        drained = client.post(
+            f"/v3/sessions/{session_id}/runtime/drain",
+            json={"max_steps_per_agent": 1},
+        )
+        assert drained.status_code == 200
+        payload = drained.json()
+        event_types = [event["event_type"] for event in payload["events"]]
+
+        assert payload["outputs"] == [f"round {round_index} handled"]
+        assert "llm.response.created" in event_types
+        assert "llm.context_budget.after_compaction" not in event_types
+        assert "llm.context_budget.exceeded" not in event_types
+        provider_prompt = "\n".join(
+            _message_content(message)
+            for message in invoker.calls[-1]["messages"]
+        )
+        assert large_marker not in provider_prompt
+        assert f"small round {round_index}" in provider_prompt
+        prompt_compactions = [
+            memory
+            for memory in repositories.memory.list_by_session(session_id)
+            if memory.kind.value == "compaction"
+            and memory.source_range == "auto:prompt_budget"
+        ]
+        assert len(prompt_compactions) == 1
+
+    assert len(invoker.calls) == 5
+
+
+def test_v3_glm51_default_window_budget_boundaries_via_message_loop(
+    monkeypatch,
+) -> None:
+    _clear_context_budget_env(monkeypatch)
+    cases = [
+        ("below_warn", 250_000, "ok"),
+        ("warn", 360_000, "warn"),
+        ("auto", 400_000, "auto_compact"),
+    ]
+
+    for suffix, message_size, expected_action in cases:
+        model_factory = PressureHarnessModelFactory(
+            [{"content": f"{suffix} handled", "tool_calls": []}],
+            model="glm-5.1",
+            context_window_tokens=None,
+            default_output_tokens=None,
+        )
+        client, repositories, model_factory = _build_v3_pressure_client(
+            monkeypatch, model_factory
+        )
+        session_id = f"sess_glm51_budget_{suffix}"
+
+        created = client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_001",
+                "objective": f"Pressure test GLM-5.1 default boundary {suffix}",
+            },
+        )
+        assert created.status_code == 200
+
+        message = client.post(
+            f"/v3/sessions/{session_id}/messages",
+            json={"message": "正常窗口边界测试：" + ("x" * message_size)},
+        )
+        assert message.status_code == 200
+
+        drained = client.post(
+            f"/v3/sessions/{session_id}/runtime/drain",
+            json={"max_steps_per_agent": 1},
+        )
+        assert drained.status_code == 200
+        payload = drained.json()
+        event_types = [event["event_type"] for event in payload["events"]]
+        budget_payloads = [
+            event["payload"]
+            for event in payload["events"]
+            if event["event_type"] == "llm.context_budget.warning"
+        ]
+
+        assert payload["status"] == "completed"
+        assert payload["outputs"] == [f"{suffix} handled"]
+        assert "llm.context_budget.exceeded" not in event_types
+        assert len(model_factory.invokers["v3_harness_loop"].calls) == 1
+        if expected_action == "ok":
+            assert budget_payloads == []
+            assert "llm.context_budget.after_compaction" not in event_types
+            assert not [
+                memory
+                for memory in repositories.memory.list_by_session(session_id)
+                if memory.kind.value == "compaction"
+                and memory.source_range == "auto:prompt_budget"
+            ]
+            continue
+
+        assert budget_payloads
+        assert budget_payloads[-1]["model"] == "glm-5.1"
+        assert budget_payloads[-1]["context_window_tokens"] == 200_000
+        assert budget_payloads[-1]["reserved_output_tokens"] == 65_536
+        assert budget_payloads[-1]["action"] == expected_action
+        if expected_action == "warn":
+            assert 0.80 <= budget_payloads[-1]["ratio"] < 0.85
+            assert "llm.context_budget.after_compaction" not in event_types
+        else:
+            assert 0.85 <= budget_payloads[-1]["ratio"] < 0.90
+            assert "llm.context_budget.after_compaction" in event_types
+            assert event_types.index(
+                "llm.context_budget.after_compaction"
+            ) < event_types.index("llm.response.created")
+            prompt_compactions = [
+                memory
+                for memory in repositories.memory.list_by_session(session_id)
+                if memory.kind.value == "compaction"
+                and memory.source_range == "auto:prompt_budget"
+            ]
+            assert prompt_compactions
+            assert "auto_compact before model call" in prompt_compactions[-1].summary
+
+
+def test_v3_pressure_large_tool_result_artifactized_via_message_loop(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _clear_context_budget_env(monkeypatch)
+    model_factory = PressureHarnessModelFactory(
+        [
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_large_range",
+                        "name": "artifact.range",
+                        "args": {
+                            "artifact_id": "art_pressure_large_text",
+                            "start_line": 1,
+                            "end_line": 500,
+                        },
+                    }
+                ],
+            },
+            {"content": "large observation handled", "tool_calls": []},
+        ],
+        context_window_tokens=100_000,
+    )
+    client, repositories, model_factory = _build_v3_pressure_client(
+        monkeypatch, model_factory
+    )
+
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_pressure_tool_result",
+            "project_id": "proj_001",
+            "objective": "Pressure test tool-result artifactization",
+        },
+    )
+    assert created.status_code == 200
+    _seed_large_text_artifact(repositories, "sess_pressure_tool_result", tmp_path)
+
+    message = client.post(
+        "/v3/sessions/sess_pressure_tool_result/messages",
+        json={"message": "Read the large artifact and summarize what matters."},
+    )
+    assert message.status_code == 200
+
+    drained = client.post(
+        "/v3/sessions/sess_pressure_tool_result/runtime/drain",
+        json={"max_steps_per_agent": 3},
+    )
+    assert drained.status_code == 200
+    payload = drained.json()
+    event_types = [event["event_type"] for event in payload["events"]]
+    invoker = model_factory.invokers["v3_harness_loop"]
+
+    assert payload["status"] == "completed"
+    assert payload["outputs"] == ["large observation handled"]
+    assert len(invoker.calls) == 2
+    assert "tool_result.artifactized" in event_types
+    assert "llm.context_budget.exceeded" not in event_types
+    assert _tool_message_name(invoker.calls[1]["messages"][-1]) == "artifact.range"
+    observation_envelope = json.loads(_message_content(invoker.calls[1]["messages"][-1]))
+    observation = observation_envelope["payload"]
+    assert observation_envelope["ok"] is False
+    assert observation["status"] == "tool_result_context_over_budget"
+    assert observation["original_tool_ok"] is True
+    assert "artifact_id" in observation
+    assert "stress-observation-" not in _message_content(invoker.calls[1]["messages"][-1])
+
+    artifacts = [
+        artifact
+        for artifact in repositories.artifacts.list_by_session(
+            "sess_pressure_tool_result"
+        )
+        if artifact.kind is ArtifactKind.RESULT
+        and artifact.relative_path == "tool_results/call_large_range.json"
+    ]
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_id == observation["artifact_id"]
+    document = repositories.engine_documents.get(
+        str(dict(artifacts[0].metadata or {})["output_ref"])
+    )
+    assert document is not None
+    assert document.document_kind == "tool_result_full"
+    persisted_result = document.payload["tool_result"]
+    assert document.payload["original_tool_ok"] is True
+    assert "stress-observation-" in persisted_result["content"]
 
 
 def test_v3_llm_response_event_is_available_before_message_command_finishes() -> None:

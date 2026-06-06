@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
+from openzyme_domain import ArtifactKind
 from openzyme_domain import EngineInvocation
 from openzyme_domain import InboxMessage
 from openzyme_domain import InboxParticipantKind
@@ -21,6 +22,7 @@ from openzyme_domain import MemoryEntry
 from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -30,6 +32,10 @@ from .engines import EngineRegistry
 from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
 from .conversation import persist_conversation_message
+from .prompt_budget import PromptBudgetAction
+from .prompt_budget import PromptBudgetDecision
+from .prompt_budget import estimate_and_decide_prompt_budget
+from .prompt_budget import prompt_budget_config_from_env
 
 
 def _new_id(prefix: str) -> str:
@@ -61,6 +67,77 @@ class HarnessStatus(StrEnum):
     FAILED = "failed"
     WAITING_APPROVAL = "waiting_approval"
     MAX_STEPS_EXCEEDED = "max_steps_exceeded"
+
+
+class ContextBudgetExceededError(RuntimeError):
+    """Raised before a provider call when the prompt cannot fit the budget."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(json.dumps(payload, sort_keys=True))
+
+
+@dataclass(frozen=True, slots=True)
+class PromptPayload:
+    system_prompt: str
+    messages: list[Any]
+    tools: list[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PromptBudgetPreflightResult:
+    payload: PromptPayload
+    initial_decision: PromptBudgetDecision
+    final_decision: PromptBudgetDecision
+    compacted: bool = False
+
+
+def _message_role(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("role") or "message")
+    role = message.__class__.__name__.removesuffix("Message").lower()
+    return role or "message"
+
+
+def _message_content(message: Any) -> str:
+    value = message.get("content") if isinstance(message, dict) else getattr(message, "content", "")
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+
+
+def _is_user_message(message: Any) -> bool:
+    if isinstance(message, dict):
+        return str(message.get("role") or "").lower() in {"user", "human"}
+    role = message.__class__.__name__.lower()
+    return "human" in role or role.startswith("user")
+
+
+def _bounded_compacted_current_turn_messages(messages: list[Any]) -> list[Any]:
+    snippets: list[str] = []
+    for message in messages[-3:]:
+        content = _message_content(message).strip()
+        if not content:
+            continue
+        if len(content) > 1200:
+            content = content[:1200] + "\n[truncated by prompt budget compaction]"
+        snippets.append(f"{_message_role(message)}: {content}")
+    if not snippets:
+        content = (
+            "Continue from the restore context and session state. "
+            "No user transcript message is available in this compacted provider payload."
+        )
+    else:
+        content = (
+            "The immediately preceding turn was compacted before the model call. "
+            "Use the restore context for durable state, and use this bounded current-turn summary without assuming omitted text was read in full.\n"
+            + "\n\n".join(snippets)
+        )
+    try:
+        from langchain_core.messages import HumanMessage
+    except ImportError:
+        return [{"role": "user", "content": content}]
+    return [HumanMessage(content=content)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +675,358 @@ def _auto_compact_if_needed(
             source_range="auto:harness_run",
         )
     context.refresh()
+
+
+def _bounded_tool_result_summary(result: ToolResult) -> str:
+    summary = result.summary or result.status or ("ok" if result.ok else "failed")
+    if len(summary) > 800:
+        summary = summary[:800] + "... [truncated]"
+    return summary
+
+
+def _decision_payload(decision: Any) -> dict[str, Any]:
+    return {
+        "action": decision.action.value,
+        "prompt_tokens": decision.prompt_tokens,
+        "reserved_output_tokens": decision.reserved_output_tokens,
+        "safety_margin_tokens": decision.safety_margin_tokens,
+        "total_budgeted_tokens": decision.total_budgeted_tokens,
+        "context_window_tokens": decision.context_window_tokens,
+        "ratio": round(decision.ratio, 6),
+        "model": decision.profile.model,
+        "profile_known": decision.profile.profile_known,
+        "tokenizer_calibrated": decision.tokenizer_calibrated,
+        "tokenizer_available": decision.tokenizer_available,
+        "tokenizer_error": decision.tokenizer_error,
+        "breakdown": dict(decision.breakdown),
+    }
+
+
+def _provider_tokenizer_result(
+    model_factory: Any | None,
+    *,
+    system_prompt: str,
+    messages: list[Any],
+    tools: list[Any],
+) -> dict[str, Any] | None:
+    if model_factory is None or not hasattr(model_factory, "count_prompt_tokens"):
+        return None
+    try:
+        result = model_factory.count_prompt_tokens(
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+    except Exception as exc:
+        return {"available": False, "error": str(exc) or exc.__class__.__name__}
+    return result if isinstance(result, dict) else None
+
+
+def _compact_before_model_call(
+    context: SessionRuntimeContext,
+    *,
+    actor_ref: str,
+    decision_payload: dict[str, Any],
+    recent_tool_result: ToolResult | None = None,
+) -> None:
+    from .memory import MemoryService
+
+    context.refresh()
+    service = MemoryService(
+        context.repositories,
+        event_emitter=lambda event_type, payload: context.emit(event_type, payload),
+    )
+    summary = service.render_compaction_summary(
+        context.restore_context,
+        recent_tool_result=None,
+    )
+    if recent_tool_result is not None:
+        summary += (
+            "\nRecent tool activity bounded: "
+            f"{recent_tool_result.tool_name} call_id={recent_tool_result.call_id} "
+            f"ok={recent_tool_result.ok} status={recent_tool_result.status or 'unknown'} "
+            f"summary={_bounded_tool_result_summary(recent_tool_result)}"
+        )
+    summary += (
+        "\nContext budget action: auto_compact before model call; "
+        f"actor_ref={actor_ref}; prompt_tokens={decision_payload.get('prompt_tokens')}; "
+        f"ratio={decision_payload.get('ratio')}"
+    )
+    service.compact_scope(
+        session_id=context.snapshot.session.session_id,
+        scope_kind=MemoryScopeKind.SESSION,
+        scope_ref=context.snapshot.session.session_id,
+        summary=summary,
+        source_range="auto:prompt_budget",
+    )
+    if context.restore_focus.lane_id is not None:
+        service.compact_scope(
+            session_id=context.snapshot.session.session_id,
+            scope_kind=MemoryScopeKind.LANE,
+            scope_ref=context.restore_focus.lane_id,
+            summary=summary,
+            source_range="auto:prompt_budget",
+        )
+    context.refresh()
+
+
+def ensure_prompt_budget_before_model_call(
+    context: SessionRuntimeContext,
+    *,
+    actor_ref: str,
+    system_prompt: str,
+    messages: list[Any],
+    tools: list[Any],
+    recent_tool_result: ToolResult | None = None,
+    rebuild_payload: Callable[[], PromptPayload] | None = None,
+) -> PromptBudgetPreflightResult:
+    prompt_payload = PromptPayload(
+        system_prompt=system_prompt,
+        messages=list(messages),
+        tools=list(tools),
+    )
+    if not any(_is_user_message(message) for message in prompt_payload.messages):
+        prompt_payload = PromptPayload(
+            system_prompt=prompt_payload.system_prompt,
+            messages=[
+                *_bounded_compacted_current_turn_messages(prompt_payload.messages),
+                *prompt_payload.messages,
+            ],
+            tools=prompt_payload.tools,
+        )
+    tokenizer_result = _provider_tokenizer_result(
+        context.model_factory,
+        system_prompt=prompt_payload.system_prompt,
+        messages=prompt_payload.messages,
+        tools=prompt_payload.tools,
+    )
+    decision = estimate_and_decide_prompt_budget(
+        system_prompt=prompt_payload.system_prompt,
+        messages=prompt_payload.messages,
+        tools=prompt_payload.tools,
+        model_factory=context.model_factory,
+        tokenizer_result=tokenizer_result,
+    )
+    initial_decision = decision
+    compacted = False
+    payload = _decision_payload(decision)
+    if decision.should_warn:
+        context.emit("llm.context_budget.warning", {"actor_ref": actor_ref, **payload})
+    if decision.action is PromptBudgetAction.AUTO_COMPACT:
+        compacted = True
+        _compact_before_model_call(
+            context,
+            actor_ref=actor_ref,
+            decision_payload=payload,
+            recent_tool_result=recent_tool_result,
+        )
+        if rebuild_payload is not None:
+            prompt_payload = rebuild_payload()
+        if not any(_is_user_message(message) for message in prompt_payload.messages):
+            prompt_payload = PromptPayload(
+                system_prompt=prompt_payload.system_prompt,
+                messages=[
+                    *_bounded_compacted_current_turn_messages(messages),
+                    *prompt_payload.messages,
+                ],
+                tools=prompt_payload.tools,
+            )
+        tokenizer_result = _provider_tokenizer_result(
+            context.model_factory,
+            system_prompt=prompt_payload.system_prompt,
+            messages=prompt_payload.messages,
+            tools=prompt_payload.tools,
+        )
+        decision = estimate_and_decide_prompt_budget(
+            system_prompt=prompt_payload.system_prompt,
+            messages=prompt_payload.messages,
+            tools=prompt_payload.tools,
+            model_factory=context.model_factory,
+            tokenizer_result=tokenizer_result,
+        )
+        payload = _decision_payload(decision)
+        context.emit(
+            "llm.context_budget.after_compaction",
+            {"actor_ref": actor_ref, **payload},
+        )
+    if decision.action is PromptBudgetAction.EMERGENCY:
+        payload = {
+            "error_code": "context_budget_exceeded",
+            "message": (
+                "LLM prompt exceeds the configured context budget; provider call was not attempted."
+            ),
+            "actor_ref": actor_ref,
+            **payload,
+        }
+        context.emit("llm.context_budget.exceeded", payload)
+        raise ContextBudgetExceededError(payload)
+    return PromptBudgetPreflightResult(
+        payload=prompt_payload,
+        initial_decision=initial_decision,
+        final_decision=decision,
+        compacted=compacted,
+    )
+
+
+def _tool_result_artifact_payload(
+    result: ToolResult, *, reason: str, token_estimate: int
+) -> dict[str, Any]:
+    return {
+        "status": "persisted",
+        "reason": reason,
+        "token_estimate": token_estimate,
+        "tool_name": result.tool_name,
+        "call_id": result.call_id,
+        "original_tool_ok": result.ok,
+        "original_status": result.status or ("ok" if result.ok else "failed"),
+        "tool_result": result.envelope(),
+    }
+
+
+def persist_tool_result_observation_artifact(
+    context: SessionRuntimeContext,
+    result: ToolResult,
+    *,
+    reason: str,
+    token_estimate: int,
+) -> ToolResult:
+    created_at = utc_now_iso()
+    document_id = _new_id("toolresult")
+    artifact_id = _new_id("art")
+    context.repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id=document_id,
+            session_id=context.snapshot.session.session_id,
+            invocation_id=None,
+            document_kind="tool_result_full",
+            payload=_tool_result_artifact_payload(
+                result,
+                reason=reason,
+                token_estimate=token_estimate,
+            ),
+            created_at=created_at,
+            updated_at=created_at,
+        )
+    )
+    artifact = SessionArtifactRecord(
+        artifact_id=artifact_id,
+        session_id=context.snapshot.session.session_id,
+        task_id=result.task_id,
+        lane_id=result.lane_id,
+        invocation_id=None,
+        run_id=None,
+        kind=ArtifactKind.RESULT,
+        storage_uri=f"engine-document://{document_id}",
+        relative_path=f"tool_results/{result.call_id}.json",
+        title=f"Full tool result for {result.tool_name}",
+        description="Full tool result persisted because it exceeded the LLM context budget.",
+        metadata={
+            "document_kind": "tool_result_full",
+            "output_ref": document_id,
+            "tool_name": result.tool_name,
+            "call_id": result.call_id,
+            "original_tool_ok": result.ok,
+            "original_status": result.status or ("ok" if result.ok else "failed"),
+            "reason": reason,
+            "token_estimate": token_estimate,
+        },
+        created_at=created_at,
+    )
+    context.repositories.artifacts.save(artifact)
+    context.emit(
+        "tool_result.artifactized",
+        {
+            "call_id": result.call_id,
+            "tool_name": result.tool_name,
+            "artifact_id": artifact.artifact_id,
+            "document_id": document_id,
+            "reason": reason,
+            "token_estimate": token_estimate,
+            "original_tool_ok": result.ok,
+        },
+    )
+    read_hint = (
+        f'Use artifact.get with artifact_id="{artifact.artifact_id}" for summary, '
+        'then path="output_payload.tool_result", offset=0, limit=30 to page the full result.'
+    )
+    observation = {
+        "ok": False,
+        "status": "tool_result_context_over_budget",
+        "error_code": "tool_result_context_over_budget",
+        "original_tool_ok": result.ok,
+        "original_status": result.status or ("ok" if result.ok else "failed"),
+        "artifact_id": artifact.artifact_id,
+        "read_hint": read_hint,
+    }
+    return ToolResult(
+        call_id=result.call_id,
+        tool_name=result.tool_name,
+        ok=False,
+        content=json.dumps(observation, sort_keys=True),
+        task_id=result.task_id,
+        lane_id=result.lane_id,
+        status="tool_result_context_over_budget",
+        summary="Full tool result was persisted as an artifact because it exceeded the LLM context budget.",
+        error_code="tool_result_context_over_budget",
+        hint=read_hint,
+        details={
+            "artifact_id": artifact.artifact_id,
+            "document_id": document_id,
+            "original_tool_ok": result.ok,
+            "original_status": result.status or ("ok" if result.ok else "failed"),
+            "reason": reason,
+            "token_estimate": token_estimate,
+        },
+    )
+
+
+def budget_tool_results_for_prompt(
+    context: SessionRuntimeContext,
+    tool_results: tuple[ToolResult, ...],
+    *,
+    system_prompt: str,
+    messages: list[Any],
+    tools: list[Any],
+) -> tuple[ToolResult, ...]:
+    if not tool_results:
+        return ()
+    budgeted: list[ToolResult] = []
+    config = prompt_budget_config_from_env()
+    for result in tool_results:
+        tool_message_content = result.to_tool_message_content()
+        candidate_messages = [*messages, *[item.to_tool_message_content() for item in budgeted], tool_message_content]
+        single_tokens = max(1, (len(tool_message_content) + 3) // 4)
+        decision = estimate_and_decide_prompt_budget(
+            system_prompt=system_prompt,
+            messages=candidate_messages,
+            tools=tools,
+            model_factory=context.model_factory,
+            config=config,
+        )
+        result_alone_over_budget = (
+            single_tokens + decision.reserved_output_tokens + decision.safety_margin_tokens
+            >= int(decision.context_window_tokens * config.auto_compact_ratio)
+        )
+        if result_alone_over_budget or decision.action in {
+            PromptBudgetAction.AUTO_COMPACT,
+            PromptBudgetAction.EMERGENCY,
+        }:
+            budgeted.append(
+                persist_tool_result_observation_artifact(
+                    context,
+                    result,
+                    reason=(
+                        "single_tool_result_over_budget"
+                        if result_alone_over_budget
+                        else "next_prompt_over_budget"
+                    ),
+                    token_estimate=single_tokens,
+                )
+            )
+        else:
+            budgeted.append(result)
+    context.refresh()
+    return tuple(budgeted)
 
 
 def _pending_approval_id(snapshot: SessionRuntimeSnapshot) -> str | None:
