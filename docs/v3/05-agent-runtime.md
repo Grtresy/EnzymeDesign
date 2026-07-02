@@ -178,6 +178,21 @@ master restore context 还必须包含最新 user message、conversation timelin
 
 restore context 受统一 token budget 管理。每次 master / teammate 模型调用前都必须估算完整 prompt；达到 80% 只记录 warning，达到 85% 写 bounded session/lane compaction 并刷新 restore context，达到 90% 显式 `context_budget_exceeded` 失败并停止 provider call。最新 session-scope `MemoryKind.COMPACTION` 且 `source_range="auto:prompt_budget"` 的记录是 LLM restore prompt 的 recent-conversation cutoff：后续 restore 只加载该 compaction 之后创建的 conversation entries；`auto:harness_run` 不触发这个剪枝。自动 compaction 只做上下文治理，不改变 task、approval、lane、conversation、workspace conversation projection 或 protocol 的 canonical 状态。
 
+### 6.1 Agent Step Context
+
+每次 master / teammate 发起 tool-calling provider 调用前，harness 必须构造一个 `AgentStepContext`。它是单个模型调用 step 的执行上下文，不是新的产品真状态，也不能替代 session、task board、lane、approval、protocol 或 runtime signal。
+
+`AgentStepContext` 至少包含：
+
+- `step_id`、`session_id`、`agent_id`、`actor_kind`、`role`、`call_index`
+- 当前 `task_id`、`lane_id`、`correlation_id`
+- runtime signal 元数据：`signal_id` 与 `wakeup_reason`
+- `restore_context_digest` 与 `tool_catalog_digest`
+
+digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算。它不得暴露 full restore context、conversation content、memory summary、artifact `storage_uri`、lane `cwd`、Host local path、runner path、sandbox host path、provider secret 或完整 tool schema。workspace `agent_traces` 可以展示 `step_id` 与 digest，帮助诊断“本次模型调用看见了哪一版 restore / tool catalog”，但不能把 Codex thread / turn 或 provider transcript 当成 OpenZyme 顶层产品状态。
+
+模型可见 tool spec 与 dispatch runtime 必须来自同一个 typed tool router。legacy `registry.register(name, handler)` 可以继续存在，但进入模型调用前要被包装为 `ToolRuntime`：同一个 runtime 对象负责生成 `ToolSpec` 并执行 `dispatch(step_context, invocation, runtime_context)`。这保证 provider-visible catalog、trace metadata 和真实 tool execution 不会走三套不一致路径。
+
 master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。`artifact.list` 必须分页返回 catalog；`artifact.get` 必须支持对 large output 和 `tool_result_full` 的 `path` / `offset` / `limit` 分页读取。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
 
 ## 7. Failure And Recovery Defaults

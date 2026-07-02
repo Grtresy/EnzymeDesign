@@ -4,6 +4,7 @@ from dataclasses import asdict
 from dataclasses import replace
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 import json
 from typing import Any
 from typing import Callable
@@ -27,8 +28,12 @@ from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
+from openzyme_runtime import AgentStepContext
+from openzyme_runtime import LegacyFunctionToolRuntime
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
+from openzyme_runtime import ToolRouter
+from openzyme_runtime import ToolSpec
 
 from .engines import EngineRegistry
 from .repositories import EngineDocumentRecord
@@ -224,6 +229,12 @@ class HarnessInput:
     restore_focus: RestoreFocus | None = None
     persist_conversation: bool = True
     skip_resume_resolution: bool = False
+    agent_id: str | None = None
+    actor_kind: str | None = None
+    actor_role: str | None = None
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    wakeup_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,8 +265,12 @@ class LlmTraceStep:
     response_text: str
     tool_calls: tuple[LlmTraceToolCall, ...] = ()
     initial_prompt: dict[str, Any] | None = None
+    step_context: AgentStepContext | None = None
 
     def to_payload(self, *, trace_id: str, created_at: str) -> dict[str, Any]:
+        agent_step = (
+            None if self.step_context is None else self.step_context.to_dict()
+        )
         payload = {
             "trace_id": trace_id,
             "actor_ref": self.actor_ref,
@@ -267,6 +282,11 @@ class LlmTraceStep:
             "response_text": self.response_text,
             "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls],
         }
+        if agent_step is not None:
+            payload["step_id"] = agent_step["step_id"]
+            payload["tool_catalog_digest"] = agent_step["tool_catalog_digest"]
+            payload["restore_context_digest"] = agent_step["restore_context_digest"]
+            payload["agent_step"] = agent_step
         if self.initial_prompt is not None:
             payload["initial_prompt"] = self.initial_prompt
         return payload
@@ -306,6 +326,32 @@ class ToolRegistry:
 
     def register(self, tool_name: str, handler: ToolHandler) -> None:
         self._handlers[tool_name] = handler
+
+    def to_tool_router(
+        self,
+        context: "SessionRuntimeContext",
+        *,
+        descriptors: tuple[Any, ...] = (),
+    ) -> ToolRouter:
+        specs: dict[str, ToolSpec] = {}
+        for descriptor in descriptors:
+            if not hasattr(descriptor, "tool_name") or not hasattr(
+                descriptor, "to_tool_spec"
+            ):
+                continue
+            tool_name = str(descriptor.tool_name)
+            if tool_name not in specs:
+                specs[tool_name] = descriptor.to_tool_spec()
+        runtimes = {
+            tool_name: LegacyFunctionToolRuntime(
+                tool_name=tool_name,
+                handler=self._handlers[tool_name],
+                tool_spec=spec,
+            )
+            for tool_name, spec in specs.items()
+            if tool_name in self._handlers
+        }
+        return ToolRouter(runtimes=runtimes, dispatch_context=context)
 
     def dispatch(
         self, context: "SessionRuntimeContext", invocation: ToolInvocation
@@ -370,6 +416,14 @@ class SessionRuntimeContext:
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
     signal_notifier: Any | None = None
+    agent_id: str | None = None
+    actor_kind: str | None = None
+    actor_role: str | None = None
+    correlation_id: str | None = None
+    signal_id: str | None = None
+    wakeup_reason: str | None = None
+    current_step_context: AgentStepContext | None = None
+    current_tool_router: ToolRouter | None = None
 
     def refresh(self) -> SessionRuntimeSnapshot:
         self.snapshot = SessionRuntimeSnapshot.load(
@@ -430,6 +484,163 @@ class SessionRuntimeContext:
             skill_keys=self.active_skill_keys,
         )
         return self.restore_context
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
+
+
+def _sha256_digest(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+def _restore_context_public_payload(context: SessionRuntimeContext) -> dict[str, Any]:
+    snapshot = context.snapshot
+    return {
+        "session": {
+            "session_id": snapshot.session.session_id,
+            "status": _enum_value(snapshot.session.status),
+            "updated_at": snapshot.session.updated_at,
+        },
+        "focus": {
+            "task_id": context.restore_focus.task_id,
+            "lane_id": context.restore_focus.lane_id,
+            "skill_keys": list(context.restore_focus.skill_keys),
+        },
+        "tasks": [
+            {
+                "task_id": task.task_id,
+                "status": _enum_value(task.status),
+                "kind": task.kind,
+                "assigned_ref": task.assigned_ref,
+                "lane_id": task.lane_id,
+                "updated_at": task.updated_at,
+            }
+            for task in sorted(snapshot.tasks, key=lambda item: item.task_id)
+        ],
+        "ready_task_ids": sorted(task.task_id for task in snapshot.ready_tasks),
+        "lanes": [
+            {
+                "lane_id": lane.lane_id,
+                "status": _enum_value(lane.status),
+                "claimed_ref": lane.claimed_ref,
+                "updated_at": lane.updated_at,
+            }
+            for lane in sorted(snapshot.lanes, key=lambda item: item.lane_id)
+        ],
+        "pending_approvals": [
+            {
+                "approval_id": approval.approval_id,
+                "task_id": approval.task_id,
+                "lane_id": approval.lane_id,
+                "kind": approval.kind,
+                "status": _enum_value(approval.status),
+            }
+            for approval in sorted(
+                snapshot.pending_approvals, key=lambda item: item.approval_id
+            )
+        ],
+        "inbox": [
+            {
+                "message_id": message.message_id,
+                "message_type": message.message_type,
+                "sender_kind": _enum_value(message.sender_kind),
+                "recipient_kind": _enum_value(message.recipient_kind),
+                "correlation_id": message.correlation_id,
+                "status": _enum_value(message.status),
+            }
+            for message in sorted(snapshot.inbox, key=lambda item: item.message_id)
+        ],
+        "memory": [
+            {
+                "memory_id": memory.memory_id,
+                "scope_kind": _enum_value(memory.scope_kind),
+                "scope_ref": memory.scope_ref,
+                "kind": _enum_value(memory.kind),
+                "importance": memory.importance,
+            }
+            for memory in sorted(snapshot.memory, key=lambda item: item.memory_id)
+        ],
+        "agents": [
+            {
+                "agent_id": agent.agent_id,
+                "role": agent.role,
+                "status": _enum_value(agent.status),
+                "task_id": agent.task_id,
+                "lane_id": agent.lane_id,
+                "current_correlation_id": agent.current_correlation_id,
+                "wakeup_reason": agent.wakeup_reason,
+                "updated_at": agent.updated_at,
+            }
+            for agent in sorted(snapshot.agents, key=lambda item: item.agent_id)
+        ],
+        "active_invocations": [
+            {
+                "invocation_id": invocation.invocation_id,
+                "engine_name": invocation.engine_name,
+                "status": _enum_value(invocation.status),
+                "task_id": invocation.task_id,
+                "lane_id": invocation.lane_id,
+                "approval_id": invocation.approval_id,
+            }
+            for invocation in sorted(
+                snapshot.active_invocations, key=lambda item: item.invocation_id
+            )
+        ],
+    }
+
+
+def restore_context_digest(context: SessionRuntimeContext) -> str:
+    return _sha256_digest(_restore_context_public_payload(context))
+
+
+def tool_catalog_digest(tool_specs: tuple[ToolSpec, ...]) -> str:
+    return _sha256_digest(
+        [
+            {
+                "tool_name": spec.tool_name,
+                "description": spec.description,
+                "input_schema": spec.input_schema,
+            }
+            for spec in sorted(tool_specs, key=lambda item: item.tool_name)
+        ]
+    )
+
+
+def build_agent_step_context(
+    context: SessionRuntimeContext,
+    *,
+    call_index: int,
+    tool_specs: tuple[ToolSpec, ...] = (),
+) -> AgentStepContext:
+    agent_id = context.agent_id or "harness"
+    actor_kind = context.actor_kind or (
+        "master" if agent_id in {"harness", "agent:master"} else "teammate"
+    )
+    role = context.actor_role or ("master" if actor_kind == "master" else actor_kind)
+    return AgentStepContext(
+        step_id=_new_id("agentstep"),
+        session_id=context.snapshot.session.session_id,
+        agent_id=agent_id,
+        actor_kind=actor_kind,
+        role=role,
+        call_index=call_index,
+        task_id=context.restore_focus.task_id,
+        lane_id=context.restore_focus.lane_id,
+        correlation_id=context.correlation_id,
+        signal_id=context.signal_id,
+        wakeup_reason=context.wakeup_reason,
+        restore_context_digest=restore_context_digest(context),
+        tool_catalog_digest=tool_catalog_digest(tool_specs),
+        created_at=utc_now_iso(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1052,6 +1263,12 @@ def run_agent_harness_loop(
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
         signal_notifier=signal_notifier,
+        agent_id=harness_input.agent_id,
+        actor_kind=harness_input.actor_kind,
+        actor_role=harness_input.actor_role,
+        correlation_id=harness_input.correlation_id,
+        signal_id=harness_input.signal_id,
+        wakeup_reason=harness_input.wakeup_reason,
     )
     outputs: list[str] = []
     all_tool_results: list[ToolResult] = []
@@ -1284,7 +1501,15 @@ def run_agent_harness_loop(
                     },
                 )
                 try:
-                    result = registry.dispatch(context, invocation)
+                    if (
+                        context.current_tool_router is not None
+                        and context.current_step_context is not None
+                    ):
+                        result = context.current_tool_router.dispatch(
+                            context.current_step_context, invocation
+                        )
+                    else:
+                        result = registry.dispatch(context, invocation)
                 except Exception as exc:
                     outputs.append(_format_runtime_error(exc))
                     context.emit(

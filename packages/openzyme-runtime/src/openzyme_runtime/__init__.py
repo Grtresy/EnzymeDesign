@@ -119,12 +119,18 @@ from .test_gates import live_llm_skip_reason
 from .test_gates import live_tavily_skip_reason
 from .test_gates import load_current_settings
 from .test_gates import quality_eval_skip_reason
+from .tooling import AgentStepContext
+from .tooling import LegacyFunctionToolRuntime
 from .tooling import ToolHandler
 from .tooling import ToolInvocation
 from .tooling import ToolRegistryProtocol
 from .tooling import ToolResult
+from .tooling import ToolRouter
+from .tooling import ToolRuntime
+from .tooling import ToolSpec
 
 __all__ = [
+    "AgentStepContext",
     "CanonicalResearchSnapshot",
     "ChatModelFactory",
     "CapabilityEngine",
@@ -166,6 +172,7 @@ __all__ = [
     "IntakeClarification",
     "IntakePhaseOutput",
     "LangChainModelFactory",
+    "LegacyFunctionToolRuntime",
     "LangChainToolCallingInvoker",
     "LimitedStructuredOutputInvoker",
     "LimitedToolCallingInvoker",
@@ -216,6 +223,9 @@ __all__ = [
     "ToolHandler",
     "ToolInvocation",
     "ToolRegistryProtocol",
+    "ToolRouter",
+    "ToolRuntime",
+    "ToolSpec",
     "ToolResult",
     "WebFetchArgs",
     "WebFetchTool",

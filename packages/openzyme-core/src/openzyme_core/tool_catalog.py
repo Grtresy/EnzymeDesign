@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from openzyme_runtime import ToolSpec
+
 from .engines import EngineRegistry
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 
@@ -13,15 +15,15 @@ class ToolDescriptor:
     description: str
     input_schema: dict[str, Any]
 
+    def to_tool_spec(self) -> ToolSpec:
+        return ToolSpec(
+            tool_name=self.tool_name,
+            description=self.description,
+            input_schema=self.input_schema,
+        )
+
     def to_openai_tool(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.tool_name,
-                "description": self.description,
-                "parameters": self.input_schema,
-            },
-        }
+        return self.to_tool_spec().to_openai_tool()
 
 
 def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
@@ -346,6 +348,87 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
+def _execution_pipeline_start_descriptor() -> ToolDescriptor:
+    return ToolDescriptor(
+        tool_name="execution.pipeline.start",
+        description=(
+            "Migration compatibility bridge for starting a Host-supervised execution pipeline "
+            "from a previously created pipeline source artifact. Prefer sandbox-first authoring; "
+            "this tool must not use Host paths, runner paths, direct SSH, or inline provider credentials."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "lane_id": {"type": "string"},
+                "code_artifact_id": {"type": "string"},
+                "inputs": {
+                    "type": "object",
+                    "properties": {
+                        "artifact_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "context_artifact_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+                "dry_run": {"type": "boolean"},
+                "invocation_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["task_id", "code_artifact_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _execution_pipeline_status_descriptor() -> ToolDescriptor:
+    return ToolDescriptor(
+        tool_name="execution.pipeline.status",
+        description="Read status for an existing Host-supervised execution pipeline invocation.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "invocation_id": {"type": "string"},
+            },
+            "required": ["invocation_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def engine_tool_descriptors(
+    engine_registry: EngineRegistry | None = None,
+) -> tuple[ToolDescriptor, ...]:
+    if engine_registry is None:
+        return ()
+    descriptors: list[ToolDescriptor] = []
+    for engine_descriptor in engine_registry.list_descriptors():
+        for tool_name in engine_descriptor.tool_names:
+            if tool_name == "execution.pipeline.start":
+                descriptors.append(_execution_pipeline_start_descriptor())
+                continue
+            if tool_name == "execution.pipeline.status":
+                descriptors.append(_execution_pipeline_status_descriptor())
+                continue
+            descriptors.append(
+                ToolDescriptor(
+                    tool_name=tool_name,
+                    description=(
+                        f"Capability engine compatibility tool for "
+                        f"{engine_descriptor.engine_name}."
+                    ),
+                    input_schema=engine_descriptor.input_schema
+                    or {"type": "object", "properties": {}},
+                )
+            )
+    return tuple(descriptors)
+
+
 def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     return (
         ToolDescriptor(
@@ -561,6 +644,7 @@ __all__ = [
     "ToolDescriptor",
     "artifact_tool_descriptors",
     "builtin_tool_descriptors",
+    "engine_tool_descriptors",
     "sandbox_tool_descriptors",
     "top_level_tool_descriptors",
 ]

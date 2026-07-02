@@ -266,6 +266,8 @@ class AgentRuntimeService:
             correlation_id=correlation_id,
             instructions=instructions,
             max_steps=max_steps,
+            signal_id=signal.signal_id,
+            wakeup_reason=signal.reason.value,
         )
         summary, final_status = finalize_teammate_result(
             self.context,
@@ -369,6 +371,12 @@ class AgentRuntimeService:
                     lane_id=claimed.lane_id,
                 ),
                 persist_conversation=True,
+                agent_id=agent.agent_id,
+                actor_kind="master",
+                actor_role=agent.role,
+                correlation_id=claimed.correlation_id,
+                signal_id=claimed.signal_id,
+                wakeup_reason=claimed.reason.value,
             ),
             driver=LlmConversationDriver(
                 self.context.model_factory,

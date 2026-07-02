@@ -37,6 +37,7 @@ from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SkillRegistry
 from openzyme_core import TaskBoardService
 from openzyme_core import TaskMutation
+from openzyme_core import ToolDescriptor
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import ToolResult
@@ -52,6 +53,7 @@ from openzyme_core import ProtocolService
 from openzyme_core import register_subagent_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
+from openzyme_core.harness import build_agent_step_context
 from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
@@ -2240,6 +2242,79 @@ def _message_content(message: object) -> str:
     return str(getattr(message, "content", "") or "")
 
 
+def test_tool_router_exposes_descriptor_spec_and_dispatches_legacy_handler() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def echo_handler(
+        context: SessionRuntimeContext, invocation: ToolInvocation
+    ) -> ToolResult:
+        assert context.snapshot.session.session_id == session.session_id
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content=f"echo:{invocation.arguments['value']}",
+            status="ok",
+            summary="echoed",
+        )
+
+    registry.register("example.echo", echo_handler)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    descriptor = ToolDescriptor(
+        tool_name="example.echo",
+        description="Echo a value.",
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+    )
+
+    router = registry.to_tool_router(context, descriptors=(descriptor,))
+    pre_step = build_agent_step_context(context, call_index=1)
+    specs = router.model_visible_specs(pre_step)
+    step_context = build_agent_step_context(
+        context,
+        call_index=1,
+        tool_specs=specs,
+    )
+
+    assert [spec.tool_name for spec in specs] == ["example.echo"]
+    assert specs[0].to_openai_tool() == descriptor.to_openai_tool()
+    assert step_context.tool_catalog_digest is not None
+    assert step_context.tool_catalog_digest.startswith("sha256:")
+    result = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_echo",
+            tool_name="example.echo",
+            arguments={"value": "ok"},
+        ),
+    )
+    assert result.ok is True
+    assert result.content == "echo:ok"
+
+    unknown = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_missing",
+            tool_name="example.missing",
+            arguments={},
+        ),
+    )
+    assert unknown.ok is False
+    assert unknown.status == "unknown_tool"
+
+
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
     assert {
@@ -2589,6 +2664,32 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
 def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    repositories.lanes.save(
+        Lane(
+            lane_id="lane_private",
+            session_id=session.session_id,
+            name="private",
+            status=LaneStatus.CLAIMED,
+            cwd="/home/user/private/workspace",
+            branch_name="wt/private",
+            claimed_ref="agent:primary",
+            created_at="2026-04-17T09:03:00+00:00",
+            updated_at="2026-04-17T09:03:00+00:00",
+        )
+    )
+    repositories.memory.save(
+        MemoryEntry(
+            memory_id="mem_private",
+            session_id=session.session_id,
+            scope_kind=MemoryScopeKind.SESSION,
+            scope_ref=session.session_id,
+            kind=MemoryKind.CONTINUITY,
+            summary="top-secret continuity from storage://private/session",
+            source_range="/home/user/private/notes.md",
+            importance=9,
+            created_at="2026-04-17T09:03:10+00:00",
+        )
+    )
     driver = LlmConversationDriver(
         FakeModelFactory(
             {
@@ -2634,6 +2735,33 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     assert args_public["secret_token"] == "[redacted]"
     assert args_public["local_path"] == "[redacted]"
     assert args_public["pipeline_code"] == "[redacted]"
+    assert payload["step_id"].startswith("agentstep_")
+    assert payload["tool_catalog_digest"].startswith("sha256:")
+    assert payload["restore_context_digest"].startswith("sha256:")
+    assert payload["agent_step"]["agent_id"] == "harness"
+    assert payload["agent_step"]["actor_kind"] == "master"
+    assert payload["agent_step"]["role"] == "master"
+    assert payload["agent_step"]["call_index"] == 1
+    assert payload["agent_step"]["tool_catalog_digest"] == payload["tool_catalog_digest"]
+    assert (
+        payload["agent_step"]["restore_context_digest"]
+        == payload["restore_context_digest"]
+    )
+    payload_text = json.dumps(payload, sort_keys=True)
+    assert "/home/user/private" not in payload_text
+    assert "abc123" not in payload_text
+    assert "top-secret" not in payload_text
+    assert "storage://private" not in payload_text
+
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    projected = workspace["agent_traces"]["harness"][0]
+    assert projected["step_id"] == payload["step_id"]
+    assert projected["tool_catalog_digest"] == payload["tool_catalog_digest"]
+    assert projected["restore_context_digest"] == payload["restore_context_digest"]
 
 
 def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
@@ -2663,6 +2791,10 @@ def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
     workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
     traces = workspace["agent_traces"]["agent:researcher"]
     assert traces[0]["actor_kind"] == "teammate"
+    assert traces[0]["agent_step"]["agent_id"] == "agent:researcher"
+    assert traces[0]["agent_step"]["actor_kind"] == "teammate"
+    assert traces[0]["agent_step"]["role"] == "researcher"
+    assert traces[0]["agent_step"]["correlation_id"] == "corr_001"
     assert traces[0]["response_text"] == "I inspected the task."
     assert traces[0]["initial_prompt"]["identity"] == "agent:researcher"
     assert traces[0]["initial_prompt"]["instructions"] == "Inspect the literature plan."

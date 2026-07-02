@@ -946,6 +946,10 @@ class V3HostApiService:
         return resolved
 
     def create_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.operation_lock:
+            return self._create_task_locked(payload)
+
+    def _create_task_locked(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = TaskBoardService(self.repositories).create_task(
             session_id=str(payload["session_id"]),
             task_id=str(payload.get("task_id") or _new_id("task")),
@@ -972,6 +976,12 @@ class V3HostApiService:
         }
 
     def update_task(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.operation_lock:
+            return self._update_task_locked(task_id, payload)
+
+    def _update_task_locked(
+        self, task_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         mutation_kwargs: dict[str, Any] = {}
         if "subject" in payload:
             mutation_kwargs["subject"] = payload["subject"]

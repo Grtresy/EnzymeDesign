@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from openzyme_runtime import AgentStepContext
+
 from .engines import EngineRegistry
 from .harness import HarnessInput
 from .harness import HarnessStep
@@ -13,6 +15,7 @@ from .harness import PromptPayload
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolResult
+from .harness import build_agent_step_context
 from .harness import budget_tool_results_for_prompt
 from .harness import ensure_prompt_budget_before_model_call
 from .tool_catalog import ToolDescriptor
@@ -289,6 +292,27 @@ class LlmConversationDriver:
     def _descriptor_by_name(self) -> dict[str, ToolDescriptor]:
         return {descriptor.tool_name: descriptor for descriptor in self._tool_catalog()}
 
+    def _prepare_step_context(
+        self, context: SessionRuntimeContext, *, call_index: int
+    ) -> tuple[list[dict[str, Any]], AgentStepContext]:
+        router = context.tool_registry.to_tool_router(
+            context,
+            descriptors=self._tool_catalog(),
+        )
+        pre_step_context = build_agent_step_context(
+            context,
+            call_index=call_index,
+        )
+        specs = router.model_visible_specs(pre_step_context)
+        step_context = build_agent_step_context(
+            context,
+            call_index=call_index,
+            tool_specs=specs,
+        )
+        context.current_tool_router = router
+        context.current_step_context = step_context
+        return [spec.to_openai_tool() for spec in specs], step_context
+
     def _invocation_refs(
         self, tool_name: str, args: dict[str, Any]
     ) -> tuple[str | None, str | None]:
@@ -374,6 +398,7 @@ class LlmConversationDriver:
         *,
         response_text: str,
         tool_invocations: tuple[ToolInvocation, ...] = (),
+        step_context: AgentStepContext | None = None,
     ) -> LlmTraceStep:
         self._call_index += 1
         return LlmTraceStep(
@@ -393,6 +418,7 @@ class LlmConversationDriver:
                 )
                 for invocation in tool_invocations
             ),
+            step_context=step_context,
         )
 
     def plan(
@@ -404,7 +430,11 @@ class LlmConversationDriver:
         if not self._initialized:
             self._messages = _build_seed_messages(context, harness_input)
             self._initialized = True
-        tools = [descriptor.to_openai_tool() for descriptor in self._tool_catalog()]
+        call_index = self._call_index + 1
+        tools, step_context = self._prepare_step_context(
+            context,
+            call_index=call_index,
+        )
         system_prompt = _build_system_prompt(context)
         if tool_results:
             tool_results = budget_tool_results_for_prompt(
@@ -444,6 +474,11 @@ class LlmConversationDriver:
         self._messages = list(preflight.payload.messages)
         system_prompt = preflight.payload.system_prompt
         tools = preflight.payload.tools
+        if preflight.compacted:
+            tools, step_context = self._prepare_step_context(
+                context,
+                call_index=call_index,
+            )
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose="v3_harness_loop"
         )
@@ -470,7 +505,10 @@ class LlmConversationDriver:
                 if validation_error is not None:
                     return HarnessStep(
                         assistant_message=validation_error,
-                        llm_trace=self._trace_step(response_text=response_text),
+                        llm_trace=self._trace_step(
+                            response_text=response_text,
+                            step_context=step_context,
+                        ),
                     )
                 task_id, lane_id = self._invocation_refs(tool_name, arguments)
                 invocations.append(
@@ -486,7 +524,9 @@ class LlmConversationDriver:
             return HarnessStep(
                 tool_invocations=tool_invocations,
                 llm_trace=self._trace_step(
-                    response_text=response_text, tool_invocations=tool_invocations
+                    response_text=response_text,
+                    tool_invocations=tool_invocations,
+                    step_context=step_context,
                 ),
             )
         assistant_message = response_text
@@ -500,7 +540,10 @@ class LlmConversationDriver:
             assistant_message = "No user-facing response was generated."
         return HarnessStep(
             assistant_message=assistant_message,
-            llm_trace=self._trace_step(response_text=assistant_message),
+            llm_trace=self._trace_step(
+                response_text=assistant_message,
+                step_context=step_context,
+            ),
         )
 
 

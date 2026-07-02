@@ -7,6 +7,7 @@ from typing import Any
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import ResearchSummaryStatus
+from openzyme_runtime import AgentStepContext
 
 from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
@@ -28,6 +29,7 @@ from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .harness import build_agent_step_context
 from .harness import budget_tool_results_for_prompt
 from .harness import ensure_prompt_budget_before_model_call
 from .harness import run_agent_harness_loop
@@ -41,6 +43,7 @@ from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
 from .tool_catalog import artifact_tool_descriptors
+from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import ToolDescriptor
 
@@ -791,6 +794,37 @@ class TeammateConversationDriver(HarnessDriver):
             )
         )
 
+    def _prepare_step_context(
+        self, context: SessionRuntimeContext, *, call_index: int
+    ) -> tuple[list[dict[str, Any]], AgentStepContext]:
+        context.agent_id = context.agent_id or self.agent_id
+        context.actor_kind = context.actor_kind or "teammate"
+        context.actor_role = context.actor_role or self.role
+        context.correlation_id = context.correlation_id or self.correlation_id
+        descriptors = self._allowed_tools(context)
+        if self.role == "executor":
+            descriptors = (
+                *descriptors,
+                *engine_tool_descriptors(context.engine_registry),
+            )
+        router = context.tool_registry.to_tool_router(
+            context,
+            descriptors=descriptors,
+        )
+        pre_step_context = build_agent_step_context(
+            context,
+            call_index=call_index,
+        )
+        specs = router.model_visible_specs(pre_step_context)
+        step_context = build_agent_step_context(
+            context,
+            call_index=call_index,
+            tool_specs=specs,
+        )
+        context.current_tool_router = router
+        context.current_step_context = step_context
+        return [spec.to_openai_tool() for spec in specs], step_context
+
     def _initial_prompt_projection(
         self, context: SessionRuntimeContext, seed_messages: list[Any]
     ) -> dict[str, Any]:
@@ -816,6 +850,7 @@ class TeammateConversationDriver(HarnessDriver):
         response_text: str,
         tool_invocations: tuple[ToolInvocation, ...] = (),
         initial_prompt: dict[str, Any] | None = None,
+        step_context: AgentStepContext | None = None,
     ) -> LlmTraceStep:
         self._call_index += 1
         return LlmTraceStep(
@@ -836,6 +871,7 @@ class TeammateConversationDriver(HarnessDriver):
                 for invocation in tool_invocations
             ),
             initial_prompt=initial_prompt,
+            step_context=step_context,
         )
 
     def plan(
@@ -853,10 +889,11 @@ class TeammateConversationDriver(HarnessDriver):
             )
             initial_prompt = self._initial_prompt_projection(context, self._messages)
             self._initialized = True
-        tools = [
-            descriptor.to_openai_tool()
-            for descriptor in self._allowed_tools(context)
-        ]
+        call_index = self._call_index + 1
+        tools, step_context = self._prepare_step_context(
+            context,
+            call_index=call_index,
+        )
         system_prompt = self._system_prompt(
             context, compact_instructions=self._instructions_compacted
         )
@@ -909,6 +946,11 @@ class TeammateConversationDriver(HarnessDriver):
         self._messages = list(preflight.payload.messages)
         system_prompt = preflight.payload.system_prompt
         tools = preflight.payload.tools
+        if preflight.compacted:
+            tools, step_context = self._prepare_step_context(
+                context,
+                call_index=call_index,
+            )
         invoker = self.model_factory.create_tool_calling_invoker(
             purpose=f"v3_teammate_loop:{self.role}"
         )
@@ -950,6 +992,7 @@ class TeammateConversationDriver(HarnessDriver):
                     response_text=response_text,
                     tool_invocations=tool_invocations,
                     initial_prompt=initial_prompt,
+                    step_context=step_context,
                 ),
             )
         assistant_message = (
@@ -966,6 +1009,7 @@ class TeammateConversationDriver(HarnessDriver):
             llm_trace=self._trace_step(
                 response_text=assistant_message,
                 initial_prompt=initial_prompt,
+                step_context=step_context,
             ),
         )
 
@@ -981,6 +1025,8 @@ def run_teammate_loop(
     instructions: str,
     resume: ResumeEnvelope | None = None,
     max_steps: int = 8,
+    signal_id: str | None = None,
+    wakeup_reason: str | None = None,
 ) -> HarnessResult:
     if parent_context.model_factory is None:
         raise ValueError("teammate loop requires model_factory")
@@ -1010,6 +1056,12 @@ def run_teammate_loop(
             restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id),
             persist_conversation=False,
             skip_resume_resolution=resume is not None,
+            agent_id=agent_id,
+            actor_kind="teammate",
+            actor_role=role,
+            correlation_id=correlation_id,
+            signal_id=signal_id,
+            wakeup_reason=wakeup_reason,
         ),
         driver=driver,
         tool_registry=registry,

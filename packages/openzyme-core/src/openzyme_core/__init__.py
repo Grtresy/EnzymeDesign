@@ -13,6 +13,7 @@ from .conversation import persist_conversation_message
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
 from .agent_scheduler import AgentRuntimeScheduler
+from .harness import AgentStepContext
 from .harness import HarnessDriver
 from .harness import HarnessEvent
 from .harness import HarnessInput
@@ -29,7 +30,10 @@ from .harness import SessionRuntimeContext
 from .harness import SessionRuntimeSnapshot
 from .harness import ToolInvocation
 from .harness import ToolRegistry
+from .harness import ToolRouter
 from .harness import ToolResult
+from .harness import ToolSpec
+from .harness import build_agent_step_context
 from .harness import run_agent_harness_loop
 from .migration_assets import CURRENT_SQLITE_SCHEMA_VERSION
 from .migration_assets import MIGRATION_IDS
@@ -128,6 +132,7 @@ from .teammates import teammate_tool_descriptors
 from .teammates import run_teammate_loop
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import builtin_tool_descriptors
+from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import top_level_tool_descriptors
 from .task_board import TaskBoardBucket
 from .task_board import TaskBoardItem
@@ -138,6 +143,7 @@ from .task_board import register_task_board_tools
 from .llm_driver import LlmConversationDriver
 
 __all__ = [
+    "AgentStepContext",
     "ActivityFeedItem",
     "AgentRuntimeOutcome",
     "AgentRuntimeScheduler",
@@ -250,13 +256,17 @@ __all__ = [
     "ToolDescriptor",
     "ToolInvocation",
     "ToolRegistry",
+    "ToolRouter",
     "ToolResult",
+    "ToolSpec",
     "apply_sqlite_migrations",
+    "build_agent_step_context",
     "build_conversation_projection",
     "builtin_tool_descriptors",
     "connect_sqlite",
     "decide_prompt_budget",
     "derive_sandbox_workspace_id",
+    "engine_tool_descriptors",
     "estimate_and_decide_prompt_budget",
     "get_migration_sql",
     "load_recent_conversation",

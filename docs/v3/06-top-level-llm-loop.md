@@ -29,12 +29,13 @@ user message
   -> enqueue agent:master wakeup signal
   -> scheduler claims signal
   -> build restore context
+  -> build AgentStepContext + typed tool router
   -> preflight prompt budget
        >= 85% -> bounded compaction -> rebuild restore context
        >= 90% after rebuild -> structured context_budget_exceeded failure, no provider call
-  -> call top-level master-agent model with V3 tool catalog
+  -> call top-level master-agent model with router-derived V3 tool catalog
   -> tool calls?
-       yes -> dispatch tools -> persist side effects
+       yes -> dispatch tools through the same router -> persist side effects
               -> artifactize over-budget tool results if needed
               -> feed bounded tool observations back into model
        no  -> persist assistant output and end turn
@@ -66,6 +67,14 @@ After every tool call, master must first read the tool-result envelope fields `o
 - 顶层 `StateGraph`
 - 顶层 graph node / edge orchestration
 - graph checkpoint 作为产品顶层状态真源
+
+### 4.1 Step Context And Tool Router
+
+每次 provider 调用前，harness 先构造 `AgentStepContext`，再用当前 `ToolRegistry` 和允许暴露的 tool descriptors 构造 typed tool router。router 输出模型可见 `ToolSpec`，provider adapter 再把 `ToolSpec` 转成 OpenAI-compatible tool schema。模型返回 tool call 后，harness 必须用同一个 router 和同一个 `AgentStepContext` dispatch tool invocation。
+
+trace 只保存公开 step metadata：`step_id`、`agent_id`、`actor_kind`、`role`、focus ids、runtime signal ids、`restore_context_digest` 和 `tool_catalog_digest`。trace 不保存完整 restore context、完整 prompt、memory summary、artifact storage URI、Host path、runner path 或 sandbox host path。
+
+legacy function handler 仍可通过 `registry.register(name, handler)` 注册；进入模型调用前由 router 包装成 `ToolRuntime`。长期方向是把 tool spec、visibility gating 和 dispatch 放入 typed runtime，而不是让 prompt catalog、provider adapter 和真实 dispatch 各自维护一份 truth。
 
 ## 5. 顶层允许暴露给模型的工具
 
