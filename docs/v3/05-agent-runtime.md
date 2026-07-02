@@ -199,6 +199,21 @@ digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算�
 - `validate(step_context, invocation)` 在 handler 执行前返回结构化 validation error 或 `None`
 - legacy function handler 默认采用保守治理：`supports_parallel=false`、`side_effect=write`、`approval_required=false`、`role_scope=[]`
 
+`ToolRegistry` 支持两条注册路径：
+
+- `registry.register_runtime(runtime)`：first-class typed path，runtime 必须提供稳定 `tool_name`
+- `registry.register(name, handler)`：legacy compatibility path，只有在进入 router 时被 descriptor 包装为 `LegacyFunctionToolRuntime`
+
+构造 `ToolRouter` 时必须先纳入 typed runtimes，再包装剩余 legacy handlers。同名重复的确定性规则是 typed runtime 优先；legacy handler 不得覆盖 typed runtime 的 spec、governance、validation 或 dispatch。非 engine 工具可以暂时继续使用 legacy register，但 engine tools 的模型可见 schema、governance、validation 与 dispatch 必须来自 registered runtime。
+
+迁移期 capability engines 的规则：
+
+- `execution.pipeline.start` / `execution.pipeline.status`、`deep_research.start` / `deep_research.resume` / `deep_research.status` / `deep_research.dossier` 均通过 `register_runtime` 注册
+- execution start runtime 只对 executor role 可见，标记 `side_effect=approval` 与 `approval_required=true`；status 是 read
+- deep research start/resume runtime 只对 researcher role 可见，标记 external/write 类 side effect；status/dossier 是 read
+- `engine_tool_descriptors()` 若仍存在，只能从 registered runtime 的 `ToolSpec` 派生兼容 `ToolDescriptor`，不能再维护 parallel schema
+- `ToolRegistry.dispatch(context, invocation)` 只保留 legacy fallback 兼容；master / teammate 模型调用路径必须使用当前 step 的 `ToolRouter.dispatch(...)`
+
 `ToolRouter` 是当前 step 的最终 tool boundary。它负责根据 runtime visibility 与 governance role scope 生成模型可见 catalog，也负责 dispatch 前的 `unknown_tool`、`tool_not_visible`、schema `required` 与 `enum` 校验。master 与 teammate driver 不应各自维护独立 descriptor map 作为最终可用性判断；它们只能做同-turn 参数补全这类产品语义辅助，然后把 tool invocation 交回 router validation。
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。

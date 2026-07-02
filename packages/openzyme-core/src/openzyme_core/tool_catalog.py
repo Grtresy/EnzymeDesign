@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from openzyme_runtime import AgentStepContext
 from openzyme_runtime import ToolSpec
+from openzyme_runtime import ToolRuntime
 
 from .engines import EngineRegistry
 from .teammate_roster import TEAMMATE_ROLE_NAMES
@@ -348,56 +350,27 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
-def _execution_pipeline_start_descriptor() -> ToolDescriptor:
-    return ToolDescriptor(
-        tool_name="execution.pipeline.start",
-        description=(
-            "Migration compatibility bridge for starting a Host-supervised execution pipeline "
-            "from a previously created pipeline source artifact. Prefer sandbox-first authoring; "
-            "this tool must not use Host paths, runner paths, direct SSH, or inline provider credentials."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string"},
-                "lane_id": {"type": "string"},
-                "code_artifact_id": {"type": "string"},
-                "inputs": {
-                    "type": "object",
-                    "properties": {
-                        "artifact_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "context_artifact_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "additionalProperties": True,
-                },
-                "dry_run": {"type": "boolean"},
-                "invocation_id": {"type": "string"},
-                "idempotency_key": {"type": "string"},
-            },
-            "required": ["task_id", "code_artifact_id"],
-            "additionalProperties": False,
-        },
-    )
+class _RuntimeDescriptorCollector:
+    def __init__(self) -> None:
+        self.runtimes: dict[str, ToolRuntime] = {}
+
+    def register(self, tool_name: str, handler: Any) -> None:
+        del tool_name, handler
+
+    def register_runtime(self, runtime: ToolRuntime) -> None:
+        tool_name = getattr(runtime, "tool_name", None)
+        if isinstance(tool_name, str) and tool_name:
+            self.runtimes[tool_name] = runtime
 
 
-def _execution_pipeline_status_descriptor() -> ToolDescriptor:
-    return ToolDescriptor(
-        tool_name="execution.pipeline.status",
-        description="Read status for an existing Host-supervised execution pipeline invocation.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "invocation_id": {"type": "string"},
-            },
-            "required": ["invocation_id"],
-            "additionalProperties": False,
-        },
+def _descriptor_step_context() -> AgentStepContext:
+    return AgentStepContext(
+        step_id="catalog_descriptor_projection",
+        session_id="catalog",
+        agent_id="catalog",
+        actor_kind="catalog",
+        role="catalog",
+        call_index=0,
     )
 
 
@@ -406,24 +379,34 @@ def engine_tool_descriptors(
 ) -> tuple[ToolDescriptor, ...]:
     if engine_registry is None:
         return ()
+    step_context = _descriptor_step_context()
     descriptors: list[ToolDescriptor] = []
-    for engine_descriptor in engine_registry.list_descriptors():
-        for tool_name in engine_descriptor.tool_names:
-            if tool_name == "execution.pipeline.start":
-                descriptors.append(_execution_pipeline_start_descriptor())
+    for engine in engine_registry.list_engines():
+        collector = _RuntimeDescriptorCollector()
+        engine.register_tools(collector)
+        projected: set[str] = set()
+        for tool_name in engine.descriptor.tool_names:
+            runtime = collector.runtimes.get(tool_name)
+            if runtime is None:
                 continue
-            if tool_name == "execution.pipeline.status":
-                descriptors.append(_execution_pipeline_status_descriptor())
-                continue
+            spec = runtime.spec(step_context)
             descriptors.append(
                 ToolDescriptor(
-                    tool_name=tool_name,
-                    description=(
-                        f"Capability engine compatibility tool for "
-                        f"{engine_descriptor.engine_name}."
-                    ),
-                    input_schema=engine_descriptor.input_schema
-                    or {"type": "object", "properties": {}},
+                    tool_name=spec.tool_name,
+                    description=spec.description,
+                    input_schema=spec.input_schema,
+                )
+            )
+            projected.add(tool_name)
+        for tool_name, runtime in collector.runtimes.items():
+            if tool_name in projected:
+                continue
+            spec = runtime.spec(step_context)
+            descriptors.append(
+                ToolDescriptor(
+                    tool_name=spec.tool_name,
+                    description=spec.description,
+                    input_schema=spec.input_schema,
                 )
             )
     return tuple(descriptors)

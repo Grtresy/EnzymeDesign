@@ -244,6 +244,8 @@ class ToolSpec:
 
 
 class ToolRuntime(Protocol):
+    tool_name: str
+
     def spec(self, step_context: AgentStepContext) -> ToolSpec: ...
 
     def is_visible(self, step_context: AgentStepContext) -> bool: ...
@@ -431,6 +433,8 @@ class ToolRouter:
 
 class ToolRegistryProtocol:
     def register(self, tool_name: str, handler: ToolHandler) -> None: ...
+
+    def register_runtime(self, runtime: ToolRuntime) -> None: ...
 
 
 __all__ = [

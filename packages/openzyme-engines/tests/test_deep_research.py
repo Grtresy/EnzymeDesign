@@ -12,7 +12,10 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
+from openzyme_core import build_agent_step_context
 from openzyme_core import connect_sqlite
+from openzyme_core import engine_tool_descriptors
+from openzyme_core import EngineRegistry
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import ResearchSummaryStatus
@@ -39,6 +42,7 @@ from openzyme_engines.deep_research_graph import DeepResearchGraphInputs
 from openzyme_engines.deep_research_graph import DefaultResearchGraphSettings
 from openzyme_engines.deep_research_graph import build_deep_research_subgraph
 from openzyme_engines.deep_research_graph import _select_tool_calls_for_budget
+from openzyme_runtime import ToolSideEffect
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
 from openzyme_research import ResearchUnitResult
@@ -558,6 +562,15 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     return session
 
 
+def _researcher_step(context: SessionRuntimeContext):
+    context.agent_id = "agent:researcher"
+    context.actor_kind = "teammate"
+    context.actor_role = "researcher"
+    router = context.tool_registry.to_tool_router(context)
+    step_context = build_agent_step_context(context, call_index=1)
+    return router, step_context
+
+
 def _build_graph_inputs(
     *,
     model_factory: object | None,
@@ -914,9 +927,34 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
         tool_registry=registry,
         restore_focus=RestoreFocus(),
     )
+    master_router = registry.to_tool_router(context)
+    master_step = build_agent_step_context(context, call_index=0)
+    assert "deep_research.start" not in {
+        spec.tool_name for spec in master_router.model_visible_specs(master_step)
+    }
+    router, step_context = _researcher_step(context)
+    specs = {spec.tool_name: spec for spec in router.model_visible_specs(step_context)}
+    governance = router.governance(step_context, "deep_research.start")
 
-    result = registry.dispatch(
-        context,
+    assert set(engine.descriptor.tool_names) <= set(specs)
+    assert specs["deep_research.start"].input_schema["required"] == [
+        "task_id",
+        "brief",
+    ]
+    assert governance is not None
+    assert governance.side_effect is ToolSideEffect.EXTERNAL
+
+    missing = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_missing",
+            tool_name="deep_research.start",
+            arguments={"task_id": "task_001"},
+            task_id="task_001",
+        ),
+    )
+    result = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_001",
             tool_name="deep_research.start",
@@ -925,6 +963,7 @@ def test_deep_research_tools_register_with_tool_registry() -> None:
         ),
     )
 
+    assert missing.status == "invalid_tool_arguments"
     assert result.ok is True
     payload = json.loads(result.content)
     assert payload["research_brief"] == "collect catalytic evidence"
@@ -947,43 +986,44 @@ def test_deep_research_dossier_and_status_return_artifact_refs() -> None:
         tool_registry=registry,
         restore_focus=RestoreFocus(),
     )
+    router, step_context = _researcher_step(context)
 
-    start_result = registry.dispatch(
-        context,
+    start_result = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_start",
             tool_name="deep_research.start",
             arguments={
                 "task_id": "task_001",
                 "brief": "download a supporting structure",
-                "invocation_id": "inv_tool_refs",
             },
             task_id="task_001",
         ),
     )
-    dossier_result = registry.dispatch(
-        context,
+    start_payload = json.loads(start_result.content)
+    invocation_id = str(start_payload["invocation_id"])
+    dossier_result = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_dossier",
             tool_name="deep_research.dossier",
-            arguments={"invocation_id": "inv_tool_refs"},
+            arguments={"invocation_id": invocation_id},
             task_id="task_001",
         ),
     )
-    status_result = registry.dispatch(
-        context,
+    status_result = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_status",
             tool_name="deep_research.status",
-            arguments={"invocation_id": "inv_tool_refs"},
+            arguments={"invocation_id": invocation_id},
             task_id="task_001",
         ),
     )
 
-    start_payload = json.loads(start_result.content)
     dossier_payload = json.loads(dossier_result.content)
     status_payload = json.loads(status_result.content)
-    expected_ids = ["inv_tool_refs:dossier", "inv_tool_refs:artifact:1"]
+    expected_ids = [f"{invocation_id}:dossier", f"{invocation_id}:artifact:1"]
     assert start_result.ok is True
     assert dossier_result.ok is True
     assert status_result.ok is True
@@ -995,6 +1035,25 @@ def test_deep_research_dossier_and_status_return_artifact_refs() -> None:
     assert status_payload["engine_status"] == "succeeded"
     assert "artifacts" not in status_payload
     assert "storage_uri" not in status_payload["artifact_refs"][1]
+
+
+def test_deep_research_engine_tool_descriptors_derive_from_registered_runtimes() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = DeepResearchEngine(repositories, CompletedDeepResearchRunner())
+    engine_registry = EngineRegistry()
+    engine_registry.register(engine)
+
+    descriptors = engine_tool_descriptors(engine_registry)
+
+    assert [descriptor.tool_name for descriptor in descriptors] == list(
+        engine.descriptor.tool_names
+    )
+    start = next(
+        descriptor for descriptor in descriptors if descriptor.tool_name == "deep_research.start"
+    )
+    assert start.input_schema["required"] == ["task_id", "brief"]
+    assert start.description == "Start deep research for the currently assigned task."
 
 
 def test_deep_research_engine_persists_artifacts_from_dossier() -> None:

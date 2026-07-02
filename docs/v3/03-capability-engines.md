@@ -328,6 +328,23 @@ registry 至少记录：
 - `produces_artifact_types`
 - `capability_key`
 
+engine-facing tools 的模型可见 contract 不再由 `EngineDescriptor.tool_names` 加一份平行 `engine_tool_descriptors()` schema 决定。每个可被 agent 调用的 capability tool 必须注册为 `ToolRuntime`：
+
+- `register_tools(registry)` 调用 `registry.register_runtime(runtime)`，runtime 自身提供稳定 `tool_name`
+- `runtime.spec(step_context)` 是 provider-visible schema 的来源
+- `runtime.governance(step_context)` 声明 role scope、side effect、approval requirement 与 parallel metadata
+- `runtime.validate(step_context, invocation)` 在 dispatch 前做结构化参数校验
+- `runtime.dispatch(step_context, invocation, runtime_context)` 复用 engine 既有受控 handler，不绕过 approval、sandbox、artifact catalog、runner adapter 或 provider adapter
+
+`EngineDescriptor.tool_names` 仍用于 engine 能力摘要、workspace/debug 投影和迁移一致性校验，但它不能列出没有 registered runtime、无法 dispatch 的模型可见工具。兼容期若仍保留 `engine_tool_descriptors()`，它只能临时调用 engine 的 `register_tools()` 并从 registered runtime 的 `ToolSpec` 派生 `ToolDescriptor`；不得维护第二份 execution / deep_research schema truth。
+
+当前已迁移的 engine tools：
+
+- `execution.pipeline.start`：executor-scoped compatibility bridge，`side_effect=approval` 且 `approval_required=true`；dispatch 继续进入现有 Host-supervised execution pipeline，不允许直接调用 runner、SSH、Slurm、runner config 或 Host 本地 artifact path
+- `execution.pipeline.status`：executor-scoped read tool
+- `deep_research.start` 与 `deep_research.resume`：researcher-scoped external/write 类 tool
+- `deep_research.status` 与 `deep_research.dossier`：researcher-scoped read tool
+
 ## 6. AI 提醒
 
 后续 AI 在实现 capability engine 时必须记住：

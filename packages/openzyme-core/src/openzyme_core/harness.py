@@ -330,7 +330,20 @@ class ToolRegistry:
     def register(self, tool_name: str, handler: ToolHandler) -> None:
         self._handlers[tool_name] = handler
 
-    def register_runtime(self, tool_name: str, runtime: ToolRuntime) -> None:
+    def register_runtime(
+        self,
+        runtime_or_tool_name: ToolRuntime | str,
+        runtime: ToolRuntime | None = None,
+    ) -> None:
+        if runtime is None:
+            runtime = runtime_or_tool_name  # type: ignore[assignment]
+            tool_name = getattr(runtime, "tool_name", None)
+            if not isinstance(tool_name, str) or not tool_name:
+                raise ValueError(
+                    "register_runtime(runtime) requires runtime.tool_name to be a non-empty string."
+                )
+        else:
+            tool_name = str(runtime_or_tool_name)
         self._runtimes[tool_name] = runtime
 
     def to_tool_router(
@@ -348,16 +361,15 @@ class ToolRegistry:
             tool_name = str(descriptor.tool_name)
             if tool_name not in specs:
                 specs[tool_name] = descriptor.to_tool_spec()
-        runtimes: dict[str, ToolRuntime] = {
-            tool_name: LegacyFunctionToolRuntime(
+        runtimes: dict[str, ToolRuntime] = dict(self._runtimes)
+        for tool_name, spec in specs.items():
+            if tool_name in runtimes or tool_name not in self._handlers:
+                continue
+            runtimes[tool_name] = LegacyFunctionToolRuntime(
                 tool_name=tool_name,
                 handler=self._handlers[tool_name],
                 tool_spec=spec,
             )
-            for tool_name, spec in specs.items()
-            if tool_name in self._handlers
-        }
-        runtimes.update(self._runtimes)
         return ToolRouter(runtimes=runtimes, dispatch_context=context)
 
     def dispatch(

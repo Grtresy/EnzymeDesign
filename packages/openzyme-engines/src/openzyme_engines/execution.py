@@ -23,10 +23,16 @@ from openzyme_runtime import ArtifactBoundaryError
 from openzyme_runtime import ArtifactBoundaryService
 from openzyme_runtime import EngineDescriptor
 from openzyme_runtime import EngineDocumentRecord
+from openzyme_runtime import AgentStepContext
+from openzyme_runtime import ToolGovernance
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolRegistryProtocol
 from openzyme_runtime import ToolResult
+from openzyme_runtime import ToolSideEffect
+from openzyme_runtime import ToolSpec
+from openzyme_runtime import ToolValidationError
+from openzyme_runtime import validate_arguments_against_schema
 from openzyme_runtime import project_artifact_for_agent
 from openzyme_runtime import sanitize_private_artifact_fields
 from openzyme_domain import ApprovalRequest
@@ -8295,20 +8301,111 @@ class ExecutionEngine:
         )
 
 
-def register_execution_tools(registry: ToolRegistryProtocol, engine: ExecutionEngine) -> None:
-    def start_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
-        session_id = context.snapshot.session.session_id
+def _execution_pipeline_start_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="execution.pipeline.start",
+        description=(
+            "Migration compatibility bridge for starting a Host-supervised execution pipeline "
+            "from a previously created pipeline source artifact. Prefer sandbox-first authoring; "
+            "this tool must not use Host paths, runner paths, direct SSH, or inline provider credentials."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "lane_id": {"type": "string"},
+                "code_artifact_id": {"type": "string"},
+                "inputs": {
+                    "type": "object",
+                    "properties": {
+                        "artifact_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "context_artifact_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "additionalProperties": True,
+                },
+                "dry_run": {"type": "boolean"},
+                "invocation_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["task_id", "code_artifact_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _execution_pipeline_status_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="execution.pipeline.status",
+        description="Read status for an existing Host-supervised execution pipeline invocation.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "invocation_id": {"type": "string"},
+            },
+            "required": ["invocation_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPipelineStartRuntime:
+    engine: ExecutionEngine
+    tool_name: str = "execution.pipeline.start"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _execution_pipeline_start_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("executor",),
+            supports_parallel=False,
+            side_effect=ToolSideEffect.APPROVAL,
+            approval_required=True,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_execution_pipeline_start_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context
+        session_id = runtime_context.snapshot.session.session_id
         task_id = str(invocation.arguments["task_id"])
         existing_task_invocation = next(
             (
                 candidate
-                for candidate in context.repositories.invocations.list_by_task(
+                for candidate in runtime_context.repositories.invocations.list_by_task(
                     session_id, task_id
                 )
-                if candidate.engine_name == engine.descriptor.engine_name
+                if candidate.engine_name == self.engine.descriptor.engine_name
                 and candidate.status
                 not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED}
-                and not engine._is_pipeline_dry_run_invocation(candidate)
+                and not self.engine._is_pipeline_dry_run_invocation(candidate)
             ),
             None,
         )
@@ -8337,30 +8434,81 @@ def register_execution_tools(registry: ToolRegistryProtocol, engine: ExecutionEn
                     "invocation_status": existing_task_invocation.status.value,
                 },
             )
-        result = engine.start_pipeline(
+        result = self.engine.start_pipeline(
             session_id=session_id,
             task_id=task_id,
             code_artifact_id=None
             if invocation.arguments.get("code_artifact_id") is None
             else str(invocation.arguments["code_artifact_id"]),
-            code=None if invocation.arguments.get("code") is None else str(invocation.arguments["code"]),
-            inputs=None if invocation.arguments.get("inputs") is None else dict(invocation.arguments["inputs"]),
+            code=None
+            if invocation.arguments.get("code") is None
+            else str(invocation.arguments["code"]),
+            inputs=None
+            if invocation.arguments.get("inputs") is None
+            else dict(invocation.arguments["inputs"]),
             dry_run=bool(invocation.arguments.get("dry_run", False)),
-            invocation_id=None if invocation.arguments.get("invocation_id") is None else str(invocation.arguments["invocation_id"]),
-            lane_id=invocation.lane_id if invocation.arguments.get("lane_id") is None else str(invocation.arguments["lane_id"]),
-            idempotency_key=None if invocation.arguments.get("idempotency_key") is None else str(invocation.arguments["idempotency_key"]),
+            invocation_id=None
+            if invocation.arguments.get("invocation_id") is None
+            else str(invocation.arguments["invocation_id"]),
+            lane_id=invocation.lane_id
+            if invocation.arguments.get("lane_id") is None
+            else str(invocation.arguments["lane_id"]),
+            idempotency_key=None
+            if invocation.arguments.get("idempotency_key") is None
+            else str(invocation.arguments["idempotency_key"]),
         )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
-            ok=result.invocation.status not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED},
+            ok=result.invocation.status
+            not in {EngineInvocationStatus.FAILED, EngineInvocationStatus.CANCELLED},
             content=json.dumps(result.to_dict(), sort_keys=True),
             task_id=result.invocation.task_id,
             lane_id=result.invocation.lane_id,
         )
 
-    def status_handler(_context: Any, invocation: ToolInvocation) -> ToolResult:
-        status = engine.get_pipeline_status(str(invocation.arguments["invocation_id"]))
+
+@dataclass(frozen=True, slots=True)
+class ExecutionPipelineStatusRuntime:
+    engine: ExecutionEngine
+    tool_name: str = "execution.pipeline.status"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _execution_pipeline_status_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("executor",),
+            supports_parallel=True,
+            side_effect=ToolSideEffect.READ,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_execution_pipeline_status_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context, runtime_context
+        status = self.engine.get_pipeline_status(str(invocation.arguments["invocation_id"]))
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -8368,8 +8516,10 @@ def register_execution_tools(registry: ToolRegistryProtocol, engine: ExecutionEn
             content=json.dumps(status, sort_keys=True),
         )
 
-    registry.register("execution.pipeline.start", start_handler)
-    registry.register("execution.pipeline.status", status_handler)
+
+def register_execution_tools(registry: ToolRegistryProtocol, engine: ExecutionEngine) -> None:
+    registry.register_runtime(ExecutionPipelineStartRuntime(engine))
+    registry.register_runtime(ExecutionPipelineStatusRuntime(engine))
 
 
 __all__ = [

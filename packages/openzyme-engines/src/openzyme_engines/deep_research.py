@@ -6,11 +6,17 @@ from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
+from openzyme_runtime import AgentStepContext
 from openzyme_runtime import EngineDescriptor
 from openzyme_runtime import EngineDocumentRecord
+from openzyme_runtime import ToolGovernance
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolRegistryProtocol
 from openzyme_runtime import ToolResult
+from openzyme_runtime import ToolSideEffect
+from openzyme_runtime import ToolSpec
+from openzyme_runtime import ToolValidationError
+from openzyme_runtime import validate_arguments_against_schema
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import ArtifactKind
@@ -877,15 +883,111 @@ class DeepResearchEngine:
             self.event_emitter(event_type, payload)
 
 
-def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepResearchEngine) -> None:
-    def start_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
-        result = engine.start_research(
-            session_id=context.snapshot.session.session_id,
+def _deep_research_start_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="deep_research.start",
+        description="Start deep research for the currently assigned task.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "brief": {"type": "string"},
+            },
+            "required": ["task_id", "brief"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _deep_research_resume_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="deep_research.resume",
+        description="Resume a deep research invocation after clarification.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "invocation_id": {"type": "string"},
+                "resolution": {"type": "string"},
+            },
+            "required": ["invocation_id", "resolution"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _deep_research_status_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="deep_research.status",
+        description="Read the current status of a deep research invocation.",
+        input_schema={
+            "type": "object",
+            "properties": {"invocation_id": {"type": "string"}},
+            "required": ["invocation_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _deep_research_dossier_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="deep_research.dossier",
+        description="Read the current dossier output for a deep research invocation.",
+        input_schema={
+            "type": "object",
+            "properties": {"invocation_id": {"type": "string"}},
+            "required": ["invocation_id"],
+            "additionalProperties": False,
+        },
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchStartRuntime:
+    engine: DeepResearchEngine
+    tool_name: str = "deep_research.start"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _deep_research_start_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("researcher",),
+            supports_parallel=False,
+            side_effect=ToolSideEffect.EXTERNAL,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_deep_research_start_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context
+        result = self.engine.start_research(
+            session_id=runtime_context.snapshot.session.session_id,
             task_id=str(invocation.arguments["task_id"]),
             brief=str(invocation.arguments["brief"]),
-            invocation_id=None if "invocation_id" not in invocation.arguments else str(invocation.arguments["invocation_id"]),
-            lane_id=invocation.lane_id if "lane_id" not in invocation.arguments else invocation.arguments.get("lane_id"),
-            idempotency_key=invocation.arguments.get("idempotency_key"),
+            invocation_id=None,
+            lane_id=invocation.lane_id,
+            idempotency_key=None,
         )
         return ToolResult(
             call_id=invocation.call_id,
@@ -899,8 +1001,48 @@ def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepRes
             lane_id=result.invocation.lane_id,
         )
 
-    def resume_handler(_context: Any, invocation: ToolInvocation) -> ToolResult:
-        result = engine.resume_research(
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchResumeRuntime:
+    engine: DeepResearchEngine
+    tool_name: str = "deep_research.resume"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _deep_research_resume_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("researcher",),
+            supports_parallel=False,
+            side_effect=ToolSideEffect.EXTERNAL,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_deep_research_resume_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context, runtime_context
+        result = self.engine.resume_research(
             invocation_id=str(invocation.arguments["invocation_id"]),
             resolution=str(invocation.arguments["resolution"]),
         )
@@ -916,8 +1058,48 @@ def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepRes
             lane_id=result.invocation.lane_id,
         )
 
-    def status_handler(_context: Any, invocation: ToolInvocation) -> ToolResult:
-        status = engine.get_research_status(str(invocation.arguments["invocation_id"]))
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchStatusRuntime:
+    engine: DeepResearchEngine
+    tool_name: str = "deep_research.status"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _deep_research_status_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("researcher",),
+            supports_parallel=True,
+            side_effect=ToolSideEffect.READ,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_deep_research_status_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context, runtime_context
+        status = self.engine.get_research_status(str(invocation.arguments["invocation_id"]))
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -925,11 +1107,51 @@ def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepRes
             content=json.dumps(status, sort_keys=True),
         )
 
-    def dossier_handler(_context: Any, invocation: ToolInvocation) -> ToolResult:
+
+@dataclass(frozen=True, slots=True)
+class DeepResearchDossierRuntime:
+    engine: DeepResearchEngine
+    tool_name: str = "deep_research.dossier"
+
+    def spec(self, step_context: AgentStepContext) -> ToolSpec:
+        del step_context
+        return _deep_research_dossier_spec()
+
+    def is_visible(self, step_context: AgentStepContext) -> bool:
+        del step_context
+        return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=("researcher",),
+            supports_parallel=True,
+            side_effect=ToolSideEffect.READ,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=_deep_research_dossier_spec().input_schema,
+            arguments=invocation.arguments,
+        )
+
+    def dispatch(
+        self,
+        step_context: AgentStepContext,
+        invocation: ToolInvocation,
+        runtime_context: Any,
+    ) -> ToolResult:
+        del step_context, runtime_context
         invocation_id = str(invocation.arguments["invocation_id"])
-        engine_invocation = engine._require_invocation(invocation_id)
-        dossier = engine.get_research_dossier(invocation_id)
-        artifact_refs = engine._artifact_refs_for_invocation(
+        engine_invocation = self.engine._require_invocation(invocation_id)
+        dossier = self.engine.get_research_dossier(invocation_id)
+        artifact_refs = self.engine._artifact_refs_for_invocation(
             engine_invocation.session_id, invocation_id
         )
         return ToolResult(
@@ -942,10 +1164,12 @@ def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepRes
             ),
         )
 
-    registry.register("deep_research.start", start_handler)
-    registry.register("deep_research.resume", resume_handler)
-    registry.register("deep_research.status", status_handler)
-    registry.register("deep_research.dossier", dossier_handler)
+
+def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepResearchEngine) -> None:
+    registry.register_runtime(DeepResearchStartRuntime(engine))
+    registry.register_runtime(DeepResearchResumeRuntime(engine))
+    registry.register_runtime(DeepResearchStatusRuntime(engine))
+    registry.register_runtime(DeepResearchDossierRuntime(engine))
 
 
 __all__ = [

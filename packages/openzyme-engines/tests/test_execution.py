@@ -16,6 +16,9 @@ from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
+from openzyme_core import build_agent_step_context
+from openzyme_core import engine_tool_descriptors
+from openzyme_core import EngineRegistry
 from openzyme_core import ProtocolService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
@@ -49,6 +52,7 @@ from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
 from openzyme_engines.execution import ProviderHttpBioDatabaseAdapter
+from openzyme_runtime import ToolSideEffect
 
 
 FPOCKET_EXPECTED_OUTPUTS = [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
@@ -820,6 +824,15 @@ def _pipeline_source_id(repositories: CoreRepositories, artifact_id: str, code: 
     return _save_pipeline_source(repositories, artifact_id=artifact_id, code=code)
 
 
+def _executor_step(context: SessionRuntimeContext):
+    context.agent_id = "agent:executor"
+    context.actor_kind = "teammate"
+    context.actor_role = "executor"
+    router = context.tool_registry.to_tool_router(context)
+    step_context = build_agent_step_context(context, call_index=1)
+    return router, step_context
+
+
 def _save_hmm_artifact(repositories: CoreRepositories, artifact_id: str = "art_hmm_001") -> str:
     content = "HMMER3/f [fixture]\nNAME fixture\n//\n"
     hmm_path = Path(f"/tmp/{artifact_id}.hmm")
@@ -1267,9 +1280,38 @@ def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
         tool_registry=registry,
         restore_focus=RestoreFocus(),
     )
+    master_router = registry.to_tool_router(context)
+    master_step = build_agent_step_context(context, call_index=0)
+    assert "execution.pipeline.start" not in {
+        spec.tool_name for spec in master_router.model_visible_specs(master_step)
+    }
+    router, step_context = _executor_step(context)
+    specs = {spec.tool_name: spec for spec in router.model_visible_specs(step_context)}
+    start_governance = router.governance(step_context, "execution.pipeline.start")
+    status_governance = router.governance(step_context, "execution.pipeline.status")
 
-    result = registry.dispatch(
-        context,
+    assert set(engine.descriptor.tool_names) <= set(specs)
+    assert specs["execution.pipeline.start"].input_schema["required"] == [
+        "task_id",
+        "code_artifact_id",
+    ]
+    assert start_governance is not None
+    assert start_governance.side_effect is ToolSideEffect.APPROVAL
+    assert start_governance.approval_required is True
+    assert status_governance is not None
+    assert status_governance.side_effect is ToolSideEffect.READ
+    missing = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_missing_code",
+            tool_name="execution.pipeline.start",
+            arguments={"task_id": "task_001"},
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    result = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_001",
             tool_name="execution.pipeline.start",
@@ -1290,6 +1332,7 @@ def test_execution_pipeline_rejects_legacy_handoff_input() -> None:
         ),
     )
 
+    assert missing.status == "invalid_tool_arguments"
     assert result.ok is False
     assert "unsupported_pipeline_handoff" in result.content
 
@@ -1412,14 +1455,15 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
         tool_registry=registry,
         restore_focus=RestoreFocus(),
     )
+    router, step_context = _executor_step(context)
     arguments = {
         "task_id": "task_001",
         "code_artifact_id": code_artifact_id,
         "inputs": {"artifact_ids": ["art_001"]},
     }
 
-    first = registry.dispatch(
-        context,
+    first = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_start_first",
             tool_name="execution.pipeline.start",
@@ -1428,8 +1472,8 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
             lane_id="lane_001",
         ),
     )
-    second = registry.dispatch(
-        context,
+    second = router.dispatch(
+        step_context,
         ToolInvocation(
             call_id="call_start_second",
             tool_name="execution.pipeline.start",
@@ -1444,6 +1488,33 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
     assert second.status == "existing_execution_invocation"
     assert second.error_code == "existing_execution_invocation"
     assert "execution.pipeline.status" in second.hint
+
+
+def test_execution_engine_tool_descriptors_derive_from_registered_runtimes() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine_registry = EngineRegistry()
+    engine_registry.register(engine)
+
+    descriptors = engine_tool_descriptors(engine_registry)
+
+    assert [descriptor.tool_name for descriptor in descriptors] == list(
+        engine.descriptor.tool_names
+    )
+    start = next(
+        descriptor
+        for descriptor in descriptors
+        if descriptor.tool_name == "execution.pipeline.start"
+    )
+    status = next(
+        descriptor
+        for descriptor in descriptors
+        if descriptor.tool_name == "execution.pipeline.status"
+    )
+    assert start.input_schema["required"] == ["task_id", "code_artifact_id"]
+    assert status.input_schema["required"] == ["invocation_id"]
+    assert "Host-supervised execution pipeline" in start.description
 
 
 def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> None:

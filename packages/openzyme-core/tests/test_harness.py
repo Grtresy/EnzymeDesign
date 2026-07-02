@@ -2346,6 +2346,93 @@ def test_legacy_tool_runtime_uses_conservative_governance_defaults() -> None:
     assert governance.approval_required is False
 
 
+def test_tool_registry_register_runtime_coexists_with_legacy_and_typed_wins() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    registry.register("example.legacy", lambda _context, _invocation: "legacy-only")
+    registry.register("example.dupe", lambda _context, _invocation: "legacy-dupe")
+
+    class TypedRuntime:
+        tool_name = "example.dupe"
+
+        def spec(self, step_context):
+            del step_context
+            return ToolDescriptor(
+                tool_name=self.tool_name,
+                description="Typed duplicate runtime.",
+                input_schema={"type": "object", "properties": {}},
+            ).to_tool_spec()
+
+        def is_visible(self, step_context):
+            del step_context
+            return True
+
+        def governance(self, step_context):
+            del step_context
+            return ToolGovernance(side_effect=ToolSideEffect.READ)
+
+        def validate(self, step_context, invocation):
+            del step_context, invocation
+            return None
+
+        def dispatch(self, step_context, invocation, runtime_context):
+            del step_context, runtime_context
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=True,
+                content="typed-dupe",
+                status="ok",
+            )
+
+    registry.register_runtime(TypedRuntime())
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    descriptors = (
+        ToolDescriptor(
+            tool_name="example.legacy",
+            description="Legacy only.",
+            input_schema={"type": "object", "properties": {}},
+        ),
+        ToolDescriptor(
+            tool_name="example.dupe",
+            description="Legacy duplicate descriptor.",
+            input_schema={"type": "object", "properties": {}},
+        ),
+    )
+    router = registry.to_tool_router(context, descriptors=descriptors)
+    step_context = build_agent_step_context(context, call_index=1)
+    specs = {spec.tool_name: spec for spec in router.model_visible_specs(step_context)}
+    legacy = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_legacy",
+            tool_name="example.legacy",
+            arguments={},
+        ),
+    )
+    dupe = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_dupe",
+            tool_name="example.dupe",
+            arguments={},
+        ),
+    )
+
+    assert specs["example.dupe"].description == "Typed duplicate runtime."
+    assert specs["example.legacy"].description == "Legacy only."
+    assert router.governance(step_context, "example.dupe").side_effect is ToolSideEffect.READ
+    assert legacy.content == "legacy-only"
+    assert dupe.content == "typed-dupe"
+
+
 class RoleScopedRuntime:
     def __init__(self) -> None:
         self.dispatched = False
