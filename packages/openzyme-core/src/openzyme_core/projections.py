@@ -18,6 +18,7 @@ from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
 from .protocols import ProtocolService
+from .trace_projection import project_public_llm_trace_step
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,9 +262,11 @@ class SessionProjectionBuilder:
         for document in self.repositories.engine_documents.list_by_session(session_id):
             if document.document_kind != "llm_trace_step":
                 continue
-            payload = dict(document.payload)
-            payload.setdefault("trace_id", document.document_id)
-            payload.setdefault("created_at", document.created_at)
+            payload = project_public_llm_trace_step(
+                document.payload,
+                trace_id=document.document_id,
+                created_at=document.created_at,
+            )
             actor_ref = str(payload.get("actor_ref") or "harness")
             grouped.setdefault(actor_ref, []).append(payload)
         for entries in grouped.values():

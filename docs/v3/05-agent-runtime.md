@@ -191,6 +191,10 @@ restore context 受统一 token budget 管理。每次 master / teammate 模型�
 
 digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算。它不得暴露 full restore context、conversation content、memory summary、artifact `storage_uri`、lane `cwd`、Host local path、runner path、sandbox host path、provider secret 或完整 tool schema。workspace `agent_traces` 可以展示 `step_id` 与 digest，帮助诊断“本次模型调用看见了哪一版 restore / tool catalog”，但不能把 Codex thread / turn 或 provider transcript 当成 OpenZyme 顶层产品状态。
 
+`AgentStepContext` 进入 workspace / SSE 时必须经过 trace public projection allowlist。公开 `agent_step` 只包含 `step_id`、`session_id`、`agent_id`、`actor_kind`、`role`、`call_index`、`task_id`、`lane_id`、`correlation_id`、`signal_id`、`wakeup_reason`、`restore_context_digest`、`tool_catalog_digest`、`created_at`。trace projection 不暴露 prompt / `initial_prompt`、restore context、memory summary、完整 tool schema、Host path、storage URI、runner path、SSH/runner config、provider secret 或 tool result content。
+
+`tool.invoked` / `tool.completed` 只作为 diagnostic/runtime events。它们必须带上 `agent_id`、`actor_kind`、`role` 与 `call_index`，用于把 tool request/result status 关联回对应 LLM step；同时保留 `step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`、`ok` / `status` / `error_code` 等公开诊断字段。它们不能成为新的 Codex-style turn 顶层状态，也不能携带 tool result content 或私有路径。
+
 模型可见 tool spec 与 dispatch runtime 必须来自同一个 typed tool router。legacy `registry.register(name, handler)` 可以继续存在，但进入模型调用前要被包装为 `ToolRuntime`：同一个 runtime 对象负责生成 `ToolSpec` 并执行 `dispatch(step_context, invocation, runtime_context)`。这保证 provider-visible catalog、trace metadata 和真实 tool execution 不会走三套不一致路径。
 
 `ToolRuntime` 同时承载最小治理 contract：

@@ -167,7 +167,42 @@ test("llm response events update agent traces without duplicates", () => {
       call_index: 1,
       created_at: "2026-04-21T00:00:02+00:00",
       response_text: "I will create a task.",
-      tool_calls: [{ call_id: "call_001", tool_name: "task.create", args_public: { subject: "Plan" } }],
+      prompt: "private prompt",
+      initial_prompt: { instructions: "private instructions" },
+      restore_context: { memory_summary: "private memory" },
+      tool_calls: [
+        {
+          call_id: "call_001",
+          tool_name: "task.create",
+          task_id: "task_001",
+          lane_id: "lane_001",
+          args_public: {
+            subject: "Plan",
+            secret_token: "abc123",
+            host_path: "/home/user/private/input.pdb",
+            storage_uri: "storage://private/input.pdb",
+            pipeline_code: "print('private')",
+          },
+          content: "private tool result",
+        },
+      ],
+      agent_step: {
+        step_id: "agentstep_001",
+        session_id: "sess_001",
+        agent_id: "harness",
+        actor_kind: "master",
+        role: "master",
+        call_index: 1,
+        task_id: "task_001",
+        lane_id: "lane_001",
+        correlation_id: "corr_001",
+        signal_id: "sig_001",
+        wakeup_reason: "manual",
+        restore_context_digest: "sha256:restore",
+        tool_catalog_digest: "sha256:tools",
+        created_at: "2026-04-21T00:00:02+00:00",
+        prompt: "private agent prompt",
+      },
     },
   };
 
@@ -175,7 +210,35 @@ test("llm response events update agent traces without duplicates", () => {
   const second = reduceWorkspaceWithEvent(workspace, event);
 
   assert.equal(workspace.agent_traces.harness.length, 1);
-  assert.equal(workspace.agent_traces.harness[0].tool_calls[0].tool_name, "task.create");
+  const trace = workspace.agent_traces.harness[0];
+  assert.equal(trace.tool_calls[0].tool_name, "task.create");
+  assert.equal(trace.projection_schema_version, "v1");
+  assert.deepEqual(Object.keys(trace).sort(), [
+    "actor_kind",
+    "actor_ref",
+    "agent_step",
+    "call_index",
+    "created_at",
+    "display_name",
+    "projection_schema_version",
+    "response_text",
+    "restore_context_digest",
+    "role",
+    "step_id",
+    "tool_calls",
+    "tool_catalog_digest",
+    "trace_id",
+  ]);
+  assert.equal(trace.tool_calls[0].args_public.secret_token, "[redacted]");
+  assert.equal(trace.tool_calls[0].args_public.host_path, "[redacted]");
+  assert.equal(trace.tool_calls[0].args_public.storage_uri, "[redacted]");
+  assert.equal(trace.tool_calls[0].args_public.pipeline_code, "[redacted]");
+  assert.equal(JSON.stringify(trace).includes("private prompt"), false);
+  assert.equal(JSON.stringify(trace).includes("private instructions"), false);
+  assert.equal(JSON.stringify(trace).includes("private memory"), false);
+  assert.equal(JSON.stringify(trace).includes("private tool result"), false);
+  assert.equal(JSON.stringify(trace).includes("/home/user/private"), false);
+  assert.equal(JSON.stringify(trace).includes("storage://private"), false);
   assert.equal(second, workspace);
 });
 
@@ -377,15 +440,6 @@ test("session tree nests teammate names and teammate trace is read-only", () => 
           created_at: "2026-04-21T00:00:03+00:00",
           response_text: "I found two papers.",
           tool_calls: [{ call_id: "call_search", tool_name: "deep_research.start", args_public: { task_id: "task_001" } }],
-          initial_prompt: {
-            identity: "agent:researcher",
-            role: "researcher",
-            task_id: "task_001",
-            lane_id: "lane_001",
-            correlation_id: "corr_001",
-            instructions: "Find papers.",
-            seed_message: "Task task_001: Find papers.",
-          },
         },
       ],
     },
@@ -403,7 +457,7 @@ test("session tree nests teammate names and teammate trace is read-only", () => 
 
   assert.match(html, /data-action="select-teammate"/);
   assert.match(html, /I found two papers/);
-  assert.match(html, /Role seed/);
+  assert.doesNotMatch(html, /Role seed/);
   assert.match(html, /trace is read-only/);
   assert.doesNotMatch(html, /id="message-form"/);
 });
@@ -438,6 +492,38 @@ test("duplicate events are ignored without cloning the workspace", () => {
   const first = reduceWorkspaceWithEvent(workspace, duplicate);
   const second = reduceWorkspaceWithEvent(first, duplicate);
   assert.notEqual(first, workspace);
+  assert.equal(second, first);
+});
+
+test("tool diagnostic events only update activity feed once", () => {
+  const workspace = buildV3Workspace();
+  const event = {
+    event_id: "evt_tool_invoked",
+    event_type: "tool.invoked",
+    created_at: "2026-04-21T00:00:05+00:00",
+    payload: {
+      call_id: "call_001",
+      tool_name: "task.get",
+      task_id: "task_001",
+      lane_id: "lane_001",
+      step_id: "agentstep_001",
+      agent_id: "harness",
+      actor_kind: "master",
+      role: "master",
+      call_index: 1,
+      tool_catalog_digest: "sha256:tools",
+      restore_context_digest: "sha256:restore",
+      side_effect: "read",
+      supports_parallel: false,
+    },
+  };
+
+  const first = reduceWorkspaceWithEvent(workspace, event);
+  const second = reduceWorkspaceWithEvent(first, event);
+
+  assert.equal(first.activity_feed.length, 1);
+  assert.equal(first.activity_feed[0].event_type, "tool.invoked");
+  assert.equal(first.agent_traces.harness, undefined);
   assert.equal(second, first);
 });
 

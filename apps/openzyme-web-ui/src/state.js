@@ -21,6 +21,149 @@ function fingerprint(value) {
   return JSON.stringify(value ?? null);
 }
 
+const AGENT_TRACE_PROJECTION_SCHEMA_VERSION = "v1";
+const AGENT_STEP_PUBLIC_KEYS = [
+  "step_id",
+  "session_id",
+  "agent_id",
+  "actor_kind",
+  "role",
+  "call_index",
+  "task_id",
+  "lane_id",
+  "correlation_id",
+  "signal_id",
+  "wakeup_reason",
+  "restore_context_digest",
+  "tool_catalog_digest",
+  "created_at",
+];
+const REDACTED = "[redacted]";
+const SENSITIVE_KEY_FRAGMENTS = [
+  "secret",
+  "token",
+  "password",
+  "credential",
+  "private_key",
+  "api_key",
+];
+const PRIVATE_KEY_FRAGMENTS = [
+  "storage_uri",
+  "source_storage_uri",
+  "intermediate_storage_uri",
+  "local_path",
+  "remote_path",
+  "host_path",
+  "runner_config",
+  "runner_path",
+  "ssh",
+  "config",
+];
+const PRIVATE_EXACT_KEYS = new Set(["code", "content", "pipeline_code", "source_code"]);
+const PRIVATE_STRING_PREFIXES = ["artifact://", "storage://", "s3://", "file://"];
+const PRIVATE_PATH_PREFIXES = ["/home/", "/tmp/", "/var/", "/mnt/", "/data/", "~"];
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function sanitizePublicToolArgs(value, key = "") {
+  const keyLower = key.toLowerCase();
+  if (PRIVATE_EXACT_KEYS.has(keyLower)) {
+    return REDACTED;
+  }
+  if (SENSITIVE_KEY_FRAGMENTS.some((fragment) => keyLower.includes(fragment))) {
+    return REDACTED;
+  }
+  if (PRIVATE_KEY_FRAGMENTS.some((fragment) => keyLower.includes(fragment))) {
+    return REDACTED;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => sanitizePublicToolArgs(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([itemKey, item]) => [
+        String(itemKey),
+        sanitizePublicToolArgs(item, String(itemKey)),
+      ]),
+    );
+  }
+  if (typeof value === "string") {
+    if (PRIVATE_STRING_PREFIXES.some((prefix) => value.startsWith(prefix))) {
+      return REDACTED;
+    }
+    if (PRIVATE_PATH_PREFIXES.some((prefix) => value.startsWith(prefix))) {
+      return REDACTED;
+    }
+    if (value.length > 1200) {
+      return `${value.slice(0, 1200)}... [truncated]`;
+    }
+  }
+  return value;
+}
+
+function publicAgentStep(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const projected = {};
+  for (const key of AGENT_STEP_PUBLIC_KEYS) {
+    if (hasOwn(value, key)) {
+      projected[key] = value[key];
+    }
+  }
+  return Object.keys(projected).length ? projected : null;
+}
+
+function publicToolCall(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    call_id: value.call_id,
+    tool_name: value.tool_name,
+    task_id: value.task_id,
+    lane_id: value.lane_id,
+    args_public: sanitizePublicToolArgs(value.args_public ?? {}),
+  };
+}
+
+function publicTracePayload(event) {
+  const payload = event.payload ?? event;
+  const agentStep = publicAgentStep(payload.agent_step) ?? publicAgentStep(payload);
+  const trace = {
+    trace_id: payload.trace_id ?? event.event_id,
+    actor_ref: payload.actor_ref ?? "harness",
+    actor_kind: payload.actor_kind ?? agentStep?.actor_kind ?? "master",
+    display_name: payload.display_name ?? "OpenZyme",
+    role: payload.role ?? agentStep?.role ?? "master",
+    call_index: payload.call_index ?? agentStep?.call_index,
+    created_at: payload.created_at ?? event.created_at,
+    response_text: payload.response_text ?? "",
+    tool_calls: (Array.isArray(payload.tool_calls) ? payload.tool_calls : [])
+      .map((toolCall) => publicToolCall(toolCall))
+      .filter((toolCall) => toolCall !== null),
+    projection_schema_version: AGENT_TRACE_PROJECTION_SCHEMA_VERSION,
+  };
+  const stepId = payload.step_id ?? agentStep?.step_id;
+  if (stepId !== undefined && stepId !== null) {
+    trace.step_id = stepId;
+  }
+  const toolCatalogDigest = payload.tool_catalog_digest ?? agentStep?.tool_catalog_digest;
+  if (toolCatalogDigest !== undefined && toolCatalogDigest !== null) {
+    trace.tool_catalog_digest = toolCatalogDigest;
+  }
+  const restoreContextDigest = payload.restore_context_digest ?? agentStep?.restore_context_digest;
+  if (restoreContextDigest !== undefined && restoreContextDigest !== null) {
+    trace.restore_context_digest = restoreContextDigest;
+  }
+  if (agentStep !== null) {
+    trace.agent_step = agentStep;
+  }
+  return trace;
+}
+
 function hasConversationEntry(workspace, role, content, messageId) {
   return (workspace.conversation ?? []).some((item) => {
     if (messageId && item.message_id) {
@@ -124,20 +267,16 @@ export function reduceWorkspaceWithEvent(workspace, event) {
       return next;
     }
     case "llm.response.created": {
-      const payload = event.payload ?? event;
-      if (hasTraceEntry(workspace, payload)) {
+      const trace = publicTracePayload(event);
+      if (hasTraceEntry(workspace, trace)) {
         return workspace;
       }
       const next = structuredClone(workspace);
-      const actorRef = payload.actor_ref ?? "harness";
+      const actorRef = trace.actor_ref ?? "harness";
       next.agent_traces ??= {};
       next.agent_traces[actorRef] = [
         ...(next.agent_traces[actorRef] ?? []),
-        {
-          ...payload,
-          trace_id: payload.trace_id ?? event.event_id,
-          created_at: payload.created_at ?? event.created_at,
-        },
+        trace,
       ].sort((left, right) => {
         const byTime = String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""));
         return byTime || Number(left.call_index ?? 0) - Number(right.call_index ?? 0);

@@ -2055,6 +2055,91 @@ def test_v3_runtime_drain_claims_master_signal_and_runs_master_loop() -> None:
     assert signals[0].claimed_by == "host-api:runtime-drain"
 
 
+def test_v3_runtime_replay_extends_sanitized_trace_events_without_duplicates() -> None:
+    repositories = _build_v3_engine_repositories()
+    event_store = V3EventStore()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=event_store,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Replay persisted trace events.",
+        session_id="sess_trace_replay",
+    )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="llmtrace_replay_001",
+            session_id="sess_trace_replay",
+            invocation_id=None,
+            document_kind="llm_trace_step",
+            payload={
+                "trace_id": "llmtrace_replay_001",
+                "actor_ref": "harness",
+                "actor_kind": "master",
+                "display_name": "OpenZyme",
+                "role": "master",
+                "call_index": 1,
+                "created_at": "2026-04-21T00:00:02+00:00",
+                "response_text": "I will inspect the task.",
+                "initial_prompt": {"instructions": "private prompt"},
+                "restore_context": {"memory_summary": "private memory"},
+                "tool_calls": [
+                    {
+                        "call_id": "call_001",
+                        "tool_name": "task.get",
+                        "task_id": "task_001",
+                        "lane_id": "lane_001",
+                        "args_public": {
+                            "task_id": "task_001",
+                            "secret_token": "abc123",
+                            "host_path": "/home/user/private/input.pdb",
+                            "storage_uri": "storage://private/input.pdb",
+                        },
+                        "content": "private tool result",
+                    }
+                ],
+            },
+            created_at="2026-04-21T00:00:02+00:00",
+            updated_at="2026-04-21T00:00:02+00:00",
+        )
+    )
+
+    first = service.drain_runtime(session_id="sess_trace_replay")
+    second = service.drain_runtime(session_id="sess_trace_replay")
+
+    first_trace_events = [
+        event
+        for event in first.events
+        if event["event_type"] == "llm.response.created"
+    ]
+    second_trace_events = [
+        event
+        for event in second.events
+        if event["event_type"] == "llm.response.created"
+    ]
+    stored_trace_events = [
+        event
+        for event in event_store.list("sess_trace_replay")
+        if event["event_type"] == "llm.response.created"
+    ]
+    assert len(first_trace_events) == 1
+    assert second_trace_events == []
+    assert len(stored_trace_events) == 1
+    payload = first_trace_events[0]["payload"]
+    assert payload["projection_schema_version"] == "v1"
+    assert payload["tool_calls"][0]["args_public"]["secret_token"] == "[redacted]"
+    assert payload["tool_calls"][0]["args_public"]["host_path"] == "[redacted]"
+    assert payload["tool_calls"][0]["args_public"]["storage_uri"] == "[redacted]"
+    payload_text = json.dumps(payload, sort_keys=True)
+    assert "initial_prompt" not in payload_text
+    assert "private prompt" not in payload_text
+    assert "private memory" not in payload_text
+    assert "private tool result" not in payload_text
+    assert "/home/user/private" not in payload_text
+    assert "storage://private" not in payload_text
+
+
 def test_v3_resolve_unassigned_approval_enqueues_master_wakeup() -> None:
     repositories = _build_v3_engine_repositories()
     model_factory = FakeHarnessModelFactory()

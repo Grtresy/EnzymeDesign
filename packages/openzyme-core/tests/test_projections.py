@@ -517,6 +517,132 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert any(item["event_type"] == "report.generated" for item in workspace["activity_feed"])
 
 
+def test_agent_trace_projection_applies_public_allowlist_and_sanitizers() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="llmtrace_private_001",
+            session_id=session.session_id,
+            invocation_id=None,
+            document_kind="llm_trace_step",
+            payload={
+                "trace_id": "llmtrace_private_001",
+                "actor_ref": "harness",
+                "actor_kind": "master",
+                "display_name": "OpenZyme",
+                "role": "master",
+                "call_index": 2,
+                "created_at": "2026-04-17T13:00:10+00:00",
+                "response_text": "I will call a tool.",
+                "prompt": "private system prompt",
+                "initial_prompt": {"instructions": "private teammate prompt"},
+                "restore_context": {"memory_summary": "top secret"},
+                "storage_uri": "storage://private/trace.json",
+                "tool_schema": {"properties": {"secret": {"type": "string"}}},
+                "tool_calls": [
+                    {
+                        "call_id": "call_private",
+                        "tool_name": "execution.pipeline.start",
+                        "task_id": "task_001",
+                        "lane_id": "lane_001",
+                        "args_public": {
+                            "task_id": "task_001",
+                            "secret_token": "abc123",
+                            "host_path": "/home/user/private/input.pdb",
+                            "storage_uri": "storage://private/input.pdb",
+                            "pipeline_code": "print('private source')",
+                        },
+                        "result": "private tool result",
+                    }
+                ],
+                "agent_step": {
+                    "step_id": "agentstep_private_001",
+                    "session_id": session.session_id,
+                    "agent_id": "harness",
+                    "actor_kind": "master",
+                    "role": "master",
+                    "call_index": 2,
+                    "task_id": "task_001",
+                    "lane_id": "lane_001",
+                    "correlation_id": "corr_001",
+                    "signal_id": "sig_001",
+                    "wakeup_reason": "manual",
+                    "restore_context_digest": "sha256:restore",
+                    "tool_catalog_digest": "sha256:tools",
+                    "created_at": "2026-04-17T13:00:10+00:00",
+                    "prompt": "private prompt",
+                    "host_path": "/home/user/private/workspace",
+                },
+            },
+            created_at="2026-04-17T13:00:10+00:00",
+            updated_at="2026-04-17T13:00:10+00:00",
+        )
+    )
+
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+
+    projected = workspace["agent_traces"]["harness"][-1]
+    assert set(projected) == {
+        "trace_id",
+        "actor_ref",
+        "actor_kind",
+        "display_name",
+        "role",
+        "call_index",
+        "created_at",
+        "response_text",
+        "tool_calls",
+        "projection_schema_version",
+        "step_id",
+        "tool_catalog_digest",
+        "restore_context_digest",
+        "agent_step",
+    }
+    assert projected["projection_schema_version"] == "v1"
+    assert set(projected["agent_step"]) == {
+        "step_id",
+        "session_id",
+        "agent_id",
+        "actor_kind",
+        "role",
+        "call_index",
+        "task_id",
+        "lane_id",
+        "correlation_id",
+        "signal_id",
+        "wakeup_reason",
+        "restore_context_digest",
+        "tool_catalog_digest",
+        "created_at",
+    }
+    assert set(projected["tool_calls"][0]) == {
+        "call_id",
+        "tool_name",
+        "task_id",
+        "lane_id",
+        "args_public",
+    }
+    args_public = projected["tool_calls"][0]["args_public"]
+    assert args_public["task_id"] == "task_001"
+    assert args_public["secret_token"] == "[redacted]"
+    assert args_public["host_path"] == "[redacted]"
+    assert args_public["storage_uri"] == "[redacted]"
+    assert args_public["pipeline_code"] == "[redacted]"
+    payload_text = json.dumps(projected, sort_keys=True)
+    assert "private system prompt" not in payload_text
+    assert "private teammate prompt" not in payload_text
+    assert "top secret" not in payload_text
+    assert "private tool result" not in payload_text
+    assert "/home/user/private" not in payload_text
+    assert "storage://private" not in payload_text
+    assert "private source" not in payload_text
+
+
 def test_workspace_artifact_projection_normalizes_execution_provenance() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)

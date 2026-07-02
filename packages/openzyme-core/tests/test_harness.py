@@ -3017,6 +3017,7 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     assert payload["step_id"].startswith("agentstep_")
     assert payload["tool_catalog_digest"].startswith("sha256:")
     assert payload["restore_context_digest"].startswith("sha256:")
+    assert payload["projection_schema_version"] == "v1"
     assert payload["agent_step"]["agent_id"] == "harness"
     assert payload["agent_step"]["actor_kind"] == "master"
     assert payload["agent_step"]["role"] == "master"
@@ -3043,7 +3044,7 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     assert projected["restore_context_digest"] == payload["restore_context_digest"]
 
 
-def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
+def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     driver = TeammateConversationDriver(
@@ -3075,8 +3076,8 @@ def test_teammate_loop_persists_trace_with_initial_prompt() -> None:
     assert traces[0]["agent_step"]["role"] == "researcher"
     assert traces[0]["agent_step"]["correlation_id"] == "corr_001"
     assert traces[0]["response_text"] == "I inspected the task."
-    assert traces[0]["initial_prompt"]["identity"] == "agent:researcher"
-    assert traces[0]["initial_prompt"]["instructions"] == "Inspect the literature plan."
+    assert traces[0]["projection_schema_version"] == "v1"
+    assert "initial_prompt" not in traces[0]
 
 
 def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
@@ -3425,16 +3426,28 @@ def test_tool_events_include_step_and_governance_metadata() -> None:
         event for event in result.events if event.event_type == "tool.completed"
     )
     assert invoked.payload["step_id"].startswith("agentstep_")
+    assert invoked.payload["agent_id"] == "harness"
+    assert invoked.payload["actor_kind"] == "master"
+    assert invoked.payload["role"] == "master"
+    assert invoked.payload["call_index"] == 1
     assert invoked.payload["tool_catalog_digest"].startswith("sha256:")
     assert invoked.payload["restore_context_digest"].startswith("sha256:")
     assert invoked.payload["side_effect"] == "write"
     assert invoked.payload["supports_parallel"] is False
     assert completed.payload["step_id"] == invoked.payload["step_id"]
+    assert completed.payload["agent_id"] == "harness"
+    assert completed.payload["actor_kind"] == "master"
+    assert completed.payload["role"] == "master"
+    assert completed.payload["call_index"] == 1
+    assert completed.payload["task_id"] is None
+    assert completed.payload["lane_id"] is None
     assert completed.payload["side_effect"] == "write"
     assert completed.payload["supports_parallel"] is False
     assert completed.payload["ok"] is True
     assert completed.payload["status"] == "ok"
     assert completed.payload["error_code"] is None
+    assert "content" not in completed.payload
+    assert "result" not in completed.payload
 
 
 def test_llm_conversation_driver_returns_tool_invocation_for_missing_delegate_task_id() -> (

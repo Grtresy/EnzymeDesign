@@ -44,6 +44,7 @@ from .prompt_budget import PromptBudgetAction
 from .prompt_budget import PromptBudgetDecision
 from .prompt_budget import estimate_and_decide_prompt_budget
 from .prompt_budget import prompt_budget_config_from_env
+from .trace_projection import project_public_llm_trace_step
 
 
 def _new_id(prefix: str) -> str:
@@ -269,10 +270,7 @@ class LlmTraceStep:
     step_context: AgentStepContext | None = None
 
     def to_payload(self, *, trace_id: str, created_at: str) -> dict[str, Any]:
-        agent_step = (
-            None if self.step_context is None else self.step_context.to_dict()
-        )
-        payload = {
+        payload: dict[str, Any] = {
             "trace_id": trace_id,
             "actor_ref": self.actor_ref,
             "actor_kind": self.actor_kind,
@@ -283,14 +281,9 @@ class LlmTraceStep:
             "response_text": self.response_text,
             "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls],
         }
-        if agent_step is not None:
-            payload["step_id"] = agent_step["step_id"]
-            payload["tool_catalog_digest"] = agent_step["tool_catalog_digest"]
-            payload["restore_context_digest"] = agent_step["restore_context_digest"]
-            payload["agent_step"] = agent_step
-        if self.initial_prompt is not None:
-            payload["initial_prompt"] = self.initial_prompt
-        return payload
+        if self.step_context is not None:
+            payload["agent_step"] = self.step_context.to_dict()
+        return project_public_llm_trace_step(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1255,6 +1248,10 @@ def _tool_event_metadata(
     step_context = context.current_step_context
     metadata: dict[str, Any] = {
         "step_id": None if step_context is None else step_context.step_id,
+        "agent_id": None if step_context is None else step_context.agent_id,
+        "actor_kind": None if step_context is None else step_context.actor_kind,
+        "role": None if step_context is None else step_context.role,
+        "call_index": None if step_context is None else step_context.call_index,
         "tool_catalog_digest": None
         if step_context is None
         else step_context.tool_catalog_digest,
@@ -1594,6 +1591,8 @@ def run_agent_harness_loop(
                     {
                         "call_id": result.call_id,
                         "tool_name": result.tool_name,
+                        "task_id": result.task_id or invocation.task_id,
+                        "lane_id": result.lane_id or invocation.lane_id,
                         "ok": result.ok,
                         "status": result.status
                         or ("ok" if result.ok else "failed"),

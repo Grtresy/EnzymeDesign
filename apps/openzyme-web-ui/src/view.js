@@ -314,22 +314,6 @@ function renderTraceStep(step, { teammate = false } = {}) {
         <span>${escapeHtml(step.display_name ?? step.actor_ref ?? "agent")}</span>
         <small>${escapeHtml(step.role ?? "")} · call ${escapeHtml(step.call_index ?? "")}</small>
       </div>
-      ${
-        step.initial_prompt
-          ? `<article class="trace-seed-card">
-              <strong>Role seed</strong>
-              <dl class="facts compact-facts">
-                <div><dt>Identity</dt><dd>${escapeHtml(step.initial_prompt.identity ?? "")}</dd></div>
-                <div><dt>Role</dt><dd>${escapeHtml(step.initial_prompt.role ?? "")}</dd></div>
-                <div><dt>Task</dt><dd>${escapeHtml(step.initial_prompt.task_id ?? "")}</dd></div>
-                <div><dt>Lane</dt><dd>${escapeHtml(step.initial_prompt.lane_id ?? "none")}</dd></div>
-                <div><dt>Correlation</dt><dd>${escapeHtml(step.initial_prompt.correlation_id ?? "")}</dd></div>
-              </dl>
-              <p>${escapeHtml(step.initial_prompt.instructions ?? "")}</p>
-              <pre>${escapeHtml(step.initial_prompt.seed_message ?? "")}</pre>
-            </article>`
-          : ""
-      }
       ${hasText ? `<p>${escapeHtml(step.response_text)}</p>` : ""}
       ${toolCalls.length ? `<div class="tool-call-stack">${toolCalls.map(renderToolCallCard).join("")}</div>` : ""}
     </li>

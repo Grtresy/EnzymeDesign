@@ -23,6 +23,7 @@ from .tool_catalog import top_level_tool_descriptors
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 from .teammate_roster import teammate_role_for_task_kind
 from .teammate_roster import teammate_roster_prompt_line
+from .trace_projection import sanitize_public_tool_args
 
 
 def _extract_tool_calls(message: Any) -> list[dict[str, Any]]:
@@ -49,52 +50,8 @@ def _stringify_content(content: Any) -> str:
     return str(content)
 
 
-_REDACTED = "[redacted]"
-_SENSITIVE_KEY_FRAGMENTS = (
-    "secret",
-    "token",
-    "password",
-    "credential",
-    "private_key",
-    "api_key",
-)
-_PRIVATE_KEY_FRAGMENTS = (
-    "storage_uri",
-    "source_storage_uri",
-    "intermediate_storage_uri",
-    "local_path",
-    "remote_path",
-    "host_path",
-    "runner_config",
-    "ssh",
-    "config",
-)
-_PRIVATE_EXACT_KEYS = {"code", "content", "pipeline_code", "source_code"}
-
-
 def _sanitize_public_args(value: Any, *, key: str = "") -> Any:
-    key_lower = key.lower()
-    if key_lower in _PRIVATE_EXACT_KEYS:
-        return _REDACTED
-    if any(fragment in key_lower for fragment in _SENSITIVE_KEY_FRAGMENTS):
-        return _REDACTED
-    if any(fragment in key_lower for fragment in _PRIVATE_KEY_FRAGMENTS):
-        return _REDACTED
-    if isinstance(value, dict):
-        return {
-            str(item_key): _sanitize_public_args(item, key=str(item_key))
-            for item_key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_sanitize_public_args(item) for item in value[:20]]
-    if isinstance(value, str):
-        if value.startswith(("artifact://", "storage://", "s3://", "file://")):
-            return _REDACTED
-        if value.startswith(("/home/", "/tmp/", "/var/", "/mnt/", "/data/", "~")):
-            return _REDACTED
-        if len(value) > 1200:
-            return value[:1200] + "... [truncated]"
-    return value
+    return sanitize_public_tool_args(value, key=key)
 
 
 def _resume_result_summary(tool_results: tuple[ToolResult, ...]) -> str | None:

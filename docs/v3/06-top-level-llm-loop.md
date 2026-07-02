@@ -72,7 +72,9 @@ After every tool call, master must first read the tool-result envelope fields `o
 
 每次 provider 调用前，harness 先构造 `AgentStepContext`，再用当前 `ToolRegistry` 和允许暴露的 tool descriptors 构造 typed tool router。router 输出模型可见 `ToolSpec`，provider adapter 再把 `ToolSpec` 转成 OpenAI-compatible tool schema。模型返回 tool call 后，harness 必须用同一个 router 和同一个 `AgentStepContext` dispatch tool invocation。
 
-trace 只保存公开 step metadata：`step_id`、`agent_id`、`actor_kind`、`role`、focus ids、runtime signal ids、`restore_context_digest` 和 `tool_catalog_digest`。trace 不保存完整 restore context、完整 prompt、memory summary、artifact storage URI、Host path、runner path 或 sandbox host path。
+trace 只保存公开 step metadata：`step_id`、`agent_id`、`actor_kind`、`role`、focus ids、runtime signal ids、`restore_context_digest` 和 `tool_catalog_digest`。`llm_trace_step -> workspace.agent_traces` 必须经过稳定 public projection helper / allowlist：trace entry 只暴露 `trace_id`、`actor_ref`、`actor_kind`、`display_name`、`role`、`call_index`、`created_at`、`response_text`、`tool_calls`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`projection_schema_version` 与 sanitized `agent_step`；`agent_step` 只暴露 `step_id`、`session_id`、`agent_id`、`actor_kind`、`role`、`call_index`、`task_id`、`lane_id`、`correlation_id`、`signal_id`、`wakeup_reason`、`restore_context_digest`、`tool_catalog_digest`、`created_at`。trace 不保存完整 restore context、完整 prompt / `initial_prompt`、memory summary、完整 tool schema、artifact storage URI、Host path、runner path、SSH/runner config、provider secret、tool result content 或 sandbox host path。
+
+`tool.invoked` / `tool.completed` 保持 diagnostic/runtime event 语义，用 `agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest` 与 `restore_context_digest` 关联回当前 step，并只带 `side_effect`、`supports_parallel`、`ok` / `status` / `error_code` 等公开诊断字段。Web UI 可以把这些事件追加到 `activity_feed` 并按事件去重，但不能由此新增 Codex thread / turn 顶层状态或默认 workspace 顶层分区。
 
 legacy function handler 仍可通过 `registry.register(name, handler)` 注册；进入模型调用前由 router 包装成 `ToolRuntime`。长期方向是把 tool spec、visibility gating 和 dispatch 放入 typed runtime，而不是让 prompt catalog、provider adapter 和真实 dispatch 各自维护一份 truth。
 
