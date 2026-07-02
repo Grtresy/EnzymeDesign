@@ -638,7 +638,7 @@ class LaneLifecycleEventRepository:
             task_id=row["task_id"],
             event_type=row["event_type"],
             created_at=row["created_at"],
-            payload=json.loads(row["payload_json"]),
+            payload=_json_loads_object(row["payload_json"]) or {},
         )
 
 
@@ -2814,7 +2814,7 @@ class EngineDocumentRepository:
             session_id=row["session_id"],
             invocation_id=row["invocation_id"],
             document_kind=row["document_kind"],
-            payload=json.loads(row["payload_json"]),
+            payload=_json_loads_object(row["payload_json"]) or {},
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

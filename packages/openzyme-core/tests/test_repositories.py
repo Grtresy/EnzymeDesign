@@ -61,6 +61,66 @@ def test_inbox_participant_kind_coercion_handles_legacy_missing_values() -> None
     assert _coerce_inbox_participant_kind("bogus", "harness") is InboxParticipantKind.HARNESS
 
 
+def test_json_payload_repositories_tolerate_json_null_payload_rows() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    session = Session.create(
+        session_id="sess_001",
+        project_id="proj_001",
+        title="Null payload rows",
+        objective="Keep projections resilient",
+    )
+    lane = Lane(
+        lane_id="lane_001",
+        session_id=session.session_id,
+        name="AOX/HMM lane",
+        status=LaneStatus.IDLE,
+        cwd="/workspace",
+        branch_name="aox-hmm",
+        claimed_ref=None,
+        created_at="2026-06-17T13:00:00+00:00",
+        updated_at="2026-06-17T13:00:00+00:00",
+    )
+    repositories.sessions.save(session)
+    repositories.lanes.save(lane)
+    repositories.lane_events.save(
+        LaneLifecycleEventRecord(
+            event_id="evt_lane_null",
+            session_id=session.session_id,
+            lane_id=lane.lane_id,
+            task_id=None,
+            event_type="lane.created",
+            created_at="2026-06-17T13:00:00+00:00",
+            payload={"lane_id": lane.lane_id},
+        )
+    )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="doc_null_payload",
+            session_id=session.session_id,
+            invocation_id=None,
+            document_kind="llm_trace_step",
+            payload={"actor_ref": "agent:executor"},
+            created_at="2026-06-17T13:00:01+00:00",
+            updated_at="2026-06-17T13:00:01+00:00",
+        )
+    )
+    connection.execute(
+        "UPDATE lane_lifecycle_events SET payload_json = 'null' WHERE event_id = ?",
+        ("evt_lane_null",),
+    )
+    connection.execute(
+        "UPDATE engine_documents SET payload_json = 'null' WHERE document_id = ?",
+        ("doc_null_payload",),
+    )
+    connection.commit()
+
+    assert repositories.lane_events.list_by_session(session.session_id)[0].payload == {}
+    assert repositories.engine_documents.get("doc_null_payload").payload == {}
+
+
 def test_core_repositories_persist_v3_control_plane_records() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

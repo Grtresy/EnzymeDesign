@@ -569,7 +569,7 @@ def _execution_resume_summary(tool_results: tuple[ToolResult, ...]) -> str | Non
         return None
     try:
         payload = json.loads(result.content)
-    except json.JSONDecodeError:
+    except (TypeError, json.JSONDecodeError):
         return result.summary or result.content or None
     run = payload.get("run")
     if isinstance(run, dict):
