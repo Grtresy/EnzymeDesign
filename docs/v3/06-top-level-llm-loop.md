@@ -76,6 +76,12 @@ trace 只保存公开 step metadata：`step_id`、`agent_id`、`actor_kind`、`r
 
 legacy function handler 仍可通过 `registry.register(name, handler)` 注册；进入模型调用前由 router 包装成 `ToolRuntime`。长期方向是把 tool spec、visibility gating 和 dispatch 放入 typed runtime，而不是让 prompt catalog、provider adapter 和真实 dispatch 各自维护一份 truth。
 
+runtime governance 也是 router contract 的一部分。每个 `ToolRuntime` 必须提供 `governance(step_context)`，至少表达 role scope、side effect、approval requirement、parallel support 与 result budget policy。legacy function handler 的默认治理保持保守：不可并行、写 side effect、不隐式要求 approval、role scope 为空。
+
+模型返回 tool call 后，harness 不再以 driver 私有 descriptor map 作为最终 tool availability truth。`ToolRouter` 负责判断 tool 是否注册、当前 step 是否可见，以及 `required` / `enum` schema 是否满足；不可见工具返回 `ok=false/status=tool_not_visible` 的标准 tool result，未注册工具继续返回 `unknown_tool`。`task.delegate` 的缺参友好提示保留在 router validation 返回的 tool result envelope 中。master 与 teammate driver 都走同一 router validation/dispatch 路径。
+
+`supports_parallel` 只记录为 runtime governance metadata；本阶段顶层 loop 仍不启用真实并行 dispatch。
+
 ## 5. 顶层允许暴露给模型的工具
 
 首批默认暴露工具集：

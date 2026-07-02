@@ -122,12 +122,16 @@ from .test_gates import quality_eval_skip_reason
 from .tooling import AgentStepContext
 from .tooling import LegacyFunctionToolRuntime
 from .tooling import ToolHandler
+from .tooling import ToolGovernance
 from .tooling import ToolInvocation
 from .tooling import ToolRegistryProtocol
 from .tooling import ToolResult
 from .tooling import ToolRouter
 from .tooling import ToolRuntime
+from .tooling import ToolSideEffect
 from .tooling import ToolSpec
+from .tooling import ToolValidationError
+from .tooling import validate_arguments_against_schema
 
 __all__ = [
     "AgentStepContext",
@@ -173,6 +177,7 @@ __all__ = [
     "IntakePhaseOutput",
     "LangChainModelFactory",
     "LegacyFunctionToolRuntime",
+    "ToolGovernance",
     "LangChainToolCallingInvoker",
     "LimitedStructuredOutputInvoker",
     "LimitedToolCallingInvoker",
@@ -225,7 +230,10 @@ __all__ = [
     "ToolRegistryProtocol",
     "ToolRouter",
     "ToolRuntime",
+    "ToolSideEffect",
     "ToolSpec",
+    "ToolValidationError",
+    "validate_arguments_against_schema",
     "ToolResult",
     "WebFetchArgs",
     "WebFetchTool",

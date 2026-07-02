@@ -289,9 +289,6 @@ class LlmConversationDriver:
     def _tool_catalog(self) -> tuple[ToolDescriptor, ...]:
         return top_level_tool_descriptors(self.engine_registry)
 
-    def _descriptor_by_name(self) -> dict[str, ToolDescriptor]:
-        return {descriptor.tool_name: descriptor for descriptor in self._tool_catalog()}
-
     def _prepare_step_context(
         self, context: SessionRuntimeContext, *, call_index: int
     ) -> tuple[list[dict[str, Any]], AgentStepContext]:
@@ -356,42 +353,6 @@ class LlmConversationDriver:
                 if inferred_role is not None:
                     arguments["agent_role"] = inferred_role
             tool_call["args"] = arguments
-
-    def _validate_tool_arguments(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> str | None:
-        descriptor = self._descriptor_by_name().get(tool_name)
-        if descriptor is None:
-            return f"Tool {tool_name} is not available in the current harness."
-        required = tuple(descriptor.input_schema.get("required") or ())
-        missing = [
-            field_name
-            for field_name in required
-            if field_name not in arguments or arguments[field_name] in (None, "")
-        ]
-        if missing:
-            if tool_name == "task.delegate" and "task_id" in missing:
-                return (
-                    "Cannot delegate a task without task_id. "
-                    "Create or select a task first, then delegate it."
-                )
-            if tool_name == "task.delegate" and "agent_role" in missing:
-                return (
-                    "Cannot delegate a task without agent_role. "
-                    f"Choose one of: {', '.join(TEAMMATE_ROLE_NAMES)}."
-                )
-            return f"Cannot call {tool_name}; missing required fields: {', '.join(missing)}."
-        properties = descriptor.input_schema.get("properties") or {}
-        for field_name, field_schema in properties.items():
-            if field_name not in arguments or not isinstance(field_schema, dict):
-                continue
-            enum_values = field_schema.get("enum")
-            if enum_values is not None and arguments[field_name] not in enum_values:
-                return (
-                    f"Cannot call {tool_name}; invalid {field_name}: {arguments[field_name]!r}. "
-                    f"Choose one of: {', '.join(str(value) for value in enum_values)}."
-                )
-        return None
 
     def _trace_step(
         self,
@@ -501,15 +462,6 @@ class LlmConversationDriver:
             for index, tool_call in enumerate(selected):
                 tool_name = str(tool_call["name"])
                 arguments = dict(tool_call.get("args") or {})
-                validation_error = self._validate_tool_arguments(tool_name, arguments)
-                if validation_error is not None:
-                    return HarnessStep(
-                        assistant_message=validation_error,
-                        llm_trace=self._trace_step(
-                            response_text=response_text,
-                            step_context=step_context,
-                        ),
-                    )
                 task_id, lane_id = self._invocation_refs(tool_name, arguments)
                 invocations.append(
                     ToolInvocation(

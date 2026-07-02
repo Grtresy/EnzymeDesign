@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 import json
 from typing import Any
 from typing import Protocol
@@ -52,6 +53,141 @@ class ToolResult:
 
 
 ToolHandler = Callable[[Any, ToolInvocation], ToolResult | str]
+
+
+class ToolSideEffect(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    APPROVAL = "approval"
+    EXTERNAL = "external"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolGovernance:
+    role_scope: tuple[str, ...] = ()
+    supports_parallel: bool = False
+    side_effect: ToolSideEffect = ToolSideEffect.WRITE
+    approval_required: bool = False
+    result_budget_policy: str = "default"
+
+    def to_public_metadata(self) -> dict[str, Any]:
+        return {
+            "role_scope": list(self.role_scope),
+            "supports_parallel": self.supports_parallel,
+            "side_effect": self.side_effect.value,
+            "approval_required": self.approval_required,
+            "result_budget_policy": self.result_budget_policy,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ToolValidationError:
+    status: str
+    message: str
+    error_code: str | None = None
+    hint: str | None = None
+    details: dict[str, Any] | None = None
+
+    def to_tool_result(self, invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content=self.message,
+            task_id=invocation.task_id,
+            lane_id=invocation.lane_id,
+            status=self.status,
+            summary=self.message,
+            error_code=self.error_code or self.status,
+            hint=self.hint,
+            details=self.details,
+        )
+
+
+def _missing_required_value(arguments: dict[str, Any], field_name: str) -> bool:
+    return field_name not in arguments or arguments[field_name] in (None, "")
+
+
+def _task_delegate_missing_required_message(
+    field_name: str, input_schema: dict[str, Any]
+) -> str | None:
+    if field_name == "task_id":
+        return (
+            "Cannot delegate a task without task_id. "
+            "Create or select a task first, then delegate it."
+        )
+    if field_name == "agent_role":
+        properties = input_schema.get("properties") or {}
+        field_schema = properties.get("agent_role") or {}
+        enum_values = (
+            field_schema.get("enum") if isinstance(field_schema, dict) else None
+        )
+        suffix = (
+            f" Choose one of: {', '.join(str(value) for value in enum_values)}."
+            if enum_values
+            else ""
+        )
+        return f"Cannot delegate a task without agent_role.{suffix}"
+    return None
+
+
+def validate_arguments_against_schema(
+    *,
+    tool_name: str,
+    input_schema: dict[str, Any],
+    arguments: dict[str, Any],
+) -> ToolValidationError | None:
+    required = tuple(input_schema.get("required") or ())
+    missing = [
+        field_name
+        for field_name in required
+        if _missing_required_value(arguments, str(field_name))
+    ]
+    if missing:
+        if tool_name == "task.delegate" and len(missing) == 1:
+            message = _task_delegate_missing_required_message(
+                str(missing[0]), input_schema
+            )
+            if message is not None:
+                return ToolValidationError(
+                    status="invalid_tool_arguments",
+                    message=message,
+                    error_code="invalid_tool_arguments",
+                    hint="Fix the task.delegate arguments before retrying.",
+                    details={"missing": [str(value) for value in missing]},
+                )
+        return ToolValidationError(
+            status="invalid_tool_arguments",
+            message=(
+                f"Cannot call {tool_name}; missing required fields: "
+                f"{', '.join(str(value) for value in missing)}."
+            ),
+            error_code="invalid_tool_arguments",
+            hint="Provide all required tool arguments before retrying.",
+            details={"missing": [str(value) for value in missing]},
+        )
+    properties = input_schema.get("properties") or {}
+    for field_name, field_schema in properties.items():
+        if field_name not in arguments or not isinstance(field_schema, dict):
+            continue
+        enum_values = field_schema.get("enum")
+        if enum_values is not None and arguments[field_name] not in enum_values:
+            return ToolValidationError(
+                status="invalid_tool_arguments",
+                message=(
+                    f"Cannot call {tool_name}; invalid {field_name}: "
+                    f"{arguments[field_name]!r}. Choose one of: "
+                    f"{', '.join(str(value) for value in enum_values)}."
+                ),
+                error_code="invalid_tool_arguments",
+                hint="Choose a valid enum value from the current tool schema.",
+                details={
+                    "field": str(field_name),
+                    "value": arguments[field_name],
+                    "allowed": list(enum_values),
+                },
+            )
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +248,12 @@ class ToolRuntime(Protocol):
 
     def is_visible(self, step_context: AgentStepContext) -> bool: ...
 
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance: ...
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None: ...
+
     def dispatch(
         self,
         step_context: AgentStepContext,
@@ -133,6 +275,26 @@ class LegacyFunctionToolRuntime:
     def is_visible(self, step_context: AgentStepContext) -> bool:
         del step_context
         return True
+
+    def governance(self, step_context: AgentStepContext) -> ToolGovernance:
+        del step_context
+        return ToolGovernance(
+            role_scope=(),
+            supports_parallel=False,
+            side_effect=ToolSideEffect.WRITE,
+            approval_required=False,
+            result_budget_policy="default",
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        del step_context
+        return validate_arguments_against_schema(
+            tool_name=invocation.tool_name,
+            input_schema=self.tool_spec.input_schema,
+            arguments=invocation.arguments,
+        )
 
     def dispatch(
         self,
@@ -186,8 +348,63 @@ class ToolRouter:
         return tuple(
             runtime.spec(step_context)
             for runtime in self.runtimes.values()
-            if runtime.is_visible(step_context)
+            if self.is_visible(step_context, runtime)
         )
+
+    def governance(
+        self, step_context: AgentStepContext, tool_name: str
+    ) -> ToolGovernance | None:
+        runtime = self.runtimes.get(tool_name)
+        if runtime is None:
+            return None
+        return runtime.governance(step_context)
+
+    def is_visible(
+        self, step_context: AgentStepContext, runtime: ToolRuntime
+    ) -> bool:
+        if not runtime.is_visible(step_context):
+            return False
+        governance = runtime.governance(step_context)
+        if not governance.role_scope:
+            return True
+        return (
+            step_context.role in governance.role_scope
+            or step_context.actor_kind in governance.role_scope
+            or step_context.agent_id in governance.role_scope
+        )
+
+    def validate(
+        self, step_context: AgentStepContext, invocation: ToolInvocation
+    ) -> ToolValidationError | None:
+        runtime = self.runtimes.get(invocation.tool_name)
+        if runtime is None:
+            return ToolValidationError(
+                status="unknown_tool",
+                message=f"unknown tool: {invocation.tool_name}",
+                error_code="unknown_tool",
+                hint="Use one of the tools exposed in the current V3 tool catalog.",
+                details={"tool_name": invocation.tool_name},
+            )
+        if not self.is_visible(step_context, runtime):
+            visible_names = sorted(
+                name
+                for name, candidate in self.runtimes.items()
+                if self.is_visible(step_context, candidate)
+            )
+            return ToolValidationError(
+                status="tool_not_visible",
+                message=(
+                    f"Tool {invocation.tool_name!r} is registered but is not "
+                    "visible in the current agent step."
+                ),
+                error_code="tool_not_visible",
+                hint="Use one of the tools exposed in the current V3 tool catalog.",
+                details={
+                    "tool_name": invocation.tool_name,
+                    "visible_tools": visible_names,
+                },
+            )
+        return runtime.validate(step_context, invocation)
 
     def dispatch(
         self, step_context: AgentStepContext, invocation: ToolInvocation
@@ -206,6 +423,9 @@ class ToolRouter:
                 error_code="unknown_tool",
                 hint="Use one of the tools exposed in the current V3 tool catalog.",
             )
+        validation_error = self.validate(step_context, invocation)
+        if validation_error is not None:
+            return validation_error.to_tool_result(invocation)
         return runtime.dispatch(step_context, invocation, self.dispatch_context)
 
 
@@ -217,10 +437,14 @@ __all__ = [
     "AgentStepContext",
     "LegacyFunctionToolRuntime",
     "ToolHandler",
+    "ToolGovernance",
     "ToolInvocation",
     "ToolRegistryProtocol",
     "ToolRouter",
     "ToolRuntime",
+    "ToolSideEffect",
     "ToolSpec",
     "ToolResult",
+    "ToolValidationError",
+    "validate_arguments_against_schema",
 ]

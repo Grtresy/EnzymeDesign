@@ -309,6 +309,8 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 `llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 被持久化为 `llm_trace_step` 后尽快推送该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。Web UI 用它实时增量更新 `workspace.agent_traces`；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
 
+`tool.invoked` 与 `tool.completed` 是 diagnostic/runtime events，不新增 Codex thread / turn 顶层产品状态。二者 payload 至少包含 `call_id`、`tool_name`、`task_id`、`lane_id`，并附加公开 step/runtime metadata：`step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`。`tool.completed` 还包含 `ok`、`status` 与 `error_code`。这些 payload 不得包含完整 prompt、完整 tool schema、tool result content、artifact `storage_uri`、Host path、runner path、sandbox host path、SSH/runner config 或 provider secret。
+
 迁移兼容 `execution.pipeline.start` 语义：
 
 `execution.pipeline.start` 不再是 executor-facing authoring 主路径。稳定目标是 executor 在 persistent sandbox workspace 中通过 `sandbox.file.*` / `sandbox.exec` 工作，Host/supervisor 在内部创建 execution plan、approval、run 和 provenance。若当前实现或迁移期仍暴露 `execution.pipeline.start`，其语义必须满足：

@@ -33,6 +33,7 @@ from openzyme_runtime import LegacyFunctionToolRuntime
 from openzyme_runtime import ToolInvocation
 from openzyme_runtime import ToolResult
 from openzyme_runtime import ToolRouter
+from openzyme_runtime import ToolRuntime
 from openzyme_runtime import ToolSpec
 
 from .engines import EngineRegistry
@@ -320,12 +321,17 @@ ToolHandler = Callable[["SessionRuntimeContext", ToolInvocation], ToolResult | s
 @dataclass(slots=True)
 class ToolRegistry:
     _handlers: dict[str, ToolHandler]
+    _runtimes: dict[str, ToolRuntime]
 
     def __init__(self) -> None:
         self._handlers = {}
+        self._runtimes = {}
 
     def register(self, tool_name: str, handler: ToolHandler) -> None:
         self._handlers[tool_name] = handler
+
+    def register_runtime(self, tool_name: str, runtime: ToolRuntime) -> None:
+        self._runtimes[tool_name] = runtime
 
     def to_tool_router(
         self,
@@ -342,7 +348,7 @@ class ToolRegistry:
             tool_name = str(descriptor.tool_name)
             if tool_name not in specs:
                 specs[tool_name] = descriptor.to_tool_spec()
-        runtimes = {
+        runtimes: dict[str, ToolRuntime] = {
             tool_name: LegacyFunctionToolRuntime(
                 tool_name=tool_name,
                 handler=self._handlers[tool_name],
@@ -351,6 +357,7 @@ class ToolRegistry:
             for tool_name, spec in specs.items()
             if tool_name in self._handlers
         }
+        runtimes.update(self._runtimes)
         return ToolRouter(runtimes=runtimes, dispatch_context=context)
 
     def dispatch(
@@ -1230,6 +1237,36 @@ def _persist_llm_trace_step(
     return payload
 
 
+def _tool_event_metadata(
+    context: SessionRuntimeContext, invocation: ToolInvocation
+) -> dict[str, Any]:
+    step_context = context.current_step_context
+    metadata: dict[str, Any] = {
+        "step_id": None if step_context is None else step_context.step_id,
+        "tool_catalog_digest": None
+        if step_context is None
+        else step_context.tool_catalog_digest,
+        "restore_context_digest": None
+        if step_context is None
+        else step_context.restore_context_digest,
+        "side_effect": None,
+        "supports_parallel": False,
+        "approval_required": None,
+    }
+    if context.current_tool_router is None or step_context is None:
+        return metadata
+    governance = context.current_tool_router.governance(
+        step_context, invocation.tool_name
+    )
+    if governance is None:
+        return metadata
+    public_governance = governance.to_public_metadata()
+    metadata["side_effect"] = public_governance["side_effect"]
+    metadata["supports_parallel"] = public_governance["supports_parallel"]
+    metadata["approval_required"] = public_governance["approval_required"]
+    return metadata
+
+
 def run_agent_harness_loop(
     repositories: CoreRepositories,
     harness_input: HarnessInput,
@@ -1498,6 +1535,7 @@ def run_agent_harness_loop(
                         "tool_name": invocation.tool_name,
                         "task_id": invocation.task_id,
                         "lane_id": invocation.lane_id,
+                        **_tool_event_metadata(context, invocation),
                     },
                 )
                 try:
@@ -1545,6 +1583,10 @@ def run_agent_harness_loop(
                         "call_id": result.call_id,
                         "tool_name": result.tool_name,
                         "ok": result.ok,
+                        "status": result.status
+                        or ("ok" if result.ok else "failed"),
+                        "error_code": result.error_code,
+                        **_tool_event_metadata(context, invocation),
                     },
                 )
                 activity_happened = True

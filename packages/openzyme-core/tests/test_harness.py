@@ -59,6 +59,8 @@ from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
+from openzyme_runtime import ToolGovernance
+from openzyme_runtime import ToolSideEffect
 
 
 class RateLimitedBioResearchService(DeterministicBioResearchService):
@@ -2315,6 +2317,196 @@ def test_tool_router_exposes_descriptor_spec_and_dispatches_legacy_handler() -> 
     assert unknown.status == "unknown_tool"
 
 
+def test_legacy_tool_runtime_uses_conservative_governance_defaults() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    registry.register("example.echo", lambda _context, _invocation: "ok")
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    descriptor = ToolDescriptor(
+        tool_name="example.echo",
+        description="Echo a value.",
+        input_schema={"type": "object", "properties": {}},
+    )
+
+    router = registry.to_tool_router(context, descriptors=(descriptor,))
+    step_context = build_agent_step_context(context, call_index=1)
+    governance = router.governance(step_context, "example.echo")
+
+    assert governance is not None
+    assert governance.role_scope == ()
+    assert governance.supports_parallel is False
+    assert governance.side_effect is ToolSideEffect.WRITE
+    assert governance.approval_required is False
+
+
+class RoleScopedRuntime:
+    def __init__(self) -> None:
+        self.dispatched = False
+
+    def spec(self, step_context):
+        del step_context
+        return ToolDescriptor(
+            tool_name="example.scoped",
+            description="Scoped tool.",
+            input_schema={"type": "object", "properties": {}},
+        ).to_tool_spec()
+
+    def is_visible(self, step_context):
+        del step_context
+        return True
+
+    def governance(self, step_context):
+        del step_context
+        return ToolGovernance(
+            role_scope=("researcher",),
+            supports_parallel=True,
+            side_effect=ToolSideEffect.READ,
+            approval_required=False,
+            result_budget_policy="compact",
+        )
+
+    def validate(self, step_context, invocation):
+        del step_context, invocation
+        return None
+
+    def dispatch(self, step_context, invocation, runtime_context):
+        del step_context, runtime_context
+        self.dispatched = True
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=True,
+            content="visible",
+            status="ok",
+        )
+
+
+def test_tool_router_dispatches_only_visible_tools() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    runtime = RoleScopedRuntime()
+    registry = ToolRegistry()
+    registry.register_runtime("example.scoped", runtime)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    router = registry.to_tool_router(context)
+    master_step = build_agent_step_context(context, call_index=1)
+
+    assert router.model_visible_specs(master_step) == ()
+    hidden = router.dispatch(
+        master_step,
+        ToolInvocation(
+            call_id="call_hidden",
+            tool_name="example.scoped",
+            arguments={},
+        ),
+    )
+
+    assert hidden.ok is False
+    assert hidden.status == "tool_not_visible"
+    assert runtime.dispatched is False
+
+    context.actor_kind = "teammate"
+    context.actor_role = "researcher"
+    researcher_step = build_agent_step_context(context, call_index=2)
+    assert [spec.tool_name for spec in router.model_visible_specs(researcher_step)] == [
+        "example.scoped"
+    ]
+    visible = router.dispatch(
+        researcher_step,
+        ToolInvocation(
+            call_id="call_visible",
+            tool_name="example.scoped",
+            arguments={},
+        ),
+    )
+    assert visible.ok is True
+    assert runtime.dispatched is True
+
+
+def test_tool_router_validates_required_and_enum_schema_before_dispatch() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    dispatched: list[dict[str, object]] = []
+
+    def handler(_context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
+        dispatched.append(invocation.arguments)
+        return "ok"
+
+    registry.register("example.validate", handler)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    descriptor = ToolDescriptor(
+        tool_name="example.validate",
+        description="Validate arguments.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "mode": {"type": "string", "enum": ["fast", "careful"]},
+            },
+            "required": ["name", "mode"],
+            "additionalProperties": False,
+        },
+    )
+    router = registry.to_tool_router(context, descriptors=(descriptor,))
+    step_context = build_agent_step_context(context, call_index=1)
+
+    missing = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_missing",
+            tool_name="example.validate",
+            arguments={"mode": "fast"},
+        ),
+    )
+    invalid_enum = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_enum",
+            tool_name="example.validate",
+            arguments={"name": "x", "mode": "slow"},
+        ),
+    )
+    valid = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_valid",
+            tool_name="example.validate",
+            arguments={"name": "x", "mode": "fast"},
+        ),
+    )
+
+    assert missing.status == "invalid_tool_arguments"
+    assert missing.details == {"missing": ["name"]}
+    assert invalid_enum.status == "invalid_tool_arguments"
+    assert invalid_enum.details == {
+        "field": "mode",
+        "value": "slow",
+        "allowed": ["fast", "careful"],
+    }
+    assert valid.ok is True
+    assert dispatched == [{"name": "x", "mode": "fast"}]
+
+
 def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in builtin_tool_descriptors()}
     assert {
@@ -2949,7 +3141,216 @@ def test_llm_conversation_driver_backfills_delegate_role_from_created_task_kind(
     assert step.tool_invocations[1].arguments["agent_role"] == "reporter"
 
 
-def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_task_id() -> (
+def test_master_driver_routes_missing_delegate_task_id_to_router_validation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_delegate",
+                            "name": "task.delegate",
+                            "args": {"agent_role": "researcher"},
+                        },
+                    ],
+                },
+                {"content": "handled invalid delegate", "tool_calls": []},
+            ]
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="start research"),
+        driver=driver,
+    )
+
+    assert result.outputs == ("handled invalid delegate",)
+    assert result.tool_results[0].status == "invalid_tool_arguments"
+    assert "without task_id" in result.tool_results[0].content
+
+
+def test_master_driver_routes_missing_delegate_role_to_router_validation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_delegate",
+                            "name": "task.delegate",
+                            "args": {"task_id": "task_001"},
+                        },
+                    ],
+                },
+                {"content": "handled invalid delegate", "tool_calls": []},
+            ]
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="delegate task"),
+        driver=driver,
+    )
+
+    assert result.outputs == ("handled invalid delegate",)
+    assert result.tool_results[0].status == "invalid_tool_arguments"
+    assert "without agent_role" in result.tool_results[0].content
+
+
+def test_master_driver_routes_invalid_delegate_role_to_router_validation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_delegate",
+                            "name": "task.delegate",
+                            "args": {"task_id": "task_001", "agent_role": "worker"},
+                        },
+                    ],
+                },
+                {"content": "handled invalid delegate", "tool_calls": []},
+            ]
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="delegate task"),
+        driver=driver,
+    )
+
+    assert result.outputs == ("handled invalid delegate",)
+    assert result.tool_results[0].status == "invalid_tool_arguments"
+    assert "invalid agent_role" in result.tool_results[0].content
+
+
+def test_master_driver_does_not_prevalidate_unknown_tool_availability() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_unknown",
+                            "name": "unknown.tool",
+                            "args": {},
+                        },
+                    ],
+                },
+                {"content": "handled unknown tool", "tool_calls": []},
+            ]
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="use unknown tool"),
+        driver=driver,
+    )
+
+    assert result.outputs == ("handled unknown tool",)
+    assert result.tool_results[0].status == "unknown_tool"
+
+
+def test_teammate_driver_uses_router_schema_validation() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = TeammateConversationDriver(
+        model_factory=FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_update",
+                            "name": "task.update",
+                            "args": {"status": "completed"},
+                        },
+                    ],
+                },
+                {"content": "handled invalid teammate tool", "tool_calls": []},
+            ]
+        ),
+        role="researcher",
+        agent_id="agent:researcher",
+        correlation_id="corr_validation",
+        task_id="task_001",
+        instructions="Complete the assigned task.",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender="agent:researcher",
+            sender_kind=InboxParticipantKind.AGENT,
+            persist_conversation=False,
+        ),
+        driver=driver,
+    )
+
+    assert result.outputs == ("handled invalid teammate tool",)
+    assert result.tool_results[0].status == "invalid_tool_arguments"
+    assert result.tool_results[0].details == {"missing": ["task_id"]}
+
+
+def test_tool_events_include_step_and_governance_metadata() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    driver = LlmConversationDriver(
+        FakeModelFactory(
+            [
+                {
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_list", "name": "task.list", "args": {}},
+                    ],
+                },
+                {"content": "listed tasks", "tool_calls": []},
+            ]
+        )
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="list tasks"),
+        driver=driver,
+    )
+
+    invoked = next(event for event in result.events if event.event_type == "tool.invoked")
+    completed = next(
+        event for event in result.events if event.event_type == "tool.completed"
+    )
+    assert invoked.payload["step_id"].startswith("agentstep_")
+    assert invoked.payload["tool_catalog_digest"].startswith("sha256:")
+    assert invoked.payload["restore_context_digest"].startswith("sha256:")
+    assert invoked.payload["side_effect"] == "write"
+    assert invoked.payload["supports_parallel"] is False
+    assert completed.payload["step_id"] == invoked.payload["step_id"]
+    assert completed.payload["side_effect"] == "write"
+    assert completed.payload["supports_parallel"] is False
+    assert completed.payload["ok"] is True
+    assert completed.payload["status"] == "ok"
+    assert completed.payload["error_code"] is None
+
+
+def test_llm_conversation_driver_returns_tool_invocation_for_missing_delegate_task_id() -> (
     None
 ):
     repositories = _build_repositories()
@@ -2985,81 +3386,7 @@ def test_llm_conversation_driver_returns_friendly_message_when_delegate_lacks_ta
         (),
     )
 
-    assert step.tool_invocations == ()
-    assert "without task_id" in str(step.assistant_message)
-
-
-def test_llm_conversation_driver_rejects_delegate_without_agent_role() -> None:
-    repositories = _build_repositories()
-    session = _seed_session(repositories)
-    context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=MemoryEventBus(),
-        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
-        tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(),
-        active_skill_keys=(),
-        skill_registry=SkillRegistry(),
-    )
-    context.refresh_restore_context()
-    driver = LlmConversationDriver(
-        FakeModelFactory(
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_delegate",
-                        "name": "task.delegate",
-                        "args": {"task_id": "task_001"},
-                    },
-                ],
-            }
-        )
-    )
-
-    step = driver.plan(
-        context,
-        HarnessInput(session_id=session.session_id, message="delegate task"),
-        (),
-    )
-
-    assert step.tool_invocations == ()
-    assert "without agent_role" in str(step.assistant_message)
-
-
-def test_llm_conversation_driver_rejects_unknown_delegate_role() -> None:
-    repositories = _build_repositories()
-    session = _seed_session(repositories)
-    context = SessionRuntimeContext(
-        repositories=repositories,
-        event_sink=MemoryEventBus(),
-        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
-        tool_registry=ToolRegistry(),
-        restore_focus=RestoreFocus(),
-        active_skill_keys=(),
-        skill_registry=SkillRegistry(),
-    )
-    context.refresh_restore_context()
-    driver = LlmConversationDriver(
-        FakeModelFactory(
-            {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_delegate",
-                        "name": "task.delegate",
-                        "args": {"task_id": "task_001", "agent_role": "worker"},
-                    },
-                ],
-            }
-        )
-    )
-
-    step = driver.plan(
-        context,
-        HarnessInput(session_id=session.session_id, message="delegate task"),
-        (),
-    )
-
-    assert step.tool_invocations == ()
-    assert "invalid agent_role" in str(step.assistant_message)
+    assert step.assistant_message is None
+    assert len(step.tool_invocations) == 1
+    assert step.tool_invocations[0].tool_name == "task.delegate"
+    assert step.tool_invocations[0].arguments == {"agent_role": "researcher"}

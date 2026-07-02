@@ -193,6 +193,16 @@ digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算�
 
 模型可见 tool spec 与 dispatch runtime 必须来自同一个 typed tool router。legacy `registry.register(name, handler)` 可以继续存在，但进入模型调用前要被包装为 `ToolRuntime`：同一个 runtime 对象负责生成 `ToolSpec` 并执行 `dispatch(step_context, invocation, runtime_context)`。这保证 provider-visible catalog、trace metadata 和真实 tool execution 不会走三套不一致路径。
 
+`ToolRuntime` 同时承载最小治理 contract：
+
+- `governance(step_context)` 返回 `role_scope`、`supports_parallel`、`side_effect`、`approval_required` 与 `result_budget_policy`
+- `validate(step_context, invocation)` 在 handler 执行前返回结构化 validation error 或 `None`
+- legacy function handler 默认采用保守治理：`supports_parallel=false`、`side_effect=write`、`approval_required=false`、`role_scope=[]`
+
+`ToolRouter` 是当前 step 的最终 tool boundary。它负责根据 runtime visibility 与 governance role scope 生成模型可见 catalog，也负责 dispatch 前的 `unknown_tool`、`tool_not_visible`、schema `required` 与 `enum` 校验。master 与 teammate driver 不应各自维护独立 descriptor map 作为最终可用性判断；它们只能做同-turn 参数补全这类产品语义辅助，然后把 tool invocation 交回 router validation。
+
+`supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
+
 master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。`artifact.list` 必须分页返回 catalog；`artifact.get` 必须支持对 large output 和 `tool_result_full` 的 `path` / `offset` / `limit` 分页读取。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
 
 ## 7. Failure And Recovery Defaults
