@@ -6,10 +6,11 @@ from typing import Any
 from typing import Protocol
 from uuid import uuid4
 
-from openzyme_core import EngineDescriptor
-from openzyme_core import ToolInvocation
-from openzyme_core import ToolRegistry
-from openzyme_core import ToolResult
+from openzyme_runtime import EngineDescriptor
+from openzyme_runtime import EngineDocumentRecord
+from openzyme_runtime import ToolInvocation
+from openzyme_runtime import ToolRegistryProtocol
+from openzyme_runtime import ToolResult
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import ArtifactKind
@@ -328,7 +329,7 @@ class DeepResearchEngine:
             capability_key="deep_research",
         )
 
-    def register_tools(self, registry: ToolRegistry) -> None:
+    def register_tools(self, registry: ToolRegistryProtocol) -> None:
         register_deep_research_tools(registry, self)
 
     def start_research(
@@ -838,8 +839,6 @@ class DeepResearchEngine:
         created_at: str,
         updated_at: str,
     ) -> Any:
-        from openzyme_core import EngineDocumentRecord
-
         return EngineDocumentRecord(
             document_id=document_id,
             session_id=session_id,
@@ -878,7 +877,7 @@ class DeepResearchEngine:
             self.event_emitter(event_type, payload)
 
 
-def register_deep_research_tools(registry: ToolRegistry, engine: DeepResearchEngine) -> None:
+def register_deep_research_tools(registry: ToolRegistryProtocol, engine: DeepResearchEngine) -> None:
     def start_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
         result = engine.start_research(
             session_id=context.snapshot.session.session_id,

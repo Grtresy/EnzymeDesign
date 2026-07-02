@@ -19,15 +19,16 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from uuid import uuid4
 
-from openzyme_core import ArtifactBoundaryError
-from openzyme_core import ArtifactBoundaryService
-from openzyme_core import EngineDescriptor
-from openzyme_core import ToolInvocation
-from openzyme_core import ToolRegistry
-from openzyme_core import ToolResult
-from openzyme_core.artifact_projection import project_artifact_for_agent
-from openzyme_core.artifact_projection import sanitize_private_artifact_fields
-from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
+from openzyme_runtime import ArtifactBoundaryError
+from openzyme_runtime import ArtifactBoundaryService
+from openzyme_runtime import EngineDescriptor
+from openzyme_runtime import EngineDocumentRecord
+from openzyme_runtime import S12_ROUTE_POLICIES
+from openzyme_runtime import ToolInvocation
+from openzyme_runtime import ToolRegistryProtocol
+from openzyme_runtime import ToolResult
+from openzyme_runtime import project_artifact_for_agent
+from openzyme_runtime import sanitize_private_artifact_fields
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import AgentMember
@@ -46,8 +47,8 @@ from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain.control_plane import utc_now_iso
-from openzyme_tools import get_hpc_tool_contract
-from openzyme_tools.contracts import ToolExecutionContract
+from openzyme_tools import compile_hpc_tool_request
+from openzyme_tools import parse_execution_result
 
 
 def _new_document_id(prefix: str) -> str:
@@ -77,29 +78,6 @@ def _artifact_kind_from_path(path: str) -> ArtifactKind:
     if lowered.endswith((".md", ".pdf", ".html")):
         return ArtifactKind.REPORT
     return ArtifactKind.RESULT
-
-
-def _runner_relative_path(value: str) -> str:
-    normalized = value.strip()
-    if not normalized or normalized.startswith("/"):
-        raise ValueError(f"runner path must be relative: {value!r}")
-    parts = PurePosixPath(normalized).parts
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"runner path must not contain empty, '.', or '..' segments: {value!r}")
-    if any(char in normalized for char in (";", "&", "|", "`", "$", "\\", "\n", "\r")):
-        raise ValueError(f"runner path must not contain shell metacharacters: {value!r}")
-    return normalized
-
-
-def _number_arg(value: Any, default: float | int) -> str:
-    candidate = default if value is None else value
-    try:
-        number = float(candidate)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"numeric execution parameter must be a number: {candidate!r}") from exc
-    if number.is_integer():
-        return str(int(number))
-    return str(number)
 
 
 def _text_excerpt(path: str, *, limit: int = 2000) -> str | None:
@@ -174,118 +152,6 @@ def _hpc_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
         if inline_logs:
             details["logs"] = inline_logs
     return {key: value for key, value in details.items() if value is not None}
-
-
-def _render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[str, Any]) -> list[str]:
-    if contract.command_template_id == "fpocket_sif_v1":
-        return [
-            "bash",
-            "-lc",
-            (
-                'apptainer exec --cleanenv --pwd /out '
-                '--bind "$MCP_WORKDIR:/work" --bind "$MCP_OUTDIR:/out" '
-                '--bind "$MCP_TMPDIR:/tmp" ~/containers/fpocket.sif fpocket -f /work/target.pdb && '
-                'if [ -d "$MCP_WORKDIR/target_out" ]; then rm -rf "$MCP_OUTDIR/target_out" && '
-                'mv "$MCP_WORKDIR/target_out" "$MCP_OUTDIR/target_out"; fi'
-            ),
-        ]
-    if contract.command_template_id == "vina_sif_v1":
-        return [
-            "bash",
-            "-lc",
-            (
-                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
-                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" ~/containers/vina.sif vina '
-                "--receptor /work/receptor.pdbqt --ligand /work/ligand.pdbqt "
-                f"--center_x {_number_arg(tool_inputs.get('center_x'), 0)} "
-                f"--center_y {_number_arg(tool_inputs.get('center_y'), 0)} "
-                f"--center_z {_number_arg(tool_inputs.get('center_z'), 0)} "
-                f"--size_x {_number_arg(tool_inputs.get('size_x'), 10)} "
-                f"--size_y {_number_arg(tool_inputs.get('size_y'), 10)} "
-                f"--size_z {_number_arg(tool_inputs.get('size_z'), 10)} "
-                f"--exhaustiveness {_number_arg(tool_inputs.get('exhaustiveness'), 8)} "
-                f"--num_modes {_number_arg(tool_inputs.get('num_modes'), 9)} "
-                "--out /out/vina_out.pdbqt --log /out/vina.log"
-            ),
-        ]
-    if contract.command_template_id == "bio_tools_cdhit_sif_v1":
-        identity = _number_arg(tool_inputs.get("identity"), 0.9)
-        word_size = _number_arg(tool_inputs.get("word_size"), 5)
-        return [
-            "bash",
-            "-lc",
-            (
-                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/cdhit"; '
-                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
-                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${CDHIT_SIF:-$HOME/containers/cd-hit_4.8.1.sif}" cd-hit '
-                f"-i /work/input.fasta -o /out/bio_tools/cdhit/clustered.fasta -c {identity} -n {word_size} -d 0 -T 1 -M 256 "
-                '> "$MCP_OUTDIR/bio_tools/cdhit/cdhit.log"; '
-                "printf 'cluster_id,representative,member_count\\n' > \"$MCP_OUTDIR/bio_tools/cdhit/clusters.csv\"; "
-                "awk 'BEGIN{c=\"cluster_1\"} /^>/{c=\"cluster_\" substr($2,1)} /\\*/{gsub(/[>.]/,\"\",$3); print c \",\" $3 \",1\"}' "
-                '"$MCP_OUTDIR/bio_tools/cdhit/clustered.fasta.clstr" >> "$MCP_OUTDIR/bio_tools/cdhit/clusters.csv"'
-            ),
-        ]
-    if contract.command_template_id == "bio_tools_mafft_sif_v1":
-        return [
-            "bash",
-            "-lc",
-            (
-                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/mafft"; '
-                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
-                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${MAFFT_SIF:-$HOME/containers/mafft_7.525.sif}" mafft --auto /work/input.fasta '
-                '> "$MCP_OUTDIR/bio_tools/mafft/alignment.fasta"'
-            ),
-        ]
-    if contract.command_template_id == "bio_tools_hmmbuild_sif_v1":
-        return [
-            "bash",
-            "-lc",
-            (
-                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmbuild"; '
-                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
-                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
-                "/out/bio_tools/hmmbuild/model.hmm /work/alignment.fasta "
-                '> "$MCP_OUTDIR/bio_tools/hmmbuild/hmmbuild.summary.txt"'
-            ),
-        ]
-    if contract.command_template_id == "bio_tools_hmmalign_sif_v1":
-        return [
-            "bash",
-            "-lc",
-            (
-                'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmalign"; '
-                'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
-                '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmalign --amino --outformat afa '
-                "-o /out/bio_tools/hmmalign/aligned.fasta /work/model.hmm /work/input.fasta"
-            ),
-        ]
-    raise ValueError(f"unsupported command template {contract.command_template_id!r}")
-
-
-def _contract_payload(contract: ToolExecutionContract) -> dict[str, Any]:
-    return {
-        "adapter_id": contract.adapter_id,
-        "tool_id": contract.tool_id,
-        "command_template_id": contract.command_template_id,
-        "parser_hints": contract.parser_hints,
-        "preprocess_requirements": contract.preprocess_requirements,
-    }
-
-
-def _contract_outputs(contract: ToolExecutionContract) -> list[dict[str, Any]]:
-    return [
-        {
-            "path": _runner_relative_path(output.path),
-            "kind": output.kind,
-            "required": output.required,
-            "non_empty": output.non_empty,
-        }
-        for output in contract.expected_outputs
-    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2752,147 +2618,17 @@ class DefaultExecutionRequestCompiler:
         resolved_context_artifacts: tuple[SessionArtifactRecord, ...],
     ) -> dict[str, Any]:
         tool_inputs = {} if handoff.tool_inputs is None else dict(handoff.tool_inputs)
-        primary_input = None if not resolved_required_artifacts else resolved_required_artifacts[0]
-        subject_id = "artifact" if primary_input is None else primary_input.artifact_id
-        subject_label = "artifact" if primary_input is None else (
-            primary_input.title or primary_input.relative_path or primary_input.artifact_id
+        return compile_hpc_tool_request(
+            tool_id=handoff.catalog_tool_id,
+            tool_inputs=tool_inputs,
+            execution_mode=handoff.execution_mode,
+            execution_goal=handoff.execution_goal,
+            required_artifacts=resolved_required_artifacts,
+            context_artifacts=resolved_context_artifacts,
+            required_artifact_ids=handoff.required_artifact_ids,
+            context_artifact_ids=handoff.context_artifact_ids,
+            task_id=task.task_id,
         )
-        contract = get_hpc_tool_contract(handoff.catalog_tool_id)
-        metadata = {
-            "catalog_tool_id": handoff.catalog_tool_id,
-            "tool_inputs": tool_inputs,
-            "tool_contract": _contract_payload(contract),
-            "execution_goal": handoff.execution_goal,
-            "required_artifact_ids": list(handoff.required_artifact_ids),
-            "context_artifact_ids": list(handoff.context_artifact_ids),
-            "resolved_artifacts": [artifact.to_dict() for artifact in (*resolved_required_artifacts, *resolved_context_artifacts)],
-            "input_artifact_ids": [artifact.artifact_id for artifact in resolved_required_artifacts],
-            "preprocess_artifact_ids": [
-                artifact.artifact_id
-                for artifact in resolved_required_artifacts
-                if artifact.metadata and artifact.metadata.get("source") == "preprocess"
-            ],
-            "task_id": task.task_id,
-        }
-        if handoff.catalog_tool_id == "fpocket":
-            structure = _find_required_artifact(
-                resolved_required_artifacts,
-                explicit_id=tool_inputs.get("structure_artifact_id"),
-                default_index=0,
-                slot_name="fpocket structure",
-            )
-            return {
-                "tool_name": "exec.run",
-                "runspec": {
-                    "name": f"execution-{structure.artifact_id}",
-                    "stage": "execution",
-                    "command": _render_contract_command(contract, tool_inputs),
-                    "execution_mode": handoff.execution_mode,
-                    "resources": dict(contract.resources),
-                    "inputs": [
-                        {
-                            "artifact_id": structure.artifact_id,
-                            "local_path": structure.storage_uri,
-                            "remote_path": _runner_relative_path(contract.input_slots[0].remote_path),
-                            "required": True,
-                            "stage_to": "work",
-                        }
-                    ],
-                    "expected_outputs": _contract_outputs(contract),
-                    "success_checks": [dict(item) for item in contract.success_checks],
-                    "failure_signatures": [dict(item) for item in contract.failure_signatures],
-                    "metadata": metadata,
-                },
-            }
-        if handoff.catalog_tool_id == "vina":
-            receptor = _find_required_artifact(
-                resolved_required_artifacts,
-                explicit_id=tool_inputs.get("receptor_artifact_id"),
-                default_index=0,
-                slot_name="vina receptor",
-            )
-            ligand = _find_required_artifact(
-                resolved_required_artifacts,
-                explicit_id=tool_inputs.get("ligand_artifact_id"),
-                default_index=1,
-                slot_name="vina ligand",
-            )
-            return {
-                "tool_name": "exec.run",
-                "runspec": {
-                    "name": f"execution-{subject_id}",
-                    "stage": "execution",
-                    "command": _render_contract_command(contract, tool_inputs),
-                    "execution_mode": handoff.execution_mode,
-                    "resources": dict(contract.resources),
-                    "inputs": [
-                        {
-                            "artifact_id": receptor.artifact_id,
-                            "local_path": receptor.storage_uri,
-                            "remote_path": _runner_relative_path(contract.input_slots[0].remote_path),
-                            "required": True,
-                            "stage_to": "work",
-                        },
-                        {
-                            "artifact_id": ligand.artifact_id,
-                            "local_path": ligand.storage_uri,
-                            "remote_path": _runner_relative_path(contract.input_slots[1].remote_path),
-                            "required": True,
-                            "stage_to": "work",
-                        },
-                    ],
-                    "expected_outputs": _contract_outputs(contract),
-                    "success_checks": [dict(item) for item in contract.success_checks],
-                    "failure_signatures": [dict(item) for item in contract.failure_signatures],
-                    "metadata": metadata,
-                },
-            }
-        if handoff.catalog_tool_id.startswith("bio_tools."):
-            inputs: list[dict[str, Any]] = []
-            input_artifact_ids: list[str] = []
-            for index, slot in enumerate(contract.input_slots):
-                artifact = _find_required_artifact(
-                    resolved_required_artifacts,
-                    explicit_id=tool_inputs.get(f"{slot.slot_id}_artifact_id"),
-                    default_index=index,
-                    slot_name=f"{handoff.catalog_tool_id} {slot.slot_id}",
-                )
-                input_artifact_ids.append(artifact.artifact_id)
-                inputs.append(
-                    {
-                        "artifact_id": artifact.artifact_id,
-                        "local_path": artifact.storage_uri,
-                        "remote_path": _runner_relative_path(slot.remote_path),
-                        "required": slot.required,
-                        "stage_to": "work",
-                    }
-                )
-            metadata["input_artifact_ids"] = input_artifact_ids
-            return {
-                "tool_name": "exec.run",
-                "runspec": {
-                    "name": f"execution-{handoff.catalog_tool_id.removeprefix('bio_tools.')}-{subject_id}",
-                    "stage": "execution",
-                    "command": _render_contract_command(contract, tool_inputs),
-                    "execution_mode": handoff.execution_mode,
-                    "resources": dict(contract.resources),
-                    "inputs": inputs,
-                    "expected_outputs": _contract_outputs(contract),
-                    "success_checks": [dict(item) for item in contract.success_checks],
-                    "failure_signatures": [dict(item) for item in contract.failure_signatures],
-                    "metadata": metadata,
-                },
-            }
-        return {
-            "tool_name": "exec.run",
-            "runspec": {
-                "name": f"execution-{subject_id}",
-                "stage": "execution",
-                "command": ["echo", subject_label],
-                "execution_mode": handoff.execution_mode,
-                "metadata": metadata,
-            },
-        }
 
 
 @dataclass(slots=True)
@@ -2904,36 +2640,15 @@ class DefaultExecutionResultParser:
         outcome: ExecutionOutcome,
         artifact_refs: tuple[SessionArtifactRecord, ...],
     ) -> ExecutionParsedResult:
-        if handoff.catalog_tool_id == "fpocket":
-            pockets_found = int(outcome.raw_result.get("pockets_found") or 1)
-            return ExecutionParsedResult(
-                result_summary=f"fpocket found {pockets_found} pocket(s) for the selected artifact set.",
-                structured_findings={
-                    "design_signal": "proceed" if pockets_found > 0 else "revise",
-                    "pockets_found": pockets_found,
-                    "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
-                },
-            )
-        if handoff.catalog_tool_id == "vina":
-            affinity_value = outcome.raw_result.get("best_affinity")
-            try:
-                affinity = float(affinity_value)
-            except (TypeError, ValueError):
-                affinity = -5.5
-            return ExecutionParsedResult(
-                result_summary=f"vina completed with best affinity {affinity:.2f} kcal/mol.",
-                structured_findings={
-                    "design_signal": "proceed" if affinity <= -6.0 else "revise",
-                    "best_affinity": affinity,
-                    "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
-                },
-            )
+        parsed = parse_execution_result(
+            tool_id=handoff.catalog_tool_id,
+            raw_result=outcome.raw_result,
+            tool_inputs={} if handoff.tool_inputs is None else dict(handoff.tool_inputs),
+            artifact_refs=artifact_refs,
+        )
         return ExecutionParsedResult(
-            result_summary=f"{handoff.catalog_tool_id} execution completed.",
-            structured_findings={
-                "design_signal": "proceed",
-                "artifacts": [project_artifact_for_agent(artifact) for artifact in artifact_refs],
-            },
+            result_summary=parsed.result_summary,
+            structured_findings=sanitize_private_artifact_fields(parsed.structured_findings),
         )
 
 
@@ -2971,7 +2686,7 @@ class ExecutionEngine:
             capability_key="execution",
         )
 
-    def register_tools(self, registry: ToolRegistry) -> None:
+    def register_tools(self, registry: ToolRegistryProtocol) -> None:
         register_execution_tools(registry, self)
 
     def execute_sandbox_adapter_operation(
@@ -7872,8 +7587,6 @@ class ExecutionEngine:
         created_at: str,
         updated_at: str,
     ) -> Any:
-        from openzyme_core import EngineDocumentRecord
-
         return EngineDocumentRecord(
             document_id=document_id,
             session_id=session_id,
@@ -8582,7 +8295,7 @@ class ExecutionEngine:
         )
 
 
-def register_execution_tools(registry: ToolRegistry, engine: ExecutionEngine) -> None:
+def register_execution_tools(registry: ToolRegistryProtocol, engine: ExecutionEngine) -> None:
     def start_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
         session_id = context.snapshot.session.session_id
         task_id = str(invocation.arguments["task_id"])

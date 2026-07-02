@@ -1,6 +1,6 @@
 """Bridge package for V3 capability engines."""
 
-from openzyme_core import EngineRegistry
+from openzyme_runtime import EngineRegistry
 
 from .deep_research import DeepResearchEngine
 from .deep_research import DeepResearchRunner

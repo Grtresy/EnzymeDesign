@@ -8,6 +8,7 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "langchain-openai>=1.0,<2.0",
   "langsmith>=0.3,<1.0",
+  "mcp-hpc-runner",
   "openzyme-core",
   "openzyme-domain",
   "openzyme-engines",

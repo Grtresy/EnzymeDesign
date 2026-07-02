@@ -2,6 +2,7 @@ from .adapter import ExecutionArtifactRef
 from .adapter import ExecutionOutcome
 from .adapter import ExecutionStatusSnapshot
 from .adapter import HpcRunnerExecutionAdapter
+from .adapter import HpcRunnerToolServer
 from .adapter import map_runner_status_to_run_status
 
 __all__ = [
@@ -9,5 +10,6 @@ __all__ = [
     "ExecutionOutcome",
     "ExecutionStatusSnapshot",
     "HpcRunnerExecutionAdapter",
+    "HpcRunnerToolServer",
     "map_runner_status_to_run_status",
 ]

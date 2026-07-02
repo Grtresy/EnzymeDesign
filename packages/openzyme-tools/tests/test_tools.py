@@ -309,6 +309,37 @@ Pocket 2 :
     assert result.structured_findings["top_pocket"]["volume"] == 1006.516
 
 
+def test_execution_registry_uses_fpocket_raw_result_fallback_when_artifact_missing() -> None:
+    registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
+
+    @dataclass
+    class Outcome:
+        raw_result: dict[str, object]
+
+    result = registry.parse_result(
+        tool_id="fpocket",
+        outcome=Outcome(raw_result={"pockets_found": 2}),
+        plan=ExecutionPlanDraft(
+            catalog_tool_id="fpocket",
+            rationale="inspect pockets",
+            tool_inputs={},
+            execution_mode="ssh",
+            expected_result_summary="Pocket ranking",
+        ),
+        artifact_refs=[
+            {
+                "artifact_id": "missing",
+                "storage_uri": "/tmp/does-not-exist/target_out",
+            }
+        ],
+    )
+
+    assert result.result_summary == "fpocket found 2 pocket(s) for the selected artifact set."
+    assert result.structured_findings["design_signal"] == "proceed"
+    assert result.structured_findings["parser_status"] == "raw_result_fallback"
+    assert result.structured_findings["pockets_found"] == 2
+
+
 def test_execution_registry_does_not_fabricate_results_when_artifact_missing() -> None:
     registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
 

@@ -227,8 +227,8 @@ Host supervisor 负责：
 - 执行 dry-run / plan，列出预计 artifact 读写、provider/local/HPC operations、资源与输出
 - 执行 SDK operation policy、approval gate、provider/tool quota、timeout、输出大小限制、declared output 校验和失败分类
 - 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
-- 把每个外部 backend/tool adapter 调用转换为 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
-- 调用 `apps/mcp-hpc-runner`，并把 fetched outputs 登记为 session artifacts
+- 把每个外部 backend/tool adapter 调用转换为 `packages/openzyme-tools` 的 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
+- 由 Host API composition root 实例化 `apps/mcp-hpc-runner` server 并注入 `packages/openzyme-execution` adapter；package adapter 只规范化 runner boundary 调用和输出，不直接依赖 app
 - 记录 `sandbox_workspace_id`、pipeline code digest、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按完整 operation digest 复用，digest 漂移必须重新审批或失败；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
 - Provider cache 只能作为 Host-private optimization；cache key/digest 可进入 provenance，但不能作为 live cutover passed 证据。AOX/HMM live cutover 必须生成 sealed evidence bundle。
 
@@ -275,6 +275,13 @@ tool-specific command 拼接分支。每次 runner-backed 调用都必须生成�
 `RunSpec`；旧 runner-backed `hpc.fpocket` / `hpc.vina` shorthand 只是迁移期实现债，
 不是稳定 executor-facing product namespace。稳定 public SDK 中 `hpc` 保留为
 placement / remote workspace / declarative stage-fetch namespace。
+
+第一阶段架构瘦身后，`packages/openzyme-tools` 是 fpocket、Vina 和 `bio_tools.*`
+execution contract、command rendering、compiler helper 与 result parser 的唯一实现位置。
+`packages/openzyme-engines` 的 execution engine 只编排 control-plane invocation、approval、
+artifact/run 持久化和 sandbox/provider/HPC supervisor 流程，不维护第二套 command
+template、parser 或 HPC catalog data。`openzyme-runtime.hpc_catalog` 仅作为旧 import
+兼容 shim，真实 catalog data 位于 `packages/openzyme-tools/src/openzyme_tools/data/hpc_catalog`。
 
 preprocess 是 pipeline 的受控本地能力：
 

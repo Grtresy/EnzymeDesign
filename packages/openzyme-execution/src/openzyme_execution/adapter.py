@@ -3,14 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
+from typing import Protocol
 
-from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_runtime.limits import LimiterRegistry
 from openzyme_runtime.seams import ExecutionAdapter
 
 _SUPPORTED_EXECUTION_TOOLS = frozenset({"exec.run"})
+
+
+class HpcRunnerToolServer(Protocol):
+    def call_tool(self, tool_name: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
 def _artifact_kind_from_uri(storage_uri: str) -> ArtifactKind:
@@ -80,12 +84,15 @@ class ExecutionStatusSnapshot:
 @dataclass(slots=True)
 class HpcRunnerExecutionAdapter(ExecutionAdapter):
     config_path: str | None = None
-    server: MCPHpcServer | None = None
+    server: HpcRunnerToolServer | None = None
     limiter_registry: LimiterRegistry | None = None
 
     def __post_init__(self) -> None:
         if self.server is None:
-            self.server = MCPHpcServer(self.config_path)
+            raise ValueError(
+                "HpcRunnerExecutionAdapter requires an injected runner server. "
+                "Instantiate mcp_hpc_runner.server.MCPHpcServer in the Host API composition root."
+            )
 
     def submit_execution(self, session_id: str, payload: dict[str, Any]) -> ExecutionOutcome:
         requested_tool_name = str(payload.get("tool_name", "exec.run"))

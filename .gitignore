@@ -26,6 +26,9 @@ playgrounds/runs/*
 __pycache__/
 
 data/
+!packages/openzyme-tools/src/openzyme_tools/data/
+!packages/openzyme-tools/src/openzyme_tools/data/hpc_catalog/
+!packages/openzyme-tools/src/openzyme_tools/data/hpc_catalog/**
 !playgrounds/host-agent-llm-sidecar/data/
 !playgrounds/host-agent-llm-sidecar/data/inputs/
 !playgrounds/host-agent-llm-sidecar/data/inputs/receptor.pdb

@@ -1,30 +1,47 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from collections.abc import Sequence
 from typing import Any
 
 from openzyme_runtime import ExecutionPlanDraft
 
 from .catalog import RepoBackedHpcCatalogProvider
-from .contracts import ToolExecutionContract
+from .command_templates import contract_outputs
+from .command_templates import contract_payload
+from .command_templates import render_contract_command
+from .command_templates import validate_runner_relative_path
 from .contracts import get_hpc_tool_contract
 from .models import ParsedExecutionResult
 from .parsers import parse_fpocket_artifacts
 from .parsers import parse_vina_artifacts
 
 
-def _artifact_id(artifact: dict[str, Any]) -> str:
-    return str(artifact.get("artifact_id") or "")
+def _artifact_payload(artifact: Any) -> dict[str, Any]:
+    if isinstance(artifact, dict):
+        return dict(artifact)
+    if hasattr(artifact, "to_dict"):
+        return dict(artifact.to_dict())
+    return {
+        "artifact_id": getattr(artifact, "artifact_id", None),
+        "storage_uri": getattr(artifact, "storage_uri", None),
+        "title": getattr(artifact, "title", None),
+        "relative_path": getattr(artifact, "relative_path", None),
+        "metadata": getattr(artifact, "metadata", None),
+    }
+
+
+def _artifact_id(artifact: Any) -> str:
+    return str(_artifact_payload(artifact).get("artifact_id") or "")
 
 
 def _select_artifact(
     *,
     slot_name: str,
     explicit_id: Any,
-    required_artifacts: list[dict[str, Any]],
+    required_artifacts: Sequence[Any],
     default_index: int,
-) -> dict[str, Any]:
+) -> Any:
     if explicit_id is not None:
         requested = str(explicit_id)
         for artifact in required_artifacts:
@@ -36,89 +53,171 @@ def _select_artifact(
     raise ValueError(f"{slot_name} requires an artifact id or required_artifact_ids[{default_index}]")
 
 
-def _local_path(artifact: dict[str, Any], slot_name: str) -> str:
-    storage_uri = str(artifact.get("storage_uri") or "")
+def _local_path(artifact: Any, slot_name: str) -> str:
+    storage_uri = str(_artifact_payload(artifact).get("storage_uri") or "")
     if not storage_uri:
         raise ValueError(f"{slot_name} artifact {_artifact_id(artifact)!r} has no storage_uri")
     return storage_uri
 
 
-def _validate_runner_relative_path(path: str) -> str:
-    normalized = path.strip()
-    if not normalized or normalized.startswith("/"):
-        raise ValueError(f"runner path must be relative under work/out: {path!r}")
-    parts = PurePosixPath(normalized).parts
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"runner path must not contain empty, '.', or '..' segments: {path!r}")
-    if any(char in normalized for char in (";", "&", "|", "`", "$", "\\", "\n", "\r")):
-        raise ValueError(f"runner path must not contain shell metacharacters: {path!r}")
-    return normalized
+def _resolved_artifact_payloads(artifacts: Sequence[Any]) -> list[dict[str, Any]]:
+    return [_artifact_payload(artifact) for artifact in artifacts]
 
 
-def _shell_number(value: Any, default: float | int) -> str:
-    candidate = default if value is None else value
-    try:
-        number = float(candidate)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Vina numeric parameter must be a number: {candidate!r}") from exc
-    if number.is_integer():
-        return str(int(number))
-    return str(number)
+def _compile_inputs_for_contract(
+    *,
+    tool_id: str,
+    tool_inputs: dict[str, Any],
+    required_artifacts: Sequence[Any],
+) -> tuple[list[dict[str, Any]], list[str], Any]:
+    contract = get_hpc_tool_contract(tool_id)
+    inputs: list[dict[str, Any]] = []
+    input_artifact_ids: list[str] = []
+    first_artifact: Any | None = None
+    for index, slot in enumerate(contract.input_slots):
+        artifact = _select_artifact(
+            slot_name=f"{tool_id} {slot.slot_id}",
+            explicit_id=tool_inputs.get(f"{slot.slot_id}_artifact_id"),
+            required_artifacts=required_artifacts,
+            default_index=index,
+        )
+        first_artifact = artifact if first_artifact is None else first_artifact
+        input_artifact_ids.append(_artifact_id(artifact))
+        inputs.append(
+            {
+                "artifact_id": _artifact_id(artifact),
+                "local_path": _local_path(artifact, f"{tool_id} {slot.slot_id}"),
+                "remote_path": validate_runner_relative_path(slot.remote_path),
+                "required": slot.required,
+                "stage_to": "work",
+            }
+        )
+    if first_artifact is None:
+        raise ValueError(f"{tool_id} requires at least one input artifact.")
+    return inputs, input_artifact_ids, first_artifact
 
 
-def _fpocket_command() -> list[str]:
-    return [
-        "bash",
-        "-lc",
-        (
-            'apptainer exec --cleanenv '
-            '--pwd /out '
-            '--bind "$MCP_WORKDIR:/work" '
-            '--bind "$MCP_OUTDIR:/out" '
-            '--bind "$MCP_TMPDIR:/tmp" '
-            "~/containers/fpocket.sif fpocket -f /work/target.pdb && "
-            'if [ -d "$MCP_WORKDIR/target_out" ]; then '
-            'rm -rf "$MCP_OUTDIR/target_out" && '
-            'mv "$MCP_WORKDIR/target_out" "$MCP_OUTDIR/target_out"; '
-            "fi"
-        ),
+def compile_hpc_tool_request(
+    *,
+    tool_id: str,
+    tool_inputs: dict[str, Any],
+    execution_mode: str,
+    execution_goal: Any,
+    required_artifacts: Sequence[Any],
+    context_artifacts: Sequence[Any],
+    required_artifact_ids: Sequence[str],
+    context_artifact_ids: Sequence[str],
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    contract = get_hpc_tool_contract(tool_id)
+    inputs, input_artifact_ids, subject_artifact = _compile_inputs_for_contract(
+        tool_id=tool_id,
+        tool_inputs=tool_inputs,
+        required_artifacts=required_artifacts,
+    )
+    metadata: dict[str, Any] = {
+        "catalog_tool_id": tool_id,
+        "tool_inputs": dict(tool_inputs),
+        "tool_contract": contract_payload(contract),
+        "execution_goal": execution_goal,
+        "required_artifact_ids": list(required_artifact_ids),
+        "context_artifact_ids": list(context_artifact_ids),
+        "resolved_artifacts": _resolved_artifact_payloads((*required_artifacts, *context_artifacts)),
+        "input_artifact_ids": input_artifact_ids,
+    }
+    if task_id is not None:
+        metadata["task_id"] = task_id
+    preprocess_artifact_ids = [
+        _artifact_id(artifact)
+        for artifact in required_artifacts
+        if isinstance(_artifact_payload(artifact).get("metadata"), dict)
+        and _artifact_payload(artifact)["metadata"].get("source") == "preprocess"
     ]
+    if preprocess_artifact_ids:
+        metadata["preprocess_artifact_ids"] = preprocess_artifact_ids
+    subject_id = _artifact_id(subject_artifact) or "artifact"
+    if tool_id.startswith("bio_tools."):
+        run_name = f"execution-{tool_id.removeprefix('bio_tools.')}-{subject_id}"
+    else:
+        run_name = f"execution-{subject_id}"
+    return {
+        "tool_name": "exec.run",
+        "runspec": {
+            "name": run_name,
+            "stage": "execution",
+            "command": render_contract_command(contract, tool_inputs),
+            "execution_mode": execution_mode,
+            "resources": dict(contract.resources),
+            "inputs": inputs,
+            "expected_outputs": contract_outputs(contract),
+            "success_checks": [dict(item) for item in contract.success_checks],
+            "failure_signatures": [dict(item) for item in contract.failure_signatures],
+            "metadata": metadata,
+        },
+    }
 
 
-def _render_command(contract: ToolExecutionContract, tool_inputs: dict[str, Any]) -> list[str]:
-    if contract.command_template_id == "fpocket_sif_v1":
-        return _fpocket_command()
-    if contract.command_template_id == "vina_sif_v1":
-        return _vina_command(tool_inputs)
-    raise ValueError(f"unsupported command template {contract.command_template_id!r}")
-
-
-def _vina_command(tool_inputs: dict[str, Any]) -> list[str]:
-    center_x = _shell_number(tool_inputs.get("center_x"), 0)
-    center_y = _shell_number(tool_inputs.get("center_y"), 0)
-    center_z = _shell_number(tool_inputs.get("center_z"), 0)
-    size_x = _shell_number(tool_inputs.get("size_x"), 10)
-    size_y = _shell_number(tool_inputs.get("size_y"), 10)
-    size_z = _shell_number(tool_inputs.get("size_z"), 10)
-    exhaustiveness = _shell_number(tool_inputs.get("exhaustiveness"), 8)
-    num_modes = _shell_number(tool_inputs.get("num_modes"), 9)
-    return [
-        "bash",
-        "-lc",
-        (
-            'apptainer exec --cleanenv '
-            '--bind "$MCP_WORKDIR:/work" '
-            '--bind "$MCP_OUTDIR:/out" '
-            '--bind "$MCP_TMPDIR:/tmp" '
-            "~/containers/vina.sif vina "
-            "--receptor /work/receptor.pdbqt "
-            "--ligand /work/ligand.pdbqt "
-            f"--center_x {center_x} --center_y {center_y} --center_z {center_z} "
-            f"--size_x {size_x} --size_y {size_y} --size_z {size_z} "
-            f"--exhaustiveness {exhaustiveness} --num_modes {num_modes} "
-            "--out /out/vina_out.pdbqt --log /out/vina.log"
-        ),
-    ]
+def parse_execution_result(
+    *,
+    tool_id: str,
+    raw_result: dict[str, Any],
+    tool_inputs: dict[str, Any],
+    artifact_refs: Sequence[Any],
+) -> ParsedExecutionResult:
+    artifact_payloads = [_artifact_payload(artifact) for artifact in artifact_refs]
+    if tool_id == "fpocket":
+        parsed = parse_fpocket_artifacts(artifact_payloads)
+        fallback_pockets = raw_result.get("pockets_found")
+        try:
+            pockets_found = int(parsed.findings.get("pockets_found") or fallback_pockets or 0)
+        except (TypeError, ValueError):
+            pockets_found = 0
+        used_raw_result_fallback = parsed.parser_status != "parsed" and pockets_found > 0
+        result_summary = parsed.summary
+        if used_raw_result_fallback:
+            result_summary = f"fpocket found {pockets_found} pocket(s) for the selected artifact set."
+        return ParsedExecutionResult(
+            result_summary=result_summary
+            or (
+                f"fpocket found {pockets_found} pocket(s) for the selected artifact set."
+                if pockets_found
+                else "fpocket completed, but no structured pocket summary was parsed."
+            ),
+            structured_findings={
+                "design_signal": "proceed" if pockets_found > 0 else "revise",
+                "confidence": "medium" if parsed.parser_status == "parsed" else "low",
+                "parser_status": (
+                    "raw_result_fallback" if used_raw_result_fallback else parsed.parser_status
+                ),
+                "artifacts": artifact_payloads,
+                **parsed.findings,
+                "pockets_found": pockets_found,
+            },
+        )
+    if tool_id == "vina":
+        parsed = parse_vina_artifacts(artifact_payloads)
+        affinity_value = parsed.findings.get("best_affinity")
+        has_affinity = isinstance(affinity_value, int | float)
+        structured_findings = {
+            "design_signal": "proceed" if has_affinity and float(affinity_value) <= -6.0 else "revise",
+            "confidence": "medium" if parsed.parser_status == "parsed" else "low",
+            "parser_status": parsed.parser_status,
+            "artifacts": artifact_payloads,
+            **parsed.findings,
+        }
+        return ParsedExecutionResult(
+            result_summary=parsed.summary
+            or "vina completed, but no structured docking score was parsed.",
+            structured_findings=structured_findings,
+        )
+    return ParsedExecutionResult(
+        result_summary=f"{tool_id} execution completed.",
+        structured_findings={
+            "design_signal": "proceed",
+            "artifacts": artifact_payloads,
+            "tool_inputs": dict(tool_inputs),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +237,6 @@ class DefaultHpcExecutionRegistry:
             raise ValueError(f"Unknown HPC catalog tool: {tool_id}")
         if str(entry.get("execution_support")) != "runnable":
             raise ValueError(f"HPC catalog tool {tool_id} is discovery-only in V1.")
-        contract = get_hpc_tool_contract(tool_id)
         session_id = str(handoff.get("session_id") or "")
         required_artifacts = host_toolbox.resolve_artifacts(
             session_id,
@@ -148,124 +246,16 @@ class DefaultHpcExecutionRegistry:
             session_id,
             list(handoff.get("context_artifact_ids") or []),
         )
-        if tool_id == "fpocket":
-            primary_input = _select_artifact(
-                slot_name="fpocket structure",
-                explicit_id=plan.tool_inputs.get("structure_artifact_id"),
-                required_artifacts=required_artifacts,
-                default_index=0,
-            )
-            request = host_toolbox.build_execution_request(
-                execution_subject_id=str(primary_input.get("artifact_id") or "artifact"),
-                execution_subject_label=str(primary_input.get("title") or "artifact"),
-                execution_mode=plan.execution_mode,
-                command=_render_command(contract, dict(plan.tool_inputs)),
-                resources=contract.resources,
-                inputs=[
-                    {
-                        "artifact_id": _artifact_id(primary_input),
-                        "local_path": _local_path(primary_input, "fpocket structure"),
-                        "remote_path": _validate_runner_relative_path(contract.input_slots[0].remote_path),
-                        "required": True,
-                        "stage_to": "work",
-                    }
-                ],
-                expected_outputs=[
-                    {
-                        "path": _validate_runner_relative_path(output.path),
-                        "kind": output.kind,
-                        "required": output.required,
-                        "non_empty": output.non_empty,
-                    }
-                    for output in contract.expected_outputs
-                ],
-                success_checks=[dict(item) for item in contract.success_checks],
-                failure_signatures=[dict(item) for item in contract.failure_signatures],
-                metadata={
-                    "catalog_tool_id": tool_id,
-                    "tool_inputs": dict(plan.tool_inputs),
-                    "tool_contract": {
-                        "adapter_id": contract.adapter_id,
-                        "tool_id": contract.tool_id,
-                        "command_template_id": contract.command_template_id,
-                        "parser_hints": contract.parser_hints,
-                        "preprocess_requirements": contract.preprocess_requirements,
-                    },
-                    "execution_goal": handoff.get("execution_goal"),
-                    "required_artifact_ids": list(handoff.get("required_artifact_ids") or []),
-                    "context_artifact_ids": list(handoff.get("context_artifact_ids") or []),
-                    "resolved_artifacts": required_artifacts + context_artifacts,
-                    "input_artifact_ids": [_artifact_id(primary_input)],
-                },
-                tool_name="exec.run",
-            )
-            return request.model_dump()
-        if tool_id == "vina":
-            receptor = _select_artifact(
-                slot_name="vina receptor",
-                explicit_id=plan.tool_inputs.get("receptor_artifact_id"),
-                required_artifacts=required_artifacts,
-                default_index=0,
-            )
-            ligand = _select_artifact(
-                slot_name="vina ligand",
-                explicit_id=plan.tool_inputs.get("ligand_artifact_id"),
-                required_artifacts=required_artifacts,
-                default_index=1,
-            )
-            request = host_toolbox.build_execution_request(
-                execution_subject_id=str(receptor.get("artifact_id") or "artifact"),
-                execution_subject_label=str(receptor.get("title") or "artifact"),
-                execution_mode=plan.execution_mode,
-                command=_render_command(contract, dict(plan.tool_inputs)),
-                resources=contract.resources,
-                inputs=[
-                    {
-                        "artifact_id": _artifact_id(receptor),
-                        "local_path": _local_path(receptor, "vina receptor"),
-                        "remote_path": _validate_runner_relative_path(contract.input_slots[0].remote_path),
-                        "required": True,
-                        "stage_to": "work",
-                    },
-                    {
-                        "artifact_id": _artifact_id(ligand),
-                        "local_path": _local_path(ligand, "vina ligand"),
-                        "remote_path": _validate_runner_relative_path(contract.input_slots[1].remote_path),
-                        "required": True,
-                        "stage_to": "work",
-                    },
-                ],
-                expected_outputs=[
-                    {
-                        "path": _validate_runner_relative_path(output.path),
-                        "kind": output.kind,
-                        "required": output.required,
-                        "non_empty": output.non_empty,
-                    }
-                    for output in contract.expected_outputs
-                ],
-                success_checks=[dict(item) for item in contract.success_checks],
-                failure_signatures=[dict(item) for item in contract.failure_signatures],
-                metadata={
-                    "catalog_tool_id": tool_id,
-                    "tool_inputs": dict(plan.tool_inputs),
-                    "tool_contract": {
-                        "adapter_id": contract.adapter_id,
-                        "tool_id": contract.tool_id,
-                        "command_template_id": contract.command_template_id,
-                        "parser_hints": contract.parser_hints,
-                        "preprocess_requirements": contract.preprocess_requirements,
-                    },
-                    "execution_goal": handoff.get("execution_goal"),
-                    "required_artifact_ids": list(handoff.get("required_artifact_ids") or []),
-                    "context_artifact_ids": list(handoff.get("context_artifact_ids") or []),
-                    "resolved_artifacts": required_artifacts + context_artifacts,
-                    "input_artifact_ids": [_artifact_id(receptor), _artifact_id(ligand)],
-                },
-                tool_name="exec.run",
-            )
-            return request.model_dump()
-        raise ValueError(f"No execution compiler registered for {tool_id}.")
+        return compile_hpc_tool_request(
+            tool_id=tool_id,
+            tool_inputs=dict(plan.tool_inputs),
+            execution_mode=plan.execution_mode,
+            execution_goal=handoff.get("execution_goal"),
+            required_artifacts=required_artifacts,
+            context_artifacts=context_artifacts,
+            required_artifact_ids=[str(value) for value in list(handoff.get("required_artifact_ids") or [])],
+            context_artifact_ids=[str(value) for value in list(handoff.get("context_artifact_ids") or [])],
+        )
 
     def parse_result(
         self,
@@ -275,45 +265,16 @@ class DefaultHpcExecutionRegistry:
         plan: ExecutionPlanDraft,
         artifact_refs: list[dict[str, Any]],
     ) -> ParsedExecutionResult:
-        if tool_id == "fpocket":
-            parsed = parse_fpocket_artifacts(artifact_refs)
-            pockets_found = int(parsed.findings.get("pockets_found") or 0)
-            return ParsedExecutionResult(
-                result_summary=parsed.summary
-                or "fpocket completed, but no structured pocket summary was parsed.",
-                structured_findings={
-                    "design_signal": "proceed" if pockets_found > 0 else "revise",
-                    "confidence": "medium" if parsed.parser_status == "parsed" else "low",
-                    "parser_status": parsed.parser_status,
-                    "artifacts": artifact_refs,
-                    **parsed.findings,
-                },
-            )
-        if tool_id == "vina":
-            parsed = parse_vina_artifacts(artifact_refs)
-            affinity_value = parsed.findings.get("best_affinity")
-            has_affinity = isinstance(affinity_value, int | float)
-            return ParsedExecutionResult(
-                result_summary=parsed.summary
-                or "vina completed, but no structured docking score was parsed.",
-                structured_findings={
-                    "design_signal": "proceed"
-                    if has_affinity and float(affinity_value) <= -6.0
-                    else "revise",
-                    "confidence": "medium" if parsed.parser_status == "parsed" else "low",
-                    "parser_status": parsed.parser_status,
-                    "artifacts": artifact_refs,
-                    **parsed.findings,
-                },
-            )
-        return ParsedExecutionResult(
-            result_summary=f"{tool_id} execution completed.",
-            structured_findings={
-                "design_signal": "proceed",
-                "artifacts": artifact_refs,
-                "tool_inputs": dict(plan.tool_inputs),
-            },
+        return parse_execution_result(
+            tool_id=tool_id,
+            raw_result=dict(getattr(outcome, "raw_result", {}) or {}),
+            tool_inputs=dict(plan.tool_inputs),
+            artifact_refs=artifact_refs,
         )
 
 
-__all__ = ["DefaultHpcExecutionRegistry"]
+__all__ = [
+    "DefaultHpcExecutionRegistry",
+    "compile_hpc_tool_request",
+    "parse_execution_result",
+]

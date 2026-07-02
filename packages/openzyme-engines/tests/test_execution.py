@@ -2996,6 +2996,7 @@ def test_pipeline_bio_tools_hmmer_search_cli_is_disabled_in_s14() -> None:
 @pytest.mark.integration
 @pytest.mark.live_hpc
 def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
+    from mcp_hpc_runner.server import MCPHpcServer
     from openzyme_execution import HpcRunnerExecutionAdapter
     from openzyme_runtime import live_hpc_skip_reason
     from openzyme_runtime import load_current_settings
@@ -3084,7 +3085,10 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
     )
     engine = ExecutionEngine(
         repositories,
-        HpcRunnerExecutionAdapter(config_path=settings.execution.hpc_runner_config),
+        HpcRunnerExecutionAdapter(
+            config_path=settings.execution.hpc_runner_config,
+            server=MCPHpcServer(settings.execution.hpc_runner_config),
+        ),
         sandbox_runner=sandbox,
     )
 

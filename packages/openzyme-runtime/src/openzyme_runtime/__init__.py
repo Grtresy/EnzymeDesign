@@ -19,6 +19,14 @@ from .llm_debug import llm_debug_context
 from .llm_debug import serialize_llm_payload
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
+from .artifact_boundary import ArtifactBoundaryError
+from .artifact_boundary import ArtifactBoundaryService
+from .artifact_boundary import register_artifact_boundary_tools
+from .artifact_boundary import summarize_workspace_directory
+from .artifact_projection import PRIVATE_ARTIFACT_KEYS
+from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import project_artifacts_for_agent
+from .artifact_projection import sanitize_private_artifact_fields
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
 from .contracts import ConstraintSet
@@ -48,6 +56,10 @@ from .contracts import ResearchSupervisorAction
 from .contracts import ResearchTurnRecord
 from .contracts import ResearchUnitDraft
 from .contracts import ResearchUnitPlan
+from .engine_spi import CapabilityEngine
+from .engine_spi import EngineDescriptor
+from .engine_spi import EngineDocumentRecord
+from .engine_spi import EngineRegistry
 from .checkpointer import MissingLangGraphPostgresDependencyError
 from .checkpointer import PostgresCheckpointerConfig
 from .checkpointer import PostgresCheckpointerFactory
@@ -63,6 +75,7 @@ from .research_tools import WebFetchArgs
 from .research_tools import WebFetchTool
 from .research_tools import WebSearchArgs
 from .research_tools import WebSearchTool
+from .route_policies import S12_ROUTE_POLICIES
 from .seams import ExecutionAdapter
 from .seams import DesignTool
 from .seams import DesignToolContext
@@ -106,10 +119,17 @@ from .test_gates import live_llm_skip_reason
 from .test_gates import live_tavily_skip_reason
 from .test_gates import load_current_settings
 from .test_gates import quality_eval_skip_reason
+from .tooling import ToolHandler
+from .tooling import ToolInvocation
+from .tooling import ToolRegistryProtocol
+from .tooling import ToolResult
 
 __all__ = [
     "CanonicalResearchSnapshot",
     "ChatModelFactory",
+    "CapabilityEngine",
+    "ArtifactBoundaryError",
+    "ArtifactBoundaryService",
     "ConstraintItem",
     "ConstraintSet",
     "DesignNextAction",
@@ -118,6 +138,9 @@ __all__ = [
     "DesignToolContext",
     "DesignBriefDraft",
     "ExecutionAdapter",
+    "EngineDescriptor",
+    "EngineDocumentRecord",
+    "EngineRegistry",
     "EvidenceSynthesis",
     "EvidenceSynthesisItem",
     "ExecutionHandoff",
@@ -161,6 +184,7 @@ __all__ = [
     "LimiterRegistry",
     "SyncConcurrencyLimiter",
     "OpenZymeSettings",
+    "PRIVATE_ARTIFACT_KEYS",
     "PostgresCheckpointerConfig",
     "PostgresCheckpointerFactory",
     "CompositeResearchToolProvider",
@@ -181,11 +205,18 @@ __all__ = [
     "ResearchUnitDraft",
     "ResearchUnitPlan",
     "ReportDraft",
+    "register_artifact_boundary_tools",
     "reset_settings_cache",
+    "S12_ROUTE_POLICIES",
     "StructuredOutputInvoker",
     "StaticResearchToolProvider",
+    "summarize_workspace_directory",
     "ThinkResearchTool",
     "ThinkToolArgs",
+    "ToolHandler",
+    "ToolInvocation",
+    "ToolRegistryProtocol",
+    "ToolResult",
     "WebFetchArgs",
     "WebFetchTool",
     "WebSearchArgs",
@@ -214,6 +245,9 @@ __all__ = [
     "live_llm_skip_reason",
     "live_tavily_skip_reason",
     "quality_eval_skip_reason",
+    "project_artifact_for_agent",
+    "project_artifacts_for_agent",
+    "sanitize_private_artifact_fields",
     "serialize_llm_payload",
     "validate_runtime_foundation_support",
 ]

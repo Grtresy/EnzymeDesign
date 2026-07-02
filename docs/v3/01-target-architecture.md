@@ -324,10 +324,11 @@ V3 默认不沿用拆散的产品级 graph/storage 包切法。
 - `packages/openzyme-domain`
   负责共享 domain models、canonical types、稳定词汇表
 - `packages/openzyme-core`
-  负责 control plane、repositories、runtime、tool registry、memory、approval、lane、projection、host-facing core services
+  负责 control plane、repositories、agent runtime、scheduler、memory、approval、lane、projection、host-facing core services；对已下沉的 runtime SPI 保留兼容重导出
 - `packages/openzyme-engines`
-  负责 `deep_research`、`execution` 等 capability engines
+  负责 `deep_research`、`execution` 等 capability engines；不依赖 `openzyme-core` 的 concrete harness 类型，engine/tool SPI 来自 `openzyme-runtime`
 - `apps/openzyme-host-api`
+  HTTP/SSE composition root：装配 repositories、runtime foundation、engine registry、background worker、SSE 与 runner server，不新增 capability-local compiler/parser/eval 权威
 - `apps/openzyme-host-cli`
 - `apps/openzyme-web-ui`
 - `apps/mcp-hpc-runner`
@@ -341,9 +342,10 @@ V3 默认不沿用拆散的产品级 graph/storage 包切法。
 
 当前边界：
 
-- `packages/openzyme-runtime` 保留 settings、LLM、limits、research tool seams 与 capability-local helper
-- `packages/openzyme-tools` 保留工具/adapter helpers
-- `packages/openzyme-research` 和 `packages/openzyme-execution` 保留 provider/runner integration
+- `packages/openzyme-runtime` 保留 settings、LLM、limits、research tool seams、engine/tool SPI、artifact projection / artifact boundary service 与 static route policy；不得承载新的顶层产品真状态
+- `packages/openzyme-tools` 是 HPC catalog、tool execution contract、command rendering、RunSpec compiler helper 与 result parser 的唯一权威
+- `packages/openzyme-research` 保留 provider integration
+- `packages/openzyme-execution` 保留 runner adapter normalization；runner server 由 `apps/openzyme-host-api` composition root 注入，不从 package 反向依赖 `apps/mcp-hpc-runner`
 
 所有边界必须满足两条约束：
 

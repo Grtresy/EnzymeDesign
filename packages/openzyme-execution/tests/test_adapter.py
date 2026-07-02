@@ -4,6 +4,8 @@ import asyncio
 import threading
 import time
 
+import pytest
+
 from openzyme_domain import RunStatus
 from openzyme_execution import HpcRunnerExecutionAdapter
 from openzyme_execution import map_runner_status_to_run_status
@@ -54,6 +56,11 @@ def test_runner_status_mapping_covers_minimum_execution_lifecycle() -> None:
     assert map_runner_status_to_run_status("completed") is RunStatus.SUCCEEDED
     assert map_runner_status_to_run_status("cancelled") is RunStatus.CANCELLED
     assert map_runner_status_to_run_status("failed") is RunStatus.FAILED
+
+
+def test_hpc_runner_adapter_requires_injected_runner_server() -> None:
+    with pytest.raises(ValueError, match="requires an injected runner server"):
+        HpcRunnerExecutionAdapter()
 
 
 def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() -> None:

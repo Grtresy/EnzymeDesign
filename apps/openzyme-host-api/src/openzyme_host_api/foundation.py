@@ -5,6 +5,7 @@ from dataclasses import field
 from dataclasses import replace
 from pathlib import Path
 
+from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SourceRefKind
@@ -261,6 +262,7 @@ def _build_execution_adapter(
     if settings.execution.backend == "hpc":
         return HpcRunnerExecutionAdapter(
             config_path=settings.execution.hpc_runner_config,
+            server=MCPHpcServer(settings.execution.hpc_runner_config),
             limiter_registry=limiter_registry,
         )
     raise ValueError(f"Unsupported execution backend: {settings.execution.backend}")

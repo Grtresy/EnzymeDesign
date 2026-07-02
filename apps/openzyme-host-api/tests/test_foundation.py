@@ -126,11 +126,20 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
     )
     calls: dict[str, object] = {}
 
+    class FakeMCPHpcServer:
+        def __init__(self, config_path: str | None) -> None:
+            calls["server_config_path"] = config_path
+
     class FakeHpcRunnerExecutionAdapter:
         def __init__(self, config_path: str | None, **kwargs) -> None:
             calls["limiter_registry"] = kwargs.get("limiter_registry")
             calls["config_path"] = config_path
+            calls["server"] = kwargs.get("server")
 
+    monkeypatch.setattr(
+        "openzyme_host_api.foundation.MCPHpcServer",
+        FakeMCPHpcServer,
+    )
     monkeypatch.setattr(
         "openzyme_host_api.foundation.HpcRunnerExecutionAdapter",
         FakeHpcRunnerExecutionAdapter,
@@ -142,6 +151,8 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
     )
 
     assert calls["config_path"] == "/tmp/hpc.toml"
+    assert calls["server_config_path"] == "/tmp/hpc.toml"
+    assert type(calls["server"]).__name__ == "FakeMCPHpcServer"
     assert calls["limiter_registry"] is foundation.limiter_registry
     assert type(foundation.execution_adapter).__name__ == "FakeHpcRunnerExecutionAdapter"
     assert type(foundation.research_adapter).__name__ == "TavilyResearchAdapter"

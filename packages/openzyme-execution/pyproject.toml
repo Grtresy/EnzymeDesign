@@ -5,7 +5,6 @@ description = "Execution adapters for the OpenZyme V3 execution engine"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "mcp-hpc-runner",
   "openzyme-domain",
   "openzyme-runtime",
 ]

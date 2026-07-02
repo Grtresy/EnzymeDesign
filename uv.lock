@@ -611,6 +611,7 @@ source = { editable = "packages/openzyme-core" }
 dependencies = [
     { name = "openzyme-domain" },
     { name = "openzyme-research" },
+    { name = "openzyme-runtime" },
 ]
 
 [package.optional-dependencies]
@@ -622,6 +623,7 @@ dev = [
 requires-dist = [
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
     { name = "openzyme-research", editable = "packages/openzyme-research" },
+    { name = "openzyme-runtime", editable = "packages/openzyme-runtime" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
 ]
 provides-extras = ["dev"]
@@ -647,7 +649,6 @@ source = { editable = "packages/openzyme-engines" }
 dependencies = [
     { name = "langchain" },
     { name = "langgraph" },
-    { name = "openzyme-core" },
     { name = "openzyme-domain" },
     { name = "openzyme-research" },
     { name = "openzyme-runtime" },
@@ -664,7 +665,6 @@ dev = [
 requires-dist = [
     { name = "langchain", specifier = ">=1.0,<2.0" },
     { name = "langgraph", specifier = ">=1.0,<2.0" },
-    { name = "openzyme-core", editable = "packages/openzyme-core" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
     { name = "openzyme-research", editable = "packages/openzyme-research" },
     { name = "openzyme-runtime", editable = "packages/openzyme-runtime" },
@@ -679,7 +679,6 @@ name = "openzyme-execution"
 version = "0.1.0"
 source = { editable = "packages/openzyme-execution" }
 dependencies = [
-    { name = "mcp-hpc-runner" },
     { name = "openzyme-domain" },
     { name = "openzyme-runtime" },
 ]
@@ -691,7 +690,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mcp-hpc-runner", editable = "apps/mcp-hpc-runner" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
     { name = "openzyme-runtime", editable = "packages/openzyme-runtime" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2.0" },
@@ -706,6 +704,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "langchain-openai" },
     { name = "langsmith" },
+    { name = "mcp-hpc-runner" },
     { name = "openzyme-core" },
     { name = "openzyme-domain" },
     { name = "openzyme-engines" },
@@ -726,6 +725,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "langchain-openai", specifier = ">=1.0,<2.0" },
     { name = "langsmith", specifier = ">=0.3,<1.0" },
+    { name = "mcp-hpc-runner", editable = "apps/mcp-hpc-runner" },
     { name = "openzyme-core", editable = "packages/openzyme-core" },
     { name = "openzyme-domain", editable = "packages/openzyme-domain" },
     { name = "openzyme-engines", editable = "packages/openzyme-engines" },
