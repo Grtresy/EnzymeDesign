@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+from openzyme_runtime import classify_llm_provider_error
+
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
 from .harness import SessionRuntimeContext
@@ -59,11 +61,12 @@ class AgentRuntimeScheduler:
                                 max_steps=max_steps_per_agent,
                             )
                         except Exception as exc:
+                            classification = classify_llm_provider_error(exc)
                             failed = (
                                 self.context.repositories.runtime_signals.fail(
                                     signal.signal_id,
                                     error_message=str(exc),
-                                    retryable=False,
+                                    retryable=classification.retryable,
                                 )
                                 or self.context.repositories.runtime_signals.get(
                                     signal.signal_id
@@ -78,7 +81,11 @@ class AgentRuntimeScheduler:
                                 ),
                                 ok=False,
                                 summary=str(exc),
-                                teammate_status="runtime_exception",
+                                teammate_status=(
+                                    "runtime_retry_scheduled"
+                                    if failed.status.value == "pending"
+                                    else "runtime_exception"
+                                ),
                             )
 
         outcomes: list[AgentRuntimeOutcome] = []

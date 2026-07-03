@@ -84,6 +84,21 @@ runtime 并发限制分层表达：
 
 异步调用应直接 await limiter。同步阻塞 SDK 只能通过受控 adapter 在 limiter 内 `to_thread`，不能把线程池大小当成 quota 策略。
 
+LLM provider 调用的统一治理边界是 `openzyme_runtime.LlmInvocationRuntime`：
+
+- structured / tool-calling / chat / connectivity invoker 只构造 provider payload、工具 alias、结构化解析与响应还原
+- runtime 统一执行 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy 与 LLM debug 记录
+- debug 记录必须包含 `kind`、`purpose`、`attempt`、`max_attempts`、`retry_reason`、`backoff_seconds`、`provider_status`、`error_taxonomy`、`final_status` 与可得 usage
+- prompt budget preflight、auto compaction、restore context rebuild 与 tool dispatch 状态机仍属于 harness/runtime service，不下沉到 invocation runtime
+
+provider 错误 taxonomy 的默认语义：
+
+- 502/503/504、transport timeout、connection failure：retryable
+- 429：只有 transient rate limit 或带 `Retry-After` 时 retryable；usage/quota/invalid/context 类 429 不重试
+- 400/401/403、schema/tool argument、context window exceeded：non-retryable
+
+当一次 runtime/provider 失败进入 signal 处理时，scheduler/runtime service 必须复用同一 taxonomy：runtime 内部 retry 成功则 turn 继续；runtime retry 耗尽但 signal 仍有剩余 attempt 时释放回 `pending`；non-retryable 或 signal attempt 耗尽时写为 `failed`。
+
 ## 4. Inbox And Protocol Flow
 
 `protocol.send` 的默认流程：

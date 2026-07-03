@@ -42,6 +42,8 @@ from openzyme_engines.deep_research_graph import DeepResearchGraphInputs
 from openzyme_engines.deep_research_graph import DefaultResearchGraphSettings
 from openzyme_engines.deep_research_graph import build_deep_research_subgraph
 from openzyme_engines.deep_research_graph import _select_tool_calls_for_budget
+from openzyme_runtime import get_llm_debug_recorder
+from openzyme_runtime import LangChainToolCallingInvoker
 from openzyme_runtime import ToolSideEffect
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
@@ -287,6 +289,56 @@ class CompletingGraphModelFactory:
         return SingleSearchToolCallInvoker(self)
 
 
+class FakeProviderStatusError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class RetryingResearcherGraphModelFactory(CompletingGraphModelFactory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.provider_calls = 0
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        factory = self
+
+        class FakeRunnable:
+            def invoke(self, messages):
+                del messages
+                factory.provider_calls += 1
+                if factory.provider_calls == 1:
+                    raise FakeProviderStatusError(502, "bad gateway")
+                factory.calls.append(purpose)
+                if factory.tool_call_count:
+                    return {"content": "Search complete.", "tool_calls": []}
+                factory.tool_call_count += 1
+                return {
+                    "tool_calls": [
+                        {
+                            "name": "web.search",
+                            "id": "valid-web-search",
+                            "args": {
+                                "query": "thermostability evidence",
+                                "topic": "general",
+                            },
+                        }
+                    ]
+                }
+
+        class FakeModel:
+            def bind_tools(self, tools):
+                del tools
+                return FakeRunnable()
+
+        return LangChainToolCallingInvoker(
+            model=FakeModel(),
+            purpose=purpose,
+            max_attempts=2,
+            retry_backoff_seconds=0.0,
+        )
+
+
 class ThinkOnlyToolCallInvoker:
     def __init__(self, factory: "NoEvidenceGraphModelFactory") -> None:
         self._factory = factory
@@ -526,6 +578,20 @@ class CompletedWithArtifactRunner:
             raw_notes=[invocation_id],
             recent_turns=[],
         )
+
+
+class RaisingDeepResearchRunner:
+    def run(
+        self,
+        *,
+        invocation_id: str,
+        objective: str,
+        design_brief: str,
+        research_brief: str,
+        resolution: str | None,
+    ) -> ResearchDossier:
+        del invocation_id, objective, design_brief, research_brief, resolution
+        raise FakeProviderStatusError(400, "invalid request")
 
 
 def _build_repositories() -> CoreRepositories:
@@ -799,6 +865,41 @@ def test_native_deep_research_runner_uses_graph_and_engine_persists_outputs() ->
     ] == "deep_research"
 
 
+def test_native_deep_research_runner_retries_researcher_transient_provider_error() -> None:
+    get_llm_debug_recorder().clear()
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = RetryingResearcherGraphModelFactory()
+    engine = DeepResearchEngine(
+        repositories,
+        NativeDeepResearchRunner(
+            repositories=repositories,
+            research_adapter=FindingWebResearchAdapter(),
+            model_factory=model_factory,
+        ),
+    )
+
+    started = engine.start_research(
+        session_id=session.session_id,
+        task_id="task_001",
+        brief="protein stability determinants",
+        invocation_id="inv_graph_retry",
+    )
+
+    records = get_llm_debug_recorder().list_records(
+        limit=10,
+        purpose="deep_research_researcher",
+        kind="tool_calling",
+    )
+    assert started.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert started.dossier.status == "completed"
+    assert model_factory.provider_calls == 3
+    retry_record = next(
+        record for record in records if record["final_status"] == "retrying"
+    )
+    assert retry_record["error_taxonomy"]["category"] == "transient_http"
+
+
 def test_native_deep_research_runner_returns_partial_without_source_backed_evidence() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -825,6 +926,32 @@ def test_native_deep_research_runner_returns_partial_without_source_backed_evide
     assert started.dossier.status == "partial"
     assert started.dossier.evidence_items == ()
     assert summary.status is ResearchSummaryStatus.PARTIAL
+
+
+def test_deep_research_engine_marks_invocation_failed_when_runner_raises() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine = DeepResearchEngine(repositories, RaisingDeepResearchRunner())
+
+    with pytest.raises(RuntimeError, match="Deep research runtime failed"):
+        engine.start_research(
+            session_id=session.session_id,
+            task_id="task_001",
+            brief="protein stability determinants",
+            invocation_id="inv_runner_failed",
+        )
+
+    invocation = repositories.invocations.get("inv_runner_failed")
+    assert invocation is not None
+    assert invocation.status is EngineInvocationStatus.FAILED
+    assert invocation.output_ref is not None
+    dossier = repositories.engine_documents.get(invocation.output_ref)
+    assert dossier is not None
+    assert dossier.payload["status"] == "failed"
+    assert (
+        dossier.payload["completion_reason"]
+        == "runtime_failure:invalid_or_auth_request"
+    )
 
 
 def test_deep_research_engine_persists_v3_canonical_research_rows() -> None:

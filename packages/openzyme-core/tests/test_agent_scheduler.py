@@ -19,6 +19,7 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import Session
 from openzyme_domain import Task
+from openzyme_runtime import LangChainToolCallingInvoker
 
 
 class FakeToolCallingInvoker:
@@ -38,6 +39,52 @@ class FakeModelFactory:
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
         del purpose
         return self.invoker
+
+
+class FakeProviderStatusError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class RetryableProviderModelFactory:
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        fail_times: int,
+        max_attempts: int,
+    ) -> None:
+        self.status_code = status_code
+        self.fail_times = fail_times
+        self.max_attempts = max_attempts
+        self.provider_calls = 0
+
+    def create_tool_calling_invoker(self, *, purpose: str):
+        factory = self
+
+        class FakeRunnable:
+            def invoke(self, messages):
+                del messages
+                factory.provider_calls += 1
+                if factory.provider_calls <= factory.fail_times:
+                    raise FakeProviderStatusError(
+                        factory.status_code,
+                        f"provider status {factory.status_code}",
+                    )
+                return {"content": "handled", "tool_calls": []}
+
+        class FakeModel:
+            def bind_tools(self, tools):
+                del tools
+                return FakeRunnable()
+
+        return LangChainToolCallingInvoker(
+            model=FakeModel(),
+            purpose=purpose,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=0.0,
+        )
 
 
 def _build_context(*, model_factory: object | None) -> tuple[CoreRepositories, SessionRuntimeContext]:
@@ -145,6 +192,74 @@ def test_scheduler_runtime_failure_records_last_error() -> None:
     assert failed.status is AgentRuntimeSignalStatus.FAILED
     assert failed.error_message == "Focused task required for wakeup."
     assert failed.last_error == "Focused task required for wakeup."
+
+
+def test_scheduler_completes_signal_when_tool_calling_retry_succeeds() -> None:
+    model_factory = RetryableProviderModelFactory(
+        status_code=502,
+        fail_times=1,
+        max_attempts=2,
+    )
+    repositories, context = _build_context(model_factory=model_factory)
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    completed = repositories.runtime_signals.get("sig_0")
+    assert completed is not None
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
+    assert completed.status is AgentRuntimeSignalStatus.COMPLETED
+    assert model_factory.provider_calls == 2
+
+
+def test_scheduler_releases_retryable_provider_failure_back_to_pending() -> None:
+    model_factory = RetryableProviderModelFactory(
+        status_code=502,
+        fail_times=10,
+        max_attempts=1,
+    )
+    repositories, context = _build_context(model_factory=model_factory)
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    pending = repositories.runtime_signals.get("sig_0")
+    agent = repositories.agents.get("sess_scheduler", "agent:researcher")
+    assert pending is not None
+    assert agent is not None
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert pending.status is AgentRuntimeSignalStatus.PENDING
+    assert pending.attempt_count == 1
+    assert pending.last_error is not None
+    assert "provider status 502" in pending.last_error
+    assert agent.status is AgentMemberStatus.IDLE
+
+
+def test_scheduler_fails_non_retryable_provider_failure() -> None:
+    model_factory = RetryableProviderModelFactory(
+        status_code=400,
+        fail_times=10,
+        max_attempts=2,
+    )
+    repositories, context = _build_context(model_factory=model_factory)
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    failed = repositories.runtime_signals.get("sig_0")
+    assert failed is not None
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert failed.status is AgentRuntimeSignalStatus.FAILED
+    assert "provider status 400" in (failed.last_error or "")
 
 
 def test_scheduler_run_forever_stops_on_shutdown_request() -> None:

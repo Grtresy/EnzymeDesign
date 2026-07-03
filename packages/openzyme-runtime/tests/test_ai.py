@@ -13,6 +13,8 @@ from openzyme_runtime.ai import LangChainStructuredInvoker
 from openzyme_runtime.ai import LangChainToolCallingInvoker
 from openzyme_runtime.ai import OpenAICompatibleChatModelFactory
 from openzyme_runtime.ai import _is_retryable_openai_error
+from openzyme_runtime.llm_invocation import classify_llm_provider_error
+from openzyme_runtime.llm_invocation import LlmProviderInvocationError
 from openzyme_runtime.llm_debug import get_llm_debug_recorder
 from openzyme_runtime.llm_debug import llm_debug_context
 
@@ -21,8 +23,23 @@ class ExampleSchema(BaseModel):
     value: str
 
 
-class RetryableTimeoutError(Exception):
-    pass
+class FakeApiStatusError(Exception):
+    def __init__(
+        self,
+        status_code: int,
+        message: str | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+        body: dict[str, object] | str | None = None,
+    ) -> None:
+        super().__init__(message or f"provider status {status_code}")
+        self.status_code = status_code
+        self.body = body
+        self.response = type(
+            "FakeResponse",
+            (),
+            {"status_code": status_code, "headers": headers or {}},
+        )()
 
 
 def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None:
@@ -34,7 +51,7 @@ def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None
             del messages
             attempts["count"] += 1
             if attempts["count"] < 3:
-                raise RetryableTimeoutError("transient timeout")
+                raise FakeApiStatusError(502, "bad gateway")
             return ExampleSchema(value="ok")
 
     class FakeModel:
@@ -42,11 +59,6 @@ def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None
             assert schema is ExampleSchema
             assert method == "function_calling"
             return FakeStructuredModel()
-
-    monkeypatch.setattr(
-        "openzyme_runtime.ai._is_retryable_openai_error",
-        lambda exc: isinstance(exc, RetryableTimeoutError),
-    )
 
     invoker = LangChainStructuredInvoker(
         model=FakeModel(),
@@ -65,8 +77,17 @@ def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None
     assert attempts["count"] == 3
     records = get_llm_debug_recorder().list_records(limit=10, purpose="structured_output")
     assert [record["status"] for record in records[:3]] == ["succeeded", "error", "error"]
+    assert [record["final_status"] for record in records[:3]] == [
+        "succeeded",
+        "retrying",
+        "retrying",
+    ]
+    assert records[0]["kind"] == "structured"
     assert records[0]["request"]["attempt"] == 3
     assert records[0]["response"]["parsed"] == {"value": "ok"}
+    assert records[1]["retry_reason"] == "http_502"
+    assert records[1]["backoff_seconds"] == 0.0
+    assert records[1]["error_taxonomy"]["category"] == "transient_http"
 
 
 def test_structured_invoker_does_not_retry_non_retryable_errors(monkeypatch) -> None:
@@ -85,8 +106,6 @@ def test_structured_invoker_does_not_retry_non_retryable_errors(monkeypatch) -> 
             assert method == "function_calling"
             return FakeStructuredModel()
 
-    monkeypatch.setattr("openzyme_runtime.ai._is_retryable_openai_error", lambda exc: False)
-
     invoker = LangChainStructuredInvoker(
         model=FakeModel(),
         structured_output_method="function_calling",
@@ -100,15 +119,63 @@ def test_structured_invoker_does_not_retry_non_retryable_errors(monkeypatch) -> 
             system_prompt="Return the schema.",
             user_payload={"value": "ignored"},
         )
-    except ValueError as exc:
-        assert str(exc) == "bad schema"
+    except LlmProviderInvocationError as exc:
+        assert "bad schema" in str(exc)
+        assert exc.classification.retryable is False
+        assert exc.classification.category == "schema_or_tool_error"
     else:  # pragma: no cover
-        raise AssertionError("expected ValueError")
+        raise AssertionError("expected LlmProviderInvocationError")
 
     assert attempts["count"] == 1
     records = get_llm_debug_recorder().list_records(limit=1, purpose="structured_output")
     assert records[0]["status"] == "error"
     assert records[0]["error"]["message"] == "bad schema"
+    assert records[0]["final_status"] == "failed"
+    assert records[0]["error_taxonomy"]["retryable"] is False
+
+
+def test_tool_calling_invoker_retries_through_shared_runtime() -> None:
+    get_llm_debug_recorder().clear()
+    attempts = {"count": 0}
+
+    class FakeRunnable:
+        def invoke(self, messages):
+            del messages
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise FakeApiStatusError(503, "service unavailable")
+            return {"content": "ok", "tool_calls": []}
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            assert tools == []
+            return FakeRunnable()
+
+    invoker = LangChainToolCallingInvoker(
+        model=FakeModel(),
+        purpose="deep_research_researcher",
+        max_attempts=2,
+        retry_backoff_seconds=0.0,
+    )
+
+    response = invoker.invoke_with_tools(
+        system_prompt="Use tools.",
+        messages=[],
+        tools=[],
+    )
+
+    records = get_llm_debug_recorder().list_records(limit=10)
+    assert response["content"] == "ok"
+    assert attempts["count"] == 2
+    assert [record["kind"] for record in records[:2]] == [
+        "tool_calling",
+        "tool_calling",
+    ]
+    assert [record["final_status"] for record in records[:2]] == [
+        "succeeded",
+        "retrying",
+    ]
+    assert records[1]["retry_reason"] == "http_503"
 
 
 def test_tool_calling_invoker_records_request_response_and_context() -> None:
@@ -427,7 +494,7 @@ def test_diagnostic_structured_invoker_wraps_provider_call_with_stage_timeout(mo
             assert method == "function_calling"
             return FakeStructuredModel()
 
-    monkeypatch.setattr("openzyme_runtime.ai.LiveStageTimeout", FakeTimeout)
+    monkeypatch.setattr("openzyme_runtime.llm_invocation.LiveStageTimeout", FakeTimeout)
 
     invoker = LangChainStructuredInvoker(
         model=FakeModel(),
@@ -473,7 +540,7 @@ def test_diagnostic_tool_invoker_wraps_provider_call_with_stage_timeout(monkeypa
             assert tools == []
             return FakeRunnable()
 
-    monkeypatch.setattr("openzyme_runtime.ai.LiveStageTimeout", FakeTimeout)
+    monkeypatch.setattr("openzyme_runtime.llm_invocation.LiveStageTimeout", FakeTimeout)
 
     invoker = LangChainToolCallingInvoker(
         model=FakeModel(),
@@ -586,21 +653,62 @@ def test_openai_compatible_factory_limits_structured_and_tool_invocations(monkey
 
 
 def test_retryable_openai_error_recognizes_rate_limit_and_transient_status(monkeypatch) -> None:
-    class FakeRateLimitError(Exception):
-        pass
-
-    class FakeApiStatusError(Exception):
-        def __init__(self, status_code: int) -> None:
-            self.status_code = status_code
-
     fake_openai = ModuleType("openai")
-    fake_openai.RateLimitError = FakeRateLimitError
+    fake_openai.RateLimitError = FakeApiStatusError
     fake_openai.APIStatusError = FakeApiStatusError
     fake_openai.APITimeoutError = type("FakeTimeoutError", (Exception,), {})
     fake_openai.APIConnectionError = type("FakeConnectionError", (Exception,), {})
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
-    assert _is_retryable_openai_error(FakeRateLimitError())
-    assert _is_retryable_openai_error(FakeApiStatusError(429))
+    assert _is_retryable_openai_error(
+        FakeApiStatusError(429, "rate_limit_exceeded", body={"error": {"type": "rate_limit_exceeded"}})
+    )
     assert _is_retryable_openai_error(FakeApiStatusError(503))
     assert not _is_retryable_openai_error(FakeApiStatusError(400))
+
+
+def test_retry_after_prefers_header_body_and_exception_attr() -> None:
+    header = classify_llm_provider_error(
+        FakeApiStatusError(429, "rate_limit_exceeded", headers={"retry-after": "7"})
+    )
+    body = classify_llm_provider_error(
+        FakeApiStatusError(
+            429,
+            "rate_limit_exceeded",
+            body={"error": {"type": "rate_limit_exceeded", "retry_after": 11}},
+        )
+    )
+
+    class RetryAfterAttrError(FakeApiStatusError):
+        retry_after = 13
+
+    attr = classify_llm_provider_error(
+        RetryAfterAttrError(429, "rate_limit_exceeded")
+    )
+
+    assert header.retry_after_seconds == 7.0
+    assert body.retry_after_seconds == 11.0
+    assert attr.retry_after_seconds == 13.0
+    assert header.retryable is body.retryable is attr.retryable is True
+
+
+def test_provider_error_taxonomy_distinguishes_retryable_and_terminal_errors() -> None:
+    assert classify_llm_provider_error(FakeApiStatusError(502)).retryable is True
+    assert classify_llm_provider_error(FakeApiStatusError(503)).retryable is True
+    transient_429 = classify_llm_provider_error(
+        FakeApiStatusError(429, "temporary rate_limit_exceeded")
+    )
+    quota_429 = classify_llm_provider_error(
+        FakeApiStatusError(
+            429,
+            "quota exceeded",
+            body={"error": {"type": "usage_limit_reached", "code": "insufficient_quota"}},
+        )
+    )
+    bad_request = classify_llm_provider_error(FakeApiStatusError(400, "invalid request"))
+
+    assert transient_429.retryable is True
+    assert transient_429.category == "rate_limit_transient"
+    assert quota_429.retryable is False
+    assert quota_429.category == "rate_limit_usage_or_quota"
+    assert bad_request.retryable is False

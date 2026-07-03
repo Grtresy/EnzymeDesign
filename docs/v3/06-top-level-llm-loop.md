@@ -135,6 +135,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - GLM-5.1 默认 profile 为 `context_window_tokens=200000`、默认输出预留 `65536`、最大输出 `131072`。未知模型必须使用显式 env override，否则使用保守 fallback 并在事件中标记 profile unknown。
 - auto compaction 默认写入 `session` scope；有 focused lane 时同时写入 `lane` scope；`task` scope compaction 仍保留显式 tool 或高价值触发。
 - auto compaction 后必须重建待发送 provider payload：重新读取 restore context、重建 system prompt 与 seed messages，再追加本轮已经 budgeted 的 tool observations。provider 调用必须使用这个 rebuilt payload，不能继续使用 compaction 前的 in-memory messages。
+- rebuilt payload 通过 structured / tool-calling invoker 交给 `LlmInvocationRuntime`。invoker 负责构造 payload 与 provider adapter 兼容层；runtime 只负责 provider 调用治理，包括 limiter、timeout、retry/backoff、`Retry-After`、taxonomy 与 debug attempt 记录。runtime 不触发 compaction，也不重建 restore context。
 - 最新 session-scope `source_range="auto:prompt_budget"` compaction 会改变后续 LLM restore prompt projection：recent conversation 只取 compaction 之后的 conversation entries。它不删除或改写持久 conversation，也不影响 `workspace.conversation`；普通 `auto:harness_run` compaction 不作为 recent-conversation cutoff。
 - compaction summary 必须 bounded：不得嵌入完整 tool result、完整 conversation、完整 docs 或完整 artifact list；只保留 id、status、summary、artifact refs 和下一步读取 hint。
 - compaction 不得替代 canonical conversation / task / approval / lane state，也不得替 agent 选择业务策略。

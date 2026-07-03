@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from openzyme_runtime import AgentStepContext
+from openzyme_runtime import classify_llm_provider_error
 from openzyme_runtime import EngineDescriptor
 from openzyme_runtime import EngineDocumentRecord
 from openzyme_runtime import ToolGovernance
@@ -460,17 +461,36 @@ class DeepResearchEngine:
         input_payload = self._require_input_payload(invocation)
         research_brief = str(input_payload["brief"])
         resolution = None if input_payload.get("resolution") is None else str(input_payload["resolution"])
-        runner_output = self.runner.run(
-            invocation_id=invocation.invocation_id,
-            objective=session.objective,
-            design_brief=task.description,
-            research_brief=research_brief,
-            resolution=resolution,
-        )
-        dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
+        try:
+            runner_output = self.runner.run(
+                invocation_id=invocation.invocation_id,
+                objective=session.objective,
+                design_brief=task.description,
+                research_brief=research_brief,
+                resolution=resolution,
+            )
+            dossier = NormalizedResearchDossier.from_runner_payload(runner_output)
+        except Exception as exc:
+            failure_dossier = _runtime_failure_dossier(
+                research_brief=research_brief,
+                exc=exc,
+            )
+            self._complete_failure(
+                session=session,
+                task=task,
+                invocation=invocation,
+                dossier=failure_dossier,
+            )
+            raise DeepResearchRuntimeError(failure_dossier.summary) from exc
         if dossier.status == "failed":
             if not self._is_controlled_domain_failure(dossier):
                 message = dossier.summary or "deep research runner returned failed without controlled domain failure metadata"
+                self._complete_failure(
+                    session=session,
+                    task=task,
+                    invocation=invocation,
+                    dossier=dossier,
+                )
                 raise DeepResearchRuntimeError(message)
             return self._complete_failure(
                 session=session,
@@ -881,6 +901,33 @@ class DeepResearchEngine:
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.event_emitter is not None:
             self.event_emitter(event_type, payload)
+
+
+def _runtime_failure_dossier(
+    *,
+    research_brief: str,
+    exc: Exception,
+) -> NormalizedResearchDossier:
+    classification = classify_llm_provider_error(exc)
+    summary = f"Deep research runtime failed: {type(exc).__name__}: {exc}"
+    return NormalizedResearchDossier(
+        status="failed",
+        completion_reason=f"runtime_failure:{classification.category}",
+        research_brief=research_brief,
+        summary=summary,
+        evidence_items=(),
+        source_refs=(),
+        unresolved_gaps=(summary,),
+        raw_notes=(
+            "domain_failure:runtime_exception",
+            "provider_taxonomy="
+            + json.dumps(
+                classification.to_dict(),
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+        ),
+    )
 
 
 def _deep_research_start_spec() -> ToolSpec:

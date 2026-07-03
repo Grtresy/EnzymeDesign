@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .llm_invocation import LlmInvocationRuntime
 from .settings import get_settings
 
 
@@ -38,12 +39,28 @@ def run_connectivity_check() -> dict[str, Any]:
         base_url=llm.base_url,
         default_headers=llm.default_headers,
         timeout=llm.timeout or 60.0,
-        max_retries=llm.max_retries,
+        max_retries=0,
     )
-    response = client.responses.create(
+    response = LlmInvocationRuntime(
+        purpose="llm_connectivity",
+        kind="connectivity",
         model=llm.model,
-        input="OpenZyme LLM connectivity check. Reply with exactly: ok",
-        max_output_tokens=_smoke_max_output_tokens(llm.max_tokens),
+        base_url=llm.base_url,
+        max_attempts=llm.structured_output_max_attempts,
+        retry_backoff_seconds=llm.structured_output_retry_backoff_seconds,
+        invocation_timeout_seconds=llm.timeout or 60.0,
+    ).invoke(
+        request={
+            "model": llm.model,
+            "use_responses_api": llm.use_responses_api,
+            "max_output_tokens": _smoke_max_output_tokens(llm.max_tokens),
+        },
+        call=lambda: client.responses.create(
+            model=llm.model,
+            input="OpenZyme LLM connectivity check. Reply with exactly: ok",
+            max_output_tokens=_smoke_max_output_tokens(llm.max_tokens),
+        ),
+        phase="invoking LLM connectivity check",
     )
     return {
         "status": "ok",

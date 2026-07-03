@@ -79,6 +79,20 @@ def _tool_message_name(message: object) -> str | None:
     )
 
 
+def _tool_message_call_id(message: object) -> str | None:
+    if isinstance(message, dict):
+        return (
+            None
+            if message.get("tool_call_id") is None
+            else str(message["tool_call_id"])
+        )
+    return (
+        None
+        if getattr(message, "tool_call_id", None) is None
+        else str(getattr(message, "tool_call_id"))
+    )
+
+
 def _tool_message_payload(message: object) -> dict[str, object]:
     try:
         envelope = json.loads(_message_content(message))
@@ -125,6 +139,34 @@ def _execution_start_payloads(messages: list[object]) -> list[dict[str, object]]
         for message in messages
         if _tool_message_name(message) == "execution.pipeline.start"
     ]
+
+
+def _execution_start_records(messages: list[object]) -> list[dict[str, object]]:
+    return [
+        {
+            "call_id": _tool_message_call_id(message),
+            "payload": _tool_message_payload(message),
+        }
+        for message in messages
+        if _tool_message_name(message) == "execution.pipeline.start"
+    ]
+
+
+def _execution_record_has_idempotency_marker(
+    record: dict[str, object],
+    *,
+    call_id: str,
+    marker: str,
+) -> bool:
+    if record.get("call_id") == call_id:
+        return True
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    invocation = payload.get("invocation")
+    if not isinstance(invocation, dict):
+        return False
+    return marker in str(invocation.get("idempotency_key") or "")
 
 
 def _focused_task_from_prompt(system_prompt: str) -> str:
@@ -1873,14 +1915,22 @@ class V3AOXHMMEvalInvoker:
         created_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.create_text"))
         patched_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.patch_text"))
         diffed = any(_tool_message_name(message) == "artifact.diff_text" for message in messages)
-        execution_payloads = _execution_start_payloads(messages)
+        execution_records = _execution_start_records(messages)
         dry_run_done = any(
-            ":dry_run:" in str((payload.get("invocation") or {}).get("idempotency_key") if isinstance(payload.get("invocation"), dict) else "")
-            for payload in execution_payloads
+            _execution_record_has_idempotency_marker(
+                record,
+                call_id="call_aox_dry_run",
+                marker=":dry_run:",
+            )
+            for record in execution_records
         )
         execute_started = any(
-            ":execute:" in str((payload.get("invocation") or {}).get("idempotency_key") if isinstance(payload.get("invocation"), dict) else "")
-            for payload in execution_payloads
+            _execution_record_has_idempotency_marker(
+                record,
+                call_id="call_aox_execute",
+                marker=":execute:",
+            )
+            for record in execution_records
         )
 
         if patched_ref is not None and dry_run_done and not execute_started:

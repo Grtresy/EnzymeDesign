@@ -115,7 +115,7 @@ function render() {
         <select name="kind">
           <option value="">Any</option>
           <option value="tool_calling" ${state.filters.kind === "tool_calling" ? "selected" : ""}>tool_calling</option>
-          <option value="structured_output" ${state.filters.kind === "structured_output" ? "selected" : ""}>structured_output</option>
+          <option value="structured" ${state.filters.kind === "structured" ? "selected" : ""}>structured</option>
         </select>
       </label>
       <label>Status

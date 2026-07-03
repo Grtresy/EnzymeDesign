@@ -26,6 +26,8 @@ Capability engine 是 V3 harness 可调用的专业子系统。
 - 用 `LangChain` 承担 model、tool、prompt、structured output 与 provider adapter 组装
 - 作为 harness / teammate loop 可调用的专业能力存在，而不是顶层产品 orchestrator
 
+engine 内部 LLM 调用不得自建 provider retry/fallback。`deep_research` 的 researcher、supervisor、synthesis 等 model call 与顶层 harness 一样经过 `LlmInvocationRuntime`，由 runtime 统一处理 limiter、timeout、retry/backoff、`Retry-After`、错误 taxonomy、LLM debug 与 MICU tool aliasing 兼容。session compaction、restore context rebuild、task/protocol 状态仍属于顶层 harness 或 teammate runtime，不进入 engine 内部 runtime。
+
 默认参考：
 
 - `/home/grtresy/VSCodeRepo/26/open_deep_research/src/open_deep_research/deep_researcher.py`
@@ -129,6 +131,8 @@ deep research 对 harness 至少提供：
 
 - `raw_notes`
 - `research_turns`
+
+若内部 runner 或 provider 异常在 shared runtime 内恢复，`deep_research` invocation 继续执行；若异常不可恢复，engine 必须写入 failed dossier 与 failed `EngineInvocation`，并把 taxonomy/summary 写入 `raw_notes` 或 failure output，不能让 invocation 保持 `RUNNING`。
 
 对 enzyme design 的补充输出约束：
 

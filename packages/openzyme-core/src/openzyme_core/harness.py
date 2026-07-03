@@ -664,6 +664,7 @@ class HarnessResult:
     outputs: tuple[str, ...]
     tool_results: tuple[ToolResult, ...]
     pending_approval_id: str | None = None
+    error: BaseException | None = None
 
 
 def _persist_message(
@@ -1377,6 +1378,7 @@ def run_agent_harness_loop(
                 outputs=tuple(outputs),
                 tool_results=tuple(all_tool_results),
                 pending_approval_id=pending_approval_id,
+                error=exc,
             )
         tool_results = ()
         if step.next_focus is not None:
@@ -1583,6 +1585,7 @@ def run_agent_harness_loop(
                         outputs=tuple(outputs),
                         tool_results=tuple(all_tool_results),
                         pending_approval_id=pending_approval_id,
+                        error=exc,
                     )
                 current_results.append(result)
                 all_tool_results.append(result)

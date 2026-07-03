@@ -15,6 +15,7 @@ from openzyme_domain import InboxStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
+from openzyme_runtime import classify_llm_provider_error
 
 from .harness import HarnessInput
 from .harness import HarnessStatus
@@ -287,10 +288,24 @@ class AgentRuntimeService:
         completed = (
             self._complete_signal(claimed)
             if ok
-            else self._fail_signal(claimed, error_message=summary, emit=False)
+            else self._fail_signal(
+                claimed,
+                error_message=summary,
+                retryable=_is_retryable_runtime_error(result.error),
+                emit=False,
+            )
+        )
+        event_type = (
+            "signal.completed"
+            if ok
+            else (
+                "signal.retry_scheduled"
+                if completed.status is AgentRuntimeSignalStatus.PENDING
+                else "signal.failed"
+            )
         )
         self.context.emit(
-            "signal.completed" if ok else "signal.failed",
+            event_type,
             {
                 "signal_id": completed.signal_id,
                 "agent_id": completed.agent_id,
@@ -303,14 +318,21 @@ class AgentRuntimeService:
         for pending_signal in self.context.repositories.runtime_signals.list_pending_by_session(agent.session_id):
             if pending_signal.source_ref in set(consumed_message_ids):
                 self.context.repositories.runtime_signals.complete(pending_signal.signal_id)
+        effective_final_status = (
+            AgentMemberStatus.IDLE
+            if not ok and completed.status is AgentRuntimeSignalStatus.PENDING
+            else final_status
+        )
         agent = self._update_agent(
             self.context.repositories.agents.get(agent.session_id, agent.agent_id) or agent,
-            status=final_status,
-            runtime_state=final_status.value,
+            status=effective_final_status,
+            runtime_state=effective_final_status.value,
             last_active_at=utc_now_iso(),
-            idle_since=utc_now_iso() if final_status is AgentMemberStatus.IDLE else None,
+            idle_since=utc_now_iso()
+            if effective_final_status is AgentMemberStatus.IDLE
+            else None,
         )
-        if final_status is AgentMemberStatus.IDLE:
+        if effective_final_status is AgentMemberStatus.IDLE:
             self.context.emit("agent.idle", {"agent_id": agent.agent_id, "signal_id": signal.signal_id, "task_id": task.task_id})
         if result.pending_approval_id is None:
             self._enqueue_master_wakeup_after_teammate(
@@ -396,11 +418,21 @@ class AgentRuntimeService:
             else self._fail_signal(
                 claimed,
                 error_message=result.outputs[-1] if result.outputs else result.status.value,
+                retryable=_is_retryable_runtime_error(result.error),
                 emit=False,
             )
         )
+        event_type = (
+            "signal.completed"
+            if ok
+            else (
+                "signal.retry_scheduled"
+                if completed.status is AgentRuntimeSignalStatus.PENDING
+                else "signal.failed"
+            )
+        )
         self.context.emit(
-            "signal.completed" if ok else "signal.failed",
+            event_type,
             {
                 "signal_id": completed.signal_id,
                 "agent_id": completed.agent_id,
@@ -529,20 +561,26 @@ class AgentRuntimeService:
         claimed: AgentRuntimeSignal,
         *,
         error_message: str,
+        retryable: bool = False,
         emit: bool = True,
     ) -> AgentRuntimeSignal:
         failed = (
             self.context.repositories.runtime_signals.fail(
                 claimed.signal_id,
                 error_message=error_message,
-                retryable=False,
+                retryable=retryable,
             )
             or self.context.repositories.runtime_signals.get(claimed.signal_id)
             or claimed
         )
         if emit:
+            event_type = (
+                "signal.retry_scheduled"
+                if failed.status is AgentRuntimeSignalStatus.PENDING
+                else "signal.failed"
+            )
             self.context.emit(
-                "signal.failed",
+                event_type,
                 {"signal_id": failed.signal_id, "error_message": failed.error_message},
             )
         return failed
@@ -799,3 +837,9 @@ class AgentRuntimeService:
 
 
 __all__ = ["AgentRuntimeOutcome", "AgentRuntimeService"]
+
+
+def _is_retryable_runtime_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    return classify_llm_provider_error(exc).retryable

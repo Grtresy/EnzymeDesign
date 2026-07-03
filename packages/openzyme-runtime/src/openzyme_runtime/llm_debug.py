@@ -179,7 +179,13 @@ class LlmDebugSpan:
         self.created_at = _utc_now_iso()
         self._started_at = perf_counter()
 
-    def finish(self, *, response: Any = None, error: Exception | None = None) -> None:
+    def finish(
+        self,
+        *,
+        response: Any = None,
+        error: Exception | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         finished_at = _utc_now_iso()
         duration_ms = round((perf_counter() - self._started_at) * 1000, 3)
         record = {
@@ -198,6 +204,8 @@ class LlmDebugSpan:
             "response": None if error is not None else serialize_llm_payload(response),
             "error": None if error is None else serialize_llm_error(error),
         }
+        if metadata:
+            record.update(serialize_llm_payload(metadata))
         self.recorder._append(record)
 
 

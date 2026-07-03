@@ -17,6 +17,12 @@ from .llm_debug import current_llm_debug_context
 from .llm_debug import get_llm_debug_recorder
 from .llm_debug import llm_debug_context
 from .llm_debug import serialize_llm_payload
+from .llm_invocation import classify_llm_provider_error
+from .llm_invocation import extract_llm_usage
+from .llm_invocation import is_retryable_llm_provider_error
+from .llm_invocation import LlmInvocationRuntime
+from .llm_invocation import LlmProviderErrorClassification
+from .llm_invocation import LlmProviderInvocationError
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
 from .artifact_boundary import ArtifactBoundaryError
@@ -186,6 +192,9 @@ __all__ = [
     "LiveLlmTestSettings",
     "LimiterSettings",
     "LlmDebugRecorder",
+    "LlmInvocationRuntime",
+    "LlmProviderErrorClassification",
+    "LlmProviderInvocationError",
     "LlmPurposePolicy",
     "LlmSettings",
     "MissingLangChainDependencyError",
@@ -204,6 +213,9 @@ __all__ = [
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",
+    "classify_llm_provider_error",
+    "extract_llm_usage",
+    "is_retryable_llm_provider_error",
     "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",
