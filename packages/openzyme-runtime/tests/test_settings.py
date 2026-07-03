@@ -7,18 +7,28 @@ from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USER_AGENT
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import get_settings
 from openzyme_runtime import reset_settings_cache
 
 
+def _disable_env_file_loading(monkeypatch) -> None:
+    monkeypatch.setattr("openzyme_runtime.settings.load_env_files", lambda: None)
+
+
 def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "")
+    monkeypatch.setenv("MICU_API_KEY", "")
     monkeypatch.setenv("BIGMODEL_API_KEY", "")
     monkeypatch.setenv("ZHIPUAI_API_KEY", "")
     for key in (
         "OPENZYME_LLM_MODEL",
         "OPENZYME_LLM_BASE_URL",
+        "OPENZYME_LLM_USER_AGENT",
+        "OPENZYME_LLM_USE_RESPONSES_API",
         "OPENZYME_LLM_TIMEOUT",
         "OPENZYME_LLM_MAX_TOKENS",
         "OPENZYME_LLM_MAX_RETRIES",
@@ -92,6 +102,8 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.llm.model == DEFAULT_OPENAI_COMPAT_MODEL
     assert settings.llm.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
     assert settings.llm.extra_body == DEFAULT_OPENAI_COMPAT_EXTRA_BODY
+    assert settings.llm.default_headers == {"User-Agent": DEFAULT_OPENAI_COMPAT_USER_AGENT}
+    assert settings.llm.use_responses_api is DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
     assert settings.llm.max_tokens is None
     assert settings.llm.structured_output_method == DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
     assert (
@@ -133,9 +145,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
 
 
 def test_settings_honor_env_overrides(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
     monkeypatch.setenv("OPENZYME_LLM_MODEL", "custom-model")
     monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("OPENZYME_LLM_USER_AGENT", "openzyme-test-agent")
+    monkeypatch.setenv("OPENZYME_LLM_USE_RESPONSES_API", "false")
     monkeypatch.setenv("OPENZYME_LLM_EXTRA_BODY", '{"provider":"bigmodel","reasoning":{"enabled":true}}')
     monkeypatch.setenv("OPENZYME_LLM_MAX_TOKENS", "900")
     monkeypatch.setenv("OPENZYME_LLM_TIMEOUT", "42")
@@ -199,6 +214,8 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.llm.model == "custom-model"
     assert settings.llm.base_url == "https://example.test/v1"
     assert settings.llm.extra_body == {"provider": "bigmodel", "reasoning": {"enabled": True}}
+    assert settings.llm.default_headers == {"User-Agent": "openzyme-test-agent"}
+    assert settings.llm.use_responses_api is False
     assert settings.llm.max_tokens == 900
     assert settings.llm.timeout == 42.0
     assert settings.llm.max_retries == 5
@@ -258,9 +275,10 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
 
 
 def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
-    monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
-    monkeypatch.delenv("OPENZYME_LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENZYME_LLM_MODEL", "glm-5.1")
+    monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
     monkeypatch.setenv("OPENZYME_LLM_EXTRA_BODY", '{"provider":"custom","mode":"strict"}')
 
     reset_settings_cache()
@@ -269,7 +287,21 @@ def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> 
     assert settings.llm.extra_body == {"provider": "custom", "mode": "strict"}
 
 
+def test_settings_default_bigmodel_extra_body_for_explicit_glm(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
+    monkeypatch.setenv("OPENZYME_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("OPENZYME_LLM_MODEL", "glm-5.1")
+    monkeypatch.setenv("OPENZYME_LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
+    monkeypatch.delenv("OPENZYME_LLM_EXTRA_BODY", raising=False)
+
+    reset_settings_cache()
+    settings = get_settings()
+
+    assert settings.llm.extra_body == {"provider": "bigmodel"}
+
+
 def test_settings_reject_non_positive_limiter_values(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY", "0")
 
     reset_settings_cache()
@@ -282,6 +314,7 @@ def test_settings_reject_non_positive_limiter_values(monkeypatch) -> None:
 
 
 def test_settings_cache_can_be_reset(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
     monkeypatch.setenv("OPENZYME_LLM_MODEL", "first")
     reset_settings_cache()
     assert get_settings().llm.model == "first"

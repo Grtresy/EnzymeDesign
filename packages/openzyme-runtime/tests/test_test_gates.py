@@ -8,6 +8,7 @@ from openzyme_runtime import get_settings
 def test_live_e2e_skip_reason_reports_all_missing_prerequisites(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_TEST_ENABLE_LIVE_E2E", "true")
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "")
+    monkeypatch.setenv("MICU_API_KEY", "")
     monkeypatch.setenv("BIGMODEL_API_KEY", "")
     monkeypatch.setenv("ZHIPUAI_API_KEY", "")
     monkeypatch.setenv("TAVILY_API_KEY", "")

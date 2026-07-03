@@ -78,8 +78,9 @@ Intended use:
 - `.env.local`: machine-local overrides you do not want to share
 - `.env.test`: test-only overrides, such as smaller fan-out or tracing disabled
 - Live external dependency suites stay opt-in. Enable them with `OPENZYME_TEST_ENABLE_LIVE_*` flags in `.env.test`.
-- `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD` controls the default schema enforcement strategy. For OpenAI-compatible `glm-5.1`, the default is `function_calling`.
+- `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD` controls the default schema enforcement strategy. For the MICU OpenAI Responses-compatible default, the default is `function_calling`.
 - `OPENZYME_LLM_EXTRA_BODY` can pass provider-specific JSON fields to OpenAI-compatible endpoints.
+- `OPENZYME_LLM_USE_RESPONSES_API` and `OPENZYME_LLM_USER_AGENT` control the OpenAI Responses API mode and provider-facing user-agent header.
 - `OPENZYME_LLM_MAX_TOKENS` and `OPENZYME_LLM_<PURPOSE>_*` can override output budget, timeout, retries, and structured-output policy for `intake`, `research`, `design`, and `report_review` calls.
 - `OPENZYME_TEST_LIVE_LLM_*` lets live LLM smoke tests use a different timeout/retry budget from the main app runtime.
 

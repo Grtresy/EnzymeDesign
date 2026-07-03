@@ -147,6 +147,99 @@ def test_tool_calling_invoker_records_request_response_and_context() -> None:
     assert records[0]["response"]["content"] == "ok"
 
 
+def test_tool_calling_invoker_aliases_dotted_tool_names_for_provider() -> None:
+    from langchain_core.messages import AIMessage
+    from langchain_core.messages import ToolMessage
+
+    get_llm_debug_recorder().clear()
+
+    class FakeRunnable:
+        def invoke(self, messages):
+            previous_ai = messages[1]
+            previous_tool = messages[2]
+            assert previous_ai.tool_calls[0]["name"] == "task_create"
+            assert previous_ai.content[0]["name"] == "task_create"
+            assert previous_tool.name == "task_create"
+            return AIMessage(
+                content=[
+                    {
+                        "type": "function_call",
+                        "name": "task_create",
+                        "arguments": '{"subject":"new task"}',
+                        "call_id": "call_new",
+                    }
+                ],
+                tool_calls=[
+                    {
+                        "name": "task_create",
+                        "args": {"subject": "new task"},
+                        "id": "call_new",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            assert tools[0]["function"]["name"] == "task_create"
+            return FakeRunnable()
+
+    invoker = LangChainToolCallingInvoker(
+        model=FakeModel(),
+        purpose="v3_harness_loop",
+        model_name="fake-model",
+        base_url="https://www.micuapi.ai/v1",
+        dotted_tool_name_aliasing=True,
+    )
+    response = invoker.invoke_with_tools(
+        system_prompt="You are master.",
+        messages=[
+            AIMessage(
+                content=[
+                    {
+                        "type": "function_call",
+                        "name": "task.create",
+                        "arguments": '{"subject":"old task"}',
+                        "call_id": "call_old",
+                    }
+                ],
+                tool_calls=[
+                    {
+                        "name": "task.create",
+                        "args": {"subject": "old task"},
+                        "id": "call_old",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content='{"ok":true}', tool_call_id="call_old", name="task.create"),
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "task.create",
+                    "description": "Create a task.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"subject": {"type": "string"}},
+                        "required": ["subject"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
+    )
+
+    records = get_llm_debug_recorder().list_records(limit=1)
+    assert response.tool_calls[0]["name"] == "task.create"
+    assert response.content[0]["name"] == "task.create"
+    assert records[0]["request"]["tools"][0]["function"]["name"] == "task_create"
+    assert records[0]["request"]["internal_tools"][0]["function"]["name"] == "task.create"
+    assert records[0]["request"]["tool_name_aliases"] == {"task.create": "task_create"}
+    assert records[0]["response"]["tool_calls"][0]["name"] == "task.create"
+
+
 def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monkeypatch) -> None:
     observed: dict[str, object] = {}
 
@@ -176,10 +269,11 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     )
 
     factory = OpenAICompatibleChatModelFactory(
-        model="glm-5.1",
+        model="gpt-5-mini",
         api_key="llm-key",
         base_url="https://example.test/v1",
-        extra_body={"provider": "bigmodel"},
+        default_headers={"User-Agent": "openzyme-test-agent"},
+        use_responses_api=True,
         max_tokens=700,
         timeout=30.0,
         max_retries=1,
@@ -208,18 +302,53 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     )
 
     assert result.value == "ok"
-    assert observed["model"] == "glm-5.1"
+    assert observed["model"] == "gpt-5-mini"
     assert observed["model_provider"] == "openai"
     assert observed["method"] == "json_mode"
     assert observed["kwargs"] == {
         "api_key": "llm-key",
         "base_url": "https://example.test/v1",
-        "extra_body": {"provider": "bigmodel"},
+        "extra_body": None,
+        "default_headers": {"User-Agent": "openzyme-test-agent"},
+        "use_responses_api": True,
         "max_tokens": 300,
         "temperature": 0.0,
         "timeout": 90.0,
         "max_retries": 0,
     }
+
+
+def test_openai_compatible_factory_aliases_dotted_tool_names_only_for_micu(monkeypatch) -> None:
+    class FakeModel:
+        def bind_tools(self, tools):
+            del tools
+            raise AssertionError("tool invocation is not part of this factory test")
+
+    monkeypatch.setattr(
+        "langchain.chat_models.init_chat_model",
+        lambda *args, **kwargs: FakeModel(),
+        raising=False,
+    )
+
+    micu_factory = OpenAICompatibleChatModelFactory(
+        model="gpt-5.5",
+        api_key="llm-key",
+        base_url="https://www.micuapi.ai/v1",
+    )
+    micu_invoker = micu_factory.create_tool_calling_invoker(purpose="v3_harness_loop")
+
+    assert isinstance(micu_invoker, LangChainToolCallingInvoker)
+    assert micu_invoker.dotted_tool_name_aliasing is True
+
+    other_factory = OpenAICompatibleChatModelFactory(
+        model="gpt-5.5",
+        api_key="llm-key",
+        base_url="https://example.test/v1",
+    )
+    other_invoker = other_factory.create_tool_calling_invoker(purpose="v3_harness_loop")
+
+    assert isinstance(other_invoker, LangChainToolCallingInvoker)
+    assert other_invoker.dotted_tool_name_aliasing is False
 
 
 def test_openai_compatible_factory_counts_bigmodel_prompt_tokens(monkeypatch) -> None:

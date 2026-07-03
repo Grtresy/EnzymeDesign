@@ -13,9 +13,14 @@ from .limits import DEFAULT_PROVIDER_LIMITS
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_ENV_FILES = (".env", ".env.local")
-DEFAULT_OPENAI_COMPAT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4"
-DEFAULT_OPENAI_COMPAT_MODEL = "glm-5.1"
-DEFAULT_OPENAI_COMPAT_EXTRA_BODY = {"provider": "bigmodel"}
+DEFAULT_OPENAI_COMPAT_BASE_URL = "https://www.micuapi.ai/v1"
+DEFAULT_OPENAI_COMPAT_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_COMPAT_EXTRA_BODY: dict[str, Any] | None = None
+_BIGMODEL_EXTRA_BODY = {"provider": "bigmodel"}
+DEFAULT_OPENAI_COMPAT_USER_AGENT = (
+    "codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal"
+)
+DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API = True
 DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD = "function_calling"
 DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS = 3
 DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
@@ -77,7 +82,7 @@ def _parse_json_object(value: str | None) -> dict[str, Any] | None:
 
 def _default_llm_extra_body(*, model: str, base_url: str) -> dict[str, Any] | None:
     if "open.bigmodel.cn" in base_url or model.startswith("glm-"):
-        return dict(DEFAULT_OPENAI_COMPAT_EXTRA_BODY)
+        return dict(_BIGMODEL_EXTRA_BODY)
     return None
 
 
@@ -142,6 +147,8 @@ class LlmSettings:
     model: str
     base_url: str
     extra_body: dict[str, Any] | None
+    default_headers: dict[str, str] | None
+    use_responses_api: bool
     max_tokens: int | None
     timeout: float | None
     max_retries: int
@@ -186,14 +193,19 @@ class LlmSettings:
 
     @classmethod
     def from_env(cls) -> "LlmSettings":
+        user_agent_raw = os.getenv("OPENZYME_LLM_USER_AGENT")
+        user_agent = (
+            DEFAULT_OPENAI_COMPAT_USER_AGENT
+            if user_agent_raw is None
+            else user_agent_raw.strip() or None
+        )
         api_key = (
             os.getenv("OPENZYME_LLM_API_KEY")
-            or os.getenv("BIGMODEL_API_KEY")
-            or os.getenv("ZHIPUAI_API_KEY")
+            or os.getenv("MICU_API_KEY")
             or None
         )
-        model = os.getenv("OPENZYME_LLM_MODEL", DEFAULT_OPENAI_COMPAT_MODEL)
-        base_url = os.getenv("OPENZYME_LLM_BASE_URL", DEFAULT_OPENAI_COMPAT_BASE_URL)
+        model = os.getenv("OPENZYME_LLM_MODEL") or DEFAULT_OPENAI_COMPAT_MODEL
+        base_url = os.getenv("OPENZYME_LLM_BASE_URL") or DEFAULT_OPENAI_COMPAT_BASE_URL
         extra_body = _parse_json_object(os.getenv("OPENZYME_LLM_EXTRA_BODY"))
         if extra_body is None:
             extra_body = _default_llm_extra_body(model=model, base_url=base_url)
@@ -202,6 +214,11 @@ class LlmSettings:
             model=model,
             base_url=base_url,
             extra_body=extra_body,
+            default_headers={"User-Agent": user_agent} if user_agent is not None else None,
+            use_responses_api=_parse_bool(
+                os.getenv("OPENZYME_LLM_USE_RESPONSES_API"),
+                DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API,
+            ),
             max_tokens=(
                 None
                 if os.getenv("OPENZYME_LLM_MAX_TOKENS") in {None, ""}
@@ -589,7 +606,10 @@ __all__ = [
     "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
+    "DEFAULT_OPENAI_COMPAT_EXTRA_BODY",
     "DEFAULT_OPENAI_COMPAT_MODEL",
+    "DEFAULT_OPENAI_COMPAT_USER_AGENT",
+    "DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API",
     "ExecutionSettings",
     "HostApiSettings",
     "HostCliSettings",

@@ -96,6 +96,8 @@ from .settings import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from .settings import DEFAULT_OPENAI_COMPAT_BASE_URL
 from .settings import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from .settings import DEFAULT_OPENAI_COMPAT_MODEL
+from .settings import DEFAULT_OPENAI_COMPAT_USER_AGENT
+from .settings import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from .settings import ExecutionSettings
 from .settings import HostApiSettings
 from .settings import HostCliSettings
@@ -253,6 +255,8 @@ __all__ = [
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
     "DEFAULT_OPENAI_COMPAT_EXTRA_BODY",
     "DEFAULT_OPENAI_COMPAT_MODEL",
+    "DEFAULT_OPENAI_COMPAT_USER_AGENT",
+    "DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API",
     "current_llm_debug_context",
     "get_llm_debug_recorder",
     "load_env_files",

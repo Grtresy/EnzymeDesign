@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -239,6 +240,7 @@ class LangChainToolCallingInvoker:
     base_url: str | None = None
     diagnostic_label: str | None = None
     invocation_timeout_seconds: float | None = None
+    dotted_tool_name_aliasing: bool = False
 
     def invoke_with_tools(
         self,
@@ -253,20 +255,37 @@ class LangChainToolCallingInvoker:
             raise MissingLangChainDependencyError(
                 "Install langchain to invoke tool-calling model calls."
             ) from exc
-        runnable = self.model.bind_tools(tools)
-        request_messages = [SystemMessage(content=system_prompt), *messages]
+        provider_tools, tool_name_aliases = _prepare_provider_tools(
+            tools,
+            dotted_tool_name_aliasing=self.dotted_tool_name_aliasing,
+        )
+        provider_to_internal_names = {
+            provider_name: internal_name
+            for internal_name, provider_name in tool_name_aliases.items()
+        }
+        provider_messages = _alias_tool_names_in_messages(
+            messages,
+            tool_name_aliases,
+        )
+        runnable = self.model.bind_tools(provider_tools)
+        request_messages = [SystemMessage(content=system_prompt), *provider_messages]
+        request: dict[str, Any] = {
+            "system_prompt": system_prompt,
+            "messages": serialize_llm_payload(provider_messages),
+            "tools": provider_tools,
+            "request_messages": serialize_llm_payload(request_messages),
+        }
+        if tool_name_aliases:
+            request["internal_messages"] = serialize_llm_payload(messages)
+            request["internal_tools"] = tools
+            request["tool_name_aliases"] = tool_name_aliases
         span = get_llm_debug_recorder().begin(
             purpose=self.purpose,
             kind="tool_calling",
             model=self.model_name,
             base_url=self.base_url,
             request_context=current_llm_debug_context(),
-            request={
-                "system_prompt": system_prompt,
-                "messages": serialize_llm_payload(messages),
-                "tools": tools,
-                "request_messages": serialize_llm_payload(request_messages),
-            },
+            request=request,
         )
         self._log_stage(f"LLM tool-calling start purpose={self.purpose!r}")
         started = time.monotonic()
@@ -278,6 +297,7 @@ class LangChainToolCallingInvoker:
         except Exception as exc:
             span.finish(error=exc)
             raise
+        response = _restore_tool_names_in_response(response, provider_to_internal_names)
         span.finish(response=response)
         self._log_stage(
             f"LLM tool-calling finished elapsed={time.monotonic() - started:.2f}s"
@@ -379,6 +399,8 @@ class OpenAICompatibleChatModelFactory:
     api_key: str
     base_url: str
     extra_body: dict[str, Any] | None = None
+    default_headers: dict[str, str] | None = None
+    use_responses_api: bool = True
     max_tokens: int | None = None
     temperature: float = 0.0
     timeout: float | None = None
@@ -409,6 +431,8 @@ class OpenAICompatibleChatModelFactory:
             api_key=self.api_key,
             base_url=self.base_url,
             extra_body=self.extra_body,
+            default_headers=self.default_headers,
+            use_responses_api=self.use_responses_api,
             max_tokens=policy["max_tokens"],
             temperature=self.temperature,
             timeout=policy["timeout"],
@@ -445,6 +469,8 @@ class OpenAICompatibleChatModelFactory:
             api_key=self.api_key,
             base_url=self.base_url,
             extra_body=self.extra_body,
+            default_headers=self.default_headers,
+            use_responses_api=self.use_responses_api,
             max_tokens=policy["max_tokens"],
             temperature=self.temperature,
             timeout=policy["timeout"],
@@ -458,6 +484,7 @@ class OpenAICompatibleChatModelFactory:
             base_url=self.base_url,
             diagnostic_label=self.diagnostic_label,
             invocation_timeout_seconds=policy["timeout"],
+            dotted_tool_name_aliasing=_is_micu_base_url(self.base_url),
         )
         if self.limiter_registry is None:
             return invoker
@@ -527,6 +554,7 @@ class OpenAICompatibleChatModelFactory:
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                **(self.default_headers or {}),
             },
             method="POST",
         )
@@ -572,6 +600,145 @@ def _extract_tokenizer_count(response: dict[str, Any]) -> int | None:
         if isinstance(candidate, int) and candidate >= 0:
             return candidate
     return None
+
+
+def _is_micu_base_url(base_url: str | None) -> bool:
+    return "micuapi.ai" in (base_url or "").lower()
+
+
+def _prepare_provider_tools(
+    tools: list[Any],
+    *,
+    dotted_tool_name_aliasing: bool,
+) -> tuple[list[Any], dict[str, str]]:
+    if not dotted_tool_name_aliasing:
+        return tools, {}
+    provider_tools = copy.deepcopy(tools)
+    aliases: dict[str, str] = {}
+    used_names = _provider_tool_names(provider_tools)
+    for index, tool in enumerate(provider_tools, start=1):
+        function = _tool_function_dict(tool)
+        if function is None:
+            continue
+        original_name = function.get("name")
+        if not isinstance(original_name, str) or "." not in original_name:
+            continue
+        provider_name = _provider_tool_alias(
+            original_name,
+            used_names=used_names,
+            suffix=index,
+        )
+        function["name"] = provider_name
+        aliases[original_name] = provider_name
+        used_names.add(provider_name)
+    return provider_tools, aliases
+
+
+def _provider_tool_alias(
+    tool_name: str,
+    *,
+    used_names: set[str],
+    suffix: int,
+) -> str:
+    alias = tool_name.replace(".", "_")
+    if alias not in used_names or alias == tool_name:
+        return alias
+    candidate = f"{alias}_{suffix}"
+    counter = suffix
+    while candidate in used_names:
+        counter += 1
+        candidate = f"{alias}_{counter}"
+    return candidate
+
+
+def _provider_tool_names(tools: list[Any]) -> set[str]:
+    names: set[str] = set()
+    for tool in tools:
+        function = _tool_function_dict(tool)
+        if function is None:
+            continue
+        name = function.get("name")
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _tool_function_dict(tool: Any) -> dict[str, Any] | None:
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function")
+    return function if isinstance(function, dict) else None
+
+
+def _alias_tool_names_in_messages(
+    messages: list[Any],
+    name_map: dict[str, str],
+) -> list[Any]:
+    if not name_map:
+        return messages
+    provider_messages = copy.deepcopy(messages)
+    for message in provider_messages:
+        _replace_tool_names_in_message(message, name_map)
+    return provider_messages
+
+
+def _restore_tool_names_in_response(
+    response: Any,
+    name_map: dict[str, str],
+) -> Any:
+    if not name_map:
+        return response
+    _replace_tool_names_in_message(response, name_map)
+    return response
+
+
+def _replace_tool_names_in_message(message: Any, name_map: dict[str, str]) -> None:
+    if isinstance(message, dict):
+        _replace_tool_names_in_mapping(message, name_map)
+        return
+    for attr in ("tool_calls", "invalid_tool_calls", "content", "additional_kwargs"):
+        if not hasattr(message, attr):
+            continue
+        try:
+            value = getattr(message, attr)
+        except Exception:
+            continue
+        _replace_tool_names_in_value(value, name_map)
+    if hasattr(message, "name"):
+        try:
+            name = getattr(message, "name")
+            if isinstance(name, str) and name in name_map:
+                setattr(message, "name", name_map[name])
+        except Exception:
+            pass
+
+
+def _replace_tool_names_in_value(value: Any, name_map: dict[str, str]) -> None:
+    if isinstance(value, dict):
+        _replace_tool_names_in_mapping(value, name_map)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _replace_tool_names_in_value(item, name_map)
+
+
+def _replace_tool_names_in_mapping(
+    value: dict[str, Any],
+    name_map: dict[str, str],
+) -> None:
+    name = value.get("name")
+    if isinstance(name, str) and name in name_map:
+        value["name"] = name_map[name]
+    function = value.get("function")
+    if isinstance(function, dict):
+        function_name = function.get("name")
+        if isinstance(function_name, str) and function_name in name_map:
+            function["name"] = name_map[function_name]
+    for key in ("tool_calls", "invalid_tool_calls", "content"):
+        _replace_tool_names_in_value(value.get(key), name_map)
+    additional_kwargs = value.get("additional_kwargs")
+    if isinstance(additional_kwargs, dict):
+        _replace_tool_names_in_mapping(additional_kwargs, name_map)
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:

@@ -213,6 +213,8 @@ def build_model_factory_from_settings(
         api_key=settings.llm.api_key,
         base_url=settings.llm.base_url,
         extra_body=settings.llm.extra_body,
+        default_headers=settings.llm.default_headers,
+        use_responses_api=settings.llm.use_responses_api,
         max_tokens=settings.llm.max_tokens,
         temperature=settings.llm.temperature,
         timeout=settings.llm.timeout,

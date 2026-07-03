@@ -28,19 +28,22 @@ Use the repository-level environment file conventions described in [README.md](/
 
 1. copy [`.env.example`](/home/grtresy/VSCodeRepo/EnzymeDesign/.env.example) to `.env`
 2. set `OPENZYME_LLM_API_KEY=<your-api-key>`
-3. keep or override the default Zhipu Coding settings as needed:
-   - `OPENZYME_LLM_MODEL=glm-5.1`
-   - `OPENZYME_LLM_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4`
+3. keep or override the default MICU OpenAI Responses settings as needed:
+   - `OPENZYME_LLM_MODEL=<micu-model-id>`
+   - `OPENZYME_LLM_BASE_URL=https://www.micuapi.ai/v1`
    - `OPENZYME_LLM_EXTRA_BODY=<optional-json-object>`
+   - `OPENZYME_LLM_USE_RESPONSES_API=true`
+   - `OPENZYME_LLM_USER_AGENT=codex_cli_rs/0.77.0 (Windows 10.0.26100; x86_64) WindowsTerminal`
    - `OPENZYME_LLM_MAX_TOKENS=<optional-output-cap>`
    - `OPENZYME_LLM_TIMEOUT=60`
    - `OPENZYME_LLM_MAX_RETRIES=1`
    - `OPENZYME_LLM_TEMPERATURE=0`
    - `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD=function_calling`
-4. run `uv run python -m openzyme_host_api.evals`
+4. run `uv run python -m openzyme_runtime.llm_connectivity` for a minimal Responses API connectivity check
+5. run `uv run python -m openzyme_host_api.evals`
 
 If no API key is set, the local eval harness keeps using the deterministic fallback path.
-For the current Zhipu OpenAI-compatible endpoint, `function_calling` is the recommended structured-output strategy. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
+For the MICU OpenAI Responses endpoint, `function_calling` remains the default structured-output strategy used by the OpenZyme runtime. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
 
 By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces:
 

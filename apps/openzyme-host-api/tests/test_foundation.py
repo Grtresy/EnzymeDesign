@@ -20,6 +20,8 @@ from openzyme_host_api.foundation import DeterministicResearchAdapter
 from openzyme_host_api.eval_support import DeterministicLocalModelFactory
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USER_AGENT
+from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from openzyme_runtime import ExecutionSettings
 from openzyme_runtime import HostApiSettings
 from openzyme_runtime import HostCliSettings
@@ -43,6 +45,8 @@ def _settings() -> OpenZymeSettings:
             model="glm-5.1",
             base_url="https://open.bigmodel.cn/api/coding/paas/v4",
             extra_body={"provider": "bigmodel"},
+            default_headers={"User-Agent": "openzyme-test-agent"},
+            use_responses_api=False,
             max_tokens=800,
             timeout=30.0,
             max_retries=5,
@@ -424,18 +428,22 @@ def test_v3_execution_runner_adapter_fails_cancel_when_boundary_unsupported() ->
 def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "")
+    monkeypatch.setenv("MICU_API_KEY", "")
     monkeypatch.setenv("BIGMODEL_API_KEY", "")
     monkeypatch.setenv("ZHIPUAI_API_KEY", "")
 
     assert build_model_factory_from_env() is None
 
 
-def test_build_model_factory_from_env_uses_bigmodel_defaults(monkeypatch) -> None:
+def test_build_model_factory_from_env_uses_micu_responses_defaults(monkeypatch) -> None:
     reset_settings_cache()
+    monkeypatch.setattr("openzyme_runtime.settings.load_env_files", lambda: None)
     monkeypatch.setenv("OPENZYME_LLM_API_KEY", "test-key")
     monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_EXTRA_BODY", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_USER_AGENT", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_USE_RESPONSES_API", raising=False)
     monkeypatch.setenv("OPENZYME_LLM_MAX_RETRIES", "5")
 
     factory = build_model_factory_from_env()
@@ -444,6 +452,8 @@ def test_build_model_factory_from_env_uses_bigmodel_defaults(monkeypatch) -> Non
     assert factory.model == DEFAULT_OPENAI_COMPAT_MODEL
     assert factory.base_url == DEFAULT_OPENAI_COMPAT_BASE_URL
     assert factory.api_key == "test-key"
-    assert factory.extra_body == {"provider": "bigmodel"}
+    assert factory.extra_body is None
+    assert factory.default_headers == {"User-Agent": DEFAULT_OPENAI_COMPAT_USER_AGENT}
+    assert factory.use_responses_api is DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
     assert factory.max_retries == 5
     reset_settings_cache()
