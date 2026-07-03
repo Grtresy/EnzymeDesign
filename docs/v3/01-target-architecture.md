@@ -160,6 +160,7 @@ restore context
   -> call top-level model with tool schemas
   -> inspect tool calls / assistant output
   -> dispatch tools through harness registry
+  -> stop immediately if a successful terminal tool result requests turn termination
   -> feed tool results back into next model turn
   -> stop when the model emits a final assistant message
   -> or return a waiting state for approval / delegation

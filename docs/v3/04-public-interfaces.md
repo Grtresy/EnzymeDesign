@@ -98,8 +98,12 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `details`: structured diagnostic metadata
 - `content`: legacy content string
 - `payload`: parsed JSON payload when `content` is JSON
+- `terminal_action`: explicit terminal action name such as `task.finish`, or `null`
+- `terminates_turn`: whether the harness must stop the current master/teammate loop immediately after this result
 
 `ok=true` must not mean "no downstream work remains"; it only means that the specific tool completed its promised action. `ok=false` means the model must not assume the requested action happened.
+
+`terminates_turn=true` 只允许由显式 terminal tool 设置。当前推荐出口是 `task.finish`；普通 tool success、capability success、engine invocation terminal state 或 protocol message 都不能自动设置该标记，也不能自动把业务 task 写为 completed / failed。
 
 当工具本身已经执行完成，但完整 result 或下一轮 prompt 会超过 token budget 时，harness 返回 context-budget observation，而不是把完整 result 塞回模型：
 

@@ -30,6 +30,8 @@ class ToolResult:
     error_code: str | None = None
     hint: str | None = None
     details: dict[str, Any] | None = None
+    terminal_action: str | None = None
+    terminates_turn: bool = False
 
     def envelope(self) -> dict[str, Any]:
         details = dict(self.details or {})
@@ -41,6 +43,8 @@ class ToolResult:
             "hint": self.hint,
             "details": details,
             "content": self.content,
+            "terminal_action": self.terminal_action,
+            "terminates_turn": self.terminates_turn,
         }
         try:
             envelope["payload"] = json.loads(self.content)

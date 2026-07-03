@@ -337,6 +337,66 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
     assert completed.ok is True
 
 
+def test_task_finish_requires_failed_and_blocked_details() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_finish",
+        subject="Finish",
+        description="Validate task.finish arguments.",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref="agent:executor",
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_finish"),
+        agent_id="agent:executor",
+        actor_kind="teammate",
+    )
+
+    failed = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_failed",
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_finish",
+                "status": "failed",
+                "summary": "Could not complete.",
+            },
+            task_id="task_finish",
+        ),
+    )
+    blocked = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_blocked",
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_finish",
+                "status": "blocked",
+                "summary": "Need user input.",
+            },
+            task_id="task_finish",
+        ),
+    )
+
+    task = repositories.tasks.get("task_finish")
+    assert failed.ok is False
+    assert failed.error_code == "task_finish_failure_required"
+    assert blocked.ok is False
+    assert blocked.error_code == "task_finish_blocked_reason_required"
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+
+
 class TaskToolDriver:
     def plan(
         self,

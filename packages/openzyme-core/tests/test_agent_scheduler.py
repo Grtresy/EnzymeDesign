@@ -19,6 +19,7 @@ from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import Session
 from openzyme_domain import Task
+from openzyme_domain import TaskStatus
 from openzyme_runtime import LangChainToolCallingInvoker
 
 
@@ -37,6 +38,34 @@ class FakeModelFactory:
         self.invoker = FakeToolCallingInvoker()
 
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
+        del purpose
+        return self.invoker
+
+
+class LoopingToolCallingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
+        del system_prompt, messages, tools
+        self.calls += 1
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_list_{self.calls}",
+                    "name": "task.list",
+                    "args": {},
+                }
+            ],
+        }
+
+
+class LoopingModelFactory:
+    def __init__(self) -> None:
+        self.invoker = LoopingToolCallingInvoker()
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> LoopingToolCallingInvoker:
         del purpose
         return self.invoker
 
@@ -192,6 +221,28 @@ def test_scheduler_runtime_failure_records_last_error() -> None:
     assert failed.status is AgentRuntimeSignalStatus.FAILED
     assert failed.error_message == "Focused task required for wakeup."
     assert failed.last_error == "Focused task required for wakeup."
+
+
+def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
+    model_factory = LoopingModelFactory()
+    repositories, context = _build_context(model_factory=model_factory)
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1, max_steps_per_agent=1)
+
+    task = repositories.tasks.get("task_0")
+    signal = repositories.runtime_signals.get("sig_0")
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert outcomes[0].teammate_status == "max_steps_exceeded"
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.FAILED
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.failure_summary is None
+    assert task.failure_ref is None
 
 
 def test_scheduler_completes_signal_when_tool_calling_retry_succeeds() -> None:

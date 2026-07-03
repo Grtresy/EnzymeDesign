@@ -511,6 +511,92 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
     }
 
 
+class TerminalTaskFinishDriver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input, tool_results
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("terminal task.finish result must not be fed back into another plan")
+        return HarnessStep(
+            tool_invocations=(
+                ToolInvocation(
+                    call_id="call_finish",
+                    tool_name="task.finish",
+                    arguments={
+                        "task_id": "task_001",
+                        "status": "completed",
+                        "summary": "Primary task is complete.",
+                    },
+                    task_id="task_001",
+                ),
+                ToolInvocation(
+                    call_id="call_after_finish",
+                    tool_name="echo",
+                    arguments={"text": "should not run"},
+                    task_id="task_001",
+                ),
+            )
+        )
+
+
+def test_task_finish_completed_updates_task_and_terminates_loop_immediately() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    calls: list[str] = []
+    registry.register(
+        "echo",
+        lambda _context, invocation: calls.append(invocation.tool_name) or "echoed",
+    )
+    driver = TerminalTaskFinishDriver()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=3,
+            agent_id="agent:primary",
+            actor_kind="teammate",
+            actor_role="researcher",
+        ),
+        driver=driver,
+        tool_registry=registry,
+    )
+
+    task = repositories.tasks.get("task_001")
+    finish_docs = [
+        document
+        for document in repositories.engine_documents.list_by_session(session.session_id)
+        if document.document_kind == "task_finish"
+    ]
+    assert result.status is HarnessStatus.COMPLETED
+    assert driver.calls == 1
+    assert calls == []
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "task.finish"
+    assert result.tool_results[0].terminal_action == "task.finish"
+    assert result.tool_results[0].terminates_turn is True
+    assert result.tool_results[0].envelope()["terminates_turn"] is True
+    assert finish_docs
+    assert finish_docs[0].payload["summary"] == "Primary task is complete."
+    assert {event.event_type for event in result.events} >= {
+        "task.updated",
+        "task.finished",
+        "harness.terminal_action",
+    }
+
+
 class RegistryBackedEngine:
     descriptor = EngineDescriptor(
         engine_name="registry_engine",
@@ -572,6 +658,50 @@ def test_harness_loop_registers_engine_tools_from_engine_registry() -> None:
     assert [tool_result.tool_name for tool_result in result.tool_results] == [
         "registry.echo"
     ]
+
+
+class EngineSuccessWithoutFinishDriver:
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        if not tool_results:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_registry",
+                        tool_name="registry.echo",
+                        arguments={"text": "ready"},
+                        task_id="task_001",
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="should require a separate model decision")
+
+
+def test_engine_tool_success_does_not_auto_complete_task() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    engine_registry = EngineRegistry()
+    engine_registry.register(RegistryBackedEngine())
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, max_steps=1),
+        driver=EngineSuccessWithoutFinishDriver(),
+        engine_registry=engine_registry,
+    )
+
+    task = repositories.tasks.get("task_001")
+    assert result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+    assert [tool_result.tool_name for tool_result in result.tool_results] == [
+        "registry.echo"
+    ]
+    assert task is not None
+    assert task.status is TaskStatus.TODO
 
 
 class ToolCreatedApprovalDriver:

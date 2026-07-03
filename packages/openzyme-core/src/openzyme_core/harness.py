@@ -1605,6 +1605,33 @@ def run_agent_harness_loop(
                 )
                 activity_happened = True
                 context.refresh()
+                if result.ok and result.terminates_turn:
+                    context.emit(
+                        "harness.terminal_action",
+                        {
+                            "call_id": result.call_id,
+                            "tool_name": result.tool_name,
+                            "terminal_action": result.terminal_action,
+                            "status": result.status
+                            or ("ok" if result.ok else "failed"),
+                        },
+                    )
+                    _auto_compact_if_needed(
+                        context,
+                        activity_happened=activity_happened,
+                        outputs=outputs,
+                        all_tool_results=all_tool_results,
+                    )
+                    context.refresh()
+                    return HarnessResult(
+                        session_id=harness_input.session_id,
+                        status=HarnessStatus.COMPLETED,
+                        snapshot=context.snapshot,
+                        events=tuple(sink.events),
+                        outputs=tuple(outputs),
+                        tool_results=tuple(all_tool_results),
+                        pending_approval_id=pending_approval_id,
+                    )
                 pending_approval_id = _pending_approval_id(context.snapshot)
                 if pending_approval_id is not None:
                     _auto_compact_if_needed(

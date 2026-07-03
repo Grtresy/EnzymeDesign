@@ -439,7 +439,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="task.update",
-            description="Update an existing task status, wording, priority, or assignment.",
+            description=(
+                "Edit an existing task's wording, priority, assignment, or non-terminal "
+                "state. Use task.finish for completed, blocked, failed, or cancelled task exits."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -455,6 +458,35 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "failure_ref": {"type": ["string", "null"]},
                 },
                 "required": ["task_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="task.finish",
+            description=(
+                "Explicitly close the current task stage as completed, blocked, failed, "
+                "or cancelled. A successful task.finish terminates the current agent turn."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "blocked", "failed", "cancelled"],
+                    },
+                    "summary": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "failure_summary": {"type": ["string", "null"]},
+                    "failure_ref": {"type": ["string", "null"]},
+                    "blocked_reason": {"type": ["string", "null"]},
+                    "recovery_hint": {"type": ["string", "null"]},
+                    "next_owner": {
+                        "type": ["string", "null"],
+                        "enum": ["master", "user", "teammate", None],
+                    },
+                },
+                "required": ["task_id", "status", "summary"],
                 "additionalProperties": False,
             },
         ),

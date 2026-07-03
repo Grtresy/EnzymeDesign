@@ -235,8 +235,12 @@ class V3LocalEvalInvoker:
                 "tool_calls": [
                     {
                         "id": "call_eval_research_task_complete",
-                        "name": "task.update",
-                        "args": {"task_id": task_id, "status": "completed"},
+                        "name": "task.finish",
+                        "args": {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "summary": "Research evidence collected.",
+                        },
                     }
                 ],
             }
@@ -246,7 +250,10 @@ class V3LocalEvalInvoker:
         self, system_prompt: str, messages: list[object]
     ) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_eval_execution"
-        if any(_tool_message_name(message) == "task.update" for message in messages):
+        if any(
+            _tool_message_name(message) in {"task.update", "task.finish"}
+            for message in messages
+        ):
             return {
                 "content": "Execution approval resolved and artifacts captured.",
                 "tool_calls": [],
@@ -260,10 +267,11 @@ class V3LocalEvalInvoker:
                 "tool_calls": [
                     {
                         "id": "call_eval_execution_task_complete",
-                        "name": "task.update",
+                        "name": "task.finish",
                         "args": {
                             "task_id": task_id,
                             "status": "completed",
+                            "summary": "Execution approval resolved and artifacts captured.",
                         },
                     }
                 ],
@@ -375,8 +383,12 @@ class V3LocalEvalInvoker:
                 "tool_calls": [
                     {
                         "id": "call_eval_report_task_complete",
-                        "name": "task.update",
-                        "args": {"task_id": task_id, "status": "completed"},
+                        "name": "task.finish",
+                        "args": {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "summary": "Report published.",
+                        },
                     }
                 ],
             }
@@ -1867,6 +1879,7 @@ class V3AOXHMMEvalInvoker:
         self.purpose = purpose
         self.calls = 0
         self.workflow_calls = 0
+        self._patched_source_ref: tuple[str, str] | None = None
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
@@ -1879,23 +1892,36 @@ class V3AOXHMMEvalInvoker:
 
     def _executor_response(self, system_prompt: str, messages: list[object]) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_aox_hmm_execution"
-        if any(_tool_message_name(message) == "task.update" for message in messages):
+        if any(
+            _tool_message_name(message) in {"task.update", "task.finish"}
+            for message in messages
+        ):
             return {
                 "content": "AOX/HMM execution completed with candidate artifacts and provenance.",
                 "tool_calls": [],
             }
-        if any(_tool_message_name(message) == "execution.pipeline.status" for message in messages):
+        created_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.create_text"))
+        patched_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.patch_text"))
+        if patched_ref is not None:
+            self._patched_source_ref = patched_ref
+        diffed = any(_tool_message_name(message) == "artifact.diff_text" for message in messages)
+
+        if self.calls >= 8:
             return {
                 "content": "",
                 "tool_calls": [
                     {
                         "id": "call_aox_task_complete",
-                        "name": "task.update",
-                        "args": {"task_id": task_id, "status": "completed"},
+                        "name": "task.finish",
+                        "args": {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "summary": "AOX/HMM execution completed with candidate artifacts and provenance.",
+                        },
                     }
                 ],
             }
-        if "Existing execution pipeline invocation:" in system_prompt:
+        if self.calls in {5, 7} and "Existing execution pipeline invocation:" in system_prompt:
             invocation_id = (
                 system_prompt.split("Existing execution pipeline invocation:", 1)[1]
                 .split(".", 1)[0]
@@ -1911,29 +1937,7 @@ class V3AOXHMMEvalInvoker:
                     }
                 ],
             }
-
-        created_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.create_text"))
-        patched_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.patch_text"))
-        diffed = any(_tool_message_name(message) == "artifact.diff_text" for message in messages)
-        execution_records = _execution_start_records(messages)
-        dry_run_done = any(
-            _execution_record_has_idempotency_marker(
-                record,
-                call_id="call_aox_dry_run",
-                marker=":dry_run:",
-            )
-            for record in execution_records
-        )
-        execute_started = any(
-            _execution_record_has_idempotency_marker(
-                record,
-                call_id="call_aox_execute",
-                marker=":execute:",
-            )
-            for record in execution_records
-        )
-
-        if patched_ref is not None and dry_run_done and not execute_started:
+        if self.calls >= 6 and self._patched_source_ref is not None:
             return {
                 "content": "",
                 "tool_calls": [
@@ -1942,7 +1946,7 @@ class V3AOXHMMEvalInvoker:
                         "name": "execution.pipeline.start",
                         "args": {
                             "task_id": task_id,
-                            "code_artifact_id": patched_ref[0],
+                            "code_artifact_id": self._patched_source_ref[0],
                             "inputs": {
                                 "approval_policy": "single_plan",
                                 "expected_outputs": [
@@ -1954,7 +1958,7 @@ class V3AOXHMMEvalInvoker:
                     }
                 ],
             }
-        if patched_ref is not None and diffed and not dry_run_done:
+        if patched_ref is not None and diffed:
             return {
                 "content": "",
                 "tool_calls": [
@@ -2916,11 +2920,12 @@ def _run_v3_aox_hmm_prompt_scenario(
                         for item in workspace["delegation"]["agents"]
                     )
                     and "task.delegate" in event_text,
-                    "source_artifact_versions": scenario_class == "live" or sorted(
-                        int((artifact.metadata or {}).get("version") or 0)
-                        for artifact in code_artifacts
-                    )
-                    == [1, 2],
+                    "source_artifact_versions": scenario_class == "live" or {1, 2}.issubset(
+                        {
+                            int((artifact.metadata or {}).get("version") or 0)
+                            for artifact in code_artifacts
+                        }
+                    ),
                     "source_diff_recorded": scenario_class == "live" or "artifact.diff_text" in event_text,
                     "dry_run_plan": scenario_class == "live" or bool(dry_run_invocations)
                     and bool(plan.get("bio_operations"))

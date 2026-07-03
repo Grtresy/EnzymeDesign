@@ -82,7 +82,10 @@ def teammate_tool_descriptors(
         ),
         ToolDescriptor(
             tool_name="task.update",
-            description="Update the assigned task status, details, or assignment.",
+            description=(
+                "Edit the assigned task's details, assignment, or non-terminal state. "
+                "Use task.finish for completed, blocked, failed, or cancelled task exits."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -111,6 +114,35 @@ def teammate_tool_descriptors(
                     "failure_ref": {"type": ["string", "null"]},
                 },
                 "required": ["task_id"],
+                "additionalProperties": False,
+            },
+        ),
+        ToolDescriptor(
+            tool_name="task.finish",
+            description=(
+                "Explicitly close your assigned task stage as completed, blocked, failed, "
+                "or cancelled. A successful task.finish ends your current teammate turn."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["completed", "blocked", "failed", "cancelled"],
+                    },
+                    "summary": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "failure_summary": {"type": ["string", "null"]},
+                    "failure_ref": {"type": ["string", "null"]},
+                    "blocked_reason": {"type": ["string", "null"]},
+                    "recovery_hint": {"type": ["string", "null"]},
+                    "next_owner": {
+                        "type": ["string", "null"],
+                        "enum": ["master", "user", "teammate", None],
+                    },
+                },
+                "required": ["task_id", "status", "summary"],
                 "additionalProperties": False,
             },
         ),
@@ -694,7 +726,7 @@ class TeammateConversationDriver(HarnessDriver):
                 f"Role: {self.role}. You are part of the internal OpenZyme agent team.",
                 "You are not user-facing. Do not speak to the user directly.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
-                "Prefer tools over narration. Complete or advance the assigned task, then send a structured protocol update if useful.",
+                "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
                 "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
@@ -1075,6 +1107,17 @@ def run_teammate_loop(
     )
 
 
+def _terminal_task_finish_result(result: HarnessResult) -> ToolResult | None:
+    for tool_result in reversed(result.tool_results):
+        if (
+            tool_result.ok
+            and tool_result.terminal_action == "task.finish"
+            and tool_result.terminates_turn
+        ):
+            return tool_result
+    return None
+
+
 def finalize_teammate_result(
     context: SessionRuntimeContext,
     *,
@@ -1113,19 +1156,17 @@ def finalize_teammate_result(
             ),
         )
         return message, AgentMemberStatus.BLOCKED
-    recovered_completion = _recover_completion_from_workspace(
-        context,
-        task_id=task_id,
-        correlation_id=correlation_id,
-    )
-    if (
-        result.status is HarnessStatus.MAX_STEPS_EXCEEDED
-        and recovered_completion is None
-    ):
+    task_finish_result = _terminal_task_finish_result(result)
+    if task_finish_result is not None:
+        task_status = str(
+            (task_finish_result.details or {}).get("task_status")
+            or task_finish_result.status
+            or "completed"
+        )
         message = (
-            result.outputs[-1]
-            if result.outputs
-            else f"{agent_id} exceeded the delegated work step budget."
+            task_finish_result.summary
+            or task_finish_result.status
+            or f"{agent_id} finished delegated work."
         )
         protocol.reply(
             session_id=context.snapshot.session.session_id,
@@ -1140,7 +1181,53 @@ def finalize_teammate_result(
                 document_kind="protocol_payload",
                 payload={
                     "task_id": task_id,
+                    "status": task_status,
+                    "runtime_status": result.status.value,
+                    "summary": message,
+                    "outputs": list(result.outputs),
+                    "terminal_action": "task.finish",
+                    "finish_ref": (task_finish_result.details or {}).get("finish_ref"),
+                    "evidence_refs": (task_finish_result.details or {}).get(
+                        "evidence_refs",
+                        [],
+                    ),
+                },
+            ),
+        )
+        if task_status == "blocked":
+            return message, AgentMemberStatus.BLOCKED
+        return message, AgentMemberStatus.IDLE
+    recovered_completion = _recover_completion_from_workspace(
+        context,
+        task_id=task_id,
+        correlation_id=correlation_id,
+    )
+    if (
+        result.status is HarnessStatus.MAX_STEPS_EXCEEDED
+        and recovered_completion is None
+    ):
+        message = (
+            result.outputs[-1]
+            if result.outputs
+            else f"{agent_id} exceeded the delegated work step budget."
+        )
+        task = context.repositories.tasks.get(task_id)
+        protocol.reply(
+            session_id=context.snapshot.session.session_id,
+            sender=agent_id,
+            sender_kind=InboxParticipantKind.AGENT,
+            recipient="harness",
+            recipient_kind=InboxParticipantKind.HARNESS,
+            message_type="delegation_result",
+            correlation_id=correlation_id,
+            payload_ref=protocol.persist_payload(
+                session_id=context.snapshot.session.session_id,
+                document_kind="protocol_payload",
+                payload={
+                    "task_id": task_id,
                     "status": result.status.value,
+                    "business_status": "unchanged",
+                    "task_status": None if task is None else task.status.value,
                     "summary": message,
                     "outputs": list(result.outputs),
                 },

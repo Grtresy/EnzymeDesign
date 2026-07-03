@@ -26,6 +26,8 @@ OpenZyme V3 的第一原则是：
 - approval protocols
 - canonical projections
 
+Harness 可以持久化和校验任务状态，但不能替 agent 判断某个 capability/tool outcome 是否代表业务阶段完成。业务任务的完成、阻塞、失败或取消必须由 master/teammate 通过显式 task lifecycle 工具写入。
+
 这里的 `Master Agent` 指对外代表 OpenZyme 与用户沟通、理解需求、创建和编排 task 的顶层 agent，也是 agent team 的 team leader。
 
 这里的 `Harness` 指为 master agent 与 teammate agents 提供持久化状态、协议、执行约束、恢复与投影的系统层。

@@ -280,7 +280,7 @@ class AgentRuntimeService:
         if result.pending_approval_id is not None:
             task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.BLOCKED))
             ok = True
-        elif final_status is AgentMemberStatus.IDLE:
+        elif final_status in {AgentMemberStatus.IDLE, AgentMemberStatus.BLOCKED}:
             ok = True
         else:
             ok = False
