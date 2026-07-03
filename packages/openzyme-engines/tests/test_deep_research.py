@@ -44,6 +44,7 @@ from openzyme_engines.deep_research_graph import build_deep_research_subgraph
 from openzyme_engines.deep_research_graph import _select_tool_calls_for_budget
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import LangChainToolCallingInvoker
+from openzyme_runtime import ToolSpec
 from openzyme_runtime import ToolSideEffect
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchSource
@@ -216,7 +217,9 @@ class SingleSearchToolCallInvoker:
         self._factory = factory
 
     def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]):
-        del system_prompt, messages, tools
+        del system_prompt, messages
+        assert all(isinstance(tool, ToolSpec) for tool in tools)
+        assert "web.search" in {tool.tool_name for tool in tools}
         self._factory.calls.append("deep_research_researcher")
         if self._factory.tool_call_count:
             return {"content": "Search complete.", "tool_calls": []}

@@ -23,6 +23,9 @@ from .llm_invocation import is_retryable_llm_provider_error
 from .llm_invocation import LlmInvocationRuntime
 from .llm_invocation import LlmProviderErrorClassification
 from .llm_invocation import LlmProviderInvocationError
+from .provider_tools import openai_tool_from_spec
+from .provider_tools import ProviderToolAdapter
+from .provider_tools import ProviderToolCatalog
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
 from .artifact_boundary import ArtifactBoundaryError
@@ -202,6 +205,7 @@ __all__ = [
     "MissingLangGraphPostgresDependencyError",
     "MissingLlmConfigurationError",
     "OpenAICompatibleChatModelFactory",
+    "openai_tool_from_spec",
     "AsyncConcurrencyLimiter",
     "DEFAULT_PROVIDER_LIMITS",
     "LimiterRegistry",
@@ -210,6 +214,8 @@ __all__ = [
     "PRIVATE_ARTIFACT_KEYS",
     "PostgresCheckpointerConfig",
     "PostgresCheckpointerFactory",
+    "ProviderToolAdapter",
+    "ProviderToolCatalog",
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",

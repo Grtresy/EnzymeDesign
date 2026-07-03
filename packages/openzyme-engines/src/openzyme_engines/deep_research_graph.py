@@ -20,6 +20,7 @@ from openzyme_runtime import DefaultResearchToolProvider
 from openzyme_runtime import ResearchTool
 from openzyme_runtime import ResearchToolContext
 from openzyme_runtime import ResearchToolProvider
+from openzyme_runtime import ToolSpec
 from pydantic import ValidationError
 
 from .deep_research_contracts import EvidenceSynthesis
@@ -225,26 +226,17 @@ def _select_tool_calls_for_budget(
     ]
 
 
-def _build_langchain_tool(tool_def: ResearchTool, context: ResearchToolContext) -> Any:
-    from langchain_core.tools import StructuredTool
-
-    def _invoke(**kwargs: Any) -> str:
-        result = tool_def.invoke(args=kwargs, context=context)
-        return json.dumps(
-            {
-                "tool_name": result.tool_name,
-                "summary": result.summary,
-                "payload": result.payload,
-            },
-            ensure_ascii=True,
-            sort_keys=True,
-        )
-
-    return StructuredTool.from_function(
-        func=_invoke,
-        name=tool_def.name,
+def _research_tool_spec(tool_def: ResearchTool) -> ToolSpec:
+    args_schema = tool_def.args_schema
+    input_schema = (
+        args_schema.model_json_schema()
+        if hasattr(args_schema, "model_json_schema")
+        else {"type": "object", "properties": {}, "additionalProperties": True}
+    )
+    return ToolSpec(
+        tool_name=tool_def.name,
         description=tool_def.description,
-        args_schema=tool_def.args_schema,
+        input_schema=input_schema,
     )
 
 
@@ -323,17 +315,7 @@ def _run_research_unit(
                     "After a search returns enough credible sources to support synthesis, stop calling tools and let synthesis run."
                 ),
                 messages=list(messages),
-                tools=[
-                    _build_langchain_tool(
-                        tool,
-                        _build_tool_context(
-                            inputs,
-                            state,
-                            tool_call_iterations=tool_call_iterations,
-                        ),
-                    )
-                    for tool in available_tools
-                ],
+                tools=[_research_tool_spec(tool) for tool in available_tools],
             )
         except Exception as exc:
             raise RuntimeError(

@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from openzyme_runtime import AgentStepContext
+from openzyme_runtime import ToolSpec
 
 from .engines import EngineRegistry
 from .harness import HarnessInput
@@ -248,7 +249,7 @@ class LlmConversationDriver:
 
     def _prepare_step_context(
         self, context: SessionRuntimeContext, *, call_index: int
-    ) -> tuple[list[dict[str, Any]], AgentStepContext]:
+    ) -> tuple[list[ToolSpec], AgentStepContext]:
         router = context.tool_registry.to_tool_router(
             context,
             descriptors=self._tool_catalog(),
@@ -265,7 +266,7 @@ class LlmConversationDriver:
         )
         context.current_tool_router = router
         context.current_step_context = step_context
-        return [spec.to_openai_tool() for spec in specs], step_context
+        return list(specs), step_context
 
     def _invocation_refs(
         self, tool_name: str, args: dict[str, Any]

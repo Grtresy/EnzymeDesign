@@ -210,7 +210,9 @@ digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算�
 
 `tool.invoked` / `tool.completed` 只作为 diagnostic/runtime events。它们必须带上 `agent_id`、`actor_kind`、`role` 与 `call_index`，用于把 tool request/result status 关联回对应 LLM step；同时保留 `step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`、`ok` / `status` / `error_code` 等公开诊断字段。它们不能成为新的 Codex-style turn 顶层状态，也不能携带 tool result content 或私有路径。
 
-模型可见 tool spec 与 dispatch runtime 必须来自同一个 typed tool router。legacy `registry.register(name, handler)` 可以继续存在，但进入模型调用前要被包装为 `ToolRuntime`：同一个 runtime 对象负责生成 `ToolSpec` 并执行 `dispatch(step_context, invocation, runtime_context)`。这保证 provider-visible catalog、trace metadata 和真实 tool execution 不会走三套不一致路径。
+模型可见 tool spec 与 dispatch runtime 必须来自同一个 typed tool router。legacy `registry.register(name, handler)` 可以继续存在，但进入模型调用前要被包装为 `ToolRuntime`：同一个 runtime 对象负责生成 canonical `ToolSpec` 并执行 `dispatch(step_context, invocation, runtime_context)`。这保证 provider-visible catalog、trace metadata 和真实 tool execution 不会走三套不一致路径。
+
+`ProviderToolAdapter` 是 `ToolSpec` 与 provider-visible schema 之间的唯一转换边界。它接收 router 输出的 canonical `ToolSpec` 或显式 legacy compatibility dict，输出 provider tools、`canonical_to_provider` 和 `provider_to_canonical`。MICU dotted alias 只允许在这里发生；provider response 必须先通过 adapter 恢复为 canonical dotted tool name，再进入 driver/router/harness。`ToolRouter.dispatch()` 只接受 canonical tool name；`task_create` 这类 provider alias 在内部 dispatch 中仍应是 `unknown_tool`，不能作为隐藏 fallback。
 
 `ToolRuntime` 同时承载最小治理 contract：
 

@@ -9,6 +9,8 @@ from types import ModuleType
 from pydantic import BaseModel
 
 from openzyme_runtime import LimiterRegistry
+from openzyme_runtime import ProviderToolAdapter
+from openzyme_runtime import ToolSpec
 from openzyme_runtime.ai import LangChainStructuredInvoker
 from openzyme_runtime.ai import LangChainToolCallingInvoker
 from openzyme_runtime.ai import OpenAICompatibleChatModelFactory
@@ -40,6 +42,77 @@ class FakeApiStatusError(Exception):
             (),
             {"status_code": status_code, "headers": headers or {}},
         )()
+
+
+def _task_create_spec() -> ToolSpec:
+    return ToolSpec(
+        tool_name="task.create",
+        description="Create a task.",
+        input_schema={
+            "type": "object",
+            "properties": {"subject": {"type": "string"}},
+            "required": ["subject"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def test_provider_tool_adapter_projects_tool_specs_and_restores_response() -> None:
+    catalog = ProviderToolAdapter(dotted_tool_name_aliasing=True).prepare(
+        [_task_create_spec()]
+    )
+    response = {
+        "content": "",
+        "tool_calls": [
+            {
+                "name": "task_create",
+                "id": "call_task",
+                "args": {"subject": "new task"},
+            }
+        ],
+    }
+
+    restored = catalog.restore_response(response)
+
+    assert catalog.provider_tools[0]["function"]["name"] == "task_create"
+    assert catalog.canonical_to_provider == {"task.create": "task_create"}
+    assert catalog.provider_to_canonical == {"task_create": "task.create"}
+    assert restored["tool_calls"][0]["name"] == "task.create"
+
+
+def test_provider_tool_adapter_keeps_canonical_names_when_aliasing_disabled() -> None:
+    catalog = ProviderToolAdapter(dotted_tool_name_aliasing=False).prepare(
+        [_task_create_spec()]
+    )
+
+    assert catalog.provider_tools[0]["function"]["name"] == "task.create"
+    assert catalog.canonical_to_provider == {"task.create": "task.create"}
+    assert catalog.provider_to_canonical == {"task.create": "task.create"}
+    assert catalog.aliases == {}
+
+
+def test_provider_tool_adapter_deterministically_avoids_alias_collisions() -> None:
+    catalog = ProviderToolAdapter(dotted_tool_name_aliasing=True).prepare(
+        [
+            ToolSpec(
+                tool_name="a_b",
+                description="Undotted tool.",
+                input_schema={"type": "object", "properties": {}},
+            ),
+            ToolSpec(
+                tool_name="a.b",
+                description="Dotted tool.",
+                input_schema={"type": "object", "properties": {}},
+            ),
+        ]
+    )
+
+    assert catalog.canonical_to_provider == {"a_b": "a_b", "a.b": "a_b_2"}
+    assert catalog.provider_to_canonical == {"a_b": "a_b", "a_b_2": "a.b"}
+    assert [tool["function"]["name"] for tool in catalog.provider_tools] == [
+        "a_b",
+        "a_b_2",
+    ]
 
 
 def test_structured_invoker_retries_retryable_openai_errors(monkeypatch) -> None:
@@ -302,6 +375,12 @@ def test_tool_calling_invoker_aliases_dotted_tool_names_for_provider() -> None:
     assert response.tool_calls[0]["name"] == "task.create"
     assert response.content[0]["name"] == "task.create"
     assert records[0]["request"]["tools"][0]["function"]["name"] == "task_create"
+    assert records[0]["request"]["canonical_to_provider"] == {
+        "task.create": "task_create"
+    }
+    assert records[0]["request"]["provider_to_canonical"] == {
+        "task_create": "task.create"
+    }
     assert records[0]["request"]["internal_tools"][0]["function"]["name"] == "task.create"
     assert records[0]["request"]["tool_name_aliases"] == {"task.create": "task_create"}
     assert records[0]["response"]["tool_calls"][0]["name"] == "task.create"
@@ -436,14 +515,29 @@ def test_openai_compatible_factory_counts_bigmodel_prompt_tokens(monkeypatch) ->
     result = factory.count_prompt_tokens(
         system_prompt="You are master.",
         messages=[{"role": "user", "content": "hello"}],
-        tools=[{"type": "function", "function": {"name": "task.list"}}],
+        tools=[
+            ToolSpec(
+                tool_name="task.list",
+                description="List tasks.",
+                input_schema={"type": "object", "properties": {}},
+            )
+        ],
     )
 
     payload = observed["payload"]
     assert result == {"available": True, "prompt_tokens": 123}
     assert payload["model"] == "glm-5.1"
     assert payload["messages"][0] == {"role": "system", "content": "You are master."}
-    assert payload["tools"] == [{"type": "function", "function": {"name": "task.list"}}]
+    assert payload["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "task.list",
+                "description": "List tasks.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
 
 
 def test_openai_compatible_factory_tokenizer_failure_is_unavailable(monkeypatch) -> None:

@@ -178,7 +178,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `agent_traces` 使用稳定 public projection helper / allowlist 生成；每个 trace entry 只允许暴露 `trace_id`、`actor_ref`、`actor_kind`、`display_name`、`role`、`call_index`、`created_at`、`response_text`、`tool_calls`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`projection_schema_version` 与已清洗的 `agent_step`
 - `agent_step` 只允许 `step_id`、`session_id`、`agent_id`、`actor_kind`、`role`、`call_index`、`task_id`、`lane_id`、`correlation_id`、`signal_id`、`wakeup_reason`、`restore_context_digest`、`tool_catalog_digest`、`created_at`
 - `agent_traces` 是过程级可观测性 read model；每次 master / teammate LLM response 后都应生成 trace entry，供 Web UI 展示中间 response text 与工具调用请求
-- `tool_calls[]` 只展示 LLM 请求调用工具的公开投影：`call_id`、`tool_name`、`task_id`、`lane_id`、`args_public`。本读模型不展示 tool result
+- `tool_calls[]` 只展示 LLM 请求调用工具的公开投影：`call_id`、canonical dotted `tool_name`、`task_id`、`lane_id`、`args_public`。本读模型不展示 tool result；provider-safe alias 只允许出现在 LLM debug request 中，不进入 workspace trace
 - `args_public` 必须清洗 secret/token/password/credential、Host path、storage URI、SSH/runner config、pipeline/source code 与超长字段；保留工具名、任务/车道关联、公开 instructions 和结构化意图
 - `agent_traces` 不暴露 restore context、memory summary、完整 tool schema、prompt / `initial_prompt`、Host path、storage URI、runner path、SSH/runner config、provider secret 或 tool result content
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
@@ -310,7 +310,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 `llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 被持久化为 `llm_trace_step` 后尽快推送该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。该事件 payload 必须与 `workspace.agent_traces` 使用同一 public projection helper / allowlist；SSE replay 从 workspace 恢复 trace event 时必须按 `trace_id` / `event_id` 去重。Web UI 用它实时增量更新 `workspace.agent_traces`，同样按 `trace_id` / `event_id` 去重；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
 
-`tool.invoked` 与 `tool.completed` 是 diagnostic/runtime events，不新增 Codex thread / turn 顶层产品状态。二者 payload 至少包含 `call_id`、`tool_name`、`task_id`、`lane_id`，并附加公开 actor / step / runtime metadata：`agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`。`tool.completed` 还包含 `ok`、`status` 与 `error_code`。这些 payload 不得包含完整 prompt、完整 tool schema、tool result content、artifact `storage_uri`、Host path、runner path、sandbox host path、SSH/runner config 或 provider secret。Web UI 可以把这些事件记录到 `activity_feed`，但它们不创建新的 workspace 顶层 turn / thread 状态。
+`tool.invoked` 与 `tool.completed` 是 diagnostic/runtime events，不新增 Codex thread / turn 顶层产品状态。二者 payload 至少包含 `call_id`、canonical dotted `tool_name`、`task_id`、`lane_id`，并附加公开 actor / step / runtime metadata：`agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`。`tool.completed` 还包含 `ok`、`status` 与 `error_code`。这些 payload 不得包含 provider alias、完整 prompt、完整 tool schema、tool result content、artifact `storage_uri`、Host path、runner path、sandbox host path、SSH/runner config 或 provider secret。Web UI 可以把这些事件记录到 `activity_feed`，但它们不创建新的 workspace 顶层 turn / thread 状态。
 
 迁移兼容 `execution.pipeline.start` 语义：
 

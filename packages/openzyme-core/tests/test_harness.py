@@ -50,6 +50,7 @@ from openzyme_core import builtin_tool_descriptors
 from openzyme_core import top_level_tool_descriptors
 from openzyme_core import build_teammate_registry
 from openzyme_core import ProtocolService
+from openzyme_core import register_task_board_tools
 from openzyme_core import register_subagent_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
@@ -59,7 +60,10 @@ from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
+from openzyme_runtime import get_llm_debug_recorder
+from openzyme_runtime import LangChainToolCallingInvoker
 from openzyme_runtime import ToolGovernance
+from openzyme_runtime import ToolSpec
 from openzyme_runtime import ToolSideEffect
 
 
@@ -2940,6 +2944,184 @@ def test_llm_conversation_driver_translates_tool_calls_to_invocations() -> None:
     assert step.tool_invocations[0].arguments["task_id"] == "task_002"
 
 
+def test_master_driver_passes_canonical_tool_specs_to_invoker() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = FakeModelFactory({"content": "I can help.", "tool_calls": []})
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="plan"),
+        driver=LlmConversationDriver(model_factory),
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    tools = model_factory.invokers["v3_harness_loop"].calls[0]["tools"]
+    assert tools
+    assert all(isinstance(tool, ToolSpec) for tool in tools)
+    assert "task.create" in {tool.tool_name for tool in tools}
+
+
+@pytest.mark.parametrize("role", ["researcher", "executor", "reporter"])
+def test_teammate_driver_passes_canonical_tool_specs_to_invoker(role: str) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = FakeModelFactory({"content": "done", "tool_calls": []})
+    driver = TeammateConversationDriver(
+        model_factory=model_factory,
+        role=role,
+        agent_id=f"agent:{role}",
+        correlation_id=f"corr_{role}",
+        task_id="task_001",
+        instructions="Complete the assigned task.",
+    )
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            sender=f"agent:{role}",
+            sender_kind=InboxParticipantKind.AGENT,
+            persist_conversation=False,
+        ),
+        driver=driver,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    tools = model_factory.invokers[f"v3_teammate_loop:{role}"].calls[0]["tools"]
+    assert tools
+    assert all(isinstance(tool, ToolSpec) for tool in tools)
+    assert "task.update" in {tool.tool_name for tool in tools}
+
+
+def _message_tool_names(messages: list[object]) -> set[str]:
+    names: set[str] = set()
+    for message in messages:
+        if isinstance(message, dict):
+            if isinstance(message.get("name"), str):
+                names.add(str(message["name"]))
+            for tool_call in message.get("tool_calls") or []:
+                if isinstance(tool_call, dict) and isinstance(
+                    tool_call.get("name"), str
+                ):
+                    names.add(str(tool_call["name"]))
+            continue
+        if hasattr(message, "name"):
+            name = getattr(message, "name")
+            if isinstance(name, str):
+                names.add(name)
+        for tool_call in getattr(message, "tool_calls", None) or []:
+            if isinstance(tool_call, dict) and isinstance(tool_call.get("name"), str):
+                names.add(str(tool_call["name"]))
+    return names
+
+
+def test_micu_provider_alias_restores_canonical_names_before_harness_dispatch() -> None:
+    get_llm_debug_recorder().clear()
+
+    class MicuAliasModelFactory:
+        def __init__(self) -> None:
+            self.provider_invocations = 0
+            self.bound_tool_names: list[list[str]] = []
+
+        def create_tool_calling_invoker(
+            self, *, purpose: str
+        ) -> LangChainToolCallingInvoker:
+            factory = self
+
+            class _Runnable:
+                def invoke(self, messages):
+                    if factory.provider_invocations == 0:
+                        factory.provider_invocations += 1
+                        return {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_task",
+                                    "name": "task_create",
+                                    "args": {"subject": "Canonical task"},
+                                }
+                            ],
+                        }
+                    assert "task_create" in _message_tool_names(list(messages))
+                    factory.provider_invocations += 1
+                    return {"content": "created canonical task", "tool_calls": []}
+
+            class _Model:
+                def bind_tools(self, tools):
+                    factory.bound_tool_names.append(
+                        [tool["function"]["name"] for tool in tools]
+                    )
+                    return _Runnable()
+
+            return LangChainToolCallingInvoker(
+                model=_Model(),
+                purpose=purpose,
+                model_name="debug-model",
+                base_url="https://www.micuapi.ai/v1",
+                dotted_tool_name_aliasing=True,
+            )
+
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = MicuAliasModelFactory()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="create a task"),
+        driver=LlmConversationDriver(model_factory),
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert model_factory.provider_invocations == 2
+    assert all("task_create" in names for names in model_factory.bound_tool_names)
+    assert result.tool_results[0].tool_name == "task.create"
+    tool_events = [
+        event
+        for event in result.events
+        if event.event_type in {"tool.invoked", "tool.completed"}
+    ]
+    assert {event.payload["tool_name"] for event in tool_events} == {"task.create"}
+
+    trace_documents = [
+        document
+        for document in repositories.engine_documents.list_by_session(session.session_id)
+        if document.document_kind == "llm_trace_step"
+    ]
+    trace_with_tool = next(
+        document for document in trace_documents if document.payload["tool_calls"]
+    )
+    assert trace_with_tool.payload["tool_calls"][0]["tool_name"] == "task.create"
+
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    workspace_text = json.dumps(workspace, sort_keys=True)
+    assert "task.create" in workspace_text
+    assert "task_create" not in workspace_text
+
+    records = get_llm_debug_recorder().list_records(
+        limit=10,
+        purpose="v3_harness_loop",
+        kind="tool_calling",
+    )
+    tool_call_record = next(
+        record for record in records if record["response"].get("tool_calls")
+    )
+    provider_tool_names = {
+        tool["function"]["name"] for tool in tool_call_record["request"]["tools"]
+    }
+    assert "artifact_list" in provider_tool_names
+    assert "task_create" in provider_tool_names
+    assert (
+        tool_call_record["request"]["tool_name_aliases"]["task.create"]
+        == "task_create"
+    )
+    assert tool_call_record["response"]["tool_calls"][0]["name"] == "task.create"
+
+
 def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -3354,6 +3536,50 @@ def test_master_driver_does_not_prevalidate_unknown_tool_availability() -> None:
 
     assert result.outputs == ("handled unknown tool",)
     assert result.tool_results[0].status == "unknown_tool"
+
+
+def test_tool_router_dispatch_rejects_provider_alias_names() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(),
+        skill_registry=SkillRegistry(),
+    )
+    context.refresh_restore_context()
+    router = context.tool_registry.to_tool_router(
+        context,
+        descriptors=top_level_tool_descriptors(None),
+    )
+    step_context = build_agent_step_context(
+        context,
+        call_index=1,
+        tool_specs=router.model_visible_specs(build_agent_step_context(context, call_index=1)),
+    )
+
+    result = router.dispatch(
+        step_context,
+        ToolInvocation(call_id="call_alias", tool_name="task_create", arguments={}),
+    )
+
+    assert result.status == "unknown_tool"
+    assert result.tool_name == "task_create"
+    canonical_result = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_canonical",
+            tool_name="task.create",
+            arguments={"subject": "canonical task"},
+        ),
+    )
+    assert canonical_result.ok is True
+    assert canonical_result.tool_name == "task.create"
 
 
 def test_teammate_driver_uses_router_schema_validation() -> None:

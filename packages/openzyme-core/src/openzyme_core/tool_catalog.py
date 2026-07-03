@@ -25,6 +25,8 @@ class ToolDescriptor:
         )
 
     def to_openai_tool(self) -> dict[str, Any]:
+        # Compatibility helper only. Product runtime model calls should convert
+        # ToolDescriptor -> ToolSpec -> ProviderToolAdapter instead.
         return self.to_tool_spec().to_openai_tool()
 
 

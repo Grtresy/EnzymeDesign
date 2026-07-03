@@ -8,6 +8,7 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import ResearchSummaryStatus
 from openzyme_runtime import AgentStepContext
+from openzyme_runtime import ToolSpec
 
 from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_tools import register_artifact_tools
@@ -796,7 +797,7 @@ class TeammateConversationDriver(HarnessDriver):
 
     def _prepare_step_context(
         self, context: SessionRuntimeContext, *, call_index: int
-    ) -> tuple[list[dict[str, Any]], AgentStepContext]:
+    ) -> tuple[list[ToolSpec], AgentStepContext]:
         context.agent_id = context.agent_id or self.agent_id
         context.actor_kind = context.actor_kind or "teammate"
         context.actor_role = context.actor_role or self.role
@@ -823,7 +824,7 @@ class TeammateConversationDriver(HarnessDriver):
         )
         context.current_tool_router = router
         context.current_step_context = step_context
-        return [spec.to_openai_tool() for spec in specs], step_context
+        return list(specs), step_context
 
     def _initial_prompt_projection(
         self, context: SessionRuntimeContext, seed_messages: list[Any]

@@ -233,6 +233,9 @@ class ToolSpec:
     input_schema: dict[str, Any]
 
     def to_openai_tool(self) -> dict[str, Any]:
+        # Compatibility helper only. Runtime provider requests should use
+        # ProviderToolAdapter so canonical names and provider-safe names stay
+        # separated.
         return {
             "type": "function",
             "function": {
