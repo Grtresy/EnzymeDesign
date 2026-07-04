@@ -61,7 +61,7 @@ def _seed_executor(
     repositories: CoreRepositories,
     session: Session,
     *,
-    agent_id: str = "agent:executor",
+    agent_id: str = "agent:executor:runtime",
     member_id: str = "member_executor",
 ) -> AgentMember:
     agent = AgentMember(

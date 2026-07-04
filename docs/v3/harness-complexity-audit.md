@@ -33,9 +33,9 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   目标边界：runtime 可以标记 runtime signal completed / failed，也可以标记 agent working / idle / blocked。业务 task 状态原则上应只通过显式 task tool 改变，或通过极少数已文档化的机械状态迁移改变。
 
-  后续修正方向：要求 teammate loop 显式调用 `task.update` 写入 task 终态；或者定义一份最小、明确、已文档化的 runtime 机械状态迁移例外清单。
+  后续修正方向：要求 teammate loop 显式调用 `task.finish` 写入 task 业务出口；或者定义一份最小、明确、已文档化的 runtime 机械状态迁移例外清单。
 
-  修正记录：已收窄 runtime 状态写入。`AgentRuntimeService.wake_agent()` 不再根据 teammate `final_status` 自动写 `COMPLETED` / failure-derived `BLOCKED`；teammate 需通过 `task.update` 显式写业务终态。保留的机械迁移为 task claim 时进入 `IN_PROGRESS`，以及 pending approval 时进入 `BLOCKED`。
+  修正记录：已收窄 runtime 状态写入。`AgentRuntimeService.wake_agent()` 不再根据 teammate `final_status` 自动写 `COMPLETED` / failure-derived `BLOCKED`；teammate 需通过 `task.finish` 显式写业务出口。保留的机械迁移为 task claim 时进入 `IN_PROGRESS`，以及 pending approval 时进入 `BLOCKED`。
 
 - [x] Host API 在用户消息和 task 更新后隐式 drain agent runtime。
 

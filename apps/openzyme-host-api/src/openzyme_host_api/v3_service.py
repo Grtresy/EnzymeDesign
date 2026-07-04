@@ -311,6 +311,9 @@ class V3HostApiService:
             updated_at=now,
             runtime_state="idle",
             idle_since=now,
+            nickname="OpenZyme",
+            display_name="OpenZyme",
+            handle="@openzyme",
         )
         self.repositories.agents.save(master)
         return master

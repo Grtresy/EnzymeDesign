@@ -50,7 +50,7 @@ def _seed_executor(
     repositories: CoreRepositories,
     session: Session,
     *,
-    agent_id: str = "agent:executor",
+    agent_id: str = "agent:executor:boundary",
     member_id: str = "member_executor",
 ) -> AgentMember:
     agent = AgentMember(

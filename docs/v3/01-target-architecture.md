@@ -81,7 +81,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 同时，V3 的 agent 不应继续建模为 REST 调用栈里的临时 loop 或一次性 subagent。默认语义是 resident agent team：
 
 - master agent 是默认 resident member，例如 `agent:master`；它负责 user-facing conversation、task 编排与 teammate 协调
-- teammate 的身份、role、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在
+- teammate 的 canonical `agent_id`、role、nickname/display name/handle、inbox、task focus、status 与 protocol threads 跨多轮对话持久存在；role 是能力类型，不是身份
 - 常驻不表示持续占用 LLM 推理；idle agent 不运行模型，只等待 scheduler 的 wakeup signal
 - 用户消息只持久化消息并排队 `agent:master` wakeup；Host API 不直接运行 master loop
 - teammate 默认由 master delegation 唤醒，也可以被 inbox message、approval resolution、engine completion 或 manual resume 唤醒；task auto-claim 仅用于显式 recovery/debug/operator 场景

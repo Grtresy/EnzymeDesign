@@ -48,7 +48,7 @@ def _build_context() -> tuple[CoreRepositories, SessionRuntimeContext]:
         status=TaskStatus.COMPLETED,
         priority=TaskPriority.HIGH,
         kind="research",
-        assigned_ref="agent:researcher",
+        assigned_ref="agent:researcher:artifacts",
         created_at="2026-04-20T12:00:01+00:00",
         updated_at="2026-04-20T12:00:02+00:00",
     )

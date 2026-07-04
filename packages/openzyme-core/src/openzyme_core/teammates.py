@@ -34,6 +34,8 @@ from .harness import build_agent_step_context
 from .harness import budget_tool_results_for_prompt
 from .harness import ensure_prompt_budget_before_model_call
 from .harness import run_agent_harness_loop
+from .agent_identity import display_name_for_agent
+from .agent_identity import handle_for_agent
 from .lane_manager import register_lane_tools
 from .llm_driver import _sanitize_public_args
 from .memory import register_memory_tools
@@ -683,6 +685,24 @@ class TeammateConversationDriver(HarnessDriver):
     _call_index: int = 0
     _instructions_compacted: bool = False
 
+    def _agent_member(self, context: SessionRuntimeContext) -> Any | None:
+        return context.repositories.agents.get(
+            context.snapshot.session.session_id,
+            self.agent_id,
+        )
+
+    def _display_name(self, context: SessionRuntimeContext) -> str:
+        agent = self._agent_member(context)
+        if agent is None:
+            return self.agent_id.removeprefix("agent:") or self.agent_id
+        return display_name_for_agent(agent)
+
+    def _handle(self, context: SessionRuntimeContext) -> str | None:
+        agent = self._agent_member(context)
+        if agent is None:
+            return None
+        return handle_for_agent(agent)
+
     def _instructions_for_prompt(self, *, compact: bool = False) -> str:
         if not compact or len(self.instructions) <= 1200:
             return self.instructions
@@ -716,11 +736,15 @@ class TeammateConversationDriver(HarnessDriver):
         report_titles = (
             ", ".join(report.title for report in restore.reports[:8]) or "none"
         )
+        display_name = self._display_name(context)
+        handle = self._handle(context) or "none"
         return "\n".join(
             [
-                f"You are teammate agent {self.agent_id}.",
-                f"Role: {self.role}. You are part of the internal OpenZyme agent team.",
+                f"You are teammate {display_name} ({handle}).",
+                f"Canonical agent_id: {self.agent_id}. Use this for task ownership, runtime signals, leases, protocol routing, and task.finish authorization.",
+                f"Role: {self.role}. Role is a capability type for prompts, tools, and runtime policy; it is not your identity.",
                 "You are not user-facing. Do not speak to the user directly.",
+                "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
                 "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
                 "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
@@ -826,10 +850,10 @@ class TeammateConversationDriver(HarnessDriver):
     def _prepare_step_context(
         self, context: SessionRuntimeContext, *, call_index: int
     ) -> tuple[list[ToolSpec], AgentStepContext]:
-        context.agent_id = context.agent_id or self.agent_id
-        context.actor_kind = context.actor_kind or "teammate"
-        context.actor_role = context.actor_role or self.role
-        context.correlation_id = context.correlation_id or self.correlation_id
+        context.agent_id = self.agent_id
+        context.actor_kind = "teammate"
+        context.actor_role = self.role
+        context.correlation_id = self.correlation_id
         descriptors = self._allowed_tools(context)
         if self.role == "executor":
             descriptors = (
@@ -861,6 +885,9 @@ class TeammateConversationDriver(HarnessDriver):
         return {
             "identity": self.agent_id,
             "role": self.role,
+            "nickname": self._display_name(context),
+            "display_name": self._display_name(context),
+            "handle": self._handle(context),
             "task_id": self.task_id,
             "lane_id": None if restore is None else restore.focused_lane_id,
             "correlation_id": self.correlation_id,
@@ -876,6 +903,7 @@ class TeammateConversationDriver(HarnessDriver):
     def _trace_step(
         self,
         *,
+        context: SessionRuntimeContext,
         response_text: str,
         tool_invocations: tuple[ToolInvocation, ...] = (),
         initial_prompt: dict[str, Any] | None = None,
@@ -885,7 +913,7 @@ class TeammateConversationDriver(HarnessDriver):
         return LlmTraceStep(
             actor_ref=self.agent_id,
             actor_kind="teammate",
-            display_name=self.agent_id.removeprefix("agent:") or self.agent_id,
+            display_name=self._display_name(context),
             role=self.role,
             call_index=self._call_index,
             response_text=response_text,
@@ -1018,6 +1046,7 @@ class TeammateConversationDriver(HarnessDriver):
             return HarnessStep(
                 tool_invocations=tool_invocations,
                 llm_trace=self._trace_step(
+                    context=context,
                     response_text=response_text,
                     tool_invocations=tool_invocations,
                     initial_prompt=initial_prompt,
@@ -1036,6 +1065,7 @@ class TeammateConversationDriver(HarnessDriver):
         return HarnessStep(
             assistant_message=assistant_message,
             llm_trace=self._trace_step(
+                context=context,
                 response_text=assistant_message,
                 initial_prompt=initial_prompt,
                 step_context=step_context,

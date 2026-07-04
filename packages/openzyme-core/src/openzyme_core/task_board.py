@@ -16,6 +16,9 @@ from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .agent_identity import AgentIdentityError
+from .agent_identity import is_teammate_role_alias
+from .agent_identity import resolve_agent_reference
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 
@@ -27,11 +30,6 @@ _PRIORITY_ORDER = {
     TaskPriority.LOW: 3,
 }
 _PSEUDO_EMPTY_ASSIGNED_REFS = {"", "none", "null"}
-_TEAMMATE_ASSIGNED_REF_ALIASES = {
-    "researcher": "agent:researcher",
-    "executor": "agent:executor",
-    "reporter": "agent:reporter",
-}
 _TASK_FINISH_STATUSES = {
     TaskStatus.COMPLETED,
     TaskStatus.BLOCKED,
@@ -54,15 +52,40 @@ _EVIDENCE_REF_KINDS = {
 }
 
 
-def _normalize_assigned_ref(value: Any) -> str | None:
+def _normalize_assigned_ref(
+    repositories: CoreRepositories,
+    *,
+    session_id: str,
+    value: Any,
+) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
         normalized = value.strip()
         if normalized.lower() in _PSEUDO_EMPTY_ASSIGNED_REFS:
             return None
-        if normalized.lower() in _TEAMMATE_ASSIGNED_REF_ALIASES:
-            return _TEAMMATE_ASSIGNED_REF_ALIASES[normalized.lower()]
+        if is_teammate_role_alias(normalized):
+            raise AgentIdentityError(
+                f"{normalized!r} is a role alias, not a canonical assigned_ref"
+            )
+        if normalized.startswith("@"):
+            resolution = resolve_agent_reference(
+                repositories,
+                session_id=session_id,
+                reference=normalized,
+            )
+            if resolution.agent is None:
+                raise AgentIdentityError(
+                    f"assigned_ref {normalized!r} did not resolve to an agent"
+                )
+            return resolution.agent.agent_id
+        resolution = resolve_agent_reference(
+            repositories,
+            session_id=session_id,
+            reference=normalized,
+        )
+        if resolution.agent is not None:
+            return resolution.agent.agent_id
         return normalized
     return str(value)
 
@@ -180,6 +203,8 @@ def _validate_evidence_refs(
 
 
 def _can_finish_task(context: SessionRuntimeContext, task: Task) -> bool:
+    if is_teammate_role_alias(context.agent_id) or is_teammate_role_alias(task.assigned_ref):
+        return False
     if context.agent_id == task.assigned_ref and context.agent_id is not None:
         return True
     if context.actor_kind == "master" or context.agent_id == "agent:master":
@@ -196,10 +221,16 @@ def _required_structure_artifact_error(
     task: Task,
     retry_tool: str,
 ) -> ToolResult | None:
+    assigned_agent = (
+        None
+        if task.assigned_ref is None
+        else context.repositories.agents.get(task.session_id, task.assigned_ref)
+    )
     if (
         task.status is not TaskStatus.COMPLETED
         and task.kind == "research"
-        and str(task.assigned_ref or "").startswith("agent:researcher")
+        and assigned_agent is not None
+        and assigned_agent.role == "researcher"
         and _session_requires_structure_artifact(context)
         and not _session_has_structure_artifact(context)
     ):
@@ -314,7 +345,11 @@ class TaskBoardService:
             priority=priority,
             kind=kind,
             status=status,
-            assigned_ref=_normalize_assigned_ref(assigned_ref),
+            assigned_ref=_normalize_assigned_ref(
+                self.repositories,
+                session_id=session_id,
+                value=assigned_ref,
+            ),
             lane_id=lane_id,
             blocked_by=blocked_by,
             failure_summary=failure_summary,
@@ -344,7 +379,11 @@ class TaskBoardService:
             kind=task.kind if mutation.kind is _UNSET else str(mutation.kind),
             assigned_ref=task.assigned_ref
             if mutation.assigned_ref is _UNSET
-            else _normalize_assigned_ref(mutation.assigned_ref),
+            else _normalize_assigned_ref(
+                self.repositories,
+                session_id=task.session_id,
+                value=mutation.assigned_ref,
+            ),
             created_at=task.created_at,
             updated_at=utc_now_iso() if mutation.updated_at is _UNSET else str(mutation.updated_at),
             lane_id=task.lane_id if mutation.lane_id is _UNSET else mutation.lane_id,

@@ -482,6 +482,9 @@ class AgentMember:
     idle_since: str | None = None
     shutdown_requested_at: str | None = None
     member_id: str | None = None
+    nickname: str | None = None
+    display_name: str | None = None
+    handle: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

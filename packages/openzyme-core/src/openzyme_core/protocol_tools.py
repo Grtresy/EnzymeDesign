@@ -4,79 +4,30 @@ import json
 from typing import Any
 
 from openzyme_domain import AgentMember
-from openzyme_domain import AgentMemberStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import Task
-from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .agent_identity import resolve_agent_reference
 from .protocols import ProtocolService
-from .teammate_roster import TEAMMATE_ROLE_NAMES
 
 
 _FAILURE_STATUSES = {"failed", "error", "cancelled", "canceled", "max_steps_exceeded"}
 
 
-def _default_agent_id_for_role(role: str) -> str:
-    return f"agent:{role}"
-
-
-def _create_resident_teammate(context: SessionRuntimeContext, *, role: str) -> AgentMember:
-    now = utc_now_iso()
-    agent = AgentMember(
-        agent_id=_default_agent_id_for_role(role),
-        session_id=context.snapshot.session.session_id,
-        lane_id=None,
-        task_id=None,
-        name=role.title(),
-        role=role,
-        status=AgentMemberStatus.IDLE,
-        parent_agent_id=None,
-        created_at=now,
-        updated_at=now,
-        runtime_state="idle",
-        current_correlation_id=None,
-        wakeup_reason=None,
-        last_active_at=None,
-        idle_since=now,
-        shutdown_requested_at=None,
-    )
-    context.repositories.agents.save(agent)
-    context.emit(
-        "agent.spawned",
-        {
-            "agent_id": agent.agent_id,
-            "status": agent.status.value,
-            "task_id": agent.task_id,
-            "lane_id": agent.lane_id,
-        },
-    )
-    return agent
-
-
 def _resolve_agent_recipient(
     context: SessionRuntimeContext,
     recipient: str,
-    *,
-    create_missing: bool = True,
 ) -> tuple[str | None, str, AgentMember | None]:
-    session_id = context.snapshot.session.session_id
-    existing = context.repositories.agents.get(session_id, recipient)
-    if existing is not None:
-        return existing.agent_id, "agent_id", existing
-    if recipient in TEAMMATE_ROLE_NAMES:
-        agent_id = _default_agent_id_for_role(recipient)
-        existing = context.repositories.agents.get(session_id, agent_id)
-        if existing is not None:
-            return existing.agent_id, "role_alias", existing
-        if not create_missing:
-            return agent_id, "role_alias_missing", None
-        created = _create_resident_teammate(context, role=recipient)
-        return created.agent_id, "role_alias_created", created
-    return None, "unresolved", None
+    resolution = resolve_agent_reference(
+        context.repositories,
+        session_id=context.snapshot.session.session_id,
+        reference=recipient,
+    )
+    return resolution.agent_id, resolution.resolution, resolution.agent
 
 
 def _resolve_task_focus(
@@ -118,7 +69,7 @@ def _focused_task_failure(
         "recipient": recipient,
         "resolved_recipient": resolved_recipient,
         "recipient_resolution": recipient_resolution,
-        "created_agent": None,
+        "resolved_agent": None,
         "task_id": task_id,
     }
     status = "focused_task_missing"
@@ -237,20 +188,17 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
         )
         resolved_recipient = recipient
         recipient_resolution = "literal"
-        created_agent = None
         resolved_agent = None
         if recipient_kind is InboxParticipantKind.AGENT:
             resolved_recipient, recipient_resolution, resolved_agent = _resolve_agent_recipient(
                 context,
                 recipient,
-                create_missing=False,
             )
             if resolved_recipient is None:
                 payload_data = {
                     "recipient": recipient,
                     "resolved_recipient": None,
                     "recipient_resolution": recipient_resolution,
-                    "created_agent": None,
                 }
                 return ToolResult(
                     call_id=invocation.call_id,
@@ -262,7 +210,7 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                     status="recipient_not_found",
                     summary=f"Recipient {recipient!r} could not be resolved to an agent in this session.",
                     error_code="recipient_not_found",
-                    hint="Use an existing agent_id or one of the role aliases: researcher, executor, reporter.",
+                    hint="Use an existing canonical agent_id, handle such as @ada, or visible nickname. Role names are not agent identities.",
                     details=payload_data,
                 )
             focused_task, focused_task_id, focus_error = _resolve_task_focus(context, invocation, payload, resolved_agent)
@@ -277,10 +225,6 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
                 )
             task_id = focused_task.task_id if focused_task is not None else task_id
             lane_id = lane_id or (None if focused_task is None else focused_task.lane_id)
-            if resolved_agent is None:
-                resolved_recipient, recipient_resolution, created_agent = _resolve_agent_recipient(context, recipient)
-            else:
-                created_agent = None
         payload_ref = None
         if isinstance(payload, dict):
             payload_ref = protocol.persist_payload(
@@ -311,7 +255,7 @@ def register_protocol_tools(registry: ToolRegistry) -> None:
             "recipient": recipient,
             "resolved_recipient": resolved_recipient,
             "recipient_resolution": recipient_resolution,
-            "created_agent": None if created_agent is None else created_agent.to_dict(),
+            "resolved_agent": None if resolved_agent is None else resolved_agent.to_dict(),
             "message": message.to_dict(),
             "signals": signals,
             "runtime_outcomes": runtime_outcomes,

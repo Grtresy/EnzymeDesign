@@ -318,18 +318,20 @@ Projection 约束：
 - 校验 task 是否存在
 - 校验 teammate role 是否有效
 - 拒绝 blocked、already assigned、非 `todo` task
+- 使用 `agent_role` 表示能力选择，使用可选 `agent_ref` 解析已有 canonical teammate；不得接受 role 字符串作为 `agent_id`
+- 在需要新 teammate 时创建 canonical `agent:<role>:<opaque-id>`，分配 role-specific nickname、display name 与 routeable handle
 - 持久化 delegation payload
 - 调用 `ProtocolService.delegate()`
 - 返回 `wakeup_queued` 或明确失败 envelope
 
 `ProtocolService.delegate()` 的职责：
 
-- 创建或更新 `AgentMember`
+- 创建或更新 canonical `AgentMember`
 - 写入 `delegation_request` inbox message
 - 排队 runtime wakeup signal
 - 发出 `agent.spawned` / `agent.delegated` 等事件
 
-业务 task 终态必须由 agent 通过 `task.update` 或已文档化机械迁移显式写入；runtime idle、max steps、tool result 或 protocol message 本身不自动表示 task completed。
+业务 task 终态必须由 agent 通过 `task.finish` 或已文档化机械迁移显式写入；runtime idle、max steps、tool result 或 protocol message 本身不自动表示 task completed。`task.finish` 授权只比较 canonical `agent_id`，role 字符串不能代表 task owner。
 
 ### 7.2 Inbox 与 Protocol
 
@@ -338,6 +340,7 @@ Projection 约束：
 默认语义：
 
 - `protocol.send` 写入有 recipient、correlation、payload、status 的 `InboxMessage`
+- agent recipient 只能解析现有 canonical `agent_id`、`@handle`、唯一 nickname/display name；`researcher` / `executor` / `reporter` 是 role，不是 recipient identity
 - agent recipient 的 unread inbox message 会创建 `inbox_unread` wakeup signal
 - delivery 成功只表示消息和 wakeup 已排队，不表示 recipient 已执行或任务已完成
 - request-response、diagnostic、handoff、clarification、result completion 都应复用 correlation thread
@@ -404,7 +407,7 @@ V3 execution 的目标主路径是 executor-owned persistent sandbox workspace�
 - executor sandbox 运行在受控 rootless Podman 环境中，默认无网络、非 root、资源受限
 - 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 rootless container process 并挂载各自独立的 persistent sandbox workspace；image layer 可以共享，sandbox workspace 不共享
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
-- 每个 executor 拥有独立 persistent sandbox workspace；`sandbox_workspace_id` 按 `session_id + agent_id` 复用，`task_id` / `lane_id` 只是当前 focus metadata；持久化对象是 sandbox workspace volume、manifest、projection summary 和 canonical records，不是容器进程或 container id；容器可重启，sandbox workspace volume 保留，`sandbox_workspace_id` 进入 execution provenance
+- 每个 executor 拥有独立 persistent sandbox workspace；`sandbox_workspace_id` 按 `session_id + canonical agent_id/member_id` 复用，`task_id` / `lane_id` 只是当前 focus metadata；持久化对象是 sandbox workspace volume、manifest、projection summary 和 canonical records，不是容器进程或 container id；容器可重启，sandbox workspace volume 保留，`sandbox_workspace_id` 进入 execution provenance
 - Host repo、用户 home、`.ssh`、数据库、runner config、HPC credentials 不得挂载进 sandbox
 - sandbox 内可做文件 CRUD、bash、python 和中间结果检查；sandbox workspace 是 working copy/cache，不是 canonical truth
 - NCBI、UniProt、EBI HMMER 等网络数据库请求只能通过 `openzyme_pipeline.bio` 由 Host supervisor 托管执行；sandbox 不直接联网，也不保存 provider credential 或 Host cache path；provider outputs 必须写入 caller 指定的 `/workspace/output/...` 并经 Host artifact boundary 登记，RPC 只返回 bounded summary、manifest 和 artifact refs

@@ -34,6 +34,7 @@ def test_control_plane_entity_names_are_stable() -> None:
         "MemoryEntry",
         "AgentMember",
         "AgentRuntimeSignal",
+        "SessionRuntimeLease",
         "EngineInvocation",
         "RunRecord",
         "SessionArtifactRecord",

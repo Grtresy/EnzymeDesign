@@ -5,6 +5,8 @@ import json
 import pytest
 
 from openzyme_domain import ArtifactKind
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
@@ -29,6 +31,7 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import register_task_board_tools
 from openzyme_core import run_agent_harness_loop
+from openzyme_core.agent_identity import create_agent_member
 
 
 def _build_repositories() -> CoreRepositories:
@@ -49,6 +52,41 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     )
     repositories.sessions.save(session)
     return session
+
+
+def _seed_agent(
+    repositories: CoreRepositories,
+    session: Session,
+    *,
+    role: str = "executor",
+    agent_id: str | None = None,
+    name: str | None = None,
+) -> AgentMember:
+    if agent_id is None and role in {"researcher", "executor", "reporter"}:
+        return create_agent_member(
+            repositories,
+            session_id=session.session_id,
+            role=role,  # type: ignore[arg-type]
+        )
+    resolved_agent_id = agent_id or f"agent:{role}:test"
+    resolved_name = name or role.title()
+    agent = AgentMember(
+        agent_id=resolved_agent_id,
+        session_id=session.session_id,
+        lane_id=None,
+        task_id=None,
+        name=resolved_name,
+        role=role,
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-04-17T10:00:00+00:00",
+        updated_at="2026-04-17T10:00:00+00:00",
+        nickname=resolved_name,
+        display_name=resolved_name,
+        handle=f"@{resolved_name.lower()}",
+    )
+    repositories.agents.save(agent)
+    return agent
 
 
 def test_task_board_projection_separates_ready_and_blocked_tasks() -> None:
@@ -148,6 +186,7 @@ def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
+    agent = _seed_agent(repositories, session)
 
     for index, value in enumerate(("null", "None", "")):
         created = service.create_task(
@@ -164,9 +203,9 @@ def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
         task_id="task_update",
         subject="Update",
         description="Clear assigned_ref through task.update",
-        assigned_ref="agent:executor",
+        assigned_ref=agent.agent_id,
     )
-    assert task.assigned_ref == "agent:executor"
+    assert task.assigned_ref == agent.agent_id
 
     for value in ("null", "None", ""):
         updated = service.update_task(
@@ -174,25 +213,30 @@ def test_task_board_normalizes_pseudo_empty_assigned_refs() -> None:
             TaskMutation(assigned_ref=value),
         )
         assert updated.assigned_ref is None
-        service.update_task("task_update", TaskMutation(assigned_ref="agent:executor"))
+        service.update_task("task_update", TaskMutation(assigned_ref=agent.agent_id))
 
 
-def test_task_board_normalizes_teammate_role_assigned_refs() -> None:
+def test_task_board_rejects_teammate_role_assigned_refs() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
 
+    with pytest.raises(ValueError, match="role alias"):
+        service.create_task(
+            session_id=session.session_id,
+            task_id="task_alias",
+            subject="Alias",
+            description="Reject teammate role alias.",
+            assigned_ref="executor",
+        )
     task = service.create_task(
         session_id=session.session_id,
-        task_id="task_alias",
-        subject="Alias",
-        description="Normalize teammate role alias.",
-        assigned_ref="executor",
+        task_id="task_canonical",
+        subject="Canonical",
+        description="Canonical assignment.",
     )
-    updated = service.update_task("task_alias", TaskMutation(assigned_ref="reporter"))
-
-    assert task.assigned_ref == "agent:executor"
-    assert updated.assigned_ref == "agent:reporter"
+    with pytest.raises(ValueError, match="role alias"):
+        service.update_task(task.task_id, TaskMutation(assigned_ref="agent:reporter"))
 
 
 def test_task_board_buckets_failed_task_as_terminal_failure() -> None:
@@ -264,6 +308,7 @@ def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
 def test_research_task_cannot_complete_before_required_structure_artifact() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     repositories.sessions.save(
         Session(
             session_id=session.session_id,
@@ -284,7 +329,7 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
             status=TaskStatus.IN_PROGRESS,
             priority=TaskPriority.HIGH,
             kind="research",
-            assigned_ref="agent:researcher",
+            assigned_ref=agent.agent_id,
             created_at="2026-04-17T10:01:00+00:00",
             updated_at="2026-04-17T10:01:00+00:00",
         )
@@ -297,6 +342,9 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_research"),
+        agent_id=agent.agent_id,
+        actor_kind="teammate",
+        actor_role="researcher",
     )
 
     missing = registry.dispatch(
@@ -351,13 +399,14 @@ def test_task_finish_requires_failed_and_blocked_details() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     service.create_task(
         session_id=session.session_id,
         task_id="task_finish",
         subject="Finish",
         description="Validate task.finish arguments.",
         status=TaskStatus.IN_PROGRESS,
-        assigned_ref="agent:executor",
+        assigned_ref=agent.agent_id,
     )
     registry = ToolRegistry()
     register_task_board_tools(registry)
@@ -367,8 +416,9 @@ def test_task_finish_requires_failed_and_blocked_details() -> None:
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_finish"),
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         actor_kind="teammate",
+        actor_role="executor",
     )
 
     failed = registry.dispatch(
@@ -412,13 +462,14 @@ def test_task_update_rejects_business_exit_statuses(status_value: str) -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     service.create_task(
         session_id=session.session_id,
         task_id="task_update_terminal",
         subject="Update",
         description="Validate task.update status guard.",
         status=TaskStatus.IN_PROGRESS,
-        assigned_ref="agent:executor",
+        assigned_ref=agent.agent_id,
     )
     registry = ToolRegistry()
     register_task_board_tools(registry)
@@ -428,8 +479,9 @@ def test_task_update_rejects_business_exit_statuses(status_value: str) -> None:
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id="task_update_terminal"),
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         actor_kind="teammate",
+        actor_role="executor",
     )
 
     result = registry.dispatch(
@@ -480,6 +532,7 @@ def test_task_finish_writes_explicit_business_exit_statuses(
     repositories = _build_repositories()
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     task_id = f"task_finish_{status_value}"
     service.create_task(
         session_id=session.session_id,
@@ -487,7 +540,7 @@ def test_task_finish_writes_explicit_business_exit_statuses(
         subject="Finish",
         description="Validate task.finish terminal statuses.",
         status=TaskStatus.IN_PROGRESS,
-        assigned_ref="agent:executor",
+        assigned_ref=agent.agent_id,
     )
     registry = ToolRegistry()
     register_task_board_tools(registry)
@@ -497,8 +550,9 @@ def test_task_finish_writes_explicit_business_exit_statuses(
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=registry,
         restore_focus=RestoreFocus(task_id=task_id),
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         actor_kind="teammate",
+        actor_role="executor",
     )
 
     result = registry.dispatch(
@@ -523,6 +577,66 @@ def test_task_finish_writes_explicit_business_exit_statuses(
     assert task.status is expected_status
     if expected_status is TaskStatus.FAILED:
         assert task.failure_summary == "External dependency failed."
+
+
+def test_task_finish_rejects_role_alias_and_wrong_agent_id() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    owner = _seed_agent(repositories, session, role="executor")
+    other = _seed_agent(repositories, session, role="reporter")
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_finish_owner",
+        subject="Finish owner",
+        description="Validate canonical finish authorization.",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref=owner.agent_id,
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+
+    role_alias_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_finish_owner"),
+        agent_id="agent:executor",
+        actor_kind="teammate",
+        actor_role="executor",
+    )
+    wrong_agent_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_finish_owner"),
+        agent_id=other.agent_id,
+        actor_kind="teammate",
+        actor_role="reporter",
+    )
+
+    for index, context in enumerate((role_alias_context, wrong_agent_context)):
+        result = registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id=f"call_finish_forbidden_{index}",
+                tool_name="task.finish",
+                arguments={
+                    "task_id": "task_finish_owner",
+                    "status": "completed",
+                    "summary": "Should be rejected.",
+                },
+                task_id="task_finish_owner",
+            ),
+        )
+        assert result.ok is False
+        assert result.error_code == "task_finish_forbidden"
+
+    task = repositories.tasks.get("task_finish_owner")
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.assigned_ref == owner.agent_id
 
 
 class TaskToolDriver:

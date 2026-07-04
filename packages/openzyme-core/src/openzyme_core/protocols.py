@@ -18,6 +18,9 @@ from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain.control_plane import utc_now_iso
 
+from .agent_identity import display_name_for_agent
+from .agent_identity import handle_for_agent
+from .agent_identity import require_canonical_agent_id
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
 
@@ -111,7 +114,11 @@ class ProtocolService:
         lane_id: str | None = None,
         parent_agent_id: str | None = None,
         correlation_id: str,
+        nickname: str | None = None,
+        display_name: str | None = None,
+        handle: str | None = None,
     ) -> DelegationEnvelope:
+        agent_id = require_canonical_agent_id(agent_id)
         lane_id = self._resolve_effective_lane_id(session_id=session_id, task_id=task_id, lane_id=lane_id)
         now = utc_now_iso()
         existing = self.repositories.agents.get(session_id, agent_id)
@@ -133,12 +140,17 @@ class ProtocolService:
             idle_since=now if existing is None else existing.idle_since,
             shutdown_requested_at=None if existing is None else existing.shutdown_requested_at,
             member_id=None if existing is None else existing.member_id,
+            nickname=nickname if existing is None else existing.nickname,
+            display_name=display_name if existing is None else existing.display_name,
+            handle=handle if existing is None else existing.handle,
         )
         self.repositories.agents.save(agent)
         self._emit(
             "agent.spawned" if existing is None else "agent.status_updated",
             {
                 "agent_id": agent.agent_id,
+                "display_name": display_name_for_agent(agent),
+                "handle": handle_for_agent(agent),
                 "status": agent.status.value,
                 "task_id": agent.task_id,
                 "lane_id": agent.lane_id,
@@ -160,6 +172,8 @@ class ProtocolService:
             "agent.delegated",
             {
                 "agent_id": agent.agent_id,
+                "display_name": display_name_for_agent(agent),
+                "handle": handle_for_agent(agent),
                 "task_id": agent.task_id,
                 "lane_id": agent.lane_id,
                 "correlation_id": correlation_id,
@@ -229,6 +243,10 @@ class ProtocolService:
         lane_id: str | None = None,
     ) -> InboxMessage:
         now = utc_now_iso()
+        if sender_kind is InboxParticipantKind.AGENT:
+            sender = require_canonical_agent_id(sender)
+        if recipient_kind is InboxParticipantKind.AGENT:
+            recipient = require_canonical_agent_id(recipient)
         resolved_status = status or (InboxStatus.UNREAD if recipient_kind is InboxParticipantKind.AGENT else InboxStatus.DELIVERED)
         message = InboxMessage(
             message_id=f"msg_{uuid4().hex[:12]}",
@@ -343,6 +361,9 @@ class ProtocolService:
                 idle_since=utc_now_iso() if success else agent.idle_since,
                 shutdown_requested_at=agent.shutdown_requested_at,
                 member_id=agent.member_id,
+                nickname=agent.nickname,
+                display_name=agent.display_name,
+                handle=agent.handle,
             )
             self.repositories.agents.save(agent)
             self._emit(

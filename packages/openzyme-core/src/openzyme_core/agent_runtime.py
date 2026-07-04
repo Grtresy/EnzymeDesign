@@ -871,6 +871,9 @@ class AgentRuntimeService:
             idle_since=agent.idle_since if idle_since is ... else idle_since,
             shutdown_requested_at=agent.shutdown_requested_at,
             member_id=agent.member_id,
+            nickname=agent.nickname,
+            display_name=agent.display_name,
+            handle=agent.handle,
         )
         self.context.repositories.agents.save(updated)
         self.context.emit(

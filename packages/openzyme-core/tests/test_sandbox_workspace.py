@@ -49,7 +49,7 @@ def _seed_executor(
     repositories: CoreRepositories,
     session: Session,
     *,
-    agent_id: str = "agent:executor",
+    agent_id: str = "agent:executor:workspace",
     member_id: str = "member_executor",
 ) -> AgentMember:
     agent = AgentMember(
@@ -102,7 +102,7 @@ def test_sandbox_workspace_identity_is_stable_and_recoverable(tmp_path: Path) ->
     assert second.sandbox_workspace_id == expected_id
     assert first.status is SandboxWorkspaceStatus.READY
     assert second.volume_digest == first.volume_digest
-    assert first.agent_id == "agent:executor"
+    assert first.agent_id == "agent:executor:workspace"
     assert first.agent_member_id == "member_executor"
 
     recovered_repositories = CoreRepositories.from_connection(repositories.sessions.connection)
@@ -151,7 +151,7 @@ def test_sandbox_workspace_status_forbids_cross_session_access(tmp_path: Path) -
     other_agent = _seed_executor(
         repositories,
         other_session,
-        agent_id="agent:executor",
+        agent_id="agent:executor:other_session",
         member_id="member_other_executor",
     )
     assert agent.member_id is not None

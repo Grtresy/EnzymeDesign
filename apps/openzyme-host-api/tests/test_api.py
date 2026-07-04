@@ -1345,11 +1345,11 @@ def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:researcher",
+            agent_id="agent:researcher:crud",
             session_id="sess_task_crud_no_drain",
             lane_id=None,
             task_id=None,
-            name="researcher",
+            name="Ada",
             role="researcher",
             status=AgentMemberStatus.IDLE,
             parent_agent_id=None,
@@ -1407,11 +1407,11 @@ def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:researcher",
+            agent_id="agent:researcher:no_auto_claim",
             session_id="sess_drain_no_auto_claim",
             lane_id=None,
             task_id=None,
-            name="researcher",
+            name="Ada",
             role="researcher",
             status=AgentMemberStatus.IDLE,
             parent_agent_id=None,
@@ -1449,11 +1449,11 @@ def test_v3_drain_runtime_explicit_auto_claim_still_enqueues_ready_task() -> Non
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:researcher",
+            agent_id="agent:researcher:auto_claim",
             session_id="sess_drain_auto_claim",
             lane_id=None,
             task_id=None,
-            name="researcher",
+            name="Curie",
             role="researcher",
             status=AgentMemberStatus.IDLE,
             parent_agent_id=None,
@@ -2308,7 +2308,7 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
         session_id="sess_sdk_approval",
     )
     agent = AgentMember(
-        agent_id="agent:executor",
+        agent_id="agent:executor:sdk_approval",
         session_id="sess_sdk_approval",
         lane_id=None,
         task_id=None,
@@ -2519,7 +2519,7 @@ def test_v3_recover_abandoned_sdk_continuation_fails_closed(tmp_path: Path) -> N
         session_id="sess_sdk_recovery",
     )
     agent = AgentMember(
-        agent_id="agent:executor",
+        agent_id="agent:executor:sdk_recovery",
         session_id="sess_sdk_recovery",
         lane_id=None,
         task_id=None,
@@ -2651,12 +2651,12 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
             "Run fpocket and report failures.",
             kind="execution",
             status=TaskStatus.BLOCKED,
-            assigned_ref="agent:executor",
+            assigned_ref="agent:executor:hpc_diag",
         )
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:executor",
+            agent_id="agent:executor:hpc_diag",
             session_id="sess_hpc_diag",
             lane_id=None,
             task_id="task_hpc_diag",
@@ -2727,7 +2727,7 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
     drained = service.drain_runtime(session_id="sess_hpc_diag")
 
     assert drained.status == "failed"
-    assert model_factory.invoker.calls == 2
+    assert model_factory.invoker.calls == 1
     assert model_factory.master_calls == 1
     assert drained.outputs == (
         "The approved fpocket task failed at the HPC runner boundary. "
@@ -3440,9 +3440,14 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
         model_factory.invokers["v3_teammate_loop:executor"].calls
         == executor_calls_before_approval + 2
     )
+    executor_agent = next(
+        agent
+        for agent in v3_repositories.agents.list_by_session("sess_v3_engines")
+        if agent.role == "executor"
+    )
     assert any(
         message.message_type == "delegation_result"
-        and message.sender == "agent:executor"
+        and message.sender == executor_agent.agent_id
         for message in v3_repositories.inbox.list_by_session("sess_v3_engines")
     )
     assert resolved_payload["status"] == "completed"

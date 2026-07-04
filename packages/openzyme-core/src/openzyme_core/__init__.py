@@ -125,7 +125,6 @@ from .skills import SkillDescriptor
 from .skills import SkillDocument
 from .skills import SkillRegistry
 from .skills import register_skill_tools
-from .subagents import default_agent_id_for_role
 from .subagents import default_agent_role_for_task
 from .subagents import register_subagent_tools
 from .teammate_roster import TEAMMATE_ROLE_NAMES
@@ -253,7 +252,6 @@ __all__ = [
     "SkillDescriptor",
     "SkillDocument",
     "SkillRegistry",
-    "default_agent_id_for_role",
     "default_agent_role_for_task",
     "default_document_registry",
     "TaskRepository",

@@ -17,6 +17,7 @@ from openzyme_domain import TaskStatus
 
 
 NOW = "2026-04-16T10:00:00+00:00"
+EXECUTOR_AGENT_ID = "agent:executor:consistency"
 
 
 def _repositories() -> CoreRepositories:
@@ -34,12 +35,12 @@ def _repositories() -> CoreRepositories:
             "Run work.",
             kind="execution",
             status=TaskStatus.IN_PROGRESS,
-            assigned_ref="agent:executor",
+            assigned_ref=EXECUTOR_AGENT_ID,
         )
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:executor",
+            agent_id=EXECUTOR_AGENT_ID,
             session_id="sess_consistency",
             lane_id=None,
             task_id="task_consistency",
@@ -64,7 +65,7 @@ def test_signal_and_agent_turn_failures_do_not_mark_business_task_failed() -> No
         AgentRuntimeSignal(
             signal_id="sig_max_steps",
             session_id="sess_consistency",
-            agent_id="agent:executor",
+            agent_id=EXECUTOR_AGENT_ID,
             task_id="task_consistency",
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.FAILED,
@@ -74,7 +75,7 @@ def test_signal_and_agent_turn_failures_do_not_mark_business_task_failed() -> No
             last_error="executor exceeded the delegated work step budget.",
         )
     )
-    agent = repositories.agents.get("sess_consistency", "agent:executor")
+    agent = repositories.agents.get("sess_consistency", EXECUTOR_AGENT_ID)
     assert agent is not None
     repositories.agents.save(
         AgentMember(
@@ -102,7 +103,7 @@ def test_signal_and_agent_turn_failures_do_not_mark_business_task_failed() -> No
 
 def test_running_invocation_with_terminal_agent_produces_attention_only() -> None:
     repositories = _repositories()
-    agent = repositories.agents.get("sess_consistency", "agent:executor")
+    agent = repositories.agents.get("sess_consistency", EXECUTOR_AGENT_ID)
     assert agent is not None
     repositories.agents.save(
         AgentMember(
@@ -190,7 +191,7 @@ def test_in_progress_task_with_failed_runtime_work_gets_attention_only() -> None
         AgentRuntimeSignal(
             signal_id="sig_failed",
             session_id="sess_consistency",
-            agent_id="agent:executor",
+            agent_id=EXECUTOR_AGENT_ID,
             task_id="task_consistency",
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.FAILED,

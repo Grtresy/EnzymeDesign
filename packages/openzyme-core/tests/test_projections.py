@@ -343,7 +343,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:reporter",
+            agent_id="agent:reporter:projection",
             session_id=session.session_id,
             lane_id="lane_001",
             task_id="task_001",
@@ -360,7 +360,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             draft_id="draft_001",
             session_id=session.session_id,
             task_id="task_001",
-            owner_agent_id="agent:reporter",
+            owner_agent_id="agent:reporter:projection",
             status=SessionReportDraftStatus.PUBLISHED,
             title="Workspace report",
             summary="Integrated workspace report",
@@ -447,7 +447,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
+        agent_id="agent:researcher:projection",
         name="Researcher",
         role="delegate",
         payload_ref="artifact://delegations/deleg_001.json",
@@ -470,13 +470,13 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
     assert any(
-        item["agent"]["agent_id"] == "agent:researcher"
+        item["agent"]["agent_id"] == "agent:researcher:projection"
         for item in workspace["delegation"]["agents"]
     )
     researcher_projection = next(
         item
         for item in workspace["delegation"]["agents"]
-        if item["agent"]["agent_id"] == "agent:researcher"
+        if item["agent"]["agent_id"] == "agent:researcher:projection"
     )
     assert researcher_projection["agent"]["runtime_state"] == "idle"
     assert researcher_projection["agent"]["status"] == "idle"

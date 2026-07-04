@@ -32,6 +32,9 @@ from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import register_protocol_tools
+from openzyme_core.agent_identity import create_agent_member
+from openzyme_core.agent_identity import display_name_for_agent
+from openzyme_core.agent_identity import handle_for_agent
 
 
 class FakeToolCallingInvoker:
@@ -110,23 +113,44 @@ def _seed_session(repositories: CoreRepositories) -> Session:
     return session
 
 
+def _seed_agent(
+    repositories: CoreRepositories,
+    session: Session,
+    *,
+    role: str = "researcher",
+    task_id: str | None = None,
+    lane_id: str | None = None,
+) -> AgentMember:
+    return create_agent_member(
+        repositories,
+        session_id=session.session_id,
+        role=role,  # type: ignore[arg-type]
+        task_id=task_id,
+        lane_id=lane_id,
+    )
+
+
 def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     service = ProtocolService(repositories)
 
     envelope = service.delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
-        name="Researcher",
-        role="delegate",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
+        role="researcher",
         payload_ref="artifact://delegations/deleg_001.json",
         task_id="task_001",
         correlation_id="corr_001",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
     response = service.reply(
         session_id=session.session_id,
-        sender="agent:researcher",
+        sender=agent.agent_id,
         sender_kind=InboxParticipantKind.AGENT,
         recipient="harness",
         recipient_kind=InboxParticipantKind.HARNESS,
@@ -136,7 +160,7 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
     )
     thread = service.build_thread(session.session_id, "corr_001")
 
-    assert envelope.agent.agent_id == "agent:researcher"
+    assert envelope.agent.agent_id == agent.agent_id
     assert envelope.request_message.message_type == "delegation_request"
     assert response.message_type == "delegation_result"
     assert thread.request is not None
@@ -153,22 +177,26 @@ def test_protocol_service_builds_correlation_threads_for_delegation() -> None:
 def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
-        name="Researcher",
-        role="delegate",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
+        role="researcher",
         payload_ref="artifact://delegations/deleg_001.json",
         task_id="task_001",
         correlation_id="corr_001",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
 
     message = service.send_message(
         session_id=session.session_id,
         sender="agent:planner",
         sender_kind=InboxParticipantKind.AGENT,
-        recipient="agent:researcher",
+        recipient=agent.agent_id,
         recipient_kind=InboxParticipantKind.AGENT,
         message_type="status_update",
         correlation_id="corr_peer",
@@ -179,9 +207,16 @@ def test_protocol_send_to_agent_creates_unread_wakeup_signal() -> None:
     assert any(signal.source_ref == message.message_id and signal.reason.value == "inbox_unread" for signal in signals)
 
 
-def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() -> None:
+def test_protocol_send_handle_resolves_existing_teammate_and_wakeup_signal() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+        lane_id="lane_001",
+    )
     registry = ToolRegistry()
     register_protocol_tools(registry)
     context = SessionRuntimeContext(
@@ -198,7 +233,7 @@ def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() 
             call_id="call_send_alias",
             tool_name="protocol.send",
             arguments={
-                "recipient": "researcher",
+                "recipient": handle_for_agent(agent),
                 "message_type": "diagnostic_request",
                 "correlation_id": "corr_alias",
                 "task_id": "task_001",
@@ -210,38 +245,25 @@ def test_protocol_send_role_alias_creates_resident_teammate_and_wakeup_signal() 
     )
 
     content = json.loads(result.content)
-    agent = repositories.agents.get(session.session_id, "agent:researcher")
+    saved_agent = repositories.agents.get(session.session_id, agent.agent_id)
     assert result.ok is True
     assert result.status == "wakeup_queued"
-    assert content["recipient"] == "researcher"
-    assert content["resolved_recipient"] == "agent:researcher"
-    assert content["recipient_resolution"] == "role_alias_created"
-    assert content["created_agent"]["agent_id"] == "agent:researcher"
-    assert agent is not None
-    assert agent.status is AgentMemberStatus.IDLE
+    assert content["recipient"] == handle_for_agent(agent)
+    assert content["resolved_recipient"] == agent.agent_id
+    assert content["recipient_resolution"] == "handle"
+    assert content["resolved_agent"]["agent_id"] == agent.agent_id
+    assert saved_agent is not None
+    assert saved_agent.status is AgentMemberStatus.IDLE
     assert repositories.inbox.get(content["message"]["message_id"]).status is InboxStatus.UNREAD
     assert len(content["signals"]) == 1
 
 
-def test_protocol_send_role_alias_resolves_only_within_current_session() -> None:
+def test_protocol_send_handle_resolves_only_within_current_session() -> None:
     repositories = _build_repositories()
     session_a = _seed_session(repositories)
     session_b = Session.create("sess_002", "proj_001", "Protocols B", "Session B")
     repositories.sessions.save(session_b)
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:researcher",
-            session_id=session_b.session_id,
-            lane_id=None,
-            task_id=None,
-            name="Researcher B",
-            role="researcher",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:00+00:00",
-            updated_at="2026-04-17T12:00:00+00:00",
-        )
-    )
+    agent_b = _seed_agent(repositories, session_b, role="researcher")
     registry = ToolRegistry()
     register_protocol_tools(registry)
     context = SessionRuntimeContext(
@@ -258,7 +280,7 @@ def test_protocol_send_role_alias_resolves_only_within_current_session() -> None
             call_id="call_send_alias_scoped",
             tool_name="protocol.send",
             arguments={
-                "recipient": "researcher",
+                "recipient": handle_for_agent(agent_b),
                 "message_type": "diagnostic_request",
                 "correlation_id": "corr_alias_scoped",
                 "task_id": "task_001",
@@ -269,18 +291,12 @@ def test_protocol_send_role_alias_resolves_only_within_current_session() -> None
         ),
     )
 
-    assert result.ok is True
-    agent_a = repositories.agents.get(session_a.session_id, "agent:researcher")
-    agent_b = repositories.agents.get(session_b.session_id, "agent:researcher")
-    assert agent_a is not None
-    assert agent_b is not None
-    assert agent_a.member_id != agent_b.member_id
-    assert agent_a.name == "Researcher"
-    assert agent_b.name == "Researcher B"
+    assert result.ok is False
+    assert result.status == "recipient_not_found"
+    assert json.loads(result.content)["recipient_resolution"] == "handle_not_found"
     assert repositories.runtime_signals.list_by_session(session_b.session_id) == []
     signals_a = repositories.runtime_signals.list_by_session(session_a.session_id)
-    assert [signal.agent_id for signal in signals_a] == ["agent:researcher"]
-    assert signals_a[0].correlation_id == "corr_alias_scoped"
+    assert signals_a == []
 
 
 def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() -> None:
@@ -312,11 +328,10 @@ def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() 
 
     content = json.loads(result.content)
     assert result.ok is False
-    assert result.status == "focused_task_missing"
-    assert result.error_code == "focused_task_missing"
-    assert content["resolved_recipient"] == "agent:researcher"
-    assert content["recipient_resolution"] == "role_alias_missing"
-    assert repositories.agents.get(session.session_id, "agent:researcher") is None
+    assert result.status == "recipient_not_found"
+    assert result.error_code == "recipient_not_found"
+    assert content["resolved_recipient"] is None
+    assert content["recipient_resolution"] == "role_alias_forbidden"
     assert repositories.inbox.list_by_correlation(session.session_id, "corr_no_task") == []
     assert repositories.runtime_signals.list_by_session(session.session_id) == []
 
@@ -324,26 +339,7 @@ def test_protocol_send_role_alias_without_task_rejects_without_creating_agent() 
 def test_protocol_send_existing_agent_without_task_rejects_before_inbox_delivery() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:researcher",
-            session_id=session.session_id,
-            lane_id=None,
-            task_id=None,
-            name="Researcher",
-            role="researcher",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:03+00:00",
-            updated_at="2026-04-17T12:00:03+00:00",
-            runtime_state="idle",
-            current_correlation_id=None,
-            wakeup_reason=None,
-            last_active_at=None,
-            idle_since="2026-04-17T12:00:03+00:00",
-            shutdown_requested_at=None,
-        )
-    )
+    agent = _seed_agent(repositories, session, role="researcher")
     registry = ToolRegistry()
     register_protocol_tools(registry)
     context = SessionRuntimeContext(
@@ -360,7 +356,7 @@ def test_protocol_send_existing_agent_without_task_rejects_before_inbox_delivery
             call_id="call_send_existing_without_task",
             tool_name="protocol.send",
             arguments={
-                "recipient": "agent:researcher",
+                "recipient": agent.agent_id,
                 "message_type": "diagnostic_request",
                 "correlation_id": "corr_existing_no_task",
                 "payload": {"question": "Can you reply?"},
@@ -412,6 +408,7 @@ def test_protocol_send_unknown_agent_recipient_returns_failure_envelope() -> Non
 def test_protocol_thread_expands_small_payloads() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     service = ProtocolService(repositories)
     payload_ref = service.persist_payload(
         session_id=session.session_id,
@@ -429,7 +426,7 @@ def test_protocol_thread_expands_small_payloads() -> None:
         session_id=session.session_id,
         sender="harness",
         sender_kind=InboxParticipantKind.HARNESS,
-        recipient="agent:researcher",
+        recipient=agent.agent_id,
         recipient_kind=InboxParticipantKind.AGENT,
         message_type="diagnostic_request",
         correlation_id="corr_diag_payload",
@@ -446,6 +443,7 @@ def test_protocol_thread_expands_small_payloads() -> None:
 def test_protocol_thread_tool_reports_failure_observation_details() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     service = ProtocolService(repositories)
     request_ref = service.persist_payload(
         session_id=session.session_id,
@@ -465,7 +463,7 @@ def test_protocol_thread_tool_reports_failure_observation_details() -> None:
         session_id=session.session_id,
         sender="harness",
         sender_kind=InboxParticipantKind.HARNESS,
-        recipient="agent:researcher",
+        recipient=agent.agent_id,
         recipient_kind=InboxParticipantKind.AGENT,
         message_type="delegation_request",
         correlation_id="corr_failed",
@@ -475,7 +473,7 @@ def test_protocol_thread_tool_reports_failure_observation_details() -> None:
     )
     service.reply(
         session_id=session.session_id,
-        sender="agent:researcher",
+        sender=agent.agent_id,
         sender_kind=InboxParticipantKind.AGENT,
         recipient="harness",
         recipient_kind=InboxParticipantKind.HARNESS,
@@ -516,16 +514,26 @@ def test_protocol_thread_tool_reports_failure_observation_details() -> None:
 def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+        lane_id="lane_001",
+    )
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
-        name="Researcher",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
         role="researcher",
         payload_ref=None,
         task_id="task_001",
         lane_id="lane_001",
         correlation_id="corr_original",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
     registry = ToolRegistry()
     register_protocol_tools(registry)
@@ -572,7 +580,7 @@ def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> 
             call_id="call_diag",
             tool_name="protocol.send",
             arguments={
-                "recipient": "agent:researcher",
+                "recipient": agent.agent_id,
                 "message_type": "diagnostic_request",
                 "correlation_id": "corr_diag_await",
                 "task_id": "task_001",
@@ -634,16 +642,26 @@ def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> 
 def test_protocol_send_rejects_synchronous_execution_arguments() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+        lane_id="lane_001",
+    )
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
-        name="Researcher",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
         role="researcher",
         payload_ref=None,
         task_id="task_001",
         lane_id="lane_001",
         correlation_id="corr_original",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
     registry = ToolRegistry()
     register_protocol_tools(registry)
@@ -662,7 +680,7 @@ def test_protocol_send_rejects_synchronous_execution_arguments() -> None:
             call_id="call_diag",
             tool_name="protocol.send",
             arguments={
-                "recipient": "agent:researcher",
+                "recipient": agent.agent_id,
                 "message_type": "diagnostic_request",
                 "correlation_id": "corr_diag_sync",
                 "task_id": "task_001",
@@ -685,32 +703,13 @@ def test_protocol_send_rejects_synchronous_execution_arguments() -> None:
 def test_runtime_missing_focused_task_fails_signal_without_consuming_unread_message() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:researcher",
-            session_id=session.session_id,
-            lane_id=None,
-            task_id=None,
-            name="Researcher",
-            role="researcher",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:03+00:00",
-            updated_at="2026-04-17T12:00:03+00:00",
-            runtime_state="idle",
-            current_correlation_id=None,
-            wakeup_reason=None,
-            last_active_at=None,
-            idle_since="2026-04-17T12:00:03+00:00",
-            shutdown_requested_at=None,
-        )
-    )
+    agent = _seed_agent(repositories, session, role="researcher")
     protocol = ProtocolService(repositories)
     message = protocol.send_message(
         session_id=session.session_id,
         sender="harness",
         sender_kind=InboxParticipantKind.HARNESS,
-        recipient="agent:researcher",
+        recipient=agent.agent_id,
         recipient_kind=InboxParticipantKind.AGENT,
         message_type="diagnostic_request",
         correlation_id="corr_runtime_no_task",
@@ -761,30 +760,11 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
             blocked_by=("task_blocker",),
         )
     )
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:researcher",
-            session_id=session.session_id,
-            lane_id=None,
-            task_id="task_blocked",
-            name="Researcher",
-            role="researcher",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:03+00:00",
-            updated_at="2026-04-17T12:00:03+00:00",
-            runtime_state="idle",
-            current_correlation_id=None,
-            wakeup_reason=None,
-            last_active_at=None,
-            idle_since="2026-04-17T12:00:03+00:00",
-            shutdown_requested_at=None,
-        )
-    )
+    agent = _seed_agent(repositories, session, role="researcher", task_id="task_blocked")
     signal = AgentRuntimeSignal(
         signal_id="sig_blocked",
         session_id=session.session_id,
-        agent_id="agent:researcher",
+        agent_id=agent.agent_id,
         task_id="task_blocked",
         lane_id=None,
         correlation_id="corr_blocked",
@@ -808,7 +788,7 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
 
     updated_task = repositories.tasks.get("task_blocked")
     updated_signal = repositories.runtime_signals.get("sig_blocked")
-    updated_agent = repositories.agents.get(session.session_id, "agent:researcher")
+    updated_agent = repositories.agents.get(session.session_id, agent.agent_id)
     assert outcome.ok is False
     assert outcome.teammate_status == "task_blocked"
     assert "task_blocker" in outcome.summary
@@ -822,30 +802,11 @@ def test_runtime_rejects_blocked_task_wakeup_without_running_teammate_loop() -> 
 def test_runtime_task_available_rejects_assigned_task_without_claiming() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
-    repositories.agents.save(
-        AgentMember(
-            agent_id="agent:researcher",
-            session_id=session.session_id,
-            lane_id=None,
-            task_id=None,
-            name="Researcher",
-            role="researcher",
-            status=AgentMemberStatus.IDLE,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:03+00:00",
-            updated_at="2026-04-17T12:00:03+00:00",
-            runtime_state="idle",
-            current_correlation_id=None,
-            wakeup_reason=None,
-            last_active_at=None,
-            idle_since="2026-04-17T12:00:03+00:00",
-            shutdown_requested_at=None,
-        )
-    )
+    agent = _seed_agent(repositories, session, role="researcher")
     signal = AgentRuntimeSignal(
         signal_id="sig_task_available_assigned",
         session_id=session.session_id,
-        agent_id="agent:researcher",
+        agent_id=agent.agent_id,
         task_id="task_001",
         lane_id=None,
         correlation_id=None,
@@ -880,6 +841,7 @@ def test_runtime_task_available_rejects_assigned_task_without_claiming() -> None
 def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     repositories.tasks.save(
         Task.create(
             "task_approval",
@@ -888,33 +850,25 @@ def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -
             "Continue after approval.",
             kind="execution",
             status=TaskStatus.BLOCKED,
-            assigned_ref="agent:executor",
+            assigned_ref=agent.agent_id,
         )
     )
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:executor",
-            session_id=session.session_id,
-            lane_id=None,
-            task_id="task_approval",
-            name="Executor",
-            role="executor",
-            status=AgentMemberStatus.BLOCKED,
-            parent_agent_id=None,
-            created_at="2026-04-17T12:00:03+00:00",
-            updated_at="2026-04-17T12:00:03+00:00",
-            runtime_state="blocked",
-            current_correlation_id="corr_approval",
-            wakeup_reason=None,
-            last_active_at=None,
-            idle_since=None,
-            shutdown_requested_at=None,
+            **{
+                **agent.to_dict(),
+                "task_id": "task_approval",
+                "status": AgentMemberStatus.BLOCKED,
+                "runtime_state": "blocked",
+                "current_correlation_id": "corr_approval",
+                "idle_since": None,
+            }
         )
     )
     signal = AgentRuntimeSignal(
         signal_id="sig_approval",
         session_id=session.session_id,
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         task_id="task_approval",
         lane_id=None,
         correlation_id="corr_approval",
@@ -947,15 +901,19 @@ def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -
 def test_background_completion_updates_agent_and_invocation_state() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     service = ProtocolService(repositories)
     service.delegate(
         session_id=session.session_id,
-        agent_id="agent:executor",
-        name="Executor",
-        role="delegate",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
+        role="executor",
         payload_ref="artifact://delegations/deleg_002.json",
         task_id="task_001",
         correlation_id="corr_bg_001",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
     repositories.invocations.save(
         EngineInvocation(
@@ -979,12 +937,12 @@ def test_background_completion_updates_agent_and_invocation_state() -> None:
         recipient="harness",
         payload_ref="artifact://engine/inv_001/output.json",
         invocation_id="inv_001",
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         success=True,
     )
 
     assert completion.notification.message_type == "background_completion"
-    assert repositories.agents.get(session.session_id, "agent:executor").status is AgentMemberStatus.IDLE
+    assert repositories.agents.get(session.session_id, agent.agent_id).status is AgentMemberStatus.IDLE
     assert repositories.invocations.get("inv_001").status is EngineInvocationStatus.SUCCEEDED
     assert service.build_thread(session.session_id, "corr_bg_001").status is CorrelationStatus.COMPLETED
     assert any(

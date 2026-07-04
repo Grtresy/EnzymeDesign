@@ -54,6 +54,9 @@ from openzyme_core import register_task_board_tools
 from openzyme_core import register_subagent_tools
 from openzyme_core import teammate_tool_descriptors
 from openzyme_core import TeammateConversationDriver
+from openzyme_core.agent_identity import create_agent_member
+from openzyme_core.agent_identity import display_name_for_agent
+from openzyme_core.agent_identity import handle_for_agent
 from openzyme_core.harness import build_agent_step_context
 from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
@@ -154,6 +157,23 @@ def _seed_session(repositories: CoreRepositories) -> Session:
         )
     )
     return session
+
+
+def _seed_agent(
+    repositories: CoreRepositories,
+    session: Session,
+    *,
+    role: str = "researcher",
+    task_id: str | None = None,
+    lane_id: str | None = None,
+):
+    return create_agent_member(
+        repositories,
+        session_id=session.session_id,
+        role=role,  # type: ignore[arg-type]
+        task_id=task_id,
+        lane_id=lane_id,
+    )
 
 
 def _seed_lane(repositories: CoreRepositories, session: Session) -> Lane:
@@ -1301,7 +1321,7 @@ class ProtocolSendDriver:
                         call_id="call_protocol_send",
                         tool_name="protocol.send",
                         arguments={
-                            "recipient": "agent:researcher",
+                            "recipient": "@ada",
                             "message_type": "diagnostic_request",
                             "correlation_id": "corr_diag_001",
                             "task_id": "task_001",
@@ -1451,14 +1471,23 @@ def test_tool_registry_propagates_runtime_handler_exceptions() -> None:
 def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(
+        repositories,
+        session,
+        role="researcher",
+        task_id="task_001",
+    )
     ProtocolService(repositories).delegate(
         session_id=session.session_id,
-        agent_id="agent:researcher",
-        name="Researcher",
+        agent_id=agent.agent_id,
+        name=display_name_for_agent(agent),
         role="researcher",
         payload_ref=None,
         task_id="task_001",
         correlation_id="corr_original",
+        nickname=agent.nickname,
+        display_name=display_name_for_agent(agent),
+        handle=handle_for_agent(agent),
     )
 
     result = run_agent_harness_loop(
@@ -1483,6 +1512,7 @@ def test_top_level_default_registry_can_send_protocol_diagnostic_request() -> No
     assert message.status.value == "unread"
     assert signal.reason.value == "inbox_unread"
     assert signal.task_id == "task_001"
+    assert signal.agent_id == agent.agent_id
     assert thread["request"]["payload"]["question"] == "Why did delegation fail?"
 
 
@@ -1526,12 +1556,20 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
 
     delegated_task = repositories.tasks.get("task_001")
     assert result.outputs == ("delegated",)
-    assert delegated_task.assigned_ref is None
-    assert delegated_task.status is TaskStatus.TODO
-    agent = repositories.agents.get(session.session_id, "agent:researcher")
+    assert delegated_task.assigned_ref is not None
+    assert delegated_task.status is TaskStatus.IN_PROGRESS
+    agent = next(
+        candidate
+        for candidate in repositories.agents.list_by_session(session.session_id)
+        if candidate.role == "researcher"
+    )
     assert agent is not None
+    assert delegated_task.assigned_ref == agent.agent_id
+    assert agent.agent_id.startswith("agent:researcher:")
     assert agent.task_id == "task_001"
     assert agent.role == "researcher"
+    assert agent.nickname == "Ada"
+    assert agent.handle == "@ada"
     assert agent.wakeup_reason == AgentRuntimeSignalReason.DELEGATION_ASSIGNED.value
     inbox = repositories.inbox.list_by_session(session.session_id)
     inbox_types = [message.message_type for message in inbox]
@@ -1540,14 +1578,65 @@ def test_harness_default_registry_can_delegate_research_task_to_builtin_subagent
     delegation_message = next(
         message for message in inbox if message.message_type == "delegation_request"
     )
-    assert delegation_message.recipient == "agent:researcher"
+    assert delegation_message.recipient == agent.agent_id
     signals = repositories.runtime_signals.list_pending_by_session(session.session_id)
     assert len(signals) == 1
-    assert signals[0].agent_id == "agent:researcher"
+    assert signals[0].agent_id == agent.agent_id
     assert signals[0].task_id == "task_001"
     assert signals[0].reason is AgentRuntimeSignalReason.INBOX_UNREAD
     assert signals[0].source_ref == delegation_message.message_id
     assert "agent.delegated" in {event.event_type for event in result.events}
+
+
+def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    for task_id in ("task_research_a", "task_research_b"):
+        service.create_task(
+            session_id=session.session_id,
+            task_id=task_id,
+            subject=f"Research {task_id}",
+            description="Delegate to a researcher.",
+            kind="research",
+        )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    results = [
+        registry.dispatch(
+            context,
+            ToolInvocation(
+                call_id=f"call_delegate_{task_id}",
+                tool_name="task.delegate",
+                arguments={"task_id": task_id, "agent_role": "researcher"},
+            ),
+        )
+        for task_id in ("task_research_a", "task_research_b")
+    ]
+
+    task_a = repositories.tasks.get("task_research_a")
+    task_b = repositories.tasks.get("task_research_b")
+    agents = [
+        agent
+        for agent in repositories.agents.list_by_session(session.session_id)
+        if agent.role == "researcher"
+    ]
+    assert [result.ok for result in results] == [True, True]
+    assert task_a.assigned_ref != task_b.assigned_ref
+    assert {task_a.assigned_ref, task_b.assigned_ref} == {
+        agent.agent_id for agent in agents
+    }
+    assert all(agent.agent_id.startswith("agent:researcher:") for agent in agents)
+    assert "agent:researcher" not in {task_a.assigned_ref, task_b.assigned_ref}
+    assert [agent.nickname for agent in agents] == ["Ada", "Curie"]
 
 
 def test_delegate_executor_aox_task_persists_mandatory_recipe_instructions() -> None:
@@ -1770,6 +1859,7 @@ def test_researcher_runtime_requires_deep_research_before_direct_open_research_t
 ):
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     adapter = TavilyResearchAdapter(
         search_callable=lambda **_: {"results": []},
         extract_callable=lambda **_: {"results": []},
@@ -1785,7 +1875,7 @@ def test_researcher_runtime_requires_deep_research_before_direct_open_research_t
     driver = TeammateConversationDriver(
         model_factory=object(),
         role="researcher",
-        agent_id="agent:researcher",
+        agent_id=agent.agent_id,
         correlation_id="corr_001",
         task_id="task_001",
         instructions="Collect research evidence and identify source-backed findings.",
@@ -2290,7 +2380,9 @@ def test_session_workspace_projection_exposes_delegation_threads() -> None:
     )
     delegation = workspace["delegation"]["agents"][0]
 
-    assert delegation["agent"]["agent_id"] == "agent:researcher"
+    assert delegation["agent"]["agent_id"].startswith("agent:researcher:")
+    assert delegation["agent"]["nickname"] == "Ada"
+    assert delegation["agent"]["handle"] == "@ada"
     assert delegation["latest_correlation_id"] is not None
     assert delegation["thread_summaries"][0]["status"] == "waiting"
 
@@ -2893,6 +2985,7 @@ def test_llm_conversation_driver_sends_tool_result_envelope_to_model() -> None:
 def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     task = repositories.tasks.get("task_001")
     repositories.tasks.save(
         Task(
@@ -2903,7 +2996,7 @@ def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
             status=TaskStatus.BLOCKED,
             priority=task.priority,
             kind="execution",
-            assigned_ref="agent:executor",
+            assigned_ref=agent.agent_id,
             created_at=task.created_at,
             updated_at=task.updated_at,
             lane_id=task.lane_id,
@@ -3096,11 +3189,12 @@ def test_master_driver_passes_canonical_tool_specs_to_invoker() -> None:
 def test_teammate_driver_passes_canonical_tool_specs_to_invoker(role: str) -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role=role)
     model_factory = FakeModelFactory({"content": "done", "tool_calls": []})
     driver = TeammateConversationDriver(
         model_factory=model_factory,
         role=role,
-        agent_id=f"agent:{role}",
+        agent_id=agent.agent_id,
         correlation_id=f"corr_{role}",
         task_id="task_001",
         instructions="Complete the assigned task.",
@@ -3110,7 +3204,7 @@ def test_teammate_driver_passes_canonical_tool_specs_to_invoker(role: str) -> No
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            sender=f"agent:{role}",
+            sender=agent.agent_id,
             sender_kind=InboxParticipantKind.AGENT,
             persist_conversation=False,
         ),
@@ -3359,10 +3453,11 @@ def test_harness_loop_persists_master_llm_trace_and_public_tool_args() -> None:
 def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     driver = TeammateConversationDriver(
         model_factory=FakeModelFactory({"content": "I inspected the task.", "tool_calls": []}),
         role="researcher",
-        agent_id="agent:researcher",
+        agent_id=agent.agent_id,
         correlation_id="corr_001",
         task_id="task_001",
         instructions="Inspect the literature plan.",
@@ -3372,7 +3467,7 @@ def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            sender="agent:researcher",
+            sender=agent.agent_id,
             sender_kind=InboxParticipantKind.AGENT,
             persist_conversation=False,
         ),
@@ -3381,9 +3476,11 @@ def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
 
     assert result.outputs == ("I inspected the task.",)
     workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
-    traces = workspace["agent_traces"]["agent:researcher"]
+    traces = workspace["agent_traces"][agent.agent_id]
     assert traces[0]["actor_kind"] == "teammate"
-    assert traces[0]["agent_step"]["agent_id"] == "agent:researcher"
+    assert traces[0]["actor_ref"] == agent.agent_id
+    assert traces[0]["display_name"] == display_name_for_agent(agent)
+    assert traces[0]["agent_step"]["agent_id"] == agent.agent_id
     assert traces[0]["agent_step"]["actor_kind"] == "teammate"
     assert traces[0]["agent_step"]["role"] == "researcher"
     assert traces[0]["agent_step"]["correlation_id"] == "corr_001"
@@ -3395,13 +3492,14 @@ def test_teammate_loop_persists_trace_without_prompt_payload() -> None:
 def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="executor")
     model_factory = FakeModelFactory(
         {"content": "I inspected the execution task.", "tool_calls": []}
     )
     driver = TeammateConversationDriver(
         model_factory=model_factory,
         role="executor",
-        agent_id="agent:executor",
+        agent_id=agent.agent_id,
         correlation_id="corr_001",
         task_id="task_001",
         instructions="Run the assigned computational execution.",
@@ -3411,7 +3509,7 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            sender="agent:executor",
+            sender=agent.agent_id,
             sender_kind=InboxParticipantKind.AGENT,
             persist_conversation=False,
         ),
@@ -3715,6 +3813,7 @@ def test_tool_router_dispatch_rejects_provider_alias_names() -> None:
 def test_teammate_driver_uses_router_schema_validation() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
+    agent = _seed_agent(repositories, session, role="researcher")
     driver = TeammateConversationDriver(
         model_factory=FakeModelFactory(
             [
@@ -3732,7 +3831,7 @@ def test_teammate_driver_uses_router_schema_validation() -> None:
             ]
         ),
         role="researcher",
-        agent_id="agent:researcher",
+        agent_id=agent.agent_id,
         correlation_id="corr_validation",
         task_id="task_001",
         instructions="Complete the assigned task.",
@@ -3742,7 +3841,7 @@ def test_teammate_driver_uses_router_schema_validation() -> None:
         repositories,
         HarnessInput(
             session_id=session.session_id,
-            sender="agent:researcher",
+            sender=agent.agent_id,
             sender_kind=InboxParticipantKind.AGENT,
             persist_conversation=False,
         ),

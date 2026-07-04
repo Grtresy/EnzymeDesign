@@ -193,6 +193,22 @@ def _json_loads_object_tuple(value: str | None) -> tuple[dict[str, Any], ...]:
     return tuple(dict(item) for item in loaded if isinstance(item, dict))
 
 
+def _slugify_agent_handle(value: str) -> str:
+    text = value.strip().lower().replace("agent:", "").replace(" ", "-").replace(":", "-")
+    chars = [char if char.isalnum() or char in {"-", "_"} else "-" for char in text]
+    slug = "".join(chars).strip("-_")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "agent"
+
+
+def _agent_identity_defaults(agent: AgentMember) -> tuple[str, str, str]:
+    nickname = agent.nickname or agent.display_name or agent.name or agent.agent_id
+    display_name = agent.display_name or nickname
+    handle = agent.handle or f"@{_slugify_agent_handle(nickname)}"
+    return nickname, display_name, handle
+
+
 @dataclass(slots=True)
 class SessionRepository:
     connection: sqlite3.Connection
@@ -1073,13 +1089,15 @@ class AgentMemberRepository:
                 agent_id=agent.parent_agent_id,
             )
         member_id = agent.member_id or self._existing_member_id(agent.session_id, agent.agent_id) or f"member_{uuid4().hex[:12]}"
+        nickname, display_name, handle = _agent_identity_defaults(agent)
         self.connection.execute(
             """
             INSERT INTO agent_members (
                 member_id, agent_id, session_id, lane_id, task_id, name, role, status, parent_agent_id, created_at, updated_at,
-                runtime_state, current_correlation_id, wakeup_reason, last_active_at, idle_since, shutdown_requested_at
+                runtime_state, current_correlation_id, wakeup_reason, last_active_at, idle_since, shutdown_requested_at,
+                nickname, display_name, handle
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, agent_id) DO UPDATE SET
                 lane_id = excluded.lane_id,
                 task_id = excluded.task_id,
@@ -1093,7 +1111,10 @@ class AgentMemberRepository:
                 wakeup_reason = excluded.wakeup_reason,
                 last_active_at = excluded.last_active_at,
                 idle_since = excluded.idle_since,
-                shutdown_requested_at = excluded.shutdown_requested_at
+                shutdown_requested_at = excluded.shutdown_requested_at,
+                nickname = excluded.nickname,
+                display_name = excluded.display_name,
+                handle = excluded.handle
             """,
             (
                 member_id,
@@ -1113,6 +1134,9 @@ class AgentMemberRepository:
                 agent.last_active_at,
                 agent.idle_since,
                 agent.shutdown_requested_at,
+                nickname,
+                display_name,
+                handle,
             ),
         )
         self.connection.commit()
@@ -1170,6 +1194,9 @@ class AgentMemberRepository:
             idle_since=row["idle_since"],
             shutdown_requested_at=row["shutdown_requested_at"],
             member_id=row["member_id"],
+            nickname=row["nickname"],
+            display_name=row["display_name"],
+            handle=row["handle"],
         )
 
 

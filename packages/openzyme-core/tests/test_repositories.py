@@ -396,7 +396,13 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
         session.session_id, MemoryScopeKind.TASK, child_task.task_id
     ) == [memory]
     stored_agent = repositories.agents.list_by_session(session.session_id)[0]
-    assert stored_agent == replace(agent, member_id=stored_agent.member_id)
+    assert stored_agent == replace(
+        agent,
+        member_id=stored_agent.member_id,
+        nickname="Planner",
+        display_name="Planner",
+        handle="@planner",
+    )
     assert stored_agent.member_id is not None
     assert repositories.invocations.list_by_session(session.session_id) == [invocation]
     assert repositories.invocations.list_active_by_session(session.session_id) == [invocation]
@@ -586,7 +592,7 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
     session = Session.create("sess_lease", "proj_001", "Lease", "Lease")
     repositories.sessions.save(session)
     agent = AgentMember(
-        agent_id="agent:researcher",
+        agent_id="agent:researcher:lease",
         session_id=session.session_id,
         lane_id=None,
         task_id=None,
@@ -963,7 +969,7 @@ def test_runtime_signals_validate_session_local_agent_identity() -> None:
     repositories.sessions.save(session_b)
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:researcher",
+            agent_id="agent:researcher:signal",
             session_id=session_a.session_id,
             lane_id=None,
             task_id=None,
@@ -980,7 +986,7 @@ def test_runtime_signals_validate_session_local_agent_identity() -> None:
         AgentRuntimeSignal(
             signal_id="sig_a",
             session_id=session_a.session_id,
-            agent_id="agent:researcher",
+            agent_id="agent:researcher:signal",
             reason=AgentRuntimeSignalReason.MANUAL_RESUME,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:01+00:00",
@@ -991,7 +997,7 @@ def test_runtime_signals_validate_session_local_agent_identity() -> None:
             AgentRuntimeSignal(
                 signal_id="sig_b",
                 session_id=session_b.session_id,
-                agent_id="agent:researcher",
+                agent_id="agent:researcher:signal",
                 reason=AgentRuntimeSignalReason.MANUAL_RESUME,
                 status=AgentRuntimeSignalStatus.PENDING,
                 created_at="2026-04-16T10:00:02+00:00",
@@ -1012,7 +1018,7 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
     repositories.sessions.save(session)
     repositories.agents.save(
         AgentMember(
-            agent_id="agent:executor",
+            agent_id="agent:executor:retry",
             session_id=session.session_id,
             lane_id=None,
             task_id=None,
@@ -1027,7 +1033,7 @@ def test_runtime_signal_repository_completion_and_retry_failure_are_idempotent()
     completed_signal = AgentRuntimeSignal(
         signal_id="sig_complete",
         session_id=session.session_id,
-        agent_id="agent:executor",
+        agent_id="agent:executor:retry",
         reason=AgentRuntimeSignalReason.MANUAL_RESUME,
         status=AgentRuntimeSignalStatus.PENDING,
         created_at="2026-04-16T10:00:01+00:00",
@@ -1084,7 +1090,7 @@ def test_continuation_state_claim_has_single_winner() -> None:
     session = Session.create("sess_s10_claim", "proj_001", "S10", "S10")
     repositories.sessions.save(session)
     agent = AgentMember(
-        agent_id="agent:executor",
+        agent_id="agent:executor:continuation",
         session_id=session.session_id,
         lane_id=None,
         task_id=None,

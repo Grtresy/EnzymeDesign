@@ -164,11 +164,21 @@ scheduler master turn or protocol.thread shows failed / unclear summary
 `protocol.send` recipient resolution:
 
 - exact `AgentMember.agent_id` wins first within the current `session_id`
-- `researcher`, `executor`, and `reporter` are role aliases for default resident agents `agent:{role}`
-- if a default resident agent does not exist, `protocol.send` creates it in the current session with `status=idle`
+- `@handle` resolves to an existing teammate in the current session
+- visible `nickname` / `display_name` may resolve only when it matches exactly one existing teammate
+- `researcher`, `executor`, and `reporter` are role names, not identities; role aliases must be rejected instead of silently mapped to an agent
+- `protocol.send` never creates a teammate implicitly; create or choose a teammate through `task.delegate`
 - unresolvable agent recipients return `ok=false/status=recipient_not_found/error_code=recipient_not_found`
 
-Agent role definitions may be reused across sessions, but `AgentMember` is session-scoped runtime state. `agent:master`, `agent:researcher`, `agent:executor`, and `agent:reporter` are session-local ids; repository and scheduler lookups must use `(session_id, agent_id)`. The internal `member_id` is the storage primary key and should not replace the public session-local `agent_id` in normal workspace/API flows.
+Agent role definitions may be reused across sessions, but `AgentMember` runtime state must distinguish identity from capability role. `agent:master` is the reserved master identity. Teammates use canonical ids in the form `agent:<role>:<opaque-id>`; `role` remains a separate field such as `researcher` / `executor` / `reporter`. Repository and scheduler lookups must use `(session_id, agent_id)`, and task ownership / runtime signals / protocol routing must compare canonical `agent_id` values, not role strings. The internal `member_id` is the storage primary key and should not replace the public canonical `agent_id` in normal workspace/API flows.
+
+Teammates also carry human-facing identity fields:
+
+- `nickname`: short project-facing name allocated from a role-specific pool
+- `display_name`: UI/prompt label, normally equal to the nickname
+- `handle`: routeable name such as `@ada`, unique with the nickname within a project/root session scope
+
+`task.delegate` owns teammate creation and existing-teammate selection. `agent_role` selects capability. Optional `agent_ref` may point at an existing canonical `agent_id`, `@handle`, nickname, or display name. Generated nicknames/handles must avoid collisions across sessions in the same project/root session and add a suffix when a role pool is exhausted.
 
 Delivery success semantics:
 
@@ -278,7 +288,7 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 
 Workspace projection 中的 `delegation` 不应只表达最近一次 `task.delegate` 调用结果，而应表达 resident team roster，包括 master 与 teammates：
 
-- agent identity、role、status、task/lane focus
+- canonical agent identity、role、nickname / display_name / handle、status、task/lane focus
 - current correlation id 与最新 message type
 - last active time、idle since
 - shutdown / failed 状态与可诊断摘要

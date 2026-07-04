@@ -10,8 +10,15 @@ from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
+from .agent_identity import create_agent_member
+from .agent_identity import display_name_for_agent
+from .agent_identity import AgentIdentityError
+from .agent_identity import handle_for_agent
+from .agent_identity import require_canonical_agent_id
+from .agent_identity import resolve_agent_reference
 from .protocols import ProtocolService
 from .task_board import TaskBoardService
+from .task_board import TaskMutation
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 from .teammate_roster import is_valid_teammate_role
 from .teammate_roster import teammate_role_for_task_kind
@@ -68,10 +75,6 @@ def default_agent_role_for_task(task: Task) -> str:
             f"Choose one of: {', '.join(TEAMMATE_ROLE_NAMES)}."
         )
     return role
-
-
-def default_agent_id_for_role(agent_role: str) -> str:
-    return f"agent:{agent_role}"
 
 
 def _protocol_service(context: SessionRuntimeContext) -> ProtocolService:
@@ -197,7 +200,93 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 hint="Only TODO, unassigned, unblocked tasks can be delegated.",
                 details={"task_status": task.status.value},
             )
-        agent_id = str(arguments.get("agent_id") or default_agent_id_for_role(agent_role))
+        if "agent_id" in arguments:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content="task.delegate no longer accepts agent_id; use agent_ref for an existing teammate or agent_role to create one.",
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="agent_id_not_supported",
+                summary="task.delegate rejected role/identity mixing.",
+                error_code="agent_id_not_supported",
+                hint="Pass agent_role for capability selection and optional agent_ref such as @ada for an existing teammate.",
+            )
+        try:
+            agent_ref = arguments.get("agent_ref")
+            if agent_ref is None:
+                agent = create_agent_member(
+                    context.repositories,
+                    session_id=task.session_id,
+                    role=agent_role,  # type: ignore[arg-type]
+                    lane_id=task.lane_id,
+                    task_id=task.task_id,
+                )
+            else:
+                resolution = resolve_agent_reference(
+                    context.repositories,
+                    session_id=task.session_id,
+                    reference=str(agent_ref),
+                )
+                if resolution.agent is None:
+                    return ToolResult(
+                        call_id=invocation.call_id,
+                        tool_name=invocation.tool_name,
+                        ok=False,
+                        content=json.dumps(
+                            {
+                                "agent_ref": agent_ref,
+                                "resolution": resolution.resolution,
+                                "status": "agent_ref_not_found",
+                            },
+                            sort_keys=True,
+                        ),
+                        task_id=task.task_id,
+                        lane_id=task.lane_id,
+                        status="agent_ref_not_found",
+                        summary=f"agent_ref {agent_ref!r} did not resolve to an existing teammate.",
+                        error_code="agent_ref_not_found",
+                        hint="Use a canonical agent_id, handle such as @ada, or visible nickname for an existing teammate.",
+                    )
+                agent = resolution.agent
+                if agent.role != agent_role:
+                    return ToolResult(
+                        call_id=invocation.call_id,
+                        tool_name=invocation.tool_name,
+                        ok=False,
+                        content=json.dumps(
+                            {
+                                "agent_ref": agent_ref,
+                                "agent_id": agent.agent_id,
+                                "agent_role": agent.role,
+                                "requested_role": agent_role,
+                            },
+                            sort_keys=True,
+                        ),
+                        task_id=task.task_id,
+                        lane_id=task.lane_id,
+                        status="agent_role_mismatch",
+                        summary=(
+                            f"agent_ref {agent_ref!r} resolved to role {agent.role!r}, "
+                            f"not requested role {agent_role!r}."
+                        ),
+                        error_code="agent_role_mismatch",
+                    )
+                require_canonical_agent_id(agent.agent_id)
+        except AgentIdentityError as exc:
+            return ToolResult(
+                call_id=invocation.call_id,
+                tool_name=invocation.tool_name,
+                ok=False,
+                content=str(exc),
+                task_id=task.task_id,
+                lane_id=task.lane_id,
+                status="invalid_agent_identity",
+                summary=str(exc),
+                error_code="invalid_agent_identity",
+            )
+        agent_id = agent.agent_id
         correlation_id = str(arguments.get("correlation_id") or _new_id("corr"))
         instructions = _delegation_instructions_for_task(
             agent_role=agent_role,
@@ -215,17 +304,27 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 "instructions": instructions,
                 "role": agent_role,
                 "agent_id": agent_id,
+                "nickname": agent.nickname,
+                "display_name": display_name_for_agent(agent),
+                "handle": handle_for_agent(agent),
             },
+        )
+        task = service.update_task(
+            task.task_id,
+            TaskMutation(assigned_ref=agent_id, status=TaskStatus.IN_PROGRESS),
         )
         delegation = protocol.delegate(
             session_id=task.session_id,
             agent_id=agent_id,
-            name=agent_id.removeprefix("agent:") or agent_id,
+            name=display_name_for_agent(agent),
             role=agent_role,
             payload_ref=payload_ref,
             task_id=task.task_id,
             lane_id=task.lane_id,
             correlation_id=correlation_id,
+            nickname=agent.nickname,
+            display_name=display_name_for_agent(agent),
+            handle=handle_for_agent(agent),
         )
         signals = [
             signal.to_dict()
@@ -241,6 +340,7 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
         payload = {
             "task": task.to_dict(),
             "agent": delegation.agent.to_dict(),
+            "agent_ref": handle_for_agent(delegation.agent),
             "correlation_id": correlation_id,
             "delegation_message_id": delegation.request_message.message_id,
             "signals": signals,
@@ -274,7 +374,6 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
 
 
 __all__ = [
-    "default_agent_id_for_role",
     "default_agent_role_for_task",
     "register_subagent_tools",
 ]

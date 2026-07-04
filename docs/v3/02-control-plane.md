@@ -168,6 +168,9 @@ SQLite schema 兼容策略：
 - `lane_id`
 - `task_id`
 - `name`
+- `nickname`
+- `display_name`
+- `handle`
 - `role`
 - `status`
 - `runtime_state`
@@ -179,6 +182,8 @@ SQLite schema 兼容策略：
 - `shutdown_requested_at`
 - `created_at`
 - `updated_at`
+
+`agent_id` 是 runtime/protocol/task ownership 使用的 canonical identity。master 保留 `agent:master`；teammate 不得把 `researcher`、`executor`、`reporter` 或 `agent:{role}` 当作身份，必须使用 `agent:<role>:<opaque-id>`。`role` 只表示能力类型；`nickname` / `display_name` / `handle` 用于 prompt、UI 与 `protocol.send`/`task.delegate` 的人类可读解析。
 
 补充约束：
 
@@ -208,6 +213,8 @@ SQLite schema 兼容策略：
 - `reason`
 - `source_ref`
 - `status`
+
+`agent_id` 必须是 canonical identity；duplicate wakeup、claim lease、runtime drain 与 teammate resume 都不得用 role 字符串替代。
 - `created_at`
 - `claimed_at`
 - `claimed_by`

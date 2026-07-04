@@ -58,7 +58,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             status=LaneStatus.CLAIMED,
             cwd="/tmp/execution",
             branch_name=None,
-            claimed_ref="agent:executor",
+            claimed_ref="agent:executor:memory",
             created_at="2026-04-17T11:00:02+00:00",
             updated_at="2026-04-17T11:00:02+00:00",
         )
@@ -87,7 +87,7 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             status=TaskStatus.TODO,
             priority=TaskPriority.NORMAL,
             kind="execution",
-            assigned_ref="agent:executor",
+            assigned_ref="agent:executor:memory",
             created_at="2026-04-17T11:00:04+00:00",
             updated_at="2026-04-17T11:00:04+00:00",
             lane_id="lane_002",

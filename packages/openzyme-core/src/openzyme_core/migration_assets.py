@@ -23,6 +23,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "016_v3_sdk_supervisor_bridge",
     "017_v3_s12_adapter_envelope",
     "018_v3_session_runtime_leases",
+    "019_v3_agent_identity_fields",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 
