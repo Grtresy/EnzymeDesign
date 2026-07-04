@@ -51,6 +51,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：`runtime/drain` 现在通过 scheduler claim lease 语义认领 signal；repository 层记录 `claimed_by`、`claim_expires_at`、`attempt_count` 与 `last_error`，支持 stale claim recovery 与失败重试边界。
 
+  追加修正记录：runtime 推进权已从 signal-level claim 扩展为 session-level `SessionRuntimeLease`。background runtime、manual `/runtime/drain`、recovery/test scheduler 共享同一 session ownership；signal claim 绑定 lease token / fencing token，过期 worker 迟到 complete/fail 会被拒绝并产生 diagnostic，而不是覆盖新 owner 的状态。
+
 - [x] Host API 在 teammate 终态结果后触发 service-level master response turn，而不是排队 master wakeup。
 
   证据：历史实现中的 service helper 会在 teammate outcomes 后启动另一次 top-level master loop。
@@ -146,6 +148,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
   后续修正方向：拆分用户侧 projection 与 debug projection，或明确把 runtime internals 标注为 diagnostic-only。
 
   修正记录：默认 delegation projection / Web UI 不再暴露 `pending_signal_count`、raw `wakeup_reason`、`latest_signal_reason` 和 unread inbox count 作为用户界面语义；低层 runtime signal 仍保留在 event/debug 路径中用于诊断。
+
+  追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `awaiting_task_finish`。该 projection 和 `runtime.consistency.warning` / `runtime.state_attention` events 只提示 follow-up，不自动写 task completed/failed；业务终态仍由 `task.finish` 写入。
 
 - [x] Design / deep-research planner fallback 会掩盖真实 provider 或 contract 失败。
 

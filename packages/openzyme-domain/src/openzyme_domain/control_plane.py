@@ -25,6 +25,7 @@ CONTROL_PLANE_ENTITY_NAMES = (
     "MemoryEntry",
     "AgentMember",
     "AgentRuntimeSignal",
+    "SessionRuntimeLease",
     "EngineInvocation",
     "RunRecord",
     "SessionArtifactRecord",
@@ -166,6 +167,13 @@ class AgentRuntimeSignalStatus(StrEnum):
     @property
     def is_terminal(self) -> bool:
         return self in {self.COMPLETED, self.FAILED, self.CANCELLED}
+
+
+class SessionRuntimeLeaseMode(StrEnum):
+    BACKGROUND = "background"
+    MANUAL_DRAIN = "manual_drain"
+    RECOVERY = "recovery"
+    TEST = "test"
 
 
 class SandboxWorkspaceStatus(StrEnum):
@@ -500,11 +508,32 @@ class AgentRuntimeSignal:
     completed_at: str | None = None
     error_message: str | None = None
     last_error: str | None = None
+    session_lease_token: str | None = None
+    session_fencing_token: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["reason"] = self.reason.value
         data["status"] = self.status.value
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRuntimeLease:
+    session_id: str
+    owner_id: str
+    lease_token: str
+    mode: SessionRuntimeLeaseMode
+    acquired_at: str
+    heartbeat_at: str
+    expires_at: str
+    fencing_token: int
+    released_at: str | None = None
+    last_error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["mode"] = self.mode.value
         return data
 
 

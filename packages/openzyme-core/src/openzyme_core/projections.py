@@ -18,6 +18,7 @@ from .task_board import TaskBoardService
 from .lane_manager import LaneManager
 from .conversation import build_conversation_projection
 from .protocols import ProtocolService
+from .runtime_consistency import RuntimeConsistencyService
 from .trace_projection import project_public_llm_trace_step
 
 
@@ -100,6 +101,7 @@ class SessionWorkspaceProjection:
     report_drafts: tuple[dict[str, Any], ...]
     reports: tuple[dict[str, Any], ...]
     capabilities: dict[str, list[dict[str, Any]]]
+    runtime_state: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +122,7 @@ class SessionWorkspaceProjection:
             "report_drafts": list(self.report_drafts),
             "reports": list(self.reports),
             "capabilities": self.capabilities,
+            "runtime_state": self.runtime_state,
         }
 
 
@@ -156,6 +159,9 @@ class SessionProjectionBuilder:
         report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
         reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
         capabilities = self._build_capabilities_projection(session_id)
+        runtime_state = RuntimeConsistencyService(self.repositories).audit_session(
+            session_id
+        ).to_dict()
         return SessionWorkspaceProjection(
             session=session.to_dict(),
             conversation=conversation,
@@ -174,6 +180,7 @@ class SessionProjectionBuilder:
             report_drafts=report_drafts,
             reports=reports,
             capabilities=capabilities,
+            runtime_state=runtime_state,
         )
 
     def _project_pending_approval(self, approval: Any) -> dict[str, Any]:

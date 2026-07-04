@@ -8,6 +8,8 @@ from .control_plane import AgentMemberStatus
 from .control_plane import AgentRuntimeSignal
 from .control_plane import AgentRuntimeSignalReason
 from .control_plane import AgentRuntimeSignalStatus
+from .control_plane import SessionRuntimeLease
+from .control_plane import SessionRuntimeLeaseMode
 from .control_plane import ApprovalRequest
 from .control_plane import ApprovalRequestStatus
 from .control_plane import CommandLogArtifactRecord
@@ -55,6 +57,8 @@ __all__ = [
     "AgentRuntimeSignal",
     "AgentRuntimeSignalReason",
     "AgentRuntimeSignalStatus",
+    "SessionRuntimeLease",
+    "SessionRuntimeLeaseMode",
     "ApprovalRequest",
     "ApprovalRequestStatus",
     "CommandLogArtifactRecord",

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
+from openzyme_domain import SessionRuntimeLease
+from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_runtime import classify_llm_provider_error
 
 from .agent_runtime import AgentRuntimeOutcome
@@ -12,11 +14,30 @@ from .agent_runtime import AgentRuntimeService
 from .harness import SessionRuntimeContext
 
 
+class SessionRuntimeLeaseLockedError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        active_lease: SessionRuntimeLease,
+        retry_after_seconds: int | None,
+    ) -> None:
+        self.session_id = session_id
+        self.active_lease = active_lease
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(
+            "session runtime lease is already held by "
+            f"{active_lease.owner_id!r} until {active_lease.expires_at}"
+        )
+
+
 @dataclass(slots=True)
 class AgentRuntimeScheduler:
     context: SessionRuntimeContext
     worker_id: str = "scheduler:local"
     lease_seconds: int = 300
+    session_lease_seconds: int = 300
+    runtime_mode: SessionRuntimeLeaseMode | str = SessionRuntimeLeaseMode.TEST
     max_global_concurrency: int = 1
     max_session_concurrency: int = 1
     max_agent_concurrency: int = 1
@@ -25,6 +46,9 @@ class AgentRuntimeScheduler:
     def __post_init__(self) -> None:
         if self.lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
+        if self.session_lease_seconds <= 0:
+            raise ValueError("session_lease_seconds must be positive")
+        self.runtime_mode = SessionRuntimeLeaseMode(str(self.runtime_mode))
         if self.max_global_concurrency <= 0:
             raise ValueError("max_global_concurrency must be positive")
         if self.max_session_concurrency <= 0:
@@ -39,9 +63,15 @@ class AgentRuntimeScheduler:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
         signal_ids: set[str] | None = None,
+        auto_enqueue_ready_tasks: bool = False,
     ) -> tuple[AgentRuntimeOutcome, ...]:
-        if self.context.model_factory is None or max_signals <= 0:
+        if max_signals <= 0:
             return ()
+        if self.context.model_factory is None and not auto_enqueue_ready_tasks:
+            return ()
+        session_lease, owns_session_lease = self._acquire_session_lease(session_id)
+        previous_session_lease = self.context.session_runtime_lease
+        self.context.session_runtime_lease = session_lease
         global_limiter = asyncio.Semaphore(self.max_global_concurrency)
         session_limiter = asyncio.Semaphore(self.max_session_concurrency)
         agent_limiters: dict[str, asyncio.Semaphore] = {}
@@ -67,12 +97,25 @@ class AgentRuntimeScheduler:
                                     signal.signal_id,
                                     error_message=str(exc),
                                     retryable=classification.retryable,
+                                    expected_session_lease_token=session_lease.lease_token,
+                                    expected_session_fencing_token=session_lease.fencing_token,
                                 )
                                 or self.context.repositories.runtime_signals.get(
                                     signal.signal_id
                                 )
                                 or signal
                             )
+                            if failed.status.value == "claimed":
+                                self.context.emit(
+                                    "runtime.fencing_rejected",
+                                    {
+                                        "signal_id": signal.signal_id,
+                                        "attempted_status": "failed",
+                                        "session_lease_token": session_lease.lease_token,
+                                        "session_fencing_token": session_lease.fencing_token,
+                                        "worker_id": self.worker_id,
+                                    },
+                                )
                             return AgentRuntimeOutcome(
                                 signal=failed,
                                 task=None,
@@ -88,28 +131,45 @@ class AgentRuntimeScheduler:
                                 ),
                             )
 
-        outcomes: list[AgentRuntimeOutcome] = []
-        while len(outcomes) < max_signals and not self._shutdown_requested:
-            claim_limit = min(
-                max_signals - len(outcomes),
-                self.max_global_concurrency,
-                self.max_session_concurrency,
-            )
-            signals = []
-            for _ in range(claim_limit):
-                signal = self.context.repositories.runtime_signals.claim_next(
-                    session_id=session_id,
-                    claimed_by=self.worker_id,
-                    lease_seconds=self.lease_seconds,
-                    signal_ids=signal_ids,
+        try:
+            if auto_enqueue_ready_tasks:
+                AgentRuntimeService(self.context).auto_enqueue_ready_tasks(session_id)
+            if self.context.model_factory is None:
+                return ()
+            outcomes: list[AgentRuntimeOutcome] = []
+            while len(outcomes) < max_signals and not self._shutdown_requested:
+                claim_limit = min(
+                    max_signals - len(outcomes),
+                    self.max_global_concurrency,
+                    self.max_session_concurrency,
                 )
-                if signal is None:
+                signals = []
+                for _ in range(claim_limit):
+                    signal = self.context.repositories.runtime_signals.claim_next(
+                        session_id=session_id,
+                        claimed_by=self.worker_id,
+                        lease_seconds=self.lease_seconds,
+                        signal_ids=signal_ids,
+                        session_lease_token=session_lease.lease_token,
+                        session_fencing_token=session_lease.fencing_token,
+                    )
+                    if signal is None:
+                        break
+                    signals.append(signal)
+                if not signals:
                     break
-                signals.append(signal)
-            if not signals:
-                break
-            outcomes.extend(await asyncio.gather(*(run_signal(signal) for signal in signals)))
-        return tuple(outcomes)
+                outcomes.extend(
+                    await asyncio.gather(*(run_signal(signal) for signal in signals))
+                )
+            return tuple(outcomes)
+        finally:
+            self.context.session_runtime_lease = previous_session_lease
+            if owns_session_lease:
+                self.context.repositories.session_runtime_leases.release(
+                    session_id=session_id,
+                    owner_id=self.worker_id,
+                    lease_token=session_lease.lease_token,
+                )
 
     async def run_forever(
         self,
@@ -149,6 +209,7 @@ class AgentRuntimeScheduler:
         max_signals: int = 3,
         max_steps_per_agent: int = 8,
         signal_ids: set[str] | None = None,
+        auto_enqueue_ready_tasks: bool = False,
     ) -> tuple[AgentRuntimeOutcome, ...]:
         return asyncio.run(
             self.run_once(
@@ -156,8 +217,35 @@ class AgentRuntimeScheduler:
                 max_signals=max_signals,
                 max_steps_per_agent=max_steps_per_agent,
                 signal_ids=signal_ids,
+                auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
             )
         )
 
+    def _acquire_session_lease(
+        self, session_id: str
+    ) -> tuple[SessionRuntimeLease, bool]:
+        existing = self.context.session_runtime_lease
+        if existing is not None and self.context.repositories.session_runtime_leases.is_active(
+            session_id=session_id,
+            lease_token=existing.lease_token,
+            fencing_token=existing.fencing_token,
+        ):
+            return existing, False
+        result = self.context.repositories.session_runtime_leases.acquire(
+            session_id=session_id,
+            owner_id=self.worker_id,
+            mode=self.runtime_mode,
+            lease_seconds=self.session_lease_seconds,
+        )
+        if result.acquired and result.lease is not None:
+            return result.lease, True
+        if result.active_lease is None:
+            raise RuntimeError("session runtime lease acquisition failed")
+        raise SessionRuntimeLeaseLockedError(
+            session_id=session_id,
+            active_lease=result.active_lease,
+            retry_after_seconds=result.retry_after_seconds,
+        )
 
-__all__ = ["AgentRuntimeScheduler"]
+
+__all__ = ["AgentRuntimeScheduler", "SessionRuntimeLeaseLockedError"]

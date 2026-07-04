@@ -15,7 +15,7 @@
 - conversation、task、lane、approval、memory、engine invocation 仍以 control plane 为真状态
 - 顶层 loop 的职责是支撑 master agent 与用户对话、编排 task、发起 delegation，而不是直接承担所有具体工作执行
 - 顶层 loop 默认不直接扮演 teammate worker；delegation 后的具体推进应由 teammate loop 在共享 workspace 上继续完成
-- 顶层 loop 只能由 scheduler claim `agent:master` wakeup signal 后启动；REST handler 只持久化用户动作并排队 signal
+- 顶层 loop 只能由 scheduler acquire session runtime lease 并 claim `agent:master` wakeup signal 后启动；REST handler 只持久化用户动作并排队 signal
 
 一句话约束：
 
@@ -27,7 +27,8 @@
 user message
   -> persist message content + inbox envelope
   -> enqueue agent:master wakeup signal
-  -> scheduler claims signal
+  -> scheduler acquires session runtime lease
+  -> scheduler claims signal with lease token / fencing token
   -> build restore context
   -> build AgentStepContext + typed tool router
   -> preflight prompt budget
@@ -45,6 +46,8 @@ user message
   -> project workspace
 ```
 
+session runtime lease 只限制“谁有权推进当前 session runtime”。它不判断业务完成，也不替代 signal claim lease。background runtime、manual `/runtime/drain`、recovery 和测试 scheduler 必须共享这一 ownership 约束；locked session 应返回或记录 diagnostic，而不是并发推进。
+
 After every tool call, master must first read the tool-result envelope fields `ok`, `status`, `summary`, `error_code`, `hint`, and `details`.
 
 - if `ok=false`, master must not assume the requested action completed
@@ -52,7 +55,7 @@ After every tool call, master must first read the tool-result envelope fields `o
 - if `status` is `wakeup_not_created`, master should treat the protocol delivery as incomplete even if the message was persisted
 - if `status` is `sync_execution_not_supported`, master should remove synchronous protocol execution arguments and rely on scheduler wakeup
 - if `task.delegate` returns `wakeup_queued`, master should treat delegation as queued, not completed; teammate execution starts only after scheduler claims the teammate signal
-- if a later scheduler turn or protocol thread shows failure or an unclear summary, master should inspect task state and `protocol.thread(correlation_id)`, then choose an existing action: send a follow-up with `protocol.send`, update task state with `task.update`, ask the user for clarification, or report the result
+- if a later scheduler turn, runtime consistency warning, or protocol thread shows failure / unclear summary, master should inspect task state and `protocol.thread(correlation_id)`, then choose an existing action: send a follow-up with `protocol.send`, update non-terminal task fields with `task.update`, call `task.finish` for an explicit business exit, ask the user for clarification, or report the result
 
 ## 4. 顶层模型接入
 
@@ -127,6 +130,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
 - approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.finish` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
+- `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `awaiting_task_finish` 都不能自动写 task terminal state。业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 
@@ -152,6 +156,6 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 
 ## 9. 测试
 
-- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler claim 后运行真实顶层 LLM driver。配置化 Host 默认由 FastAPI background runtime worker 自动推进；`/runtime/drain` 只用于 debug/operator/manual recovery
+- 有 `model_factory` 时，`POST /v3/sessions/{session_id}/messages` 默认只排队 `agent:master` signal；scheduler acquire session lease 并 claim signal 后运行真实顶层 LLM driver。配置化 Host 默认由 FastAPI background runtime worker 自动推进；`/runtime/drain` 只用于 debug/operator/manual recovery，且必须尊重同一 session lease
 - live LLM smoke 至少覆盖一次真实 tool call
 - 顶层单回合 tool call 并发上限固定为 `3`

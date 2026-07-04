@@ -166,6 +166,7 @@ class AgentRuntimeService:
                 claimed_by="runtime:wake_agent",
                 lease_seconds=300,
                 signal_ids={signal.signal_id},
+                **self._signal_lease_claim_kwargs(),
             )
             if claimed is None:
                 current = self.context.repositories.runtime_signals.get(signal.signal_id) or signal
@@ -189,7 +190,7 @@ class AgentRuntimeService:
         )
         agent = self.context.repositories.agents.get(signal.session_id, signal.agent_id)
         if agent is None:
-            failed = self._fail_signal(claimed, error_message="agent not found")
+            failed, _ = self._fail_signal(claimed, error_message="agent not found")
             return AgentRuntimeOutcome(signal=failed, task=None, agent=None, ok=False, summary="agent not found")
         if agent.agent_id == "agent:master" or agent.role == "master":
             return self._wake_master(claimed, agent, max_steps=max_steps)
@@ -198,7 +199,7 @@ class AgentRuntimeService:
         task = self._resolve_task(signal, agent, payload)
         if task is None:
             summary = "Focused task required for wakeup."
-            failed = self._fail_signal(claimed, error_message=summary)
+            failed, _ = self._fail_signal(claimed, error_message=summary)
             agent = self._update_agent(
                 agent,
                 status=AgentMemberStatus.IDLE,
@@ -285,34 +286,37 @@ class AgentRuntimeService:
         else:
             ok = False
 
-        completed = (
-            self._complete_signal(claimed)
-            if ok
-            else self._fail_signal(
+        if ok:
+            completed, signal_write_ok = self._complete_signal(claimed)
+        else:
+            completed, signal_write_ok = self._fail_signal(
                 claimed,
                 error_message=summary,
                 retryable=_is_retryable_runtime_error(result.error),
                 emit=False,
             )
-        )
+        if not signal_write_ok:
+            ok = False
+            summary = "session runtime lease fencing rejected; signal write was not applied"
         event_type = (
             "signal.completed"
-            if ok
+            if ok and signal_write_ok
             else (
                 "signal.retry_scheduled"
-                if completed.status is AgentRuntimeSignalStatus.PENDING
+                if signal_write_ok and completed.status is AgentRuntimeSignalStatus.PENDING
                 else "signal.failed"
             )
         )
-        self.context.emit(
-            event_type,
-            {
-                "signal_id": completed.signal_id,
-                "agent_id": completed.agent_id,
-                "status": completed.status.value,
-                "error_message": completed.error_message,
-            },
-        )
+        if signal_write_ok:
+            self.context.emit(
+                event_type,
+                {
+                    "signal_id": completed.signal_id,
+                    "agent_id": completed.agent_id,
+                    "status": completed.status.value,
+                    "error_message": completed.error_message,
+                },
+            )
         for message_id in consumed_message_ids:
             self.context.repositories.inbox.set_status(message_id, InboxStatus.ACKNOWLEDGED)
         for pending_signal in self.context.repositories.runtime_signals.list_pending_by_session(agent.session_id):
@@ -412,34 +416,39 @@ class AgentRuntimeService:
             signal_notifier=self.context.signal_notifier,
         )
         ok = result.status is not HarnessStatus.FAILED
-        completed = (
-            self._complete_signal(claimed)
-            if ok
-            else self._fail_signal(
+        if ok:
+            completed, signal_write_ok = self._complete_signal(claimed)
+        else:
+            completed, signal_write_ok = self._fail_signal(
                 claimed,
                 error_message=result.outputs[-1] if result.outputs else result.status.value,
                 retryable=_is_retryable_runtime_error(result.error),
                 emit=False,
             )
-        )
+        if not signal_write_ok:
+            ok = False
+            summary = "session runtime lease fencing rejected; signal write was not applied"
+        else:
+            summary = result.outputs[-1] if result.outputs else result.status.value
         event_type = (
             "signal.completed"
-            if ok
+            if ok and signal_write_ok
             else (
                 "signal.retry_scheduled"
-                if completed.status is AgentRuntimeSignalStatus.PENDING
+                if signal_write_ok and completed.status is AgentRuntimeSignalStatus.PENDING
                 else "signal.failed"
             )
         )
-        self.context.emit(
-            event_type,
-            {
-                "signal_id": completed.signal_id,
-                "agent_id": completed.agent_id,
-                "status": completed.status.value,
-                "error_message": completed.error_message,
-            },
-        )
+        if signal_write_ok:
+            self.context.emit(
+                event_type,
+                {
+                    "signal_id": completed.signal_id,
+                    "agent_id": completed.agent_id,
+                    "status": completed.status.value,
+                    "error_message": completed.error_message,
+                },
+            )
         agent = self._update_agent(
             self.context.repositories.agents.get(agent.session_id, agent.agent_id) or agent,
             status=AgentMemberStatus.IDLE,
@@ -462,7 +471,7 @@ class AgentRuntimeService:
             else self.context.repositories.tasks.get(claimed.task_id),
             agent=agent,
             ok=ok,
-            summary=result.outputs[-1] if result.outputs else result.status.value,
+            summary=summary,
             teammate_status=result.status.value,
             outputs=tuple(result.outputs),
             waiting_approval_id=result.pending_approval_id,
@@ -549,12 +558,16 @@ class AgentRuntimeService:
             )
         return None
 
-    def _complete_signal(self, claimed: AgentRuntimeSignal) -> AgentRuntimeSignal:
-        return (
-            self.context.repositories.runtime_signals.complete(claimed.signal_id)
-            or self.context.repositories.runtime_signals.get(claimed.signal_id)
-            or claimed
+    def _complete_signal(self, claimed: AgentRuntimeSignal) -> tuple[AgentRuntimeSignal, bool]:
+        completed = self.context.repositories.runtime_signals.complete(
+            claimed.signal_id,
+            **self._signal_lease_write_kwargs(),
         )
+        if completed is None:
+            current = self.context.repositories.runtime_signals.get(claimed.signal_id) or claimed
+            self._emit_signal_fencing_rejected(current, attempted_status="completed")
+            return current, False
+        return completed, True
 
     def _fail_signal(
         self,
@@ -563,16 +576,17 @@ class AgentRuntimeService:
         error_message: str,
         retryable: bool = False,
         emit: bool = True,
-    ) -> AgentRuntimeSignal:
-        failed = (
-            self.context.repositories.runtime_signals.fail(
-                claimed.signal_id,
-                error_message=error_message,
-                retryable=retryable,
-            )
-            or self.context.repositories.runtime_signals.get(claimed.signal_id)
-            or claimed
+    ) -> tuple[AgentRuntimeSignal, bool]:
+        failed = self.context.repositories.runtime_signals.fail(
+            claimed.signal_id,
+            error_message=error_message,
+            retryable=retryable,
+            **self._signal_lease_write_kwargs(),
         )
+        if failed is None:
+            current = self.context.repositories.runtime_signals.get(claimed.signal_id) or claimed
+            self._emit_signal_fencing_rejected(current, attempted_status="failed")
+            return current, False
         if emit:
             event_type = (
                 "signal.retry_scheduled"
@@ -583,7 +597,7 @@ class AgentRuntimeService:
                 event_type,
                 {"signal_id": failed.signal_id, "error_message": failed.error_message},
             )
-        return failed
+        return failed, True
 
     def _fail_ready_gate(
         self,
@@ -594,7 +608,7 @@ class AgentRuntimeService:
         summary: str,
         teammate_status: str,
     ) -> AgentRuntimeOutcome:
-        failed = self._fail_signal(claimed, error_message=summary)
+        failed, _ = self._fail_signal(claimed, error_message=summary)
         updated_agent = self._update_agent(
             agent,
             status=AgentMemberStatus.IDLE,
@@ -610,6 +624,42 @@ class AgentRuntimeService:
             ok=False,
             summary=summary,
             teammate_status=teammate_status,
+        )
+
+    def _signal_lease_claim_kwargs(self) -> dict[str, Any]:
+        lease = self.context.session_runtime_lease
+        if lease is None:
+            return {}
+        return {
+            "session_lease_token": lease.lease_token,
+            "session_fencing_token": lease.fencing_token,
+        }
+
+    def _signal_lease_write_kwargs(self) -> dict[str, Any]:
+        lease = self.context.session_runtime_lease
+        if lease is None:
+            return {}
+        return {
+            "expected_session_lease_token": lease.lease_token,
+            "expected_session_fencing_token": lease.fencing_token,
+        }
+
+    def _emit_signal_fencing_rejected(
+        self, signal: AgentRuntimeSignal, *, attempted_status: str
+    ) -> None:
+        lease = self.context.session_runtime_lease
+        self.context.emit(
+            "runtime.fencing_rejected",
+            {
+                "signal_id": signal.signal_id,
+                "agent_id": signal.agent_id,
+                "attempted_status": attempted_status,
+                "current_status": signal.status.value,
+                "signal_session_lease_token": signal.session_lease_token,
+                "signal_session_fencing_token": signal.session_fencing_token,
+                "worker_session_lease_token": None if lease is None else lease.lease_token,
+                "worker_session_fencing_token": None if lease is None else lease.fencing_token,
+            },
         )
 
     def _payload_for_signal(self, signal: AgentRuntimeSignal) -> dict[str, Any] | None:

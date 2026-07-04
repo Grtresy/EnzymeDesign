@@ -22,6 +22,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "015_v3_sandbox_file_command_runtime",
     "016_v3_sdk_supervisor_bridge",
     "017_v3_s12_adapter_envelope",
+    "018_v3_session_runtime_leases",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 
@@ -31,6 +32,7 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "tasks",
         "agent_members",
         "agent_runtime_signals",
+        "session_runtime_leases",
         "session_artifact_records",
         "sandbox_workspace_records",
         "controlled_operation_records",

@@ -26,6 +26,7 @@ def test_migration_asset_is_available() -> None:
     sandbox_runtime_sql = get_migration_sql("015_v3_sandbox_file_command_runtime")
     sdk_supervisor_sql = get_migration_sql("016_v3_sdk_supervisor_bridge")
     adapter_envelope_sql = get_migration_sql("017_v3_s12_adapter_envelope")
+    session_runtime_lease_sql = get_migration_sql("018_v3_session_runtime_leases")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -52,6 +53,8 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS continuation_state_records" in sdk_supervisor_sql
     assert "adapter_approval_envelope_json" in adapter_envelope_sql
     assert "route_policy_id" in adapter_envelope_sql
+    assert "CREATE TABLE IF NOT EXISTS session_runtime_leases" in session_runtime_lease_sql
+    assert "ADD COLUMN session_lease_token" in session_runtime_lease_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -70,6 +73,7 @@ def test_migration_asset_is_available() -> None:
         "015_v3_sandbox_file_command_runtime",
         "016_v3_sdk_supervisor_bridge",
         "017_v3_s12_adapter_envelope",
+        "018_v3_session_runtime_leases",
     )
 
 
@@ -96,6 +100,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "memory_entries",
         "agent_members",
         "agent_runtime_signals",
+        "session_runtime_leases",
         "engine_invocations",
         "engine_documents",
         "session_run_records",
@@ -130,7 +135,31 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         row[1]
         for row in connection.execute("PRAGMA table_info(agent_runtime_signals)").fetchall()
     }
-    assert {"claimed_by", "claim_expires_at", "attempt_count", "last_error"}.issubset(signal_columns)
+    assert {
+        "claimed_by",
+        "claim_expires_at",
+        "attempt_count",
+        "last_error",
+        "session_lease_token",
+        "session_fencing_token",
+    }.issubset(signal_columns)
+    lease_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(session_runtime_leases)"
+        ).fetchall()
+    }
+    assert {
+        "session_id",
+        "owner_id",
+        "lease_token",
+        "mode",
+        "heartbeat_at",
+        "expires_at",
+        "released_at",
+        "last_error",
+        "fencing_token",
+    }.issubset(lease_columns)
     operation_columns = {
         row[1]
         for row in connection.execute("PRAGMA table_info(controlled_operation_records)").fetchall()

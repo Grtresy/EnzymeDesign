@@ -38,7 +38,9 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `max_steps_per_agent: int = 8`
 - `auto_enqueue_ready_tasks: bool = false`
 
-该 endpoint 返回 `V3CommandResult` shape。它内部必须通过 scheduler claim lease 语义认领 signal，而不是直接顺序调用 `wake_agent()`、`run_agent_harness_loop()` 或任何 service-level master response helper。它可以 claim `agent:master` 与 teammate signals，但不能绕过统一 scheduler runtime 入口。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
+该 endpoint 返回 `V3CommandResult` shape。它内部必须先 acquire session-level runtime lease，再通过 scheduler claim signal 语义认领 work，而不是直接顺序调用 `wake_agent()`、`run_agent_harness_loop()` 或任何 service-level master response helper。它可以 claim `agent:master` 与 teammate signals，但不能绕过统一 scheduler runtime 入口。`auto_enqueue_ready_tasks` 是显式 scheduler option，默认关闭；只有 operator/debug/recovery 调用明确传入 `true` 时才扫描 ready unassigned tasks 并创建 `TASK_AVAILABLE` wakeup。
+
+若同一 session 已有未过期 background/manual/recovery lease，`/runtime/drain` 不得并发推进。service 层必须给出可测试的结构化结果，例如 `status="locked"` 并包含当前 `owner_id`、`mode`、`expires_at`、`fencing_token` 与 `retry_after_seconds`；HTTP endpoint 可以继续返回 command result，也可以映射为 409，但不能静默等待或绕过 ownership。
 
 面向 harness tools、CLI/ops、测试与迁移调试的 control-plane secondary endpoints：
 
@@ -172,6 +174,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `report_drafts`
 - `reports`
 - `capabilities`
+- `runtime_state`
 
 说明：
 
@@ -187,6 +190,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `agent_traces` 不暴露 restore context、memory summary、完整 tool schema、prompt / `initial_prompt`、Host path、storage URI、runner path、SSH/runner config、provider secret 或 tool result content
 - `capabilities` 是可扩展分区，按 `capability_key` 挂载各 engine 的投影
 - 不应把当前 engine 名称直接固化为 workspace 顶层 contract，避免后续每新增一种能力都破坏接口
+- `runtime_state` 是 diagnostic-only projection：区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `awaiting_task_finish`，但不自动改变 task business status
 - `task_board`、`delegation`、`lane_board` 共同表达内部执行状态；它们不是 conversation 的附属调试信息，而是与 conversation 并列的 control-plane 读模型
 - `delegation.agents` 默认表达 resident team roster：agent identity、role、status、task/lane focus、correlation thread 与 last active time。默认用户 projection 不暴露 unread inbox count、pending signal count 或 raw wakeup reason；这些属于 diagnostic-only 信息
 - `artifacts` 默认是 session 共享工作面的安全投影，供 UI 呈现，也供后续 agent loops 作为可读取 catalog 理解当前工作面；普通投影不直接返回文件内容或 Host 私有路径
@@ -309,6 +313,10 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `execution.artifacts.fetched`
 - `report_draft.updated`
 - `report.generated`
+- `runtime.session_locked`
+- `runtime.fencing_rejected`
+- `runtime.consistency.warning`
+- `runtime.state_attention`
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
 
@@ -343,6 +351,9 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `agent.woken` 表示 scheduler 已为 resident master 或 teammate 开始一次 work turn；wakeup reason 必须能回链到 user message、inbox、task、approval、engine invocation 或 manual resume
 - `agent.idle` 表示 agent 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
 - `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
+- `runtime.session_locked` 表示某个 session 当前由另一个 runtime owner 持有推进权；manual drain / background tick 必须尊重该状态
+- `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果
+- `runtime.consistency.warning` / `runtime.state_attention` 是只读诊断事件；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed
 
 ## 7. Legacy Boundary
 

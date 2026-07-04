@@ -24,6 +24,7 @@ from openzyme_domain import MemoryKind
 from openzyme_domain import MemoryScopeKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
+from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -428,6 +429,7 @@ class SessionRuntimeContext:
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
     signal_notifier: Any | None = None
+    session_runtime_lease: SessionRuntimeLease | None = None
     agent_id: str | None = None
     actor_kind: str | None = None
     actor_role: str | None = None

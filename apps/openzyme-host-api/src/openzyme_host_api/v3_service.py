@@ -16,6 +16,7 @@ from openzyme_core import HarnessEvent
 from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import RestoreFocus
+from openzyme_core import RuntimeConsistencyService
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
@@ -25,6 +26,7 @@ from openzyme_core import ToolRegistry
 from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import persist_conversation_message
+from openzyme_core import SessionRuntimeLeaseLockedError
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalReason
@@ -432,6 +434,32 @@ class V3HostApiService:
                 events.append(event)
                 seen_trace_ids.add(trace_id)
 
+    def _extend_with_runtime_consistency_events(
+        self, session_id: str, events: list[dict[str, Any]]
+    ) -> None:
+        audit = RuntimeConsistencyService(self.repositories).audit_session(session_id)
+        for warning in audit.warnings:
+            events.append(
+                _event(
+                    "runtime.consistency.warning",
+                    session_id,
+                    warning.to_dict(),
+                )
+            )
+        attention_items = [
+            item
+            for item in audit.task_attention
+            if item.get("needs_attention") or item.get("runtime_attention")
+        ]
+        if attention_items:
+            events.append(
+                _event(
+                    "runtime.state_attention",
+                    session_id,
+                    {"tasks": attention_items},
+                )
+            )
+
     def _build_runtime_context(
         self,
         session_id: str,
@@ -467,29 +495,60 @@ class V3HostApiService:
             if self.repositories.sessions.get(session_id) is None:
                 raise KeyError(f"session {session_id!r} does not exist")
             context = self._build_runtime_context(session_id)
-            scheduler = self._build_scheduler(context, worker_id=worker_id)
-        outcomes = await scheduler.run_once(
-            session_id,
-            max_signals=max_signals,
-            max_steps_per_agent=max_steps_per_agent,
-        )
+            scheduler = self._build_scheduler(
+                context, worker_id=worker_id, runtime_mode="background"
+            )
+        try:
+            outcomes = await scheduler.run_once(
+                session_id,
+                max_signals=max_signals,
+                max_steps_per_agent=max_steps_per_agent,
+            )
+        except SessionRuntimeLeaseLockedError as exc:
+            event = self._runtime_locked_event(session_id, exc)
+            with self.operation_lock:
+                self.event_store.append(session_id, [event])
+            return []
         events = [event.to_dict() for event in context.event_sink.events]
         with self.operation_lock:
             self._touch_session(session_id)
             self._extend_with_trace_events(session_id, events)
             self._extend_with_activity_events(session_id, events)
+            self._extend_with_runtime_consistency_events(session_id, events)
             self.event_store.append(session_id, events)
         return [outcome.to_dict() for outcome in outcomes]
 
     def _build_scheduler(
-        self, context: SessionRuntimeContext, *, worker_id: str
+        self,
+        context: SessionRuntimeContext,
+        *,
+        worker_id: str,
+        runtime_mode: str = "manual_drain",
     ) -> AgentRuntimeScheduler:
         return AgentRuntimeScheduler(
             context,
             worker_id=worker_id,
+            runtime_mode=runtime_mode,
             max_global_concurrency=int(self.scheduler_limits.get("global", 1)),
             max_session_concurrency=int(self.scheduler_limits.get("session", 1)),
             max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
+        )
+
+    def _runtime_locked_event(
+        self, session_id: str, exc: SessionRuntimeLeaseLockedError
+    ) -> dict[str, Any]:
+        return _event(
+            "runtime.session_locked",
+            session_id,
+            {
+                "status": "locked",
+                "owner_id": exc.active_lease.owner_id,
+                "mode": exc.active_lease.mode.value,
+                "lease_token": exc.active_lease.lease_token,
+                "fencing_token": exc.active_lease.fencing_token,
+                "expires_at": exc.active_lease.expires_at,
+                "retry_after_seconds": exc.retry_after_seconds,
+            },
         )
 
     def _drain_pending_agent_signals(
@@ -503,14 +562,14 @@ class V3HostApiService:
         worker_id: str = "host-api:runtime-drain",
     ) -> list[dict[str, Any]]:
         context = self._build_runtime_context(session_id)
-        runtime = AgentRuntimeService(context)
-        if auto_enqueue_ready_tasks:
-            runtime.auto_enqueue_ready_tasks(session_id)
-        scheduler = self._build_scheduler(context, worker_id=worker_id)
+        scheduler = self._build_scheduler(
+            context, worker_id=worker_id, runtime_mode="manual_drain"
+        )
         outcomes = scheduler.run_once_sync(
             session_id,
             max_signals=max_signals,
             max_steps_per_agent=max_steps_per_agent,
+            auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
         )
         events.extend(event.to_dict() for event in context.event_sink.events)
         return [outcome.to_dict() for outcome in outcomes]
@@ -527,13 +586,27 @@ class V3HostApiService:
             if self.repositories.sessions.get(session_id) is None:
                 raise KeyError(f"session {session_id!r} does not exist")
         events: list[dict[str, Any]] = []
-        outcomes = self._drain_pending_agent_signals(
-            session_id,
-            events,
-            max_signals=max_signals,
-            max_steps_per_agent=max_steps_per_agent,
-            auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
-        )
+        try:
+            outcomes = self._drain_pending_agent_signals(
+                session_id,
+                events,
+                max_signals=max_signals,
+                max_steps_per_agent=max_steps_per_agent,
+                auto_enqueue_ready_tasks=auto_enqueue_ready_tasks,
+            )
+        except SessionRuntimeLeaseLockedError as exc:
+            with self.operation_lock:
+                locked_event = self._runtime_locked_event(session_id, exc)
+                events.append(locked_event)
+                self.event_store.append(session_id, events)
+                workspace = self.workspace(session_id)
+            return V3CommandResult(
+                session_id=session_id,
+                status="locked",
+                outputs=(),
+                events=events,
+                workspace=workspace,
+            )
         with self.operation_lock:
             has_pending_approval = bool(
                 self.repositories.approvals.list_pending_by_session(session_id)
@@ -555,6 +628,7 @@ class V3HostApiService:
             self._touch_session(session_id)
             self._extend_with_trace_events(session_id, events)
             self._extend_with_activity_events(session_id, events)
+            self._extend_with_runtime_consistency_events(session_id, events)
             self.event_store.append(session_id, events)
             workspace = self.workspace(session_id)
         return V3CommandResult(

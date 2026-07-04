@@ -216,6 +216,8 @@ SQLite schema 兼容策略：
 - `completed_at`
 - `error_message`
 - `last_error`
+- `session_lease_token`
+- `session_fencing_token`
 
 补充约束：
 
@@ -226,7 +228,10 @@ SQLite schema 兼容策略：
 - claim 后必须要么 `completed`，要么释放回 `pending`，要么写入 `failed`；失败重试只允许在明确 retryable 且未超过 attempt 上限时回到 `pending`
 - duplicate wakeup 去重按 `session_id + agent_id + reason + source_ref` 作用于未完成 signal，避免同一 inbox message 或 engine completion 被重复排队
 - `last_error` 保存最近一次失败原因；`error_message` 表达当前 terminal failure 或待重试错误摘要
-- signal 是调度语义，不替代 canonical task、inbox、approval 或 engine invocation
+- signal claim lease 只保护单条 signal 不被重复处理，不代表 worker 拥有整个 session runtime 推进权
+- scheduler 在 claim signal 时应绑定当前 `SessionRuntimeLease` 的 `lease_token` / `fencing_token`；complete / fail / release 写回必须校验当前 worker 仍持有有效 session lease
+- stale worker 在 session lease 过期或被新 owner reclaim 后，不能把旧 signal 写为 completed / failed；应安全失败并产生 runtime diagnostic
+- signal 是调度语义，不替代 canonical task、inbox、approval 或 engine invocation；signal failed 也不等于业务 task failed
 
 状态转换：
 
@@ -237,6 +242,35 @@ pending --claim lease--> claimed --non-retryable / exhausted--> failed
 claimed --lease expired--> claimed --reclaim by worker--> claimed
 claimed --operator release--> pending
 ```
+
+### 2.7.2 SessionRuntimeLease
+
+用途：
+
+- 表达某个 session 当前由哪个 runtime worker 拥有推进权
+- 阻止 background runtime、manual `/runtime/drain`、recovery 或测试 worker 同时推进同一 session 的不同 signal
+- 为 signal claim / complete / fail 提供 fencing token，防止过期 worker 迟到写回
+
+建议字段：
+
+- `session_id`
+- `owner_id`
+- `lease_token`
+- `mode` (`background` / `manual_drain` / `recovery` / `test`)
+- `acquired_at`
+- `heartbeat_at`
+- `expires_at`
+- `released_at`
+- `last_error`
+- `fencing_token`
+
+补充约束：
+
+- 同一 session 同时只能有一个未过期 active lease；不同 session 的 lease 互不阻塞
+- lease 过期后可由新的 owner reclaim，并分配新的单调 `fencing_token`
+- heartbeat / extend / release 必须校验 `owner_id + lease_token`
+- session runtime lease 只管理“谁有权推进 session runtime”，不判断 task 是否完成或失败
+- `/runtime/drain`、background runtime、recovery worker 和测试 scheduler 都必须尊重同一 session lease；已被占用时返回或记录 locked diagnostic
 
 ### 2.8 EngineInvocation
 
@@ -331,6 +365,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `report_drafts`
 - `reports`
 - `capabilities`
+- `runtime_state`
 - `activity_feed`
 
 其中推荐的阅读关系是：
@@ -341,8 +376,11 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 - `lane_board` / `capabilities` 看 task 在什么执行上下文里运行
 - `report_drafts` 看 report teammate 正在如何组织、修订、准备发布交付物
 - `artifacts` 看 agent team 当前共享工作面中已产出的证据、结果与中间产物
+- `runtime_state` 看只读诊断：runtime/signal/agent/invocation 层 attention、awaiting `task.finish`、以及 task business status 的区别
 
 workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或恢复 CLI 后，调用方应能从 projection 重建 conversation timeline、task board、resident teammate roster、pending approvals、lane/artifact/report 状态与 capability invocation 摘要，而不依赖浏览器本地缓存、raw graph state 或临时 prompt 内容。
+
+`runtime_state` 是 projection / diagnostic，不是新的业务判题器。它可以标记 `runtime_signal_failed`、`agent_turn_failed`、`runtime_attention`、`needs_attention` 或 `awaiting_task_finish`，但不得自动把 task 写为 `completed` / `failed`。task 的业务 terminal state 仍只能由 `task.finish` 或已文档化机械迁移写入。
 
 `artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它必须指向 sealed storage 或其它 Host-owned immutable backend，不是 workspace/API/agent read model 字段。
 

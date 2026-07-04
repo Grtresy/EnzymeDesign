@@ -62,16 +62,35 @@ wakeup signal 至少需要记录 recipient agent、reason、session、task/lane/
 
 第一版采用单进程 async scheduler：同一 Host 进程内的 scheduler/worker pool 从持久化 `AgentRuntimeSignal` 队列 claim work，并运行 bounded master 或 teammate turn。agent 本身不是常驻进程；常驻的是 `AgentMember` identity、inbox、task focus、memory 和 protocol state。
 
-claim 语义：
+session ownership 与 signal claim 是两层不同语义：
+
+- `SessionRuntimeLease` 是 session-scoped ownership：同一 session 同时只能有一个 active runtime owner，不同 session 可并行推进
+- `AgentRuntimeSignal.claimed_by / claim_expires_at` 是 signal-scoped lease：它只避免同一条 signal 被重复处理，不足以阻止同一 session 内不同 signal 被多个 worker 并发推进
+- background runtime、manual `/runtime/drain`、recovery worker 和测试 scheduler 在推进某个 session 前都必须先 acquire session lease
+- `/runtime/drain` 是 debug/operator/manual recovery command；如果 session 已由 background/manual/recovery worker 持有未过期 lease，它必须返回结构化 locked/blocked 结果或等价 HTTP conflict，而不能并发推进
+- session lease 过期后可由新 owner reclaim，并通过单调 fencing token 让旧 worker 迟到写回失败
+- session lease 只管理 runtime 推进权，不判断 task 是否完成或失败
+
+signal claim 语义：
 
 - worker 只 claim `pending` signal 或 lease 已过期的 `claimed` signal
-- claim 写入 `claimed_by`、`claim_expires_at`，递增 `attempt_count`
-- worker 完成 turn 后把 signal 写为 `completed` 或 `failed`
+- claim 写入 `claimed_by`、`claim_expires_at`，递增 `attempt_count`，并绑定当前 session lease token / fencing token
+- worker 完成 turn 后把 signal 写为 `completed` 或 `failed` 前必须确认仍持有有效 session lease
 - retryable failure 在 attempt 上限内可释放回 `pending`，否则保持 `failed`
-- stale claim recovery 只基于 lease，不依赖进程内内存
+- stale signal claim recovery 只基于 signal lease，不依赖进程内内存；stale session worker recovery 还必须通过 session lease fencing 拒绝迟到写回
 - 没有 LLM 配置或 model factory 不可用时，后台 worker 不应 claim 需要 LLM 的 signal；缺失配置应作为诊断状态暴露
 
-第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：claim API 是 repository 层能力，scheduler 通过 worker id 和 lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
+第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：session lease 与 signal claim API 是 repository 层能力，scheduler 通过 worker id、session lease 和 signal lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
+
+runtime state consistency guard 是只读诊断层。它可以在 workspace projection 与 events 中报告：
+
+- active/running engine invocation 关联的 task 或 agent 已 terminal / 缺失
+- `runtime_signal_failed`、`agent_turn_failed` 与 `task_failed` 的层级差异
+- `max_steps_exceeded` / `runtime_exception` 属于 agent turn 或 signal 层，不自动代表 task failed
+- task 仍 `in_progress` 但相关 runtime work 全部 terminal failed/cancelled 时标记 `runtime_attention` / `needs_attention`
+- invocation terminal 而 task 非 terminal 时标记 awaiting explicit `task.finish` 或 master follow-up，不自动 completed
+
+guard 不写 task status。业务终态仍由 master/teammate 显式 `task.finish` 写入。
 
 ## 3.2 Concurrency And Provider Limits
 

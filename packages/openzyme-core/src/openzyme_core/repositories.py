@@ -14,6 +14,8 @@ from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
+from openzyme_domain import SessionRuntimeLease
+from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import CommandLogArtifactRecord
@@ -59,6 +61,15 @@ from openzyme_domain import TaskStatus
 
 class OwnershipError(ValueError):
     """Raised when linked canonical records do not belong to the same session."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRuntimeLeaseAcquireResult:
+    acquired: bool
+    lease: SessionRuntimeLease | None = None
+    active_lease: SessionRuntimeLease | None = None
+    reason: str | None = None
+    retry_after_seconds: int | None = None
 
 
 def connect_sqlite(database_path: str) -> sqlite3.Connection:
@@ -131,6 +142,18 @@ def _load_blocked_by(connection: sqlite3.Connection, task_id: str) -> tuple[str,
 
 def _utc_now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _retry_after_seconds(expires_at: str, *, now_iso: str) -> int:
+    seconds = (_parse_iso_datetime(expires_at) - _parse_iso_datetime(now_iso)).total_seconds()
+    return max(0, int(seconds))
 
 
 def _utc_after_iso(seconds: int) -> str:
@@ -2218,6 +2241,260 @@ class CommandLogArtifactRepository:
 
 
 @dataclass(slots=True)
+class SessionRuntimeLeaseRepository:
+    connection: sqlite3.Connection
+
+    def acquire(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        mode: SessionRuntimeLeaseMode | str,
+        lease_seconds: int = 300,
+    ) -> SessionRuntimeLeaseAcquireResult:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        _require_session_exists(self.connection, session_id)
+        now = _utc_now_iso()
+        expires_at = _utc_after_iso(lease_seconds)
+        resolved_mode = SessionRuntimeLeaseMode(str(mode))
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            active = self._get_unreleased_row(session_id)
+            if active is not None and str(active["expires_at"]) > now:
+                lease = self._row_to_lease(active)
+                self.connection.commit()
+                return SessionRuntimeLeaseAcquireResult(
+                    acquired=False,
+                    active_lease=lease,
+                    reason="session_runtime_lease_active",
+                    retry_after_seconds=_retry_after_seconds(lease.expires_at, now_iso=now),
+                )
+            if active is not None:
+                self.connection.execute(
+                    """
+                    UPDATE session_runtime_leases
+                    SET released_at = ?,
+                        last_error = COALESCE(last_error, ?)
+                    WHERE lease_token = ? AND released_at IS NULL
+                    """,
+                    (
+                        now,
+                        "lease expired before reclaim",
+                        active["lease_token"],
+                    ),
+                )
+            row = self.connection.execute(
+                """
+                SELECT COALESCE(MAX(fencing_token), 0) + 1 AS next_fencing_token
+                FROM session_runtime_leases
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            fencing_token = int(row["next_fencing_token"] if row is not None else 1)
+            lease_token = f"lease_{uuid4().hex[:12]}"
+            self.connection.execute(
+                """
+                INSERT INTO session_runtime_leases (
+                    lease_token, session_id, owner_id, mode, acquired_at, heartbeat_at,
+                    expires_at, released_at, last_error, fencing_token
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                """,
+                (
+                    lease_token,
+                    session_id,
+                    owner_id,
+                    resolved_mode.value,
+                    now,
+                    now,
+                    expires_at,
+                    fencing_token,
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.Error:
+            self.connection.rollback()
+            active_lease = self.get_active(session_id)
+            if active_lease is None:
+                raise
+            return SessionRuntimeLeaseAcquireResult(
+                acquired=False,
+                active_lease=active_lease,
+                reason="session_runtime_lease_active",
+                retry_after_seconds=_retry_after_seconds(
+                    active_lease.expires_at, now_iso=now
+                ),
+            )
+        lease = self.get_by_token(lease_token)
+        return SessionRuntimeLeaseAcquireResult(acquired=True, lease=lease)
+
+    def get_by_token(self, lease_token: str) -> SessionRuntimeLease | None:
+        row = self.connection.execute(
+            "SELECT * FROM session_runtime_leases WHERE lease_token = ?",
+            (lease_token,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_lease(row)
+
+    def get_active(self, session_id: str) -> SessionRuntimeLease | None:
+        now = _utc_now_iso()
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM session_runtime_leases
+            WHERE session_id = ?
+              AND released_at IS NULL
+              AND expires_at > ?
+            ORDER BY fencing_token DESC
+            LIMIT 1
+            """,
+            (session_id, now),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_lease(row)
+
+    def heartbeat(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        lease_token: str,
+        lease_seconds: int = 300,
+    ) -> SessionRuntimeLease | None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        now = _utc_now_iso()
+        cursor = self.connection.execute(
+            """
+            UPDATE session_runtime_leases
+            SET heartbeat_at = ?,
+                expires_at = ?
+            WHERE session_id = ?
+              AND owner_id = ?
+              AND lease_token = ?
+              AND released_at IS NULL
+              AND expires_at > ?
+            """,
+            (
+                now,
+                _utc_after_iso(lease_seconds),
+                session_id,
+                owner_id,
+                lease_token,
+                now,
+            ),
+        )
+        self.connection.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_by_token(lease_token)
+
+    def release(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        lease_token: str,
+    ) -> SessionRuntimeLease | None:
+        now = _utc_now_iso()
+        cursor = self.connection.execute(
+            """
+            UPDATE session_runtime_leases
+            SET released_at = ?,
+                heartbeat_at = ?
+            WHERE session_id = ?
+              AND owner_id = ?
+              AND lease_token = ?
+              AND released_at IS NULL
+            """,
+            (now, now, session_id, owner_id, lease_token),
+        )
+        self.connection.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_by_token(lease_token)
+
+    def record_error(
+        self,
+        *,
+        session_id: str,
+        owner_id: str,
+        lease_token: str,
+        error_message: str,
+    ) -> SessionRuntimeLease | None:
+        now = _utc_now_iso()
+        cursor = self.connection.execute(
+            """
+            UPDATE session_runtime_leases
+            SET heartbeat_at = ?,
+                last_error = ?
+            WHERE session_id = ?
+              AND owner_id = ?
+              AND lease_token = ?
+              AND released_at IS NULL
+            """,
+            (now, error_message, session_id, owner_id, lease_token),
+        )
+        self.connection.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_by_token(lease_token)
+
+    def is_active(
+        self,
+        *,
+        session_id: str,
+        lease_token: str,
+        fencing_token: int,
+    ) -> bool:
+        now = _utc_now_iso()
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM session_runtime_leases
+            WHERE session_id = ?
+              AND lease_token = ?
+              AND fencing_token = ?
+              AND released_at IS NULL
+              AND expires_at > ?
+            """,
+            (session_id, lease_token, fencing_token, now),
+        ).fetchone()
+        return row is not None
+
+    def _get_unreleased_row(self, session_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            """
+            SELECT *
+            FROM session_runtime_leases
+            WHERE session_id = ?
+              AND released_at IS NULL
+            ORDER BY fencing_token DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+
+    def _row_to_lease(self, row: sqlite3.Row) -> SessionRuntimeLease:
+        return SessionRuntimeLease(
+            session_id=row["session_id"],
+            owner_id=row["owner_id"],
+            lease_token=row["lease_token"],
+            mode=SessionRuntimeLeaseMode(row["mode"]),
+            acquired_at=row["acquired_at"],
+            heartbeat_at=row["heartbeat_at"],
+            expires_at=row["expires_at"],
+            released_at=row["released_at"],
+            last_error=row["last_error"],
+            fencing_token=int(row["fencing_token"]),
+        )
+
+
+@dataclass(slots=True)
 class AgentRuntimeSignalRepository:
     connection: sqlite3.Connection
 
@@ -2249,9 +2526,9 @@ class AgentRuntimeSignalRepository:
             INSERT INTO agent_runtime_signals (
                 signal_id, session_id, agent_id, task_id, lane_id, correlation_id, reason, source_ref, status,
                 created_at, claimed_at, claimed_by, claim_expires_at, attempt_count,
-                completed_at, error_message, last_error
+                completed_at, error_message, last_error, session_lease_token, session_fencing_token
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(signal_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 agent_id = excluded.agent_id,
@@ -2267,7 +2544,9 @@ class AgentRuntimeSignalRepository:
                 attempt_count = excluded.attempt_count,
                 completed_at = excluded.completed_at,
                 error_message = excluded.error_message,
-                last_error = excluded.last_error
+                last_error = excluded.last_error,
+                session_lease_token = excluded.session_lease_token,
+                session_fencing_token = excluded.session_fencing_token
             """,
             (
                 signal.signal_id,
@@ -2287,6 +2566,8 @@ class AgentRuntimeSignalRepository:
                 signal.completed_at,
                 signal.error_message,
                 signal.last_error,
+                signal.session_lease_token,
+                signal.session_fencing_token,
             ),
         )
         self.connection.commit()
@@ -2363,9 +2644,15 @@ class AgentRuntimeSignalRepository:
         claimed_by: str,
         lease_seconds: int = 60,
         signal_ids: set[str] | None = None,
+        session_lease_token: str | None = None,
+        session_fencing_token: int | None = None,
     ) -> AgentRuntimeSignal | None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
+        if (session_lease_token is None) != (session_fencing_token is None):
+            raise ValueError(
+                "session_lease_token and session_fencing_token must be provided together"
+            )
         now = _utc_now_iso()
         params: list[Any] = [
             session_id,
@@ -2411,7 +2698,9 @@ class AgentRuntimeSignalRepository:
                 claim_expires_at = ?,
                 attempt_count = attempt_count + 1,
                 completed_at = NULL,
-                error_message = NULL
+                error_message = NULL,
+                session_lease_token = ?,
+                session_fencing_token = ?
             WHERE signal_id = ?
               AND (
                 status = ?
@@ -2427,6 +2716,8 @@ class AgentRuntimeSignalRepository:
                 now,
                 claimed_by,
                 _utc_after_iso(lease_seconds),
+                session_lease_token,
+                session_fencing_token,
                 signal_id,
                 AgentRuntimeSignalStatus.PENDING.value,
                 AgentRuntimeSignalStatus.CLAIMED.value,
@@ -2438,9 +2729,21 @@ class AgentRuntimeSignalRepository:
             return None
         return self.get(str(signal_id))
 
-    def complete(self, signal_id: str) -> AgentRuntimeSignal | None:
+    def complete(
+        self,
+        signal_id: str,
+        *,
+        expected_session_lease_token: str | None = None,
+        expected_session_fencing_token: int | None = None,
+    ) -> AgentRuntimeSignal | None:
         existing = self.get(signal_id)
         if existing is None:
+            return None
+        if not self._fencing_allows_signal_write(
+            existing,
+            expected_session_lease_token=expected_session_lease_token,
+            expected_session_fencing_token=expected_session_fencing_token,
+        ):
             return None
         if existing.status.is_terminal:
             return existing
@@ -2466,9 +2769,17 @@ class AgentRuntimeSignalRepository:
         error_message: str,
         retryable: bool = False,
         max_attempts: int = 3,
+        expected_session_lease_token: str | None = None,
+        expected_session_fencing_token: int | None = None,
     ) -> AgentRuntimeSignal | None:
         existing = self.get(signal_id)
         if existing is None:
+            return None
+        if not self._fencing_allows_signal_write(
+            existing,
+            expected_session_lease_token=expected_session_lease_token,
+            expected_session_fencing_token=expected_session_fencing_token,
+        ):
             return None
         if existing.status.is_terminal:
             return existing
@@ -2502,9 +2813,21 @@ class AgentRuntimeSignalRepository:
         self.connection.commit()
         return self.get(signal_id)
 
-    def release(self, signal_id: str) -> AgentRuntimeSignal | None:
+    def release(
+        self,
+        signal_id: str,
+        *,
+        expected_session_lease_token: str | None = None,
+        expected_session_fencing_token: int | None = None,
+    ) -> AgentRuntimeSignal | None:
         existing = self.get(signal_id)
         if existing is None:
+            return None
+        if not self._fencing_allows_signal_write(
+            existing,
+            expected_session_lease_token=expected_session_lease_token,
+            expected_session_fencing_token=expected_session_fencing_token,
+        ):
             return None
         if existing.status.is_terminal:
             return existing
@@ -2520,6 +2843,33 @@ class AgentRuntimeSignalRepository:
         )
         self.connection.commit()
         return self.get(signal_id)
+
+    def _fencing_allows_signal_write(
+        self,
+        signal: AgentRuntimeSignal,
+        *,
+        expected_session_lease_token: str | None,
+        expected_session_fencing_token: int | None,
+    ) -> bool:
+        if expected_session_lease_token is None and expected_session_fencing_token is None:
+            return True
+        if (expected_session_lease_token is None) != (
+            expected_session_fencing_token is None
+        ):
+            raise ValueError(
+                "expected_session_lease_token and expected_session_fencing_token must be provided together"
+            )
+        if signal.session_lease_token != expected_session_lease_token:
+            return False
+        if signal.session_fencing_token != expected_session_fencing_token:
+            return False
+        assert expected_session_lease_token is not None
+        assert expected_session_fencing_token is not None
+        return SessionRuntimeLeaseRepository(self.connection).is_active(
+            session_id=signal.session_id,
+            lease_token=expected_session_lease_token,
+            fencing_token=expected_session_fencing_token,
+        )
 
     def find_pending_duplicate(
         self,
@@ -2571,6 +2921,10 @@ class AgentRuntimeSignalRepository:
             completed_at=row["completed_at"],
             error_message=row["error_message"],
             last_error=row["last_error"],
+            session_lease_token=row["session_lease_token"],
+            session_fencing_token=None
+            if row["session_fencing_token"] is None
+            else int(row["session_fencing_token"]),
         )
 
 
@@ -4043,6 +4397,7 @@ class CoreRepositories:
     continuation_states: ContinuationStateRepository
     file_audit_entries: FileAuditEntryRepository
     command_log_artifacts: CommandLogArtifactRepository
+    session_runtime_leases: SessionRuntimeLeaseRepository
     runtime_signals: AgentRuntimeSignalRepository
     invocations: EngineInvocationRepository
     engine_documents: EngineDocumentRepository
@@ -4075,6 +4430,7 @@ class CoreRepositories:
             continuation_states=ContinuationStateRepository(connection),
             file_audit_entries=FileAuditEntryRepository(connection),
             command_log_artifacts=CommandLogArtifactRepository(connection),
+            session_runtime_leases=SessionRuntimeLeaseRepository(connection),
             runtime_signals=AgentRuntimeSignalRepository(connection),
             invocations=EngineInvocationRepository(connection),
             engine_documents=EngineDocumentRepository(connection),

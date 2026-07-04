@@ -642,6 +642,213 @@ def test_runtime_signal_repository_claims_leases_and_recovers_stale_claims() -> 
     assert reclaimed.attempt_count == 2
 
 
+def test_session_runtime_lease_repository_enforces_session_scoped_ownership() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    for session_id in ("sess_runtime_lease_a", "sess_runtime_lease_b"):
+        repositories.sessions.save(
+            Session.create(session_id, "proj_001", session_id, session_id)
+        )
+
+    acquired = repositories.session_runtime_leases.acquire(
+        session_id="sess_runtime_lease_a",
+        owner_id="worker:a",
+        mode="background",
+        lease_seconds=60,
+    )
+    assert acquired.acquired is True
+    assert acquired.lease is not None
+    assert acquired.lease.owner_id == "worker:a"
+    assert acquired.lease.fencing_token == 1
+
+    blocked = repositories.session_runtime_leases.acquire(
+        session_id="sess_runtime_lease_a",
+        owner_id="worker:b",
+        mode="manual_drain",
+        lease_seconds=60,
+    )
+    assert blocked.acquired is False
+    assert blocked.active_lease is not None
+    assert blocked.active_lease.lease_token == acquired.lease.lease_token
+    assert blocked.retry_after_seconds is not None
+
+    parallel = repositories.session_runtime_leases.acquire(
+        session_id="sess_runtime_lease_b",
+        owner_id="worker:b",
+        mode="manual_drain",
+        lease_seconds=60,
+    )
+    assert parallel.acquired is True
+    assert parallel.lease is not None
+    assert parallel.lease.session_id == "sess_runtime_lease_b"
+
+    assert (
+        repositories.session_runtime_leases.heartbeat(
+            session_id="sess_runtime_lease_a",
+            owner_id="worker:b",
+            lease_token=acquired.lease.lease_token,
+        )
+        is None
+    )
+    heartbeat = repositories.session_runtime_leases.heartbeat(
+        session_id="sess_runtime_lease_a",
+        owner_id="worker:a",
+        lease_token=acquired.lease.lease_token,
+        lease_seconds=120,
+    )
+    assert heartbeat is not None
+    assert heartbeat.heartbeat_at >= acquired.lease.heartbeat_at
+
+    assert (
+        repositories.session_runtime_leases.release(
+            session_id="sess_runtime_lease_a",
+            owner_id="worker:b",
+            lease_token=acquired.lease.lease_token,
+        )
+        is None
+    )
+    released = repositories.session_runtime_leases.release(
+        session_id="sess_runtime_lease_a",
+        owner_id="worker:a",
+        lease_token=acquired.lease.lease_token,
+    )
+    assert released is not None
+    assert released.released_at is not None
+    assert repositories.session_runtime_leases.get_active("sess_runtime_lease_a") is None
+
+
+def test_session_runtime_lease_repository_reclaims_expired_lease() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    repositories.sessions.save(
+        Session.create("sess_runtime_reclaim", "proj_001", "Reclaim", "Reclaim")
+    )
+    first = repositories.session_runtime_leases.acquire(
+        session_id="sess_runtime_reclaim",
+        owner_id="worker:a",
+        mode="background",
+        lease_seconds=60,
+    )
+    assert first.lease is not None
+    connection.execute(
+        "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+        ("2020-01-01T00:00:00+00:00", first.lease.lease_token),
+    )
+    connection.commit()
+
+    second = repositories.session_runtime_leases.acquire(
+        session_id="sess_runtime_reclaim",
+        owner_id="worker:b",
+        mode="recovery",
+        lease_seconds=60,
+    )
+
+    assert second.acquired is True
+    assert second.lease is not None
+    assert second.lease.owner_id == "worker:b"
+    assert second.lease.fencing_token == first.lease.fencing_token + 1
+    old = repositories.session_runtime_leases.get_by_token(first.lease.lease_token)
+    assert old is not None
+    assert old.released_at is not None
+    assert old.last_error == "lease expired before reclaim"
+
+
+def test_runtime_signal_fencing_rejects_stale_session_lease_writes() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_signal_fence", "proj_001", "Fence", "Fence")
+    repositories.sessions.save(session)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:master",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="Master",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-16T10:00:00+00:00",
+            updated_at="2026-04-16T10:00:00+00:00",
+        )
+    )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_fenced",
+            session_id=session.session_id,
+            agent_id="agent:master",
+            reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-04-16T10:00:01+00:00",
+        )
+    )
+    first_lease = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:a",
+        mode="manual_drain",
+        lease_seconds=60,
+    ).lease
+    assert first_lease is not None
+    claimed_by_a = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:a",
+        signal_ids={"sig_fenced"},
+        lease_seconds=60,
+        session_lease_token=first_lease.lease_token,
+        session_fencing_token=first_lease.fencing_token,
+    )
+    assert claimed_by_a is not None
+    connection.execute(
+        "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+        ("2020-01-01T00:00:00+00:00", first_lease.lease_token),
+    )
+    connection.execute(
+        "UPDATE agent_runtime_signals SET claim_expires_at = ? WHERE signal_id = ?",
+        ("2020-01-01T00:00:00+00:00", "sig_fenced"),
+    )
+    connection.commit()
+    second_lease = repositories.session_runtime_leases.acquire(
+        session_id=session.session_id,
+        owner_id="worker:b",
+        mode="recovery",
+        lease_seconds=60,
+    ).lease
+    assert second_lease is not None
+    claimed_by_b = repositories.runtime_signals.claim_next(
+        session_id=session.session_id,
+        claimed_by="worker:b",
+        signal_ids={"sig_fenced"},
+        lease_seconds=60,
+        session_lease_token=second_lease.lease_token,
+        session_fencing_token=second_lease.fencing_token,
+    )
+    assert claimed_by_b is not None
+    completed_by_b = repositories.runtime_signals.complete(
+        "sig_fenced",
+        expected_session_lease_token=second_lease.lease_token,
+        expected_session_fencing_token=second_lease.fencing_token,
+    )
+    assert completed_by_b is not None
+    assert completed_by_b.status is AgentRuntimeSignalStatus.COMPLETED
+
+    stale = repositories.runtime_signals.fail(
+        "sig_fenced",
+        error_message="late stale worker failure",
+        expected_session_lease_token=first_lease.lease_token,
+        expected_session_fencing_token=first_lease.fencing_token,
+    )
+
+    current = repositories.runtime_signals.get("sig_fenced")
+    assert stale is None
+    assert current is not None
+    assert current.status is AgentRuntimeSignalStatus.COMPLETED
+    assert current.error_message is None
+    assert current.session_lease_token == second_lease.lease_token
+
+
 def test_runtime_signal_repository_lists_claimable_sessions() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

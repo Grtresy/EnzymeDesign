@@ -13,6 +13,7 @@ from .conversation import persist_conversation_message
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
 from .agent_scheduler import AgentRuntimeScheduler
+from .agent_scheduler import SessionRuntimeLeaseLockedError
 from .harness import AgentStepContext
 from .harness import HarnessDriver
 from .harness import HarnessEvent
@@ -69,6 +70,9 @@ from .protocols import CorrelationThread
 from .protocols import DelegationEnvelope
 from .protocols import ProtocolService
 from .report_drafts import register_report_draft_tools
+from .runtime_consistency import RuntimeConsistencyService
+from .runtime_consistency import RuntimeConsistencyWarning
+from .runtime_consistency import RuntimeStateAudit
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
 from .sandbox_workspace import register_sandbox_workspace_tools
@@ -110,6 +114,8 @@ from .repositories import SandboxWorkspaceRecordRepository
 from .repositories import SessionReportDraftRepository
 from .repositories import SessionReportRepository
 from .repositories import SessionArtifactRepository
+from .repositories import SessionRuntimeLeaseAcquireResult
+from .repositories import SessionRuntimeLeaseRepository
 from .repositories import SessionRepository
 from .repositories import LaneRepository
 from .repositories import TaskRepository
@@ -148,6 +154,7 @@ __all__ = [
     "AgentRuntimeOutcome",
     "AgentRuntimeScheduler",
     "AgentRuntimeService",
+    "SessionRuntimeLeaseLockedError",
     "AgentMemberRepository",
     "AgentRuntimeSignalRepository",
     "ArtifactBlobGcRepository",
@@ -217,6 +224,9 @@ __all__ = [
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
     "RunRecordRepository",
+    "RuntimeConsistencyService",
+    "RuntimeConsistencyWarning",
+    "RuntimeStateAudit",
     "SandboxImageRecordRepository",
     "SandboxRuntimeError",
     "SandboxRuntimeService",
@@ -226,6 +236,8 @@ __all__ = [
     "SandboxWorkspaceService",
     "SessionReportDraftRepository",
     "SessionReportRepository",
+    "SessionRuntimeLeaseAcquireResult",
+    "SessionRuntimeLeaseRepository",
     "SQLiteSchemaMismatchError",
     "RestoreFocus",
     "ResumeDecision",

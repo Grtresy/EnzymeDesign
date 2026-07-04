@@ -1489,11 +1489,20 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
             captured["context"] = context
             captured.update(kwargs)
 
-        def run_once_sync(self, session_id: str, *, max_signals: int, max_steps_per_agent: int, signal_ids=None):
+        def run_once_sync(
+            self,
+            session_id: str,
+            *,
+            max_signals: int,
+            max_steps_per_agent: int,
+            signal_ids=None,
+            auto_enqueue_ready_tasks: bool = False,
+        ):
             captured["session_id"] = session_id
             captured["max_signals"] = max_signals
             captured["max_steps_per_agent"] = max_steps_per_agent
             captured["signal_ids"] = signal_ids
+            captured["auto_enqueue_ready_tasks"] = auto_enqueue_ready_tasks
             return ()
 
     monkeypatch.setattr("openzyme_host_api.v3_service.AgentRuntimeScheduler", FakeScheduler)
@@ -1513,8 +1522,108 @@ def test_v3_drain_runtime_uses_configured_scheduler_limits(monkeypatch) -> None:
     assert captured["max_global_concurrency"] == 7
     assert captured["max_session_concurrency"] == 5
     assert captured["max_agent_concurrency"] == 3
+    assert captured["runtime_mode"] == "manual_drain"
     assert captured["max_signals"] == 4
     assert captured["max_steps_per_agent"] == 6
+    assert captured["auto_enqueue_ready_tasks"] is False
+
+
+def test_v3_manual_drain_returns_locked_when_background_owns_session() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_manual_locked_by_background",
+            "proj_001",
+            "Runtime lock",
+            "Manual drain must respect background ownership.",
+        )
+    )
+    lease = repositories.session_runtime_leases.acquire(
+        session_id="sess_manual_locked_by_background",
+        owner_id="host-api:background-runtime",
+        mode="background",
+        lease_seconds=60,
+    ).lease
+    assert lease is not None
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=object(),
+    )
+
+    result = service.drain_runtime(session_id="sess_manual_locked_by_background")
+
+    assert result.status == "locked"
+    assert result.outputs == ()
+    assert result.events[0]["event_type"] == "runtime.session_locked"
+    assert result.events[0]["payload"]["owner_id"] == "host-api:background-runtime"
+    assert result.events[0]["payload"]["mode"] == "background"
+    assert repositories.session_runtime_leases.get_active(
+        "sess_manual_locked_by_background"
+    ).lease_token == lease.lease_token
+
+
+def test_v3_background_runtime_skips_when_manual_drain_owns_session() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create(
+            "sess_background_locked_by_manual",
+            "proj_001",
+            "Runtime lock",
+            "Background runtime must respect manual ownership.",
+        )
+    )
+    repositories.session_runtime_leases.acquire(
+        session_id="sess_background_locked_by_manual",
+        owner_id="host-api:runtime-drain",
+        mode="manual_drain",
+        lease_seconds=60,
+    )
+    event_store = V3EventStore()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=event_store,
+        model_factory=object(),
+    )
+
+    outcomes = asyncio.run(
+        service.run_background_runtime_once(
+            session_id="sess_background_locked_by_manual",
+            worker_id="host-api:background-runtime",
+        )
+    )
+
+    assert outcomes == []
+    events = event_store.list("sess_background_locked_by_manual")
+    assert [event["event_type"] for event in events] == ["runtime.session_locked"]
+    assert events[0]["payload"]["owner_id"] == "host-api:runtime-drain"
+
+
+def test_v3_session_runtime_lease_does_not_block_other_sessions() -> None:
+    repositories = _build_v3_engine_repositories()
+    repositories.sessions.save(
+        Session.create("sess_locked_a", "proj_001", "A", "A")
+    )
+    repositories.sessions.save(
+        Session.create("sess_unlocked_b", "proj_001", "B", "B")
+    )
+    repositories.session_runtime_leases.acquire(
+        session_id="sess_locked_a",
+        owner_id="host-api:background-runtime",
+        mode="background",
+        lease_seconds=60,
+    )
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=object(),
+    )
+
+    result = service.drain_runtime(session_id="sess_unlocked_b")
+
+    assert result.status == "completed"
+    assert repositories.session_runtime_leases.get_active("sess_locked_a") is not None
+    assert repositories.session_runtime_leases.get_active("sess_unlocked_b") is None
 
 
 def test_v3_drain_runtime_request_defaults_disable_auto_claim() -> None:
@@ -1691,8 +1800,8 @@ def test_v3_background_runtime_once_releases_operation_lock_while_scheduler_runs
             return [Outcome()]
 
     class LockAwareService(V3HostApiService):
-        def _build_scheduler(self, context, *, worker_id):
-            del context, worker_id
+        def _build_scheduler(self, context, *, worker_id, runtime_mode="manual_drain"):
+            del context, worker_id, runtime_mode
             return BlockingScheduler()
 
     service = LockAwareService(
