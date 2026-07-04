@@ -22,6 +22,7 @@ from openzyme_core import EngineRegistry
 from openzyme_core import ProtocolService
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
+from openzyme_core import register_bio_research_tools
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
@@ -52,6 +53,7 @@ from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
 from openzyme_engines.execution import ProviderHttpBioDatabaseAdapter
+from openzyme_research import DeterministicBioResearchService
 from openzyme_runtime import ToolSideEffect
 
 
@@ -3353,6 +3355,73 @@ def test_pipeline_stage_artifact_requires_s08_sealed_digest() -> None:
     error = result.parsed_result.structured_findings["error"]
     assert error["type"] == "hpc_stage_digest_missing"
     assert error["stage"] == "hpc_stage_validation"
+
+
+def test_pipeline_stage_artifact_accepts_rcsb_downloaded_sealed_artifact() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_bio_research_tools(
+        registry,
+        service=DeterministicBioResearchService(),
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+    download = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_download_rcsb_for_stage",
+            tool_name="rcsb_pdb.download_structure",
+            arguments={"pdb_id": "1ABC", "format": "pdb"},
+            task_id="task_001",
+            lane_id="lane_001",
+        ),
+    )
+    assert download.ok is True
+    download_payload = json.loads(download.content)
+    artifact_id = str(download_payload["artifacts"][0]["artifact_id"])
+    artifact = repositories.artifacts.get(artifact_id)
+    assert artifact is not None
+    metadata = dict(artifact.metadata or {})
+    assert metadata["content_digest"] == metadata["sealed_digest"]
+
+    workspace = _workspace_payload("rcsb_download")
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_stage_rcsb_download",
+        "from openzyme_pipeline import hpc\n"
+        "# Runtime sandbox fixture stages the downloaded RCSB artifact.\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "hpc.stage_artifact",
+                {
+                    "hpc_workspace": workspace,
+                    "artifact_id": artifact_id,
+                    "workspace_path": "inputs/structure.pdb",
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_stage_rcsb_download",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [artifact_id]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    assert sandbox.results[0]["artifact_id"] == artifact_id
+    assert sandbox.results[0]["artifact_digest"] == metadata["content_digest"]
 
 
 def test_pipeline_stage_ref_digest_mismatch_is_rejected() -> None:

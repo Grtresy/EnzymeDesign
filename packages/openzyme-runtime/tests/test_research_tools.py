@@ -67,6 +67,17 @@ def test_bio_research_download_tools_return_artifact_manifests() -> None:
     assert result.payload["findings"] == []
     assert result.payload["artifacts"][0]["kind"] == "sequence"
     assert result.payload["artifacts"][0]["storage_uri"]
+    assert result.payload["artifacts"][0]["content_digest"].startswith("sha256:")
+    assert (
+        result.payload["artifacts"][0]["sealed_digest"]
+        == result.payload["artifacts"][0]["content_digest"]
+    )
+    assert result.payload["artifacts"][0]["retrieved_at"]
+    provenance = result.payload["artifacts"][0]["provenance"]
+    assert provenance["provider"] == "uniprot"
+    assert provenance["external_id"] == "P12345"
+    assert provenance["format"] == "fasta"
+    assert provenance["digest"] == result.payload["artifacts"][0]["content_digest"]
 
 
 def test_default_research_tools_expose_web_tools_without_search_collect() -> None:

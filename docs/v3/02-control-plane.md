@@ -322,6 +322,7 @@ claimed --operator release--> pending
 - preprocess 生成的中间文件也是 session artifact；它们可以作为后续 execution input，但必须保留来源 artifact 与转换工具 metadata
 - `artifact.relative_path` 是 workspace-facing path，用于 UI 路径树、CLI 列表和 agent 对共享工作面的理解；它不是 Host 本地 filesystem path，也不能替代 artifact catalog 授权
 - artifact storage 采用两层模型：Host-private Blob 层按 `content_digest` / `tree_digest` 封存与去重内容；Artifact 层按不可变 `artifact_id` 记录 session/task/lane/run/invocation、kind、format、validation、producer metadata、provenance、sealed digest 与展示用 `relative_path`
+- 外部 provider 下载产物进入 Artifact 层时默认必须 sealed：Host 按实际下载 bytes 记录 SHA-256 `content_digest` / `sealed_digest`、provider、external id/source locator、format、retrieved_at 与 provenance。sealed 只证明 catalog 内容不可变且可授权搬运；PDB/FASTA 内容是否满足 fpocket、docking 或其它 execution tool 的业务输入要求，由对应 capability/tool validator 单独判断
 - `storage_uri` 或后续等价 Host-private storage field 只能指向 sealed Blob/Artifact storage；不得指向 mutable sandbox `/workspace/output`、sandbox host path、runner path 或 Host repo path
 - 同一 `relative_path` 可以存在多个 artifact leaf；重复 path 不覆盖、不合并、不作为唯一键，UI/CLI 只能用 `artifact_id` 区分，并可按 created_at、version、run 或 artifact id 排序
 - executor sandbox 的 `/workspace` working copy 不是 canonical artifact store；只有 `artifacts.materialize`、`artifacts.register`、`artifacts.snapshot_code` 产生或回链的 Host-owned records 才进入 canonical workspace

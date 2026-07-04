@@ -137,6 +137,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - download 返回 `summary + artifacts`，并在可能时附带来源 `findings / sources`
 - `sources` 是 evidence 的引用来源，不是 workspace artifact
 - 只有真实下载或生成的文件资产才进入 `artifacts`
+- provider direct download 产物进入 control plane 时默认是 sealed artifact：artifact metadata 必须记录基于实际 bytes 的 SHA-256 `content_digest` / `sealed_digest`、`provider`、`external_id`、`source_locator`、`format`、`retrieved_at` 和结构化 `provenance`；后续 `hpc.stage_artifact` 只消费这些 catalog digest 与 session 授权，不负责判断 PDB/FASTA 是否满足某个 execution tool 的输入质量
 - raw provider payload 默认不进入长期 LLM restore context；需要调试时使用 `raw_ref` 或 engine document 追踪
 
 说明：
@@ -213,7 +214,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - artifact tool results、workspace projection、events 与 capability projection 都不得返回 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、`source_storage_uri` 或 `intermediate_storage_uri`
 - `report_drafts` 默认表达 report teammate 的中间交付面；它不是一次 capability invocation 的临时输出
 - research 过程中下载的 sequence / structure 默认也进入 `artifacts` 共享投影，而不是只停留在 lane 私有目录
-- 这类 research artifact 至少应带 provider、external id、format、source locator、task linkage 与 provenance / evidence linkage
+- 这类 research artifact 默认按外部下载 sealed：至少应带 provider、external id、format、source locator、retrieved_at、SHA-256 content/sealed digest、task linkage 与 provenance / evidence linkage；execution-ready 语义由后续 capability tool 校验，不与 sealed 状态混用
 - execution 输入 artifact 必须通过 compiler 映射为 runner staging input；public workspace/read model 和普通 artifact browser 不暴露 Host repo path、sandbox host path、`storage_uri`、runner credentials、SSH/Slurm config
 - execution 输出 artifact 必须来自 runner declared `expected_outputs` 的下载结果，并保留 output relative path
 - `capabilities.deep_research[]` 默认承载每个 research invocation 的 `canonical_summary`、`evidence`、`source_refs`、`gaps` 与 output document 投影

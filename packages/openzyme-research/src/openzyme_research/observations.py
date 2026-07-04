@@ -23,6 +23,10 @@ class ResearchArtifactManifest:
     storage_uri: str | None = None
     relative_path: str | None = None
     artifact_id: str | None = None
+    content_digest: str | None = None
+    sealed_digest: str | None = None
+    retrieved_at: str | None = None
+    provenance: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         kind = self.kind.value if isinstance(self.kind, ArtifactKind) else str(self.kind)
@@ -39,6 +43,10 @@ class ResearchArtifactManifest:
             "storage_uri": self.storage_uri,
             "relative_path": self.relative_path,
             "artifact_id": self.artifact_id,
+            "content_digest": self.content_digest,
+            "sealed_digest": self.sealed_digest,
+            "retrieved_at": self.retrieved_at,
+            "provenance": {} if self.provenance is None else dict(self.provenance),
         }
 
 

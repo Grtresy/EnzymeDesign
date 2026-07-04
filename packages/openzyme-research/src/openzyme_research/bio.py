@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+import hashlib
 import json
 from pathlib import PurePosixPath
 import re
@@ -96,6 +99,44 @@ class DownloadedResearchAsset:
         payload["kind"] = self.kind.value
         payload["content"] = f"<{len(self.content)} bytes>"
         return payload
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _content_digest(content: bytes) -> str:
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _sealed_asset_metadata(
+    asset: DownloadedResearchAsset,
+    *,
+    retrieved_at: str | None = None,
+) -> dict[str, Any]:
+    digest = _content_digest(asset.content)
+    timestamp = retrieved_at or str(
+        (asset.metadata or {}).get("retrieved_at") or _utc_now_iso()
+    )
+    provenance = {
+        "provider": asset.provider,
+        "external_id": asset.external_id,
+        "source_locator": asset.locator,
+        "format": asset.format,
+        "retrieved_at": timestamp,
+        "digest": digest,
+    }
+    return {
+        **({} if asset.metadata is None else dict(asset.metadata)),
+        "provider": asset.provider,
+        "external_id": asset.external_id,
+        "format": asset.format,
+        "source_locator": asset.locator,
+        "content_digest": digest,
+        "sealed_digest": digest,
+        "retrieved_at": timestamp,
+        "provenance": provenance,
+    }
 
 
 class BioResearchService(Protocol):
@@ -574,6 +615,7 @@ def structure_hits_to_findings(hits: tuple[StructureHit, ...], *, query: str) ->
 
 
 def asset_manifest(asset: DownloadedResearchAsset) -> dict[str, Any]:
+    metadata = _sealed_asset_metadata(asset)
     return ResearchArtifactManifest(
         external_id=asset.external_id,
         provider=asset.provider,
@@ -583,7 +625,11 @@ def asset_manifest(asset: DownloadedResearchAsset) -> dict[str, Any]:
         title=asset.title,
         description=asset.description,
         source_locator=asset.locator,
-        metadata=asset.metadata,
+        metadata=metadata,
+        content_digest=str(metadata["content_digest"]),
+        sealed_digest=str(metadata["sealed_digest"]),
+        retrieved_at=str(metadata["retrieved_at"]),
+        provenance=dict(metadata["provenance"]),
     ).to_dict()
 
 

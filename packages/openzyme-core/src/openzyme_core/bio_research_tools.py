@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -44,6 +45,39 @@ def _artifact_root() -> Path:
     return root
 
 
+def _content_digest(content: bytes) -> str:
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _sealed_asset_metadata(
+    asset: DownloadedResearchAsset,
+    *,
+    produced_by: str,
+    retrieved_at: str,
+) -> dict[str, Any]:
+    digest = _content_digest(asset.content)
+    provenance = {
+        "provider": asset.provider,
+        "external_id": asset.external_id,
+        "source_locator": asset.locator,
+        "format": asset.format,
+        "retrieved_at": retrieved_at,
+        "digest": digest,
+    }
+    return {
+        **({} if asset.metadata is None else dict(asset.metadata)),
+        "provider": asset.provider,
+        "external_id": asset.external_id,
+        "format": asset.format,
+        "source_locator": asset.locator,
+        "produced_by": produced_by,
+        "content_digest": digest,
+        "sealed_digest": digest,
+        "retrieved_at": retrieved_at,
+        "provenance": provenance,
+    }
+
+
 def _persist_asset(
     context: SessionRuntimeContext,
     invocation: ToolInvocation,
@@ -59,6 +93,11 @@ def _persist_asset(
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / f"{artifact_id}_{asset.filename}"
     target_path.write_bytes(asset.content)
+    metadata = _sealed_asset_metadata(
+        asset,
+        produced_by=scope_label,
+        retrieved_at=now,
+    )
     artifact = SessionArtifactRecord(
         artifact_id=artifact_id,
         session_id=session_id,
@@ -71,14 +110,7 @@ def _persist_asset(
         relative_path=target_path.name,
         title=asset.title,
         description=asset.description,
-        metadata={
-            "provider": asset.provider,
-            "external_id": asset.external_id,
-            "format": asset.format,
-            "source_locator": asset.locator,
-            "produced_by": scope_label,
-            **({} if asset.metadata is None else dict(asset.metadata)),
-        },
+        metadata=metadata,
         created_at=now,
     )
     context.repositories.artifacts.save(artifact)
@@ -296,6 +328,8 @@ def _research_brief(invocation: ToolInvocation, observation: dict[str, Any]) -> 
 def _artifact_manifest(
     asset: DownloadedResearchAsset, artifact: SessionArtifactRecord
 ) -> ResearchArtifactManifest:
+    metadata = dict(artifact.metadata or {})
+    provenance = metadata.get("provenance")
     return ResearchArtifactManifest(
         artifact_id=artifact.artifact_id,
         external_id=asset.external_id,
@@ -306,10 +340,19 @@ def _artifact_manifest(
         title=asset.title,
         description=asset.description,
         source_locator=asset.locator,
-        metadata=asset.metadata,
+        metadata=metadata,
         storage_uri=artifact.storage_uri,
         relative_path=artifact.relative_path,
+        content_digest=_metadata_text(metadata, "content_digest"),
+        sealed_digest=_metadata_text(metadata, "sealed_digest"),
+        retrieved_at=_metadata_text(metadata, "retrieved_at"),
+        provenance=None if not isinstance(provenance, dict) else dict(provenance),
     )
+
+
+def _metadata_text(metadata: dict[str, Any], key: str) -> str | None:
+    value = metadata.get(key)
+    return None if value is None else str(value)
 
 
 @dataclass(frozen=True, slots=True)
