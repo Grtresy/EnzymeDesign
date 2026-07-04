@@ -617,6 +617,169 @@ def test_task_finish_completed_updates_task_and_terminates_loop_immediately() ->
     }
 
 
+class MasterFinishesDelegatedTaskDriver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan(
+        self,
+        context: SessionRuntimeContext,
+        harness_input: HarnessInput,
+        tool_results: tuple[object, ...],
+    ) -> HarnessStep:
+        del context, harness_input
+        self.calls += 1
+        if self.calls == 1:
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_finish_delegated",
+                        tool_name="task.finish",
+                        arguments={
+                            "task_id": "task_001",
+                            "status": "completed",
+                            "summary": "Delegated research task is complete.",
+                        },
+                        task_id="task_001",
+                    ),
+                )
+            )
+        if self.calls == 2:
+            assert tool_results[-1].tool_name == "task.finish"
+            return HarnessStep(
+                tool_invocations=(
+                    ToolInvocation(
+                        call_id="call_continue_after_finish",
+                        tool_name="echo",
+                        arguments={"text": "continued"},
+                    ),
+                )
+            )
+        return HarnessStep(assistant_message="master continued")
+
+
+def test_master_finishing_delegated_task_does_not_terminate_master_loop() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    delegated_agent = create_agent_member(
+        repositories,
+        session_id=session.session_id,
+        role="researcher",
+        task_id="task_001",
+    )
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=TaskStatus.IN_PROGRESS,
+            priority=task.priority,
+            kind="research",
+            assigned_ref=delegated_agent.agent_id,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    echo_calls: list[str] = []
+    registry.register(
+        "echo",
+        lambda _context, invocation: echo_calls.append(
+            str(invocation.arguments["text"])
+        )
+        or "echoed",
+    )
+    driver = MasterFinishesDelegatedTaskDriver()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=4,
+            agent_id="agent:master",
+            actor_kind="master",
+            actor_role="master",
+        ),
+        driver=driver,
+        tool_registry=registry,
+    )
+
+    task = repositories.tasks.get("task_001")
+    assert result.status is HarnessStatus.COMPLETED
+    assert driver.calls == 3
+    assert echo_calls == ["continued"]
+    assert task.status is TaskStatus.COMPLETED
+    assert result.tool_results[0].tool_name == "task.finish"
+    assert result.tool_results[0].terminal_action == "task.finish"
+    assert result.tool_results[0].terminates_turn is False
+    assert "harness.terminal_action" not in {
+        event.event_type for event in result.events
+    }
+
+
+def test_master_finishing_own_task_does_not_terminate_master_loop() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    task = repositories.tasks.get("task_001")
+    repositories.tasks.save(
+        Task(
+            task_id=task.task_id,
+            session_id=task.session_id,
+            subject=task.subject,
+            description=task.description,
+            status=TaskStatus.IN_PROGRESS,
+            priority=task.priority,
+            kind=task.kind,
+            assigned_ref="agent:master",
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            lane_id=task.lane_id,
+            blocked_by=task.blocked_by,
+        )
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    echo_calls: list[str] = []
+    registry.register(
+        "echo",
+        lambda _context, invocation: echo_calls.append(
+            str(invocation.arguments["text"])
+        )
+        or "echoed",
+    )
+    driver = MasterFinishesDelegatedTaskDriver()
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            max_steps=4,
+            agent_id="agent:master",
+            actor_kind="master",
+            actor_role="master",
+        ),
+        driver=driver,
+        tool_registry=registry,
+    )
+
+    task = repositories.tasks.get("task_001")
+    assert result.status is HarnessStatus.COMPLETED
+    assert driver.calls == 3
+    assert echo_calls == ["continued"]
+    assert task.status is TaskStatus.COMPLETED
+    assert result.tool_results[0].tool_name == "task.finish"
+    assert result.tool_results[0].terminal_action == "task.finish"
+    assert result.tool_results[0].terminates_turn is False
+    assert "harness.terminal_action" not in {
+        event.event_type for event in result.events
+    }
+
+
 class RegistryBackedEngine:
     descriptor = EngineDescriptor(
         engine_name="registry_engine",
@@ -1637,6 +1800,105 @@ def test_task_delegate_creates_distinct_canonical_agents_for_same_role() -> None
     assert all(agent.agent_id.startswith("agent:researcher:") for agent in agents)
     assert "agent:researcher" not in {task_a.assigned_ref, task_b.assigned_ref}
     assert [agent.nickname for agent in agents] == ["Ada", "Curie"]
+
+
+def test_task_delegate_normalizes_blank_and_same_role_agent_ref() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    for task_id in ("task_blank_ref", "task_role_ref"):
+        service.create_task(
+            session_id=session.session_id,
+            task_id=task_id,
+            subject=f"Research {task_id}",
+            description="Delegate to a researcher.",
+            kind="research",
+        )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    blank_ref = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_blank_ref",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_blank_ref",
+                "agent_role": "researcher",
+                "agent_ref": "",
+            },
+        ),
+    )
+    same_role_ref = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_same_role_ref",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_role_ref",
+                "agent_role": "researcher",
+                "agent_ref": "researcher",
+            },
+        ),
+    )
+
+    blank_task = repositories.tasks.get("task_blank_ref")
+    role_task = repositories.tasks.get("task_role_ref")
+    assert blank_ref.ok is True
+    assert same_role_ref.ok is True
+    assert blank_task.assigned_ref is not None
+    assert role_task.assigned_ref is not None
+    assert blank_task.assigned_ref != "researcher"
+    assert role_task.assigned_ref != "researcher"
+    assert blank_task.assigned_ref != role_task.assigned_ref
+
+
+def test_task_delegate_rejects_mismatched_role_alias_agent_ref() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_mismatch_ref",
+        subject="Research mismatch",
+        description="Delegate to a researcher.",
+        kind="research",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_mismatch_ref",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_mismatch_ref",
+                "agent_role": "researcher",
+                "agent_ref": "executor",
+            },
+        ),
+    )
+
+    task = repositories.tasks.get("task_mismatch_ref")
+    assert result.ok is False
+    assert result.error_code == "agent_ref_role_mismatch"
+    assert task.assigned_ref is None
+    assert task.status is TaskStatus.TODO
 
 
 def test_delegate_executor_aox_task_persists_mandatory_recipe_instructions() -> None:

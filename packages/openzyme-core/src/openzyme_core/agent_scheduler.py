@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import replace
 from typing import Any
 
+from openzyme_domain import AgentMember
+from openzyme_domain import AgentMemberStatus
+from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionRuntimeLeaseMode
+from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
 
 from .agent_runtime import AgentRuntimeOutcome
@@ -116,10 +121,16 @@ class AgentRuntimeScheduler:
                                         "worker_id": self.worker_id,
                                     },
                                 )
+                            agent = None
+                            if failed.status.value != "claimed":
+                                agent = self._release_agent_after_runtime_exception(
+                                    signal
+                                )
                             return AgentRuntimeOutcome(
                                 signal=failed,
                                 task=None,
-                                agent=self.context.repositories.agents.get(
+                                agent=agent
+                                or self.context.repositories.agents.get(
                                     signal.session_id, signal.agent_id
                                 ),
                                 ok=False,
@@ -246,6 +257,50 @@ class AgentRuntimeScheduler:
             active_lease=result.active_lease,
             retry_after_seconds=result.retry_after_seconds,
         )
+
+    def _release_agent_after_runtime_exception(
+        self, signal: AgentRuntimeSignal
+    ) -> AgentMember | None:
+        agent = self.context.repositories.agents.get(signal.session_id, signal.agent_id)
+        if agent is None:
+            return None
+        now = utc_now_iso()
+        updated = replace(
+            agent,
+            status=AgentMemberStatus.IDLE,
+            task_id=signal.task_id if signal.task_id is not None else agent.task_id,
+            lane_id=signal.lane_id if signal.lane_id is not None else agent.lane_id,
+            updated_at=now,
+            runtime_state="idle",
+            current_correlation_id=(
+                signal.correlation_id
+                if signal.correlation_id is not None
+                else agent.current_correlation_id
+            ),
+            wakeup_reason=signal.reason.value,
+            last_active_at=now,
+            idle_since=now,
+        )
+        self.context.repositories.agents.save(updated)
+        self.context.emit(
+            "agent.status_updated",
+            {
+                "agent_id": updated.agent_id,
+                "status": updated.status.value,
+                "task_id": updated.task_id,
+                "lane_id": updated.lane_id,
+                "wakeup_reason": updated.wakeup_reason,
+            },
+        )
+        self.context.emit(
+            "agent.idle",
+            {
+                "agent_id": updated.agent_id,
+                "signal_id": signal.signal_id,
+                "task_id": signal.task_id,
+            },
+        )
+        return updated
 
 
 __all__ = ["AgentRuntimeScheduler", "SessionRuntimeLeaseLockedError"]

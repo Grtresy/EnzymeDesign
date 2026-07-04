@@ -214,6 +214,16 @@ def _can_finish_task(context: SessionRuntimeContext, task: Task) -> bool:
     return False
 
 
+def _finish_terminates_current_turn(context: SessionRuntimeContext, task: Task) -> bool:
+    if context.agent_id is None:
+        return False
+    if context.actor_kind == "master" or context.agent_id == "agent:master":
+        return False
+    if is_teammate_role_alias(context.agent_id):
+        return False
+    return context.agent_id == task.assigned_ref
+
+
 def _required_structure_artifact_error(
     context: SessionRuntimeContext,
     invocation: ToolInvocation,
@@ -817,6 +827,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             "finish_ref": finish_ref,
             **finish_payload,
         }
+        terminates_turn = _finish_terminates_current_turn(context, task)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -832,9 +843,10 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 "finish_ref": finish_ref,
                 "evidence_refs": list(evidence_refs),
                 "next_owner": next_owner,
+                "terminates_current_turn": terminates_turn,
             },
             terminal_action="task.finish",
-            terminates_turn=True,
+            terminates_turn=terminates_turn,
         )
 
     def get_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:

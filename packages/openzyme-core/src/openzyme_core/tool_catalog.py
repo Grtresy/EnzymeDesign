@@ -522,7 +522,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="task.delegate",
             description=(
                 "Delegate a concrete task to one internal teammate agent by queuing a runtime wakeup. "
-                "agent_role selects capability; agent_ref optionally targets an existing canonical agent by id, handle, or nickname. "
+                "agent_role selects capability; omit agent_ref to create a new teammate, or use agent_ref only for an existing canonical agent by id, handle, or nickname. "
                 f"Valid teammate roles are {', '.join(TEAMMATE_ROLE_NAMES)}."
             ),
             input_schema={

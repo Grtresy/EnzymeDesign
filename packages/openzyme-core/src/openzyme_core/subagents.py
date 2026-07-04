@@ -214,7 +214,38 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 hint="Pass agent_role for capability selection and optional agent_ref such as @ada for an existing teammate.",
             )
         try:
-            agent_ref = arguments.get("agent_ref")
+            raw_agent_ref = arguments.get("agent_ref")
+            agent_ref = None if raw_agent_ref is None else str(raw_agent_ref).strip()
+            if agent_ref == "":
+                agent_ref = None
+            elif is_valid_teammate_role(agent_ref):
+                if agent_ref != agent_role:
+                    return ToolResult(
+                        call_id=invocation.call_id,
+                        tool_name=invocation.tool_name,
+                        ok=False,
+                        content=json.dumps(
+                            {
+                                "agent_ref": raw_agent_ref,
+                                "agent_role": agent_role,
+                                "status": "agent_ref_role_mismatch",
+                            },
+                            sort_keys=True,
+                        ),
+                        task_id=task.task_id,
+                        lane_id=task.lane_id,
+                        status="agent_ref_role_mismatch",
+                        summary=(
+                            f"agent_ref {raw_agent_ref!r} is a role alias, "
+                            f"not an existing teammate reference for role {agent_role!r}."
+                        ),
+                        error_code="agent_ref_role_mismatch",
+                        hint=(
+                            "Omit agent_ref to create a new teammate for agent_role, "
+                            "or pass an existing canonical agent_id, handle, or nickname."
+                        ),
+                    )
+                agent_ref = None
             if agent_ref is None:
                 agent = create_agent_member(
                     context.repositories,

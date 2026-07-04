@@ -14,6 +14,7 @@ from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core.agent_identity import create_agent_member
+from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
@@ -218,6 +219,12 @@ class RetryableProviderModelFactory:
         )
 
 
+class ExplodingMasterModelFactory:
+    def create_tool_calling_invoker(self, *, purpose: str) -> object:
+        del purpose
+        raise ValueError("task '' does not exist")
+
+
 def _build_context(*, model_factory: object | None) -> tuple[CoreRepositories, SessionRuntimeContext]:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -374,6 +381,66 @@ def test_scheduler_runtime_failure_records_last_error() -> None:
     assert failed.status is AgentRuntimeSignalStatus.FAILED
     assert failed.error_message == "Focused task required for wakeup."
     assert failed.last_error == "Focused task required for wakeup."
+
+
+def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_master_failure", "proj_001", "Master", "Fail once")
+    repositories.sessions.save(session)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:master",
+            session_id=session.session_id,
+            lane_id=None,
+            task_id=None,
+            name="OpenZyme",
+            role="master",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-04-16T10:00:00+00:00",
+            updated_at="2026-04-16T10:00:00+00:00",
+            runtime_state="idle",
+            idle_since="2026-04-16T10:00:00+00:00",
+        )
+    )
+    repositories.runtime_signals.save(
+        AgentRuntimeSignal(
+            signal_id="sig_master_failure",
+            session_id=session.session_id,
+            agent_id="agent:master",
+            reason=AgentRuntimeSignalReason.INBOX_UNREAD,
+            status=AgentRuntimeSignalStatus.PENDING,
+            created_at="2026-04-16T10:00:01+00:00",
+        )
+    )
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(),
+        model_factory=ExplodingMasterModelFactory(),
+    )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync(session.session_id, max_signals=1)
+
+    failed = repositories.runtime_signals.get("sig_master_failure")
+    master = repositories.agents.get(session.session_id, "agent:master")
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert failed is not None
+    assert failed.status is AgentRuntimeSignalStatus.FAILED
+    assert "task '' does not exist" in (failed.last_error or "")
+    assert master is not None
+    assert master.status is AgentMemberStatus.IDLE
+    assert master.runtime_state == "idle"
+    assert master.idle_since is not None
+    assert outcomes[0].agent == master
 
 
 def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
