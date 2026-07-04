@@ -623,17 +623,18 @@ class FakeEngineHarnessInvoker:
                     "tool_calls": [
                         {
                             "id": "call_research_task_complete",
-                            "name": "task.update",
+                            "name": "task.finish",
                             "args": {
                                 "task_id": "task_research_v3",
                                 "status": "completed",
+                                "summary": "Research complete.",
                             },
                         }
                     ],
                 }
             return {"content": "Research complete.", "tool_calls": []}
         if self.purpose == "v3_teammate_loop:executor":
-            if any(_tool_message_name(message) == "task.update" for message in messages):
+            if any(_tool_message_name(message) == "task.finish" for message in messages):
                 return {
                     "content": "fpocket found 1 pocket(s) for the selected artifact set. Output artifacts: run_inv_pipeline_task_execution_v3:target_out.",
                     "tool_calls": [],
@@ -647,10 +648,11 @@ class FakeEngineHarnessInvoker:
                     "tool_calls": [
                         {
                             "id": "call_execution_task_complete",
-                            "name": "task.update",
+                            "name": "task.finish",
                             "args": {
                                 "task_id": "task_execution_v3",
                                 "status": "completed",
+                                "summary": "fpocket found 1 pocket for the selected artifact set.",
                             },
                         }
                     ],
@@ -757,10 +759,11 @@ class FakeEngineHarnessInvoker:
                     "tool_calls": [
                         {
                             "id": "call_report_task_complete",
-                            "name": "task.update",
+                            "name": "task.finish",
                             "args": {
                                 "task_id": "task_report_v3",
                                 "status": "completed",
+                                "summary": "Reporting complete.",
                             },
                         }
                     ],
@@ -934,7 +937,7 @@ class DiagnosticExecutorInvoker:
         self.system_prompts.append(system_prompt)
         assert "sanitized failure evidence" in system_prompt
         assert "INPUT_OR_ENTRYPOINT_MISSING" in system_prompt
-        if any(_tool_message_name(message) == "task.update" for message in messages):
+        if any(_tool_message_name(message) == "task.finish" for message in messages):
             return {
                 "content": (
                     "The approved fpocket task failed at the HPC runner boundary; "
@@ -947,10 +950,11 @@ class DiagnosticExecutorInvoker:
             "tool_calls": [
                 {
                     "id": "call_mark_failed",
-                    "name": "task.update",
+                    "name": "task.finish",
                     "args": {
                         "task_id": "task_hpc_diag",
                         "status": "failed",
+                        "summary": "Approved fpocket failed at the HPC runner boundary.",
                         "failure_summary": (
                             "Approved fpocket reached the HPC runner, but the runner failed "
                             "with INPUT_OR_ENTRYPOINT_MISSING while creating the Apptainer container."
@@ -3434,7 +3438,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     )
     assert (
         model_factory.invokers["v3_teammate_loop:executor"].calls
-        == executor_calls_before_approval + 3
+        == executor_calls_before_approval + 2
     )
     assert any(
         message.message_type == "delegation_result"

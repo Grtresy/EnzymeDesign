@@ -380,7 +380,7 @@ V3 的 UI / CLI 不直接读取 raw internal state，而是读取一个统一 pr
 
 workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或恢复 CLI 后，调用方应能从 projection 重建 conversation timeline、task board、resident teammate roster、pending approvals、lane/artifact/report 状态与 capability invocation 摘要，而不依赖浏览器本地缓存、raw graph state 或临时 prompt 内容。
 
-`runtime_state` 是 projection / diagnostic，不是新的业务判题器。它可以标记 `runtime_signal_failed`、`agent_turn_failed`、`runtime_attention`、`needs_attention` 或 `awaiting_task_finish`，但不得自动把 task 写为 `completed` / `failed`。task 的业务 terminal state 仍只能由 `task.finish` 或已文档化机械迁移写入。
+`runtime_state` 是 projection / diagnostic，不是新的业务判题器。它可以标记 `runtime_signal_failed`、`agent_turn_failed`、`runtime_attention`、`needs_attention` 或 `outcome_unconsumed` / `capability_outcome_ready`，但不得自动把 task 写为 `completed` / `failed`。terminal capability outcome 只表示可消费的 evidence 已 ready，并可用于 wake owner；task 的业务 terminal state 仍只能由 `task.finish` 或已文档化机械迁移写入。
 
 `artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它必须指向 sealed storage 或其它 Host-owned immutable backend，不是 workspace/API/agent read model 字段。
 

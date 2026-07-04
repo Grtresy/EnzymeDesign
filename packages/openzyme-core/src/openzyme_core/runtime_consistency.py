@@ -87,7 +87,8 @@ class RuntimeConsistencyService:
                 "agent_turn_failed": False,
                 "runtime_attention": False,
                 "needs_attention": False,
-                "awaiting_task_finish": False,
+                "capability_outcome_ready": False,
+                "outcome_unconsumed": False,
                 "reasons": [],
             }
             for task_id, task in tasks.items()
@@ -244,28 +245,30 @@ class RuntimeConsistencyService:
             elif task is not None and not task.status.is_terminal:
                 warnings.append(
                     RuntimeConsistencyWarning(
-                        code="invocation_terminal_awaiting_task_finish",
-                        layer="engine_invocation",
+                        code="terminal_capability_outcome_unconsumed",
+                        layer="capability_outcome",
                         severity="info",
-                        attention="awaiting_task_finish",
+                        attention="outcome_unconsumed",
                         task_id=task.task_id,
                         invocation_id=invocation.invocation_id,
                         task_status=task.status.value,
                         runtime_status=invocation.status.value,
                         message=(
-                            "Engine invocation is terminal while task remains "
-                            "non-terminal; awaiting explicit task.finish or master "
-                            "follow-up."
+                            "Capability outcome is terminal while the linked task "
+                            "remains non-terminal; the owner has not consumed the "
+                            "outcome into an explicit task.finish or follow-up yet."
                         ),
                         recommendation=(
-                            "Use the invocation result as evidence, but do not "
-                            "auto-complete the task."
+                            "Use the capability outcome as evidence and wake the "
+                            "owner for follow-up; only task.finish may set the "
+                            "business terminal state."
                         ),
                     )
                 )
-                task_attention[task.task_id]["awaiting_task_finish"] = True
+                task_attention[task.task_id]["capability_outcome_ready"] = True
+                task_attention[task.task_id]["outcome_unconsumed"] = True
                 task_attention[task.task_id]["reasons"].append(
-                    "invocation_terminal_awaiting_task_finish"
+                    "terminal_capability_outcome_unconsumed"
                 )
 
         for task in tasks.values():
@@ -320,7 +323,7 @@ class RuntimeConsistencyService:
             for item in task_attention.values()
             if item["task_failed"]
             or item["runtime_attention"]
-            or item["awaiting_task_finish"]
+            or item["outcome_unconsumed"]
         )
         return RuntimeStateAudit(
             session_id=session_id,

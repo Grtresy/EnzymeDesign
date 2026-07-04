@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from openzyme_domain import ArtifactKind
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
@@ -301,8 +303,12 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
         context,
         ToolInvocation(
             call_id="call_missing_structure",
-            tool_name="task.update",
-            arguments={"task_id": "task_research", "status": "completed"},
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_research",
+                "status": "completed",
+                "summary": "Research complete.",
+            },
             task_id="task_research",
         ),
     )
@@ -325,8 +331,12 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
         context,
         ToolInvocation(
             call_id="call_has_structure",
-            tool_name="task.update",
-            arguments={"task_id": "task_research", "status": "completed"},
+            tool_name="task.finish",
+            arguments={
+                "task_id": "task_research",
+                "status": "completed",
+                "summary": "Research complete.",
+            },
             task_id="task_research",
         ),
     )
@@ -395,6 +405,124 @@ def test_task_finish_requires_failed_and_blocked_details() -> None:
     assert blocked.error_code == "task_finish_blocked_reason_required"
     assert task is not None
     assert task.status is TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize("status_value", ("completed", "failed", "blocked", "cancelled"))
+def test_task_update_rejects_business_exit_statuses(status_value: str) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_update_terminal",
+        subject="Update",
+        description="Validate task.update status guard.",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref="agent:executor",
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_update_terminal"),
+        agent_id="agent:executor",
+        actor_kind="teammate",
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id=f"call_update_{status_value}",
+            tool_name="task.update",
+            arguments={"task_id": "task_update_terminal", "status": status_value},
+            task_id="task_update_terminal",
+        ),
+    )
+    task = repositories.tasks.get("task_update_terminal")
+
+    assert result.ok is False
+    assert result.error_code == "task_terminal_status_requires_finish"
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize(
+    ("status_value", "extra_arguments", "expected_status"),
+    (
+        ("completed", {"summary": "Completed explicitly."}, TaskStatus.COMPLETED),
+        (
+            "failed",
+            {
+                "summary": "Failed explicitly.",
+                "failure_summary": "External dependency failed.",
+            },
+            TaskStatus.FAILED,
+        ),
+        (
+            "blocked",
+            {
+                "summary": "Blocked explicitly.",
+                "blocked_reason": "Need user input.",
+            },
+            TaskStatus.BLOCKED,
+        ),
+        ("cancelled", {"summary": "Cancelled explicitly."}, TaskStatus.CANCELLED),
+    ),
+)
+def test_task_finish_writes_explicit_business_exit_statuses(
+    status_value: str,
+    extra_arguments: dict[str, str],
+    expected_status: TaskStatus,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    task_id = f"task_finish_{status_value}"
+    service.create_task(
+        session_id=session.session_id,
+        task_id=task_id,
+        subject="Finish",
+        description="Validate task.finish terminal statuses.",
+        status=TaskStatus.IN_PROGRESS,
+        assigned_ref="agent:executor",
+    )
+    registry = ToolRegistry()
+    register_task_board_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id=task_id),
+        agent_id="agent:executor",
+        actor_kind="teammate",
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id=f"call_finish_{status_value}",
+            tool_name="task.finish",
+            arguments={
+                "task_id": task_id,
+                "status": status_value,
+                **extra_arguments,
+            },
+            task_id=task_id,
+        ),
+    )
+    task = repositories.tasks.get(task_id)
+
+    assert result.ok is True
+    assert result.terminal_action == "task.finish"
+    assert result.terminates_turn is True
+    assert task is not None
+    assert task.status is expected_status
+    if expected_status is TaskStatus.FAILED:
+        assert task.failure_summary == "External dependency failed."
 
 
 class TaskToolDriver:

@@ -88,9 +88,9 @@ runtime state consistency guard 是只读诊断层。它可以在 workspace proj
 - `runtime_signal_failed`、`agent_turn_failed` 与 `task_failed` 的层级差异
 - `max_steps_exceeded` / `runtime_exception` 属于 agent turn 或 signal 层，不自动代表 task failed
 - task 仍 `in_progress` 但相关 runtime work 全部 terminal failed/cancelled 时标记 `runtime_attention` / `needs_attention`
-- invocation terminal 而 task 非 terminal 时标记 awaiting explicit `task.finish` 或 master follow-up，不自动 completed
+- capability / engine invocation terminal 而 task 非 terminal 时标记 `outcome_unconsumed` / `capability_outcome_ready`，表示 terminal capability outcome 尚未被 owner 消费；它只作为 evidence 与 wakeup source，不自动 completed
 
-guard 不写 task status。业务终态仍由 master/teammate 显式 `task.finish` 写入。
+guard 不写 task status。业务终态仍由 master/teammate 显式 `task.finish` 写入；max loop、runtime failure 或 agent turn failure 只产生 runtime attention，不自动写 task failed。
 
 ## 3.2 Concurrency And Provider Limits
 
@@ -138,7 +138,7 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update` 保留为普通 task 字段编辑和非终态状态迁移工具，不是推荐业务终态出口。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
+teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update` 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移工具；tool handler 必须拒绝 completed / failed / blocked / cancelled 业务出口。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
 
 ### Failed Delegation Follow-up Flow
 
@@ -270,7 +270,7 @@ master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact
 - task canonical 终态由 task board 表达；protocol/chat 只承载沟通内容。成功执行由 executor 总结结果后通过 `task.finish(status="completed")` 完成 task，失败执行只在明确不可修复时由 executor 调用 `task.finish(status="failed")` 并提供 `failure_summary` 或 `failure_ref`。阻塞退出必须提供 `blocked_reason` 或 `recovery_hint`。
 - scheduler 只根据 user message、approval、engine completion、inbox、task availability 等信号唤醒 agent；它不根据 sandbox dirty state、可用 backend 或工具探测结果替 executor 选择 plan、切换本地/HPC 后端、自动重写 pipeline，或把 run 结果自动解释成任务终态。
 - 如果 bounded loop 到达 max steps，runtime 可以标记 runtime signal / agent 状态为 failed，但不能据此推断 task 业务终态，也不能把 task 机械写成 failed；master 或 teammate 应通过 protocol thread、task state 与 artifacts 决定下一步。
-- 如果 engine completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 消费后再通过 task/protocol/report 变化唤醒 master。
+- 如果 engine/capability completed 但 teammate 未消费结果，scheduler 应唤醒 owner teammate 或 report teammate 进行收尾；teammate 必须用 outcome 作为 evidence 显式调用 `task.finish`，或发送 follow-up / blocked 语义后再通过 task/protocol/report 变化唤醒 master。
 - shutdown 必须通过 protocol handshake：request -> cleanup / approve -> shutdown status；不得默认直接丢弃未读 inbox 或未发布 report draft。
 - failed teammate 的 task 应回到可诊断状态，由 master 或其他 teammate 接管，workspace projection 必须显示失败原因与关联 thread。
 

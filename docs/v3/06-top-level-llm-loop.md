@@ -130,7 +130,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - conversation 拓扑固定为 user <-> master；teammate output 是内部 protocol/task result，不直接写入 user chat
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
 - approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.finish` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
-- `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `awaiting_task_finish` 都不能自动写 task terminal state。业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
+- `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `outcome_unconsumed` / `capability_outcome_ready` 都不能自动写 task terminal state。terminal capability outcome 只作为 evidence 和 wakeup source；业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 

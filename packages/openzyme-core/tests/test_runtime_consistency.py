@@ -1,3 +1,5 @@
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import RuntimeConsistencyService
 from openzyme_core import apply_sqlite_migrations
@@ -138,20 +140,30 @@ def test_running_invocation_with_terminal_agent_produces_attention_only() -> Non
     assert "active_invocation_agent_terminal" in attention["reasons"]
 
 
-def test_terminal_invocation_awaits_explicit_task_finish_without_completion() -> None:
+@pytest.mark.parametrize(
+    "status",
+    (
+        EngineInvocationStatus.SUCCEEDED,
+        EngineInvocationStatus.FAILED,
+        EngineInvocationStatus.CANCELLED,
+    ),
+)
+def test_terminal_invocation_leaves_unconsumed_capability_outcome_without_task_completion(
+    status: EngineInvocationStatus,
+) -> None:
     repositories = _repositories()
     repositories.invocations.save(
         EngineInvocation(
-            invocation_id="inv_succeeded",
+            invocation_id=f"inv_{status.value}",
             session_id="sess_consistency",
             task_id="task_consistency",
             lane_id=None,
             engine_name="execution",
-            status=EngineInvocationStatus.SUCCEEDED,
+            status=status,
             input_ref=None,
             output_ref=None,
             approval_id=None,
-            idempotency_key="task_consistency:execution:succeeded",
+            idempotency_key=f"task_consistency:execution:{status.value}",
             started_at=NOW,
             finished_at="2026-04-16T10:02:00+00:00",
         )
@@ -162,10 +174,14 @@ def test_terminal_invocation_awaits_explicit_task_finish_without_completion() ->
 
     assert task is not None
     assert task.status is TaskStatus.IN_PROGRESS
-    assert "invocation_terminal_awaiting_task_finish" in _codes(audit)
+    assert "terminal_capability_outcome_unconsumed" in _codes(audit)
+    assert "invocation_terminal_awaiting_task_finish" not in _codes(audit)
     attention = audit.to_dict()["task_attention"][0]
-    assert attention["awaiting_task_finish"] is True
-    assert attention["needs_attention"] is False
+    assert "awaiting_task_finish" not in attention
+    assert attention["capability_outcome_ready"] is True
+    assert attention["outcome_unconsumed"] is True
+    if status is EngineInvocationStatus.SUCCEEDED:
+        assert attention["needs_attention"] is False
 
 
 def test_in_progress_task_with_failed_runtime_work_gets_attention_only() -> None:

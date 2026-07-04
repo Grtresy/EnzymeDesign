@@ -149,7 +149,7 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   修正记录：默认 delegation projection / Web UI 不再暴露 `pending_signal_count`、raw `wakeup_reason`、`latest_signal_reason` 和 unread inbox count 作为用户界面语义；低层 runtime signal 仍保留在 event/debug 路径中用于诊断。
 
-  追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `awaiting_task_finish`。该 projection 和 `runtime.consistency.warning` / `runtime.state_attention` events 只提示 follow-up，不自动写 task completed/failed；业务终态仍由 `task.finish` 写入。
+  追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`。terminal capability outcome 只表示 evidence ready 和 owner wakeup，不代表 teammate/task completed。该 projection 和 `runtime.consistency.warning` / `runtime.state_attention` events 只提示 follow-up，不自动写 task completed/failed；业务终态仍由 `task.finish` 写入。
 
 - [x] Design / deep-research planner fallback 会掩盖真实 provider 或 contract 失败。
 

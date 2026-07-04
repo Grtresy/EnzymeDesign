@@ -38,6 +38,10 @@ _TASK_FINISH_STATUSES = {
     TaskStatus.FAILED,
     TaskStatus.CANCELLED,
 }
+_TASK_TOOL_MUTATION_STATUSES = {
+    TaskStatus.TODO,
+    TaskStatus.IN_PROGRESS,
+}
 _EVIDENCE_REF_KINDS = {
     "artifact",
     "document",
@@ -480,6 +484,27 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments.get("task_id") or f"task_{uuid4().hex[:12]}")
+        requested_status = TaskStatus(str(arguments.get("status", TaskStatus.TODO.value)))
+        if requested_status not in _TASK_TOOL_MUTATION_STATUSES:
+            return _finish_error_result(
+                invocation,
+                status="task_terminal_status_requires_finish",
+                summary=(
+                    "task.create cannot create a completed, blocked, failed, or "
+                    "cancelled task. Create a non-terminal task, then use "
+                    "task.finish for the explicit business exit."
+                ),
+                details={
+                    "task_id": task_id,
+                    "requested_status": requested_status.value,
+                    "allowed_statuses": sorted(
+                        status.value for status in _TASK_TOOL_MUTATION_STATUSES
+                    ),
+                    "finish_statuses": sorted(
+                        status.value for status in _TASK_FINISH_STATUSES
+                    ),
+                },
+            )
         task = service.create_task(
             session_id=context.snapshot.session.session_id,
             task_id=task_id,
@@ -487,7 +512,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             description=str(arguments.get("description") or ""),
             priority=TaskPriority(str(arguments.get("priority", TaskPriority.NORMAL.value))),
             kind=str(arguments.get("kind", "general")),
-            status=TaskStatus(str(arguments.get("status", TaskStatus.TODO.value))),
+            status=requested_status,
             assigned_ref=arguments.get("assigned_ref"),
             lane_id=invocation.lane_id if "lane_id" not in arguments else arguments.get("lane_id"),
             blocked_by=tuple(str(item) for item in arguments.get("blocked_by", ())),
@@ -507,21 +532,33 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
         service = TaskBoardService(context.repositories, event_emitter=context.emit)
         arguments = invocation.arguments
         task_id = str(arguments["task_id"])
-        existing = context.repositories.tasks.get(task_id)
         requested_status = (
             None
             if "status" not in arguments
             else TaskStatus(str(arguments["status"]))
         )
-        if existing is not None and requested_status is TaskStatus.COMPLETED:
-            required_artifact_error = _required_structure_artifact_error(
-                context,
+        if (
+            requested_status is not None
+            and requested_status not in _TASK_TOOL_MUTATION_STATUSES
+        ):
+            return _finish_error_result(
                 invocation,
-                task=existing,
-                retry_tool="task.update",
+                status="task_terminal_status_requires_finish",
+                summary=(
+                    "task.update cannot set completed, blocked, failed, or "
+                    "cancelled. Use task.finish for explicit business exits."
+                ),
+                details={
+                    "task_id": task_id,
+                    "requested_status": requested_status.value,
+                    "allowed_statuses": sorted(
+                        status.value for status in _TASK_TOOL_MUTATION_STATUSES
+                    ),
+                    "finish_statuses": sorted(
+                        status.value for status in _TASK_FINISH_STATUSES
+                    ),
+                },
             )
-            if required_artifact_error is not None:
-                return required_artifact_error
         mutation = TaskMutation(
             subject=arguments["subject"] if "subject" in arguments else _UNSET,
             description=arguments["description"] if "description" in arguments else _UNSET,

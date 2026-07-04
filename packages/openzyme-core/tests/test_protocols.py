@@ -618,7 +618,10 @@ def test_protocol_send_queues_signal_and_explicit_runtime_drain_runs_agent() -> 
     assert message.status is InboxStatus.ACKNOWLEDGED
     assert outcomes[0].ok is True
     assert thread["status"] == CorrelationStatus.RESPONDED.value
-    assert [response["message_type"] for response in thread["responses"]] == ["diagnostic_response", "delegation_result"]
+    assert [response["message_type"] for response in thread["responses"]] == [
+        "diagnostic_response",
+        "status_update",
+    ]
     assert "Diagnostic question:" not in prompt
     assert "Handle this diagnostic request" not in prompt
     assert "Answer with a concise root cause." in prompt

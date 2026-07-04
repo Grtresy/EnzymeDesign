@@ -173,7 +173,7 @@ deep research 对 harness 至少提供：
 - approval 由 harness/API 统一 resolve；`POST /v3/approvals/{approval_id}/resolve` 是唯一改变 approval 状态的外部入口
 - execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
 - Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 sandbox/execution status、artifacts 和 structured error 后生成用户可见收尾
-- 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或用 `task.update(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
+- 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或在明确不可修复时用 `task.finish(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
 - execution / HPC retry 与失败诊断策略属于 executor prompt、受控 docs 或 tool result hints；runtime wakeup instruction 只应携带 invocation/status/artifact/error evidence，不应规定重试或修复策略
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影

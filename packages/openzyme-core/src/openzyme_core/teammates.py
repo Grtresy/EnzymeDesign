@@ -97,10 +97,6 @@ def teammate_tool_descriptors(
                         "enum": [
                             "todo",
                             "in_progress",
-                            "blocked",
-                            "completed",
-                            "failed",
-                            "cancelled",
                         ],
                     },
                     "priority": {
@@ -1197,14 +1193,14 @@ def finalize_teammate_result(
         if task_status == "blocked":
             return message, AgentMemberStatus.BLOCKED
         return message, AgentMemberStatus.IDLE
-    recovered_completion = _recover_completion_from_workspace(
+    recovered_outcome_summary = _recover_terminal_outcome_summary_from_workspace(
         context,
         task_id=task_id,
         correlation_id=correlation_id,
     )
     if (
         result.status is HarnessStatus.MAX_STEPS_EXCEEDED
-        and recovered_completion is None
+        and recovered_outcome_summary is None
     ):
         message = (
             result.outputs[-1]
@@ -1218,7 +1214,7 @@ def finalize_teammate_result(
             sender_kind=InboxParticipantKind.AGENT,
             recipient="harness",
             recipient_kind=InboxParticipantKind.HARNESS,
-            message_type="delegation_result",
+            message_type="status_update",
             correlation_id=correlation_id,
             payload_ref=protocol.persist_payload(
                 session_id=context.snapshot.session.session_id,
@@ -1234,40 +1230,61 @@ def finalize_teammate_result(
             ),
         )
         return message, AgentMemberStatus.FAILED
-    message = recovered_completion or (
-        result.outputs[-1]
-        if result.outputs
-        else f"{agent_id} completed delegated work."
-    )
+    task = context.repositories.tasks.get(task_id)
+    task_status = None if task is None else task.status.value
+    last_output = result.outputs[-1] if result.outputs else None
+    if recovered_outcome_summary is not None:
+        message = (
+            f"{agent_id} produced a terminal capability outcome but did not call "
+            f"task.finish; task remains {task_status or 'unknown'}. "
+            f"Outcome: {recovered_outcome_summary}"
+        )
+    elif result.status is HarnessStatus.COMPLETED:
+        message = (
+            f"{agent_id} ended its turn without task.finish; task remains "
+            f"{task_status or 'unknown'}."
+        )
+        if last_output:
+            message = f"{message} Last output: {last_output}"
+    else:
+        message = last_output or (
+            f"{agent_id} ended with runtime status {result.status.value}; "
+            f"task remains {task_status or 'unknown'}."
+        )
     protocol.reply(
         session_id=context.snapshot.session.session_id,
         sender=agent_id,
         sender_kind=InboxParticipantKind.AGENT,
         recipient="harness",
         recipient_kind=InboxParticipantKind.HARNESS,
-        message_type="delegation_result",
+        message_type="status_update",
         correlation_id=correlation_id,
         payload_ref=protocol.persist_payload(
             session_id=context.snapshot.session.session_id,
             document_kind="protocol_payload",
             payload={
                 "task_id": task_id,
-                "status": "completed"
-                if result.status
-                in {HarnessStatus.COMPLETED, HarnessStatus.MAX_STEPS_EXCEEDED}
-                and recovered_completion
+                "status": "task_finish_required"
+                if recovered_outcome_summary is not None
+                or result.status is HarnessStatus.COMPLETED
                 else result.status.value,
+                "runtime_status": result.status.value,
+                "business_status": "unchanged",
+                "task_status": task_status,
                 "summary": message,
                 "outputs": list(result.outputs),
+                "recovered_outcome_summary": recovered_outcome_summary,
+                "required_action": "task.finish",
+                "terminal_action": None,
             },
         ),
     )
-    if result.status is HarnessStatus.COMPLETED or recovered_completion is not None:
+    if result.status is HarnessStatus.COMPLETED:
         return message, AgentMemberStatus.IDLE
     return message, AgentMemberStatus.FAILED
 
 
-def _recover_completion_from_workspace(
+def _recover_terminal_outcome_summary_from_workspace(
     context: SessionRuntimeContext,
     *,
     task_id: str,

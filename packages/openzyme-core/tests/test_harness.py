@@ -3724,7 +3724,7 @@ def test_teammate_driver_uses_router_schema_validation() -> None:
                         {
                             "id": "call_update",
                             "name": "task.update",
-                            "args": {"status": "completed"},
+                            "args": {"status": "in_progress"},
                         },
                     ],
                 },

@@ -42,6 +42,38 @@ class FakeModelFactory:
         return self.invoker
 
 
+class FinishingToolCallingInvoker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_with_tools(self, *, system_prompt: str, messages: list[object], tools: list[object]) -> object:
+        del system_prompt, messages, tools
+        self.calls += 1
+        return {
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_finish",
+                    "name": "task.finish",
+                    "args": {
+                        "task_id": "task_0",
+                        "status": "completed",
+                        "summary": "Finished via task.finish.",
+                    },
+                }
+            ],
+        }
+
+
+class FinishingModelFactory:
+    def __init__(self) -> None:
+        self.invoker = FinishingToolCallingInvoker()
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FinishingToolCallingInvoker:
+        del purpose
+        return self.invoker
+
+
 class LoopingToolCallingInvoker:
     def __init__(self) -> None:
         self.calls = 0
@@ -101,7 +133,20 @@ class RetryableProviderModelFactory:
                         factory.status_code,
                         f"provider status {factory.status_code}",
                     )
-                return {"content": "handled", "tool_calls": []}
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_finish",
+                            "name": "task.finish",
+                            "args": {
+                                "task_id": "task_0",
+                                "status": "completed",
+                                "summary": "Finished after provider retry.",
+                            },
+                        }
+                    ],
+                }
 
         class FakeModel:
             def bind_tools(self, tools):
@@ -182,7 +227,7 @@ def test_scheduler_does_not_claim_without_model_factory() -> None:
 
 
 def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
-    repositories, context = _build_context(model_factory=FakeModelFactory())
+    repositories, context = _build_context(model_factory=FinishingModelFactory())
 
     outcomes = AgentRuntimeScheduler(
         context,
@@ -201,6 +246,9 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
         for signal in signals
     )
     assert signals[0].claimed_by == "test:scheduler"
+    task = repositories.tasks.get("task_0")
+    assert task is not None
+    assert task.status is TaskStatus.COMPLETED
 
 
 def test_scheduler_runtime_failure_records_last_error() -> None:
@@ -243,6 +291,53 @@ def test_teammate_max_steps_does_not_mark_business_task_failed() -> None:
     assert task.status is TaskStatus.IN_PROGRESS
     assert task.failure_summary is None
     assert task.failure_ref is None
+
+
+def test_teammate_without_task_finish_records_followup_not_business_completion() -> None:
+    repositories, context = _build_context(model_factory=FakeModelFactory())
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    task = repositories.tasks.get("task_0")
+    signal = repositories.runtime_signals.get("sig_0")
+    agent = repositories.agents.get("sess_scheduler", "agent:researcher")
+    messages = repositories.inbox.list_by_session("sess_scheduler")
+    status_update = next(
+        message
+        for message in messages
+        if message.sender == "agent:researcher"
+        and message.message_type == "status_update"
+    )
+    payload = repositories.engine_documents.get(status_update.payload_ref)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
+    assert outcomes[0].teammate_status == "completed"
+    assert "task.finish" in outcomes[0].summary
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert task is not None
+    assert task.status is TaskStatus.IN_PROGRESS
+    assert task.failure_summary is None
+    assert agent is not None
+    assert agent.status is AgentMemberStatus.IDLE
+    assert all(message.message_type != "delegation_result" for message in messages)
+    assert any(
+        runtime_signal.agent_id == "agent:master"
+        and runtime_signal.status is AgentRuntimeSignalStatus.PENDING
+        for runtime_signal in repositories.runtime_signals.list_by_session(
+            "sess_scheduler"
+        )
+    )
+    assert payload is not None
+    assert payload.payload["status"] == "task_finish_required"
+    assert payload.payload["runtime_status"] == "completed"
+    assert payload.payload["business_status"] == "unchanged"
+    assert payload.payload["task_status"] == "in_progress"
+    assert payload.payload["required_action"] == "task.finish"
 
 
 def test_scheduler_completes_signal_when_tool_calling_retry_succeeds() -> None:
