@@ -4,8 +4,11 @@ from dataclasses import asdict
 from dataclasses import dataclass
 import json
 from pathlib import PurePosixPath
+import re
+import time
 from typing import Any
 from typing import Protocol
+from urllib.error import URLError
 from urllib.parse import quote_plus
 from urllib.parse import urlencode
 from urllib.request import Request
@@ -111,16 +114,120 @@ class BioResearchService(Protocol):
     def query_interpro(self, *, accession: str, limit: int = 10) -> AnnotationRecord: ...
 
 
-def _read_json(url: str, *, headers: dict[str, str] | None = None, method: str = "GET", body: bytes | None = None) -> dict[str, Any]:
+def _read_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    body: bytes | None = None,
+    empty_ok: bool = False,
+) -> dict[str, Any]:
     request = Request(url, headers=headers or {}, method=method, data=body)
-    with urlopen(request, timeout=30) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=30) as response:  # noqa: S310
+                raw_body = response.read()
+                text = raw_body.decode("utf-8", errors="replace")
+                if not text.strip():
+                    if empty_ok:
+                        return {}
+                    status = getattr(response, "status", "unknown")
+                    raise RuntimeError(
+                        f"Expected JSON from {url}; got empty response with status {status}."
+                    )
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError as exc:
+                    status = getattr(response, "status", "unknown")
+                    content_type = response.headers.get("Content-Type", "unknown")
+                    excerpt = text[:200].replace("\n", " ")
+                    raise RuntimeError(
+                        f"Expected JSON from {url}; got status {status}, content-type {content_type}, "
+                        f"body prefix {excerpt!r}."
+                    ) from exc
+        except (TimeoutError, URLError) as exc:
+            if attempt == 2:
+                raise RuntimeError(f"Request to {url} failed after 3 attempts: {exc}") from exc
+            time.sleep(0.5 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def _read_bytes(url: str, *, headers: dict[str, str] | None = None) -> bytes:
     request = Request(url, headers=headers or {}, method="GET")
-    with urlopen(request, timeout=30) as response:  # noqa: S310
-        return response.read()
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=30) as response:  # noqa: S310
+                return response.read()
+        except (TimeoutError, URLError) as exc:
+            if attempt == 2:
+                raise RuntimeError(f"Request to {url} failed after 3 attempts: {exc}") from exc
+            time.sleep(0.5 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
+_RCSB_SEARCH_NOISE_TERMS = {
+    "a",
+    "an",
+    "and",
+    "for",
+    "in",
+    "of",
+    "or",
+    "the",
+    "with",
+    "rcsb",
+    "pdb",
+    "structure",
+    "structures",
+    "entry",
+    "entries",
+    "evidence",
+    "experimental",
+    "functional",
+    "high",
+    "resolution",
+    "site",
+    "active",
+    "well",
+    "characterized",
+    "verified",
+}
+
+_RCSB_RESIDUE_TOKEN_RE = re.compile(r"^[A-Z][a-z]{2}\d+[A-Za-z]?$")
+
+
+def _rcsb_search_query_candidates(query: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        normalized = " ".join(candidate.split())
+        key = normalized.casefold()
+        if normalized and key not in seen:
+            seen.add(key)
+            candidates.append(normalized)
+
+    add(query)
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", query)
+    meaningful: list[str] = []
+    token_keys: set[str] = set()
+    for token in tokens:
+        key = token.casefold()
+        if key in _RCSB_SEARCH_NOISE_TERMS or key in token_keys:
+            continue
+        token_keys.add(key)
+        meaningful.append(token)
+    if meaningful:
+        for width in (6, 4, 3, 2):
+            if len(meaningful) >= width:
+                add(" ".join(meaningful[:width]))
+        for token in meaningful:
+            if _RCSB_RESIDUE_TOKEN_RE.match(token):
+                continue
+            if token.casefold() in {"enzyme", "protein", "ligand", "bound", "apo"}:
+                continue
+            add(token)
+    return tuple(candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,44 +441,55 @@ class DefaultBioResearchService:
         )
 
     def search_rcsb_pdb(self, *, query: str, limit: int = 5) -> tuple[StructureHit, ...]:
-        search_body = {
-            "query": {
-                "type": "terminal",
-                "service": "full_text",
-                "parameters": {"value": query},
-            },
-            "return_type": "entry",
-            "request_options": {"paginate": {"start": 0, "rows": limit}},
-        }
-        payload = _read_json(
-            "https://search.rcsb.org/rcsbsearch/v2/query",
-            headers={"Content-Type": "application/json"},
-            method="POST",
-            body=json.dumps(search_body).encode("utf-8"),
-        )
         hits: list[StructureHit] = []
-        for item in payload.get("result_set", []):
-            structure_id = str(item.get("identifier") or "")
-            title = structure_id
-            try:
-                entry = _read_json(f"https://data.rcsb.org/rest/v1/core/entry/{structure_id}")
-                title = str(
-                    ((entry.get("struct") or {}).get("title"))
-                    or structure_id
-                )
-                resolution_values = (((entry.get("rcsb_entry_info") or {}).get("resolution_combined")) or [])
-                resolution = None if not resolution_values else float(resolution_values[0])
-            except Exception:
-                resolution = None
-            hits.append(
-                StructureHit(
-                    provider="rcsb_pdb",
-                    structure_id=structure_id,
-                    title=title,
-                    locator=f"https://www.rcsb.org/structure/{structure_id}",
-                    resolution=resolution,
-                )
+        seen_ids: set[str] = set()
+        for search_query in _rcsb_search_query_candidates(query):
+            if len(hits) >= limit:
+                break
+            search_body = {
+                "query": {
+                    "type": "terminal",
+                    "service": "full_text",
+                    "parameters": {"value": search_query},
+                },
+                "return_type": "entry",
+                "request_options": {"paginate": {"start": 0, "rows": limit}},
+            }
+            payload = _read_json(
+                "https://search.rcsb.org/rcsbsearch/v2/query",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+                body=json.dumps(search_body).encode("utf-8"),
+                empty_ok=True,
             )
+            for item in payload.get("result_set", []):
+                structure_id = str(item.get("identifier") or "").strip()
+                if not structure_id or structure_id in seen_ids:
+                    continue
+                seen_ids.add(structure_id)
+                title = structure_id
+                try:
+                    entry = _read_json(f"https://data.rcsb.org/rest/v1/core/entry/{structure_id}")
+                    title = str(
+                        ((entry.get("struct") or {}).get("title"))
+                        or structure_id
+                    )
+                    resolution_values = (((entry.get("rcsb_entry_info") or {}).get("resolution_combined")) or [])
+                    resolution = None if not resolution_values else float(resolution_values[0])
+                except Exception:
+                    resolution = None
+                hits.append(
+                    StructureHit(
+                        provider="rcsb_pdb",
+                        structure_id=structure_id,
+                        title=title,
+                        locator=f"https://www.rcsb.org/structure/{structure_id}",
+                        resolution=resolution,
+                        metadata={"query": query, "search_query": search_query},
+                    )
+                )
+                if len(hits) >= limit:
+                    break
         return tuple(hits)
 
     def download_rcsb_structure(self, *, pdb_id: str, file_format: str = "pdb") -> DownloadedResearchAsset:

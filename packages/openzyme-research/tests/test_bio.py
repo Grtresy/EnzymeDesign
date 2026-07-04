@@ -1,11 +1,15 @@
+import json
+
 from openzyme_domain import ArtifactKind
 from openzyme_domain import SourceRefKind
 
+from openzyme_research import DefaultBioResearchService
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import ResearchArtifactManifest
 from openzyme_research import ResearchFinding
 from openzyme_research import ResearchObservation
 from openzyme_research import ResearchSource
+from openzyme_research import bio
 
 
 def test_deterministic_bio_research_service_returns_provider_specific_records() -> None:
@@ -27,6 +31,72 @@ def test_deterministic_bio_research_service_returns_provider_specific_records() 
     assert structure_hits[0].provider == "rcsb_pdb"
     assert structure.kind is ArtifactKind.STRUCTURE
     assert annotations.provider == "interpro"
+
+
+def test_read_json_allows_empty_rcsb_no_content_response(monkeypatch) -> None:
+    class EmptyResponse:
+        status = 204
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self) -> "EmptyResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+    monkeypatch.setattr(bio, "urlopen", lambda request, timeout: EmptyResponse())
+
+    assert bio._read_json("https://search.rcsb.org/rcsbsearch/v2/query", empty_ok=True) == {}
+
+
+def test_rcsb_search_falls_back_from_verbose_no_hit_query(monkeypatch) -> None:
+    queries: list[str] = []
+
+    def fake_read_json(
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        method: str = "GET",
+        body: bytes | None = None,
+        empty_ok: bool = False,
+    ) -> dict[str, object]:
+        del headers, method, empty_ok
+        if "search.rcsb.org" in url:
+            assert body is not None
+            search_body = json.loads(body.decode("utf-8"))
+            search_query = str(search_body["query"]["parameters"]["value"])
+            queries.append(search_query)
+            if search_query == "lysozyme":
+                return {"result_set": [{"identifier": "1LYZ"}]}
+            return {}
+        if "data.rcsb.org" in url:
+            return {
+                "struct": {"title": "Hen egg-white lysozyme"},
+                "rcsb_entry_info": {"resolution_combined": [1.5]},
+            }
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(bio, "_read_json", fake_read_json)
+
+    hits = DefaultBioResearchService().search_rcsb_pdb(
+        query="RCSB PDB lysozyme high resolution structure active site functional evidence Glu35 Asp52",
+        limit=3,
+    )
+
+    assert "lysozyme" in queries
+    assert hits[0].structure_id == "1LYZ"
+    assert hits[0].title == "Hen egg-white lysozyme"
+    assert hits[0].resolution == 1.5
+    assert hits[0].metadata == {
+        "query": (
+            "RCSB PDB lysozyme high resolution structure active site functional "
+            "evidence Glu35 Asp52"
+        ),
+        "search_query": "lysozyme",
+    }
 
 
 def test_research_observation_serializes_stable_normalized_fields() -> None:
