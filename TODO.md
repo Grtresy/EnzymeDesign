@@ -121,10 +121,18 @@ https://mp.weixin.qq.com/s/sqHF3d3l5PX3VOs0Mtwk3A
 
 ## 自动approval
 
-## 我们现在在做agent，而不是一个固定的工作流或者软件，你现在设计harness需要从llm的使用体验和用户的使用体验出发，不要做太多限制
-
-## 测试如果需要检查agent的产出，应该由codex进行评估，而不是预先写死固定规则的test
-
 ## 参数向用户确认
 
 ## 工具 skill
+
+## 关注文章
+
+https://mp.weixin.qq.com/s/nMRaj4aCY8DPqFC3pcItDg
+
+## 科学对象模型
+
+## 上下文缓存复用（codex）
+
+## 论文想法
+
+从领域知识出发，对比不同形式的领域知识对最后设计效果的影响。
