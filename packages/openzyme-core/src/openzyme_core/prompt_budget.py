@@ -71,6 +71,12 @@ _GLM_51_PROFILE = ModelContextProfile(
     default_output_tokens=65_536,
     max_output_tokens=131_072,
 )
+_GPT_55_PROFILE = ModelContextProfile(
+    model="gpt-5.5",
+    context_window_tokens=1_050_000,
+    default_output_tokens=16_384,
+    max_output_tokens=128_000,
+)
 _UNKNOWN_FALLBACK_CONTEXT = 32_768
 _UNKNOWN_FALLBACK_OUTPUT = 4_096
 
@@ -111,6 +117,14 @@ def model_context_profile_from_env_or_factory(model_factory: Any | None) -> Mode
             context_window_tokens=context_window or _GLM_51_PROFILE.context_window_tokens,
             default_output_tokens=default_output or _GLM_51_PROFILE.default_output_tokens,
             max_output_tokens=_GLM_51_PROFILE.max_output_tokens,
+            profile_known=True,
+        )
+    if model.lower() == "gpt-5.5" or model.lower().startswith("gpt-5.5-"):
+        return ModelContextProfile(
+            model=model,
+            context_window_tokens=context_window or _GPT_55_PROFILE.context_window_tokens,
+            default_output_tokens=default_output or _GPT_55_PROFILE.default_output_tokens,
+            max_output_tokens=_GPT_55_PROFILE.max_output_tokens,
             profile_known=True,
         )
     if context_window is not None:

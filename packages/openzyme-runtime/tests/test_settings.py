@@ -130,7 +130,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.v3_background_runtime.enabled is True
     assert settings.v3_background_runtime.poll_interval_seconds == 2.0
     assert settings.v3_background_runtime.max_signals_per_tick == 3
-    assert settings.v3_background_runtime.max_steps_per_agent == 8
+    assert settings.v3_background_runtime.max_steps_per_agent == 12
     assert settings.v3_background_runtime.shutdown_timeout_seconds == 10.0
     assert settings.tracing.enabled is False
     assert settings.test.enable_live_llm is False

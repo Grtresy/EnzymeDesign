@@ -421,7 +421,7 @@ class V3BackgroundRuntimeSettings:
         )
         max_steps_per_agent = _parse_int(
             os.getenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT"),
-            8,
+            12,
         )
         if max_signals_per_tick <= 0:
             raise ValueError(
