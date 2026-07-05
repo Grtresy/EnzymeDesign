@@ -332,6 +332,7 @@ BIO_PROVIDER_ROUTE_POLICY_IDS = {
     "bio.ncbi_fetch_proteins": "bio.ncbi_fetch_proteins.provider:v1",
     "bio.uniprot_fetch": "bio.uniprot_fetch.provider:v1",
     "bio.hmmer_search": "bio.hmmer_search.provider:v1",
+    "rcsb_pdb.download_structure": "rcsb_pdb.download_structure.provider:v1",
 }
 BIO_TOOL_ROUTE_POLICY_IDS = {
     "bio_tools.cdhit": "bio_tools.cdhit.hpc:v1",
@@ -340,10 +341,14 @@ BIO_TOOL_ROUTE_POLICY_IDS = {
     "bio_tools.hmmalign": "bio_tools.hmmalign.hpc:v1",
     "bio_tools.hmmer_search_cli": "bio_tools.hmmer_search_cli.disabled:v1",
 }
+STRUCTURE_TOOL_ROUTE_POLICY_IDS = {
+    "structure_tools.fpocket": "structure_tools.fpocket.hpc:v1",
+}
 BIO_PROVIDER_NAMES = {
     "bio.ncbi_fetch_proteins": "ncbi",
     "bio.uniprot_fetch": "uniprot",
     "bio.hmmer_search": "ebi_hmmer",
+    "rcsb_pdb.download_structure": "rcsb_pdb",
 }
 BIO_SAFE_HEADER_NAMES = {
     "content-type",
@@ -513,6 +518,14 @@ class BioDatabaseAdapter(Protocol):
         retrieved_at: str,
     ) -> BioSdkResult: ...
 
+    def rcsb_download_structure(
+        self,
+        *,
+        pdb_id: str,
+        file_format: str,
+        retrieved_at: str,
+    ) -> BioSdkResult: ...
+
     def hmmer_search(
         self,
         *,
@@ -672,6 +685,70 @@ class DeterministicBioDatabaseAdapter:
                         "accessions": list(accessions),
                         "retrieved_at": retrieved_at,
                         "request_window": {"start": 0, "size": effective_batch_size},
+                    },
+                ),
+            ),
+        )
+
+    def rcsb_download_structure(
+        self,
+        *,
+        pdb_id: str,
+        file_format: str,
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        normalized_id = self._normalize_pdb_id(pdb_id, sdk_method="rcsb_pdb.download_structure")
+        normalized_format = self._normalize_structure_format(
+            file_format,
+            sdk_method="rcsb_pdb.download_structure",
+        )
+        content = self._fixture_structure_content(normalized_id, normalized_format)
+        digest = _sha256_text(content)
+        locator = f"https://files.rcsb.org/download/{normalized_id}.{normalized_format}"
+        summary = {
+            "provider": "rcsb_pdb",
+            "pdb_id": normalized_id,
+            "format": normalized_format,
+            "artifact_count": 1,
+        }
+        return BioSdkResult(
+            provider="rcsb_pdb",
+            operation="rcsb_pdb.download_structure",
+            summary=summary,
+            api_version="fixture",
+            provider_observation={
+                "provider": "rcsb_pdb",
+                "api_version": "fixture",
+                "requests": [
+                    {
+                        "method": "GET",
+                        "url": "https://files.rcsb.org/download/{pdb_id}.{format}",
+                        "status_code": 200,
+                        "response_digest": digest,
+                    }
+                ],
+            },
+            artifacts=(
+                self._draft(
+                    provider="rcsb_pdb",
+                    relative_path=f"provider_parsed/{normalized_id}.{normalized_format}",
+                    kind=ArtifactKind.STRUCTURE,
+                    title=f"{normalized_id}.{normalized_format}",
+                    content=content,
+                    format=normalized_format,
+                    metadata={
+                        "external_id": normalized_id,
+                        "source_locator": locator,
+                        "retrieved_at": retrieved_at,
+                        "primary_output": True,
+                        "provider_provenance": {
+                            "provider": "rcsb_pdb",
+                            "external_id": normalized_id,
+                            "source_locator": locator,
+                            "format": normalized_format,
+                            "retrieved_at": retrieved_at,
+                            "digest": digest,
+                        },
                     },
                 ),
             ),
@@ -864,6 +941,56 @@ class DeterministicBioDatabaseAdapter:
                 }
             )
         return tuple(normalized), tuple(warnings)
+
+    def _normalize_pdb_id(self, pdb_id: str, *, sdk_method: str) -> str:
+        value = str(pdb_id).strip().upper()
+        if not re.fullmatch(r"[0-9A-Z]{4}", value):
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="RCSB PDB id must be a four-character structure id.",
+                hint="Use an RCSB structure id such as 6LEH.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"pdb_id": pdb_id},
+            )
+        return value
+
+    def _normalize_structure_format(self, file_format: str, *, sdk_method: str) -> str:
+        value = str(file_format or "pdb").strip().lower()
+        if value == "mmcif":
+            value = "cif"
+        if value not in {"pdb", "cif"}:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="RCSB structure format must be pdb or cif.",
+                hint="Retry with format='pdb' or format='cif'.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"format": file_format},
+            )
+        return value
+
+    def _fixture_structure_content(self, pdb_id: str, file_format: str) -> str:
+        if file_format == "cif":
+            atoms = "\n".join(
+                f"ATOM {idx} C C{idx % 4} ALA A {idx // 4 + 1} {idx}.0 {idx + 1}.0 {idx + 2}.0"
+                for idx in range(1, 65)
+            )
+            return f"data_{pdb_id}\n#\n{atoms}\n#\n"
+        lines = [f"HEADER    OPENZYME FIXTURE STRUCTURE              {pdb_id}"]
+        atom_id = 1
+        for residue in range(1, 17):
+            for atom_name in ("N", "CA", "C", "O"):
+                lines.append(
+                    f"ATOM  {atom_id:5d} {atom_name:^4s} ALA A{residue:4d}    "
+                    f"{residue + atom_id / 100:8.3f}{residue + 1.0:8.3f}{residue + 2.0:8.3f}"
+                    "  1.00 20.00           C"
+                )
+                atom_id += 1
+        lines.append("END")
+        return "\n".join(lines) + "\n"
 
     def _protein_record(self, accession: str, *, provider: str, reviewed: bool | None) -> dict[str, Any]:
         sequence = self._sequence_for(accession)
@@ -1198,6 +1325,83 @@ class ProviderHttpBioDatabaseAdapter:
                 "pagination": {"page_count": len(pages)},
             },
             artifacts=tuple(artifacts),
+        )
+
+    def rcsb_download_structure(
+        self,
+        *,
+        pdb_id: str,
+        file_format: str,
+        retrieved_at: str,
+    ) -> BioSdkResult:
+        normalized_id = self._normalize_pdb_id(pdb_id, sdk_method="rcsb_pdb.download_structure")
+        normalized_format = self._normalize_structure_format(
+            file_format,
+            sdk_method="rcsb_pdb.download_structure",
+        )
+        url = f"https://files.rcsb.org/download/{urllib_parse.quote(normalized_id)}.{normalized_format}"
+        response = self._http_request(
+            "GET",
+            url,
+            sdk_method="rcsb_pdb.download_structure",
+            stage="provider_request",
+        )
+        content = response.body.strip() + ("\n" if response.body.strip() else "")
+        self._validate_structure_download(
+            content,
+            pdb_id=normalized_id,
+            file_format=normalized_format,
+            response=response,
+        )
+        digest = _sha256_text(content)
+        summary = {
+            "provider": "rcsb_pdb",
+            "pdb_id": normalized_id,
+            "format": normalized_format,
+            "artifact_count": 1,
+        }
+        return BioSdkResult(
+            provider="rcsb_pdb",
+            operation="rcsb_pdb.download_structure",
+            summary=summary,
+            api_version=self.api_version,
+            provider_observation={
+                "provider": "rcsb_pdb",
+                "api_version": self.api_version,
+                "requests": [
+                    {
+                        "method": "GET",
+                        "url": "https://files.rcsb.org/download/{pdb_id}.{format}",
+                        "status_code": response.status_code,
+                        "headers": _sanitize_provider_headers(response.headers),
+                        "response_digest": digest,
+                    }
+                ],
+            },
+            artifacts=(
+                self._draft(
+                    provider="rcsb_pdb",
+                    relative_path=f"provider_parsed/{normalized_id}.{normalized_format}",
+                    kind=ArtifactKind.STRUCTURE,
+                    title=f"{normalized_id}.{normalized_format}",
+                    content=content,
+                    format=normalized_format,
+                    metadata={
+                        "external_id": normalized_id,
+                        "source_locator": url,
+                        "retrieved_at": retrieved_at,
+                        "primary_output": True,
+                        "provider_provenance": {
+                            "provider": "rcsb_pdb",
+                            "external_id": normalized_id,
+                            "source_locator": url,
+                            "format": normalized_format,
+                            "retrieved_at": retrieved_at,
+                            "digest": digest,
+                        },
+                    },
+                ),
+            ),
         )
 
     def hmmer_search(
@@ -1598,6 +1802,67 @@ class ProviderHttpBioDatabaseAdapter:
                 details={"accession_count": len(normalized), "limit": self.config.batch_size_cap},
             )
         return tuple(normalized)
+
+    def _normalize_pdb_id(self, pdb_id: str, *, sdk_method: str) -> str:
+        value = str(pdb_id).strip().upper()
+        if not re.fullmatch(r"[0-9A-Z]{4}", value):
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="RCSB PDB id must be a four-character structure id.",
+                hint="Use an RCSB structure id such as 6LEH.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"pdb_id": pdb_id},
+            )
+        return value
+
+    def _normalize_structure_format(self, file_format: str, *, sdk_method: str) -> str:
+        value = str(file_format or "pdb").strip().lower()
+        if value == "mmcif":
+            value = "cif"
+        if value not in {"pdb", "cif"}:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="RCSB structure format must be pdb or cif.",
+                hint="Retry with format='pdb' or format='cif'.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"format": file_format},
+            )
+        return value
+
+    def _validate_structure_download(
+        self,
+        content: str,
+        *,
+        pdb_id: str,
+        file_format: str,
+        response: BioProviderHttpResponse,
+    ) -> None:
+        if file_format == "pdb":
+            valid = any(line.startswith(("ATOM", "HETATM", "HEADER", "TITLE")) for line in content.splitlines())
+        else:
+            valid = content.lstrip().startswith(f"data_{pdb_id}") or "\n_atom_site." in content
+        if valid:
+            return
+        raise PipelineSdkFailure(
+            error_type="provider_invalid_request",
+            message="RCSB returned content that does not look like the requested structure format.",
+            hint="Check the PDB id and requested format before retrying.",
+            stage="provider_response_validation",
+            retryable=False,
+            sdk_method="rcsb_pdb.download_structure",
+            details={
+                "provider": "rcsb_pdb",
+                "pdb_id": pdb_id,
+                "format": file_format,
+                "status_code": response.status_code,
+                "body_excerpt": _scrub_provider_text(content[:500]),
+                "response_digest": _sha256_text(content),
+            },
+        )
 
     def _bounded_batch_size(self, value: int | None, *, sdk_method: str) -> int:
         if value is None:
@@ -2712,7 +2977,7 @@ class ExecutionEngine:
                 sdk_method=method,
                 details={"operation_id": operation.operation_id},
             )
-        if operation.sdk_module == "bio" and operation.selected_backend == "provider_http":
+        if operation.sdk_module in {"bio", "rcsb_pdb"} and operation.selected_backend == "provider_http":
             return self._execute_sandbox_bio_provider_operation(
                 operation=operation,
                 method=method,
@@ -2720,6 +2985,12 @@ class ExecutionEngine:
             )
         if operation.sdk_module == "bio_tools" and operation.selected_backend == "hpc":
             return self._execute_sandbox_bio_tool_hpc_operation(
+                operation=operation,
+                method=method,
+                params=dict(params),
+            )
+        if operation.sdk_module == "structure_tools" and operation.selected_backend == "hpc":
+            return self._execute_sandbox_structure_tool_hpc_operation(
                 operation=operation,
                 method=method,
                 params=dict(params),
@@ -2844,6 +3115,79 @@ class ExecutionEngine:
             params=params,
         )
         run_handle = self._run_pipeline_bio_tool(
+            session=session,
+            task=task,
+            invocation=invocation,
+            method=method,
+            params=params,
+        )
+        run_handle = {
+            **run_handle,
+            "operation_id": operation.operation_id,
+            "operation_digest": operation.operation_digest,
+            "operation_key": operation_key,
+        }
+        adapter_result = {
+            "status": run_handle.get("status"),
+            "backend_run_id": run_handle.get("runner_run_id") or run_handle.get("run_id"),
+            "fetch_refs": [],
+            "registered_artifact_ids": [],
+            "output_artifact_ids": [],
+            "bounded_summary": run_handle,
+            "warnings": list(run_handle.get("warnings") or []),
+        }
+        self._emit(
+            "sandbox.adapter_operation.hpc_submitted",
+            {
+                "operation_id": operation.operation_id,
+                "sandbox_run_id": operation.sandbox_run_id,
+                "operation": method,
+                "run_id": run_handle.get("run_id"),
+                "runner_run_id": run_handle.get("runner_run_id"),
+            },
+        )
+        return {"adapter_result": adapter_result, "result_summary": run_handle}
+
+    def _execute_sandbox_structure_tool_hpc_operation(
+        self,
+        *,
+        operation: ControlledOperation,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        route_policy = self._require_structure_tool_route_policy(method)
+        if operation.route_policy_id != route_policy["route_policy_id"]:
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} route policy does not match the approved S12 operation.",
+                hint="Retry through the public SDK so route_policy_id and function name are consistent.",
+                stage="structure_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "operation_id": operation.operation_id,
+                    "operation_route_policy_id": operation.route_policy_id,
+                    "expected_route_policy_id": route_policy["route_policy_id"],
+                },
+            )
+        if operation.task_id is None:
+            raise PipelineSdkFailure(
+                error_type="adapter_execution_unavailable",
+                message=f"{method} sandbox adapter operation is not bound to a task.",
+                hint="Run structure_tools from a task-scoped sandbox teammate.",
+                stage="adapter_context_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"operation_id": operation.operation_id},
+            )
+        session = self._require_session(operation.session_id)
+        task = self._require_task(operation.session_id, operation.task_id)
+        invocation, operation_key = self._sandbox_adapter_invocation(
+            operation=operation,
+            method=method,
+            params=params,
+        )
+        run_handle = self._run_pipeline_hpc(
             session=session,
             task=task,
             invocation=invocation,
@@ -3828,9 +4172,16 @@ class ExecutionEngine:
         params: dict[str, Any],
     ) -> Any:
         invocation = self._require_invocation(invocation_id)
+        if method == "s10.controlled_operation":
+            return self._run_pipeline_controlled_operation(
+                session=session,
+                task=task,
+                invocation=invocation,
+                envelope=params,
+            )
         if method in {"preprocess.convert_format", "preprocess.prepare_receptor", "preprocess.prepare_ligand", "preprocess.smiles_to_3d"}:
             return self._run_pipeline_preprocess(session=session, invocation=invocation, method=method, params=params)
-        if method in {"bio.ncbi_fetch_proteins", "bio.uniprot_fetch", "bio.hmmer_search"}:
+        if method in BIO_PROVIDER_ROUTE_POLICY_IDS:
             return self._run_pipeline_bio(session=session, invocation=invocation, method=method, params=params)
         if method in {"bio_tools.cdhit", "bio_tools.mafft", "bio_tools.hmmbuild", "bio_tools.hmmalign", "bio_tools.hmmer_search_cli"}:
             return self._run_pipeline_bio_tool(session=session, task=task, invocation=invocation, method=method, params=params)
@@ -3853,6 +4204,111 @@ class ExecutionEngine:
                 for artifact in self.repositories.artifacts.list_by_run(str(params["run_id"]))
             ]
         raise ValueError(f"unsupported SDK operation {method!r}")
+
+    def _run_pipeline_controlled_operation(
+        self,
+        *,
+        session: Any,
+        task: Any,
+        invocation: EngineInvocation,
+        envelope: dict[str, Any],
+    ) -> Any:
+        route_policy_id = str(envelope.get("route_policy_id") or "")
+        policy = dict(S12_ROUTE_POLICIES.get(route_policy_id) or {})
+        if not policy:
+            raise PipelineSdkFailure(
+                error_type="route_policy_missing",
+                message="S12 controlled operation route policy is not registered.",
+                hint="Use a public SDK function with a registered static route policy.",
+                stage="adapter_route_dispatch",
+                retryable=False,
+                sdk_method="s10.controlled_operation",
+                details={"route_policy_id": route_policy_id},
+            )
+        sdk_module = str(envelope.get("sdk_module") or "")
+        function_name = str(envelope.get("function_name") or "")
+        if sdk_module != policy.get("sdk_module") or function_name != policy.get("function_name"):
+            raise PipelineSdkFailure(
+                error_type="adapter_schema_incompatible",
+                message="SDK module/function does not match the selected route policy.",
+                hint="Retry through the public SDK so route_policy_id and function name are consistent.",
+                stage="adapter_route_dispatch",
+                retryable=False,
+                sdk_method="s10.controlled_operation",
+                details={
+                    "route_policy_id": route_policy_id,
+                    "sdk_module": sdk_module,
+                    "function_name": function_name,
+                },
+            )
+        adapter_params = envelope.get("params")
+        if not isinstance(adapter_params, dict):
+            raise PipelineSdkFailure(
+                error_type="invalid_tool_arguments",
+                message="S12 controlled operation requires typed params.",
+                hint="Use the public openzyme_pipeline SDK so typed adapter params are included.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method="s10.controlled_operation",
+            )
+        params_digest = str(envelope.get("params_digest") or "")
+        actual_digest = "sha256:" + hashlib.sha256(
+            json.dumps(adapter_params, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        if actual_digest != params_digest:
+            raise PipelineSdkFailure(
+                error_type="adapter_params_digest_mismatch",
+                message="S12 controlled operation params do not match params_digest.",
+                hint="Do not mutate SDK params after computing the S12 envelope digest.",
+                stage="adapter_input_validation",
+                retryable=False,
+                sdk_method="s10.controlled_operation",
+                details={"params_digest": params_digest, "actual_digest": actual_digest},
+            )
+        if policy.get("status") != "ok":
+            raise PipelineSdkFailure(
+                error_type=str(policy.get("error_code") or "operation_prerequisite_missing"),
+                message="S12 controlled operation route policy is not executable.",
+                hint="Fix route policy prerequisites before submitting the controlled operation.",
+                stage="adapter_route_dispatch",
+                retryable=False,
+                sdk_method=f"{sdk_module}.{function_name}",
+                details={"route_policy_id": route_policy_id, "status": policy.get("status")},
+            )
+        method = f"{sdk_module}.{function_name}"
+        selected_backend = str(policy.get("selected_backend") or "")
+        if method in BIO_PROVIDER_ROUTE_POLICY_IDS and selected_backend == "provider_http":
+            return self._run_pipeline_bio(
+                session=session,
+                invocation=invocation,
+                method=method,
+                params=dict(adapter_params),
+            )
+        if method in BIO_TOOL_ROUTE_POLICY_IDS and selected_backend == "hpc":
+            return self._run_pipeline_bio_tool(
+                session=session,
+                task=task,
+                invocation=invocation,
+                method=method,
+                params=dict(adapter_params),
+            )
+        if method in STRUCTURE_TOOL_ROUTE_POLICY_IDS and selected_backend == "hpc":
+            return self._run_pipeline_hpc(
+                session=session,
+                task=task,
+                invocation=invocation,
+                method=method,
+                params=dict(adapter_params),
+            )
+        raise PipelineSdkFailure(
+            error_type="adapter_execution_unavailable",
+            message=f"{method} does not have a Host adapter executor for selected backend {selected_backend!r}.",
+            hint="Implement the selected backend executor before treating this operation as live-ready.",
+            stage="adapter_route_dispatch",
+            retryable=False,
+            sdk_method=method,
+            details={"route_policy_id": route_policy_id, "selected_backend": selected_backend},
+        )
 
     def _pipeline_sandbox_workspace_id(self, invocation: EngineInvocation) -> str:
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
@@ -4729,6 +5185,41 @@ class ExecutionEngine:
             )
         return {"route_policy_id": route_policy_id, **policy}
 
+    def _require_structure_tool_route_policy(self, method: str) -> dict[str, Any]:
+        route_policy_id = STRUCTURE_TOOL_ROUTE_POLICY_IDS.get(method)
+        policy = dict(S12_ROUTE_POLICIES.get(str(route_policy_id)) or {})
+        if not route_policy_id or not policy:
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} has no structure_tools HPC route policy.",
+                hint="Register a versioned structure_tools route policy before executing this SDK operation.",
+                stage="structure_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"method": method},
+            )
+        if policy.get("status") != "ok" or policy.get("selected_backend") != "hpc":
+            raise PipelineSdkFailure(
+                error_type=str(policy.get("error_code") or "route_prerequisite_missing"),
+                message=f"{method} HPC route policy is not executable.",
+                hint="Fix the route policy evidence, runtime packaging, and toolchain linkage before running the tool.",
+                stage="structure_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"route_policy_id": route_policy_id, "policy": _sanitize_provider_value(policy)},
+            )
+        if not policy.get("runtime_packaging_id") or not policy.get("toolchain_id"):
+            raise PipelineSdkFailure(
+                error_type="toolchain_not_configured",
+                message=f"{method} route policy does not declare runtime packaging and toolchain ids.",
+                hint="Add runtime_packaging_id and toolchain_id to the route policy before executing the tool.",
+                stage="structure_tools_route_policy_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"route_policy_id": route_policy_id},
+            )
+        return {"route_policy_id": route_policy_id, **policy}
+
     def _validate_bio_tool_fasta_artifact(
         self,
         artifact: SessionArtifactRecord,
@@ -4891,8 +5382,8 @@ class ExecutionEngine:
     ) -> dict[str, Any]:
         return {
             "adapter_envelope_schema_version": "s12.adapter_envelope.v1",
-            "sdk_module": "bio",
-            "function_name": method.removeprefix("bio."),
+            "sdk_module": route_policy.get("sdk_module") or "bio",
+            "function_name": route_policy.get("function_name") or method.rsplit(".", 1)[-1],
             "route_policy_id": route_policy["route_policy_id"],
             "selected_backend": route_policy.get("selected_backend"),
             "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
@@ -5263,6 +5754,45 @@ class ExecutionEngine:
             ],
         }
 
+    def _bio_primary_artifact_manifests(
+        self,
+        *,
+        method: str,
+        records: tuple[SessionArtifactRecord, ...],
+    ) -> list[dict[str, Any]]:
+        if method != "rcsb_pdb.download_structure":
+            return []
+        manifests: list[dict[str, Any]] = []
+        for record in records:
+            metadata = dict(record.metadata or {})
+            if metadata.get("primary_output") is not True:
+                continue
+            provenance = metadata.get("provider_provenance") or metadata.get("provenance") or {}
+            manifests.append(
+                {
+                    "artifact_id": record.artifact_id,
+                    "kind": record.kind.value,
+                    "relative_path": record.relative_path,
+                    "format": metadata.get("format"),
+                    "provider": metadata.get("provider"),
+                    "external_id": metadata.get("external_id"),
+                    "source_locator": metadata.get("source_locator"),
+                    "content_digest": metadata.get("content_digest"),
+                    "sealed_digest": metadata.get("sealed_digest"),
+                    "provenance": _sanitize_provider_value(provenance),
+                    "metadata": {
+                        "provider": metadata.get("provider"),
+                        "external_id": metadata.get("external_id"),
+                        "format": metadata.get("format"),
+                        "source_locator": metadata.get("source_locator"),
+                        "content_digest": metadata.get("content_digest"),
+                        "sealed_digest": metadata.get("sealed_digest"),
+                        "provenance": _sanitize_provider_value(provenance),
+                    },
+                }
+            )
+        return manifests
+
     def _execute_sandbox_bio_provider_operation(
         self,
         *,
@@ -5368,6 +5898,12 @@ class ExecutionEngine:
                     batch_size=batch_size,
                     retrieved_at=retrieved_at,
                 )
+            elif method == "rcsb_pdb.download_structure":
+                result = adapter.rcsb_download_structure(
+                    pdb_id=str(params.get("pdb_id") or ""),
+                    file_format=str(params.get("format") or "pdb"),
+                    retrieved_at=retrieved_at,
+                )
             elif method == "bio.hmmer_search":
                 hmm_artifact_id = str(params.get("hmm_artifact_id") or "")
                 hmm_artifact = self.repositories.artifacts.get(hmm_artifact_id)
@@ -5430,6 +5966,9 @@ class ExecutionEngine:
             route_policy=route_policy,
         )
         bounded_summary = {**dict(result.summary), "transcript_manifest": transcript_manifest}
+        primary_artifacts = self._bio_primary_artifact_manifests(method=method, records=records)
+        if primary_artifacts:
+            bounded_summary["artifacts"] = primary_artifacts
         adapter_result = {
             "status": RunStatus.SUCCEEDED.value,
             "provider_request_id": provider_request_id,
@@ -5568,6 +6107,22 @@ class ExecutionEngine:
                     request_metadata=request_metadata,
                     request_draft=request_draft,
                 ) from exc
+        elif method == "rcsb_pdb.download_structure":
+            try:
+                result = adapter.rcsb_download_structure(
+                    pdb_id=str(params.get("pdb_id") or ""),
+                    file_format=str(params.get("format") or "pdb"),
+                    retrieved_at=retrieved_at,
+                )
+            except PipelineSdkFailure as exc:
+                raise self._persist_bio_failure_transcript(
+                    session=session,
+                    invocation=invocation,
+                    failure=self._normalize_bio_failure(exc),
+                    output_dir_relative=output_dir_relative,
+                    request_metadata=request_metadata,
+                    request_draft=request_draft,
+                ) from exc
         elif method == "bio.uniprot_fetch":
             batch_size_value = params.get("batch_size")
             try:
@@ -5661,6 +6216,9 @@ class ExecutionEngine:
             route_policy=route_policy,
         )
         bounded_summary = {**dict(result.summary), "transcript_manifest": transcript_manifest}
+        primary_artifacts = self._bio_primary_artifact_manifests(method=method, records=records)
+        if primary_artifacts:
+            bounded_summary["artifacts"] = primary_artifacts
         adapter_result_envelope = {
             "status": RunStatus.SUCCEEDED.value,
             "provider_request_id": provider_request_id,
@@ -5962,7 +6520,9 @@ class ExecutionEngine:
             return dict(completed[operation_key])
         placement = self._require_hpc_workspace(params.get("placement"), sdk_method=method)
         expected_outputs = self._require_declared_outputs(params, sdk_method=method)
+        route_policy: dict[str, Any] | None = None
         if method == "structure_tools.fpocket":
+            route_policy = self._require_structure_tool_route_policy(method)
             structure_id = self._require_stage_ref_artifact_id(
                 params.get("structure"),
                 placement=placement,
@@ -5981,7 +6541,15 @@ class ExecutionEngine:
                 execution_goal="Run fpocket from execution pipeline.",
                 required_artifact_ids=(structure_id,),
                 catalog_tool_id="fpocket",
-                tool_inputs={"structure_artifact_id": structure_id, **tool_params},
+                tool_inputs={
+                    "structure_artifact_id": structure_id,
+                    **tool_params,
+                    "route_policy_id": route_policy["route_policy_id"],
+                    "route_reason": route_policy.get("route_reason"),
+                    "runtime_packaging_id": route_policy.get("runtime_packaging_id"),
+                    "toolchain_id": route_policy.get("toolchain_id"),
+                    "hpc_workspace_id": placement.get("hpc_workspace_id"),
+                },
                 require_approval=False,
             )
         else:
@@ -6039,6 +6607,10 @@ class ExecutionEngine:
             "hpc_workspace_id": placement.get("hpc_workspace_id"),
             "declared_outputs": expected_outputs,
             "stage_refs": stage_refs,
+            "route_policy_id": None if route_policy is None else route_policy["route_policy_id"],
+            "selected_backend": None if route_policy is None else route_policy.get("selected_backend"),
+            "runtime_packaging_id": None if route_policy is None else route_policy.get("runtime_packaging_id"),
+            "toolchain_id": None if route_policy is None else route_policy.get("toolchain_id"),
             "summary": None,
             "warnings": [],
         }
@@ -7612,6 +8184,7 @@ class ExecutionEngine:
             "bio.ncbi_fetch_proteins": ("bio.ncbi_fetch_proteins", "bio.md"),
             "bio.uniprot_fetch": ("bio.uniprot_fetch", "bio.md"),
             "bio.hmmer_search": ("bio.hmmer_search", "bio.md"),
+            "rcsb_pdb.download_structure": ("rcsb_pdb.download_structure", "bio.md"),
             "bio_tools.cdhit": ("bio_tools.cdhit", "bio-tools.md"),
             "bio_tools.mafft": ("bio_tools.mafft", "bio-tools.md"),
             "bio_tools.hmmbuild": ("bio_tools.hmmbuild", "bio-tools.md"),
@@ -7656,6 +8229,7 @@ class ExecutionEngine:
                 "bio.ncbi_fetch_proteins",
                 "bio.uniprot_fetch",
                 "bio.hmmer_search",
+                "rcsb_pdb.download_structure",
                 "bio_tools.cdhit",
                 "bio_tools.mafft",
                 "bio_tools.hmmbuild",
@@ -7680,6 +8254,7 @@ class ExecutionEngine:
                     "bio.ncbi_fetch_proteins",
                     "bio.uniprot_fetch",
                     "bio.hmmer_search",
+                    "rcsb_pdb.download_structure",
                     "structure_tools.fpocket",
                     "docking.vina",
                 },
@@ -7740,7 +8315,7 @@ class ExecutionEngine:
                 "doc_id": item.get("doc_id"),
             }
             for item in operations
-            if str(item.get("operation", "")).startswith("bio.")
+            if str(item.get("operation", "")) in BIO_PROVIDER_ROUTE_POLICY_IDS
         ]
         bio_tool_operations = [
             {
@@ -7974,6 +8549,7 @@ class ExecutionEngine:
             "bio.ncbi_fetch_proteins": "ncbi",
             "bio.uniprot_fetch": "uniprot",
             "bio.hmmer_search": "ebi_hmmer",
+            "rcsb_pdb.download_structure": "rcsb_pdb",
         }.get(method, "unknown")
 
     def _planned_bio_expected_outputs(self, method: str) -> list[dict[str, Any]]:
@@ -8005,6 +8581,11 @@ class ExecutionEngine:
                 *transcript_outputs,
                 {"path": "<output_dir>/provider_raw/raw_hits.json", "kind": "result", "format": "json"},
                 {"path": "<output_dir>/provider_parsed/parsed_hits.csv", "kind": "result", "format": "csv"},
+            ]
+        if method == "rcsb_pdb.download_structure":
+            return [
+                *transcript_outputs,
+                {"path": "<output_dir>/provider_parsed/<pdb_id>.<format>", "kind": "structure", "format": "pdb"},
             ]
         return []
 

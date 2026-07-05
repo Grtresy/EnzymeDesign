@@ -1960,6 +1960,107 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_
     assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">AAB57849.1")
 
 
+def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    agent = AgentMember(
+        agent_id="agent:executor",
+        session_id=session.session_id,
+        lane_id="lane_001",
+        task_id="task_001",
+        name="executor",
+        role="executor",
+        status=AgentMemberStatus.IDLE,
+        parent_agent_id=None,
+        created_at="2026-05-31T00:00:00+00:00",
+        updated_at="2026-05-31T00:00:00+00:00",
+        member_id="member_executor",
+    )
+    repositories.agents.save(agent)
+    workspace_root = tmp_path / "workspaces"
+    workspace = SandboxWorkspaceService(repositories, workspace_root=workspace_root).create_or_get(
+        session_id=session.session_id,
+        agent_member_id="member_executor",
+        focus_task_id="task_001",
+        focus_lane_id="lane_001",
+    )
+    source_path = workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    source_path.write_text("from openzyme_pipeline import rcsb_pdb\n", encoding="utf-8")
+    snapshot = ArtifactBoundaryService(repositories, workspace_root=workspace_root).snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths=["pipeline.py"],
+        entrypoint="pipeline.py",
+        metadata={"producer": "test"},
+    )
+    params = {
+        "pdb_id": "6LEH",
+        "format": "pdb",
+        "output_dir": "/workspace/output/rcsb_pdb/6leh",
+    }
+    operation = ControlledOperation(
+        operation_id="op_sandbox_rcsb_provider",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_rcsb_provider",
+        logical_operation_key="rcsb_pdb.download_structure",
+        operation_digest="sha256:operation-rcsb",
+        params_digest=_payload_digest(params),
+        backend_category="provider_http",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_id="appr_sandbox_rcsb_provider",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        source_snapshot_artifact_id=snapshot.artifact.artifact_id,
+        source_snapshot_digest=snapshot.source_tree_digest,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="rcsb_pdb",
+        function_name="download_structure",
+        route_policy_id="rcsb_pdb.download_structure.provider:v1",
+        placement="provider",
+        selected_backend="provider_http",
+        resource_class="network_io",
+        runtime_packaging_id="provider_http:v1",
+        provider_config_digest="provider_config:rcsb_pdb:v1",
+        expected_outputs_summary={"output_dir": "/workspace/output/rcsb_pdb/6leh"},
+        resource_estimate={"network_io": True},
+        idempotency_key="rcsb_pdb.download_structure:" + _payload_digest(params),
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        bio_adapter=DeterministicBioDatabaseAdapter(),
+        allow_bio_fixture_adapter=True,
+        sandbox_workspace_root=workspace_root,
+    )
+
+    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+
+    adapter_result = result["adapter_result"]
+    assert adapter_result["provider_request_id"].startswith("provider_req_")
+    bounded_summary = adapter_result["bounded_summary"]
+    assert bounded_summary["pdb_id"] == "6LEH"
+    assert bounded_summary["format"] == "pdb"
+    manifest = bounded_summary["artifacts"][0]
+    assert manifest["provider"] == "rcsb_pdb"
+    assert manifest["external_id"] == "6LEH"
+    assert manifest["content_digest"].startswith("sha256:")
+    assert manifest["sealed_digest"] == manifest["content_digest"]
+    assert manifest["provenance"]["provider"] == "rcsb_pdb"
+    assert "storage_uri" not in json.dumps(manifest)
+    artifact = repositories.artifacts.get(str(manifest["artifact_id"]))
+    assert artifact is not None
+    assert artifact.kind is ArtifactKind.STRUCTURE
+    assert artifact.metadata is not None
+    assert artifact.metadata["controlled_operation_id"] == operation.operation_id
+    assert artifact.metadata["content_digest"] == artifact.metadata["sealed_digest"]
+    assert artifact.metadata["provider_provenance"]["external_id"] == "6LEH"
+
+
 def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
@@ -2040,6 +2141,79 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
     assert artifact.metadata["source"] == "sandbox_artifact_boundary"
     assert artifact.metadata["pipeline_invocation_id"] == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
     assert artifact.metadata["sdk_method"] == "bio_tools.mafft"
+
+
+def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
+    workspace = _workspace_payload("sandbox_fpocket")
+    staged_structure = _stage_payload(repositories, "art_001", workspace, "inputs/structure.pdb")
+    params = {
+        "structure": staged_structure,
+        "placement": workspace,
+        "expected_outputs": FPOCKET_EXPECTED_OUTPUTS,
+        "params": {},
+    }
+    runner = CapturingSuccessRunner()
+    operation = ControlledOperation(
+        operation_id="op_sandbox_hpc_fpocket",
+        session_id="sess_001",
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_hpc_fpocket",
+        logical_operation_key="structure_tools.fpocket",
+        operation_digest="sha256:operation-fpocket",
+        params_digest=_payload_digest(params),
+        backend_category="hpc",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        input_artifact_ids=("art_001",),
+        input_artifact_digests=(_artifact_digest(repositories, "art_001"),),
+        source_snapshot_artifact_id="art_source_snapshot",
+        source_snapshot_digest="sha256:source",
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="structure_tools",
+        function_name="fpocket",
+        route_policy_id="structure_tools.fpocket.hpc:v1",
+        placement="hpc",
+        hpc_workspace_id=str(workspace["hpc_workspace_id"]),
+        selected_backend="hpc",
+        resource_class="hpc_batch_small",
+        runtime_packaging_id="hpc_apptainer_sif.fpocket_2026_05_30",
+        toolchain_id="fpocket_4.2.2.hpc_apptainer_sif:v1",
+        stage_refs=(staged_structure,),
+        expected_outputs_summary={"items": FPOCKET_EXPECTED_OUTPUTS},
+        resource_estimate={"placement": "hpc", "resource_class": "hpc_batch_small"},
+        planned_fetch_intent={"declared_outputs": FPOCKET_EXPECTED_OUTPUTS},
+        idempotency_key="structure_tools.fpocket:" + _payload_digest(params),
+    )
+    engine = ExecutionEngine(repositories, runner)
+
+    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+
+    run_handle = result["result_summary"]
+    assert run_handle["kind"] == "hpc_run_handle"
+    assert run_handle["operation_id"] == operation.operation_id
+    assert run_handle["route_policy_id"] == "structure_tools.fpocket.hpc:v1"
+    assert run_handle["hpc_workspace_id"] == workspace["hpc_workspace_id"]
+    assert run_handle["stage_refs"][0]["artifact_id"] == "art_001"
+    assert run_handle["stage_refs"][0]["artifact_digest"] == _artifact_digest(repositories, "art_001")
+    assert run_handle["declared_outputs"] == FPOCKET_EXPECTED_OUTPUTS
+    assert len(runner.payloads) == 1
+    runspec = runner.payloads[0]["runspec"]
+    tool_inputs = dict(runspec["metadata"]["tool_inputs"])
+    assert tool_inputs["structure_artifact_id"] == "art_001"
+    assert tool_inputs["route_policy_id"] == "structure_tools.fpocket.hpc:v1"
+    assert tool_inputs["runtime_packaging_id"] == "hpc_apptainer_sif.fpocket_2026_05_30"
+    assert tool_inputs["toolchain_id"] == "fpocket_4.2.2.hpc_apptainer_sif:v1"
+    assert tool_inputs["hpc_workspace_id"] == workspace["hpc_workspace_id"]
+    assert "storage_uri" not in str(result)
+    assert "/tmp/input_structure.pdb" not in str(run_handle)
 
 
 def test_pipeline_bio_requires_output_dir_before_approval() -> None:

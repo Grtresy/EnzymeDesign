@@ -2,7 +2,7 @@
 
 Use `structure_tools.fpocket` for pocket detection on a protein structure. Use `hpc.workspace(...)`, `stage_artifact(...)`, and `fetch_outputs(...)` when the selected route runs on HPC.
 
-The stable boundary is Host-supervised execution: no SSH, Slurm, runner path, SIF path, database mount, or Host artifact path in pipeline code.
+The stable boundary is Host-supervised execution: in supervised sandbox mode `structure_tools.fpocket` is submitted as `structure_tools.fpocket.hpc:v1` via `s10.controlled_operation`; no SSH, Slurm, runner path, SIF path, database mount, or Host artifact path is allowed in pipeline code or agent-facing payloads.
 
 Required input:
 

@@ -10,6 +10,7 @@ import pytest
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
 from openzyme_runtime import LimiterRegistry
+from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime.research_tools import DefaultResearchToolProvider
 from openzyme_runtime.research_tools import build_bio_research_tools
 from openzyme_runtime.seams import ResearchToolContext
@@ -78,6 +79,20 @@ def test_bio_research_download_tools_return_artifact_manifests() -> None:
     assert provenance["external_id"] == "P12345"
     assert provenance["format"] == "fasta"
     assert provenance["digest"] == result.payload["artifacts"][0]["content_digest"]
+
+
+def test_rcsb_download_structure_provider_route_policy_is_registered() -> None:
+    policy = S12_ROUTE_POLICIES["rcsb_pdb.download_structure.provider:v1"]
+
+    assert policy["sdk_module"] == "rcsb_pdb"
+    assert policy["function_name"] == "download_structure"
+    assert policy["selected_backend"] == "provider_http"
+    assert policy["runtime_packaging_id"] == "provider_http:v1"
+    assert policy["provider_config_digest"] == "provider_config:rcsb_pdb:v1"
+    assert policy["evidence_ref"]
+    assert policy["parameter_inventory_ref"]
+    assert policy["approval_requirement"] == {"required": True}
+    assert policy["status"] == "ok"
 
 
 def test_default_research_tools_expose_web_tools_without_search_collect() -> None:

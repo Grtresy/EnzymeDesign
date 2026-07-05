@@ -976,6 +976,126 @@ def test_sandbox_exec_public_bio_sdk_uses_adapter_executor_after_approval(
     assert persisted.error_code is None
 
 
+def test_sandbox_exec_public_rcsb_sdk_uses_s12_controlled_operation(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    calls: list[dict[str, object]] = []
+    manifest = {
+        "artifact_id": "art_rcsb_6leh",
+        "kind": "structure",
+        "relative_path": "rcsb_pdb/6leh/provider_parsed/6LEH.pdb",
+        "format": "pdb",
+        "provider": "rcsb_pdb",
+        "external_id": "6LEH",
+        "content_digest": "sha256:rcsb-content",
+        "sealed_digest": "sha256:rcsb-content",
+        "provenance": {
+            "provider": "rcsb_pdb",
+            "external_id": "6LEH",
+            "format": "pdb",
+            "digest": "sha256:rcsb-content",
+        },
+    }
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        calls.append({"operation_id": operation.operation_id, "params": dict(envelope["adapter_params"])})
+        result_summary = {
+            "provider": "rcsb_pdb",
+            "pdb_id": "6LEH",
+            "format": "pdb",
+            "artifacts": [manifest],
+        }
+        return {
+            "adapter_result": {
+                "status": "succeeded",
+                "provider_request_id": "provider_req_rcsb_core",
+                "registered_artifact_ids": ["art_rcsb_6leh"],
+                "output_artifact_ids": ["art_rcsb_6leh"],
+                "validation_results": {"art_rcsb_6leh": {"passed": True}},
+                "bounded_summary": result_summary,
+                "warnings": [],
+            },
+            "result_summary": result_summary,
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_rcsb_sdk.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline import rcsb_pdb\n"
+            "result = rcsb_pdb.download_structure(\n"
+            "    pdb_id='6LEH',\n"
+            "    format='pdb',\n"
+            "    output_dir='/workspace/output/rcsb_pdb/6leh',\n"
+            ")\n"
+            "print(json.dumps(result, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_rcsb_sdk.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    assert operation.adapter_envelope_schema_version == "s12.adapter_envelope.v1"
+    assert operation.sdk_module == "rcsb_pdb"
+    assert operation.function_name == "download_structure"
+    assert operation.route_policy_id == "rcsb_pdb.download_structure.provider:v1"
+    assert operation.selected_backend == "provider_http"
+    assert operation.provider_config_digest == "provider_config:rcsb_pdb:v1"
+    assert operation.expected_outputs_summary == {"output_dir": "/workspace/output/rcsb_pdb/6leh"}
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    payload = json.loads(str(run.stdout_summary))
+    artifact = payload["result_summary"]["artifacts"][0]
+    assert artifact["content_digest"] == "sha256:rcsb-content"
+    assert artifact["sealed_digest"] == "sha256:rcsb-content"
+    assert artifact["provenance"]["provider"] == "rcsb_pdb"
+    assert "storage_uri" not in json.dumps(payload)
+    assert "sandbox_transport_method_forbidden" not in run.stderr_summary
+    assert calls == [
+        {
+            "operation_id": operation.operation_id,
+            "params": {
+                "pdb_id": "6LEH",
+                "format": "pdb",
+                "output_dir": "/workspace/output/rcsb_pdb/6leh",
+            },
+        }
+    ]
+
+
 def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     tmp_path: Path,
 ) -> None:
@@ -1189,6 +1309,99 @@ def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
     assert persisted is not None
     assert persisted.status is ControlledOperationStatus.FAILED
     assert persisted.error_code == "adapter_execution_unavailable"
+
+
+def test_sandbox_exec_public_structure_tools_fpocket_uses_controlled_operation(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/public_fpocket_sdk.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts, hpc, structure_tools\n"
+            "lines = ['HEADER    OPENZYME FPOCKET FIXTURE']\n"
+            "atom_id = 1\n"
+            "for residue in range(1, 17):\n"
+            "    for atom_name in ('N', 'CA', 'C', 'O'):\n"
+            "        lines.append(\n"
+            "            f'ATOM  {atom_id:5d} {atom_name:^4s} ALA A{residue:4d}    '\n"
+            "            f'{residue + atom_id / 100:8.3f}{residue + 1.0:8.3f}{residue + 2.0:8.3f}'\n"
+            "            '  1.00 20.00           C'\n"
+            "        )\n"
+            "        atom_id += 1\n"
+            "lines.append('END')\n"
+            "path = Path('output/inputs/structure.pdb')\n"
+            "path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "path.write_text('\\n'.join(lines) + '\\n', encoding='utf-8')\n"
+            "registered = artifacts.register('/workspace/output/inputs/structure.pdb', kind='structure', format='pdb')\n"
+            "artifact_id = registered['artifact']['artifact_id']\n"
+            "ws = hpc.workspace('fpocket')\n"
+            "stage_ref = ws.stage_artifact(artifact_id, workspace_path='inputs/structure.pdb')\n"
+            "result = structure_tools.fpocket(\n"
+            "    structure=stage_ref,\n"
+            "    placement=ws,\n"
+            "    expected_outputs=[{'path': 'target_out', 'kind': 'directory', 'format': 'fpocket'}],\n"
+            ")\n"
+            "print(json.dumps({'registered': registered, 'stage_ref': stage_ref, 'result': result}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/public_fpocket_sdk.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    operation = _wait_for_operation_with_approval(
+        repositories,
+        str(pending.request_ref),
+        pending.approval_id,
+    )
+    assert operation.adapter_envelope_schema_version == "s12.adapter_envelope.v1"
+    assert operation.sdk_module == "structure_tools"
+    assert operation.function_name == "fpocket"
+    assert operation.route_policy_id == "structure_tools.fpocket.hpc:v1"
+    assert operation.selected_backend == "hpc"
+    assert operation.placement == "hpc"
+    assert operation.hpc_workspace_id
+    assert operation.input_artifact_ids
+    assert operation.input_artifact_digests
+    assert len(operation.stage_refs) == 1
+    assert operation.stage_refs[0]["kind"] == "hpc_stage_ref"
+    assert operation.stage_refs[0]["artifact_id"] == operation.input_artifact_ids[0]
+    assert operation.stage_refs[0]["artifact_digest"] == operation.input_artifact_digests[0]
+    assert operation.expected_outputs_summary == {
+        "items": [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
+    }
+    assert operation.planned_fetch_intent == {
+        "declared_outputs": [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
+    }
+
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.FAILED
+    assert run.error_code == "sandbox_exec_nonzero"
+    assert "adapter_execution_unavailable" in run.stderr_summary
+    assert "sandbox_transport_method_forbidden" not in run.stderr_summary
 
 
 def test_sandbox_exec_public_hpc_fetch_outputs_fails_structured_without_run(

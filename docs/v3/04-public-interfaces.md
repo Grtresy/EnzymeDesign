@@ -131,6 +131,8 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 这些 direct provider tools 的返回内容应统一为 `ResearchObservation` JSON，而不是暴露各 provider 的原始 response shape。
 
+在 executor sandbox SDK 中，`rcsb_pdb.download_structure` 不是 direct control-socket tool，而是 `rcsb_pdb.download_structure.provider:v1` 受控 provider operation：sandbox 提交 typed params，Host supervisor 负责真实 RCSB 下载、输出校验、artifact boundary 登记和 `content_digest` / `sealed_digest` / provenance manifest 返回。
+
 最低语义：
 
 - search / lookup 返回 `summary + findings + sources + unresolved_gaps`

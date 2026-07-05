@@ -152,6 +152,8 @@ class PodmanPipelineSandboxRunner:
             f"{socket_path}:/openzyme/control.sock:Z",
             "-v",
             f"{root}:/workspace:Z",
+            "-e",
+            "OPENZYME_SANDBOX_MODE=s10",
         ]
         if sdk_src := self._prepare_pipeline_sdk_src(root=root):
             command.extend(["-e", "PYTHONPATH=/openzyme/sdk", "-v", f"{sdk_src}:/openzyme/sdk:ro,Z"])
