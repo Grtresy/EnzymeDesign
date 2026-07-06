@@ -88,6 +88,14 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 旧式 `skill.list` / `skill.load` 可以作为迁移期兼容机制存在，但不再是 V3 execution pipeline / sandbox SDK / backend adapter 用法说明的主路径。executor 应优先使用 `docs.search` / `docs.read`。
 
+默认 agent-facing 世界读取工具还应包括：
+
+- `world.inspect`
+
+`world.inspect(sections?, task_id?, agent_id?, limit?)` 返回当前 session 的结构化事实快照，面向 master 和 teammate。它可以包含 session focus、task board、assigned/delegated task、agent roster、inbox、runtime signals、artifact catalog 安全投影、capability invocation、controlled operation、pending approval、capability outcome、runtime consistency warning、模型当前可见 tool schema、route policy、approval requirement 与输入约束。
+
+该工具只表达 facts / constraints / affordance metadata，不输出 `recommended_actions`，不固定 “RCSB 后必须 fpocket” 或 “所有任务必须 report” 之类 workflow，不替 agent 判断 task 是否完成。terminal capability outcome 只表示 evidence ready；业务 task terminal 仍由 agent 通过 `task.finish` 写入。
+
 ### Internal Tool Result Envelope
 
 V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.content` field remains available for compatibility, but tool messages fed back into master/teammate models are serialized as JSON with at least:

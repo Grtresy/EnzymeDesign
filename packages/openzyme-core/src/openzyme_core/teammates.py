@@ -49,6 +49,8 @@ from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import ToolDescriptor
+from .tool_catalog import world_tool_descriptors
+from .world_inspection import register_world_inspection_tools
 
 
 def _web_tool_enabled(adapter: object | None) -> bool:
@@ -144,6 +146,7 @@ def teammate_tool_descriptors(
                 "additionalProperties": False,
             },
         ),
+        *world_tool_descriptors(),
         *artifact_tool_descriptors(),
         ToolDescriptor(
             tool_name="protocol.thread",
@@ -542,6 +545,7 @@ def build_teammate_registry(
     register_lane_tools(registry)
     register_memory_tools(registry)
     register_docs_tools(registry)
+    register_world_inspection_tools(registry)
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)
@@ -746,12 +750,13 @@ class TeammateConversationDriver(HarnessDriver):
                 "You are not user-facing. Do not speak to the user directly.",
                 "When coordinating with other agents, prefer their nickname or @handle in natural language, but tool calls must use resolvable agent references that the service can convert to canonical agent_id.",
                 "Work on your assigned task using the shared session workspace and your role-scoped tools.",
+                "Use world.inspect when you need structured facts about task state, artifacts, approvals, operations, outcomes, runtime warnings, visible tools, or route policies; it is an observation tool, not a workflow planner.",
                 "Prefer tools over narration. When you decide the assigned task stage is completed, blocked, failed, or cancelled, call task.finish with a concise summary and evidence refs instead of natural-language closure or ordinary task.update. task.finish ends your current turn; send protocol updates before it only when useful.",
                 "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
                 "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",
-                "Researcher contract: when the assigned objective requires execution against a real structure, use RCSB/UniProt tools to persist a workspace artifact such as rcsb_pdb.download_structure; fetching a web page is not a structure artifact.",
+                "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
                 "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then call sandbox.workspace.status to inspect the persistent sandbox workspace. Author source with sandbox.file.* and run it with sandbox.exec; external provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Do not treat execution.pipeline.start as the required authoring path.",
                 "AOX/HMM execution tasks: read docs.read doc_id=\"aox-hmm-live\" before authoring source, follow that recipe exactly, and do not mark task completed until the fixed aox_hmm/* deliverables are registered or a structured failure is recorded. If the recipe SDK path fails, fix the SDK call or report the structured error; never substitute sandbox-local pseudo-HMMs, local clustering, dependency installs, direct provider raw-file parsing, direct binaries, or synthetic hits for the required Host-supervised SDK operations.",
                 f"Assigned task: {self.task_id}",

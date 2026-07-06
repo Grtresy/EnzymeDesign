@@ -801,6 +801,7 @@ def _register_builtin_tools(
     from .protocol_tools import register_protocol_tools
     from .subagents import register_subagent_tools
     from .task_board import register_task_board_tools
+    from .world_inspection import register_world_inspection_tools
 
     register_artifact_tools(registry)
     register_artifact_boundary_tools(registry)
@@ -810,6 +811,7 @@ def _register_builtin_tools(
     register_lane_tools(registry)
     register_memory_tools(registry)
     register_docs_tools(registry)
+    register_world_inspection_tools(registry)
     if engine_registry is not None:
         for engine in engine_registry.list_engines():
             engine.register_tools(registry)

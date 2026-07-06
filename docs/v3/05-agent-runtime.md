@@ -78,6 +78,7 @@ signal claim 语义：
 - worker 完成 turn 后把 signal 写为 `completed` 或 `failed` 前必须确认仍持有有效 session lease
 - retryable failure 在 attempt 上限内可释放回 `pending`，否则保持 `failed`
 - stale signal claim recovery 只基于 signal lease，不依赖进程内内存；stale session worker recovery 还必须通过 session lease fencing 拒绝迟到写回
+- 如果 signal 关联的 task 已经进入 `completed` / `failed` / `cancelled` 业务终态，scheduler 必须把该 signal 作为 stale runtime fact 安全消费为 completed，不得再次运行 teammate loop，也不得把它写成 runtime failure
 - 没有 LLM 配置或 model factory 不可用时，后台 worker 不应 claim 需要 LLM 的 signal；缺失配置应作为诊断状态暴露
 
 第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：session lease 与 signal claim API 是 repository 层能力，scheduler 通过 worker id、session lease 和 signal lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
@@ -89,6 +90,7 @@ runtime state consistency guard 是只读诊断层。它可以在 workspace proj
 - `max_steps_exceeded` / `runtime_exception` 属于 agent turn 或 signal 层，不自动代表 task failed
 - task 仍 `in_progress` 但相关 runtime work 全部 terminal failed/cancelled 时标记 `runtime_attention` / `needs_attention`
 - capability / engine invocation terminal 而 task 非 terminal 时标记 `outcome_unconsumed` / `capability_outcome_ready`，表示 terminal capability outcome 尚未被 owner 消费；它只作为 evidence 与 wakeup source，不自动 completed
+- controlled operation terminal 后，对应 `inv_sandbox_adapter_<operation_id>` engine invocation 必须进入 terminal 状态；该同步只维护 runtime lifecycle 一致性，不代表 task business terminal
 
 guard 不写 task status。业务终态仍由 master/teammate 显式 `task.finish` 写入；max loop、runtime failure 或 agent turn failure 只产生 runtime attention，不自动写 task failed。
 

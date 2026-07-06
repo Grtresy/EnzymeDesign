@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from enum import Enum
 import json
 import sqlite3
 from typing import Any
@@ -144,6 +145,13 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
+def _require_enum_member(value: Any, enum_type: type[Enum], field_name: str) -> None:
+    if not isinstance(value, enum_type):
+        raise ValueError(
+            f"{field_name} must be {enum_type.__name__}, got {value!r}"
+        )
+
+
 def _parse_iso_datetime(value: str) -> datetime:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
@@ -214,6 +222,7 @@ class SessionRepository:
     connection: sqlite3.Connection
 
     def save(self, session: Session) -> None:
+        _require_enum_member(session.status, SessionStatus, "Session.status")
         self.connection.execute(
             """
             INSERT INTO sessions (session_id, project_id, title, objective, status, created_at, updated_at)
@@ -278,6 +287,8 @@ class TaskRepository:
     connection: sqlite3.Connection
 
     def save(self, task: Task) -> None:
+        _require_enum_member(task.status, TaskStatus, "Task.status")
+        _require_enum_member(task.priority, TaskPriority, "Task.priority")
         _require_session_exists(self.connection, task.session_id)
         if task.lane_id is not None:
             _require_linked_session_id(
@@ -1614,6 +1625,9 @@ class ControlledOperationRepository:
     connection: sqlite3.Connection
 
     def save(self, record: ControlledOperation) -> None:
+        _require_enum_member(
+            record.status, ControlledOperationStatus, "ControlledOperation.status"
+        )
         _require_session_exists(self.connection, record.session_id)
         _require_linked_session_id(
             self.connection,
@@ -1732,6 +1746,36 @@ class ControlledOperationRepository:
                 record.created_at,
                 record.updated_at,
             ),
+        )
+        self.connection.commit()
+        self._sync_terminal_engine_invocation(record)
+
+    def _sync_terminal_engine_invocation(self, record: ControlledOperation) -> None:
+        if not record.status.is_terminal:
+            return
+        invocation_id = f"inv_sandbox_adapter_{record.operation_id}"
+        row = self.connection.execute(
+            "SELECT * FROM engine_invocations WHERE invocation_id = ?",
+            (invocation_id,),
+        ).fetchone()
+        if row is None:
+            return
+        current_status = EngineInvocationStatus(row["status"])
+        if current_status.is_terminal:
+            return
+        now = _utc_now_iso()
+        next_status = (
+            EngineInvocationStatus.SUCCEEDED
+            if record.status is ControlledOperationStatus.COMPLETED
+            else EngineInvocationStatus.FAILED
+        )
+        self.connection.execute(
+            """
+            UPDATE engine_invocations
+            SET status = ?, finished_at = COALESCE(finished_at, ?)
+            WHERE invocation_id = ?
+            """,
+            (next_status.value, now, invocation_id),
         )
         self.connection.commit()
 
@@ -2526,6 +2570,12 @@ class AgentRuntimeSignalRepository:
     connection: sqlite3.Connection
 
     def save(self, signal: AgentRuntimeSignal) -> None:
+        _require_enum_member(
+            signal.reason, AgentRuntimeSignalReason, "AgentRuntimeSignal.reason"
+        )
+        _require_enum_member(
+            signal.status, AgentRuntimeSignalStatus, "AgentRuntimeSignal.status"
+        )
         _require_session_exists(self.connection, signal.session_id)
         _require_agent_member_exists(
             self.connection,
@@ -2960,6 +3010,9 @@ class EngineInvocationRepository:
     connection: sqlite3.Connection
 
     def save(self, invocation: EngineInvocation) -> None:
+        _require_enum_member(
+            invocation.status, EngineInvocationStatus, "EngineInvocation.status"
+        )
         _require_session_exists(self.connection, invocation.session_id)
         if invocation.task_id is not None:
             _require_linked_session_id(

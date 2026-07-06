@@ -9,7 +9,6 @@ from uuid import uuid4
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
-from openzyme_domain import ArtifactKind
 from openzyme_domain.control_plane import utc_now_iso
 
 from .harness import SessionRuntimeContext
@@ -88,27 +87,6 @@ def _normalize_assigned_ref(
             return resolution.agent.agent_id
         return normalized
     return str(value)
-
-
-def _session_requires_structure_artifact(context: SessionRuntimeContext) -> bool:
-    objective = context.snapshot.session.objective.lower()
-    return (
-        ("structure" in objective or "pdb" in objective)
-        and (
-            "artifact" in objective
-            or "execution" in objective
-            or "fpocket" in objective
-        )
-    )
-
-
-def _session_has_structure_artifact(context: SessionRuntimeContext) -> bool:
-    return any(
-        artifact.kind is ArtifactKind.STRUCTURE
-        for artifact in context.repositories.artifacts.list_by_session(
-            context.snapshot.session.session_id
-        )
-    )
 
 
 def _finish_error_result(
@@ -222,48 +200,6 @@ def _finish_terminates_current_turn(context: SessionRuntimeContext, task: Task) 
     if is_teammate_role_alias(context.agent_id):
         return False
     return context.agent_id == task.assigned_ref
-
-
-def _required_structure_artifact_error(
-    context: SessionRuntimeContext,
-    invocation: ToolInvocation,
-    *,
-    task: Task,
-    retry_tool: str,
-) -> ToolResult | None:
-    assigned_agent = (
-        None
-        if task.assigned_ref is None
-        else context.repositories.agents.get(task.session_id, task.assigned_ref)
-    )
-    if (
-        task.status is not TaskStatus.COMPLETED
-        and task.kind == "research"
-        and assigned_agent is not None
-        and assigned_agent.role == "researcher"
-        and _session_requires_structure_artifact(context)
-        and not _session_has_structure_artifact(context)
-    ):
-        return ToolResult(
-            call_id=invocation.call_id,
-            tool_name=invocation.tool_name,
-            ok=False,
-            content=(
-                "Cannot complete this research task yet: the session objective "
-                "requires a real structure artifact for execution, but no "
-                "structure artifact is present in the workspace."
-            ),
-            task_id=task.task_id,
-            lane_id=invocation.lane_id,
-            status="required_structure_artifact_missing",
-            summary="Download a real structure artifact before completing research.",
-            error_code="required_structure_artifact_missing",
-            hint=(
-                "Use rcsb_pdb.download_structure with a validated PDB ID, then "
-                f"retry {retry_tool}(status='completed')."
-            ),
-        )
-    return None
 
 
 class TaskBoardBucket(StrEnum):
@@ -765,16 +701,6 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 summary=evidence_validation_error,
                 details={"task_id": task_id, "evidence_refs": list(evidence_refs)},
             )
-        if status is TaskStatus.COMPLETED:
-            required_artifact_error = _required_structure_artifact_error(
-                context,
-                invocation,
-                task=task,
-                retry_tool="task.finish",
-            )
-            if required_artifact_error is not None:
-                return required_artifact_error
-
         now = utc_now_iso()
         finish_ref = f"task_finish_{uuid4().hex[:12]}"
         finish_payload = {

@@ -138,6 +138,9 @@ from .teammates import run_teammate_loop
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import builtin_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
+from .tool_catalog import world_tool_descriptors
+from .world_inspection import WorldInspectionService
+from .world_inspection import register_world_inspection_tools
 from .tool_catalog import top_level_tool_descriptors
 from .task_board import TaskBoardBucket
 from .task_board import TaskBoardItem
@@ -269,6 +272,7 @@ __all__ = [
     "ToolRouter",
     "ToolResult",
     "ToolSpec",
+    "WorldInspectionService",
     "apply_sqlite_migrations",
     "build_agent_step_context",
     "build_conversation_projection",
@@ -289,6 +293,7 @@ __all__ = [
     "register_subagent_tools",
     "register_task_board_tools",
     "register_lane_tools",
+    "register_world_inspection_tools",
     "run_teammate_loop",
     "run_agent_harness_loop",
     "sandbox_image_record",
@@ -296,4 +301,5 @@ __all__ = [
     "teammate_role_for_task_kind",
     "teammate_tool_descriptors",
     "top_level_tool_descriptors",
+    "world_tool_descriptors",
 ]

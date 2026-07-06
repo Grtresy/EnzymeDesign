@@ -383,6 +383,29 @@ def test_scheduler_runtime_failure_records_last_error() -> None:
     assert failed.last_error == "Focused task required for wakeup."
 
 
+def test_terminal_task_stale_signal_is_consumed_without_runtime_failure() -> None:
+    model_factory = FinishingModelFactory()
+    repositories, context = _build_context(model_factory=model_factory)
+    task = repositories.tasks.get("task_0")
+    assert task is not None
+    repositories.tasks.save(replace(task, status=TaskStatus.COMPLETED))
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_scheduler", max_signals=1)
+
+    signal = repositories.runtime_signals.get("sig_0")
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
+    assert outcomes[0].teammate_status == "stale_signal_ignored"
+    assert "already completed" in outcomes[0].summary
+    assert signal is not None
+    assert signal.status is AgentRuntimeSignalStatus.COMPLETED
+    assert signal.error_message is None
+    assert model_factory.invoker.calls == 0
+
+
 def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

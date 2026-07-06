@@ -4,13 +4,11 @@ import json
 
 import pytest
 
-from openzyme_domain import ArtifactKind
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
-from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskPriority
@@ -305,7 +303,7 @@ def test_task_board_can_filter_and_select_tasks_by_lane() -> None:
     assert next_task.task_id == "task_lane"
 
 
-def test_research_task_cannot_complete_before_required_structure_artifact() -> None:
+def test_research_task_finish_does_not_hardcode_structure_artifact_gate() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="researcher")
@@ -347,38 +345,10 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
         actor_role="researcher",
     )
 
-    missing = registry.dispatch(
-        context,
-        ToolInvocation(
-            call_id="call_missing_structure",
-            tool_name="task.finish",
-            arguments={
-                "task_id": "task_research",
-                "status": "completed",
-                "summary": "Research complete.",
-            },
-            task_id="task_research",
-        ),
-    )
-    repositories.artifacts.save(
-        SessionArtifactRecord(
-            artifact_id="art_structure",
-            session_id=session.session_id,
-            task_id="task_research",
-            lane_id=None,
-            invocation_id=None,
-            run_id=None,
-            kind=ArtifactKind.STRUCTURE,
-            storage_uri="/tmp/structure.pdb",
-            relative_path="structure.pdb",
-            created_at="2026-04-17T10:02:00+00:00",
-            title="structure.pdb",
-        )
-    )
     completed = registry.dispatch(
         context,
         ToolInvocation(
-            call_id="call_has_structure",
+            call_id="call_complete_without_structure",
             tool_name="task.finish",
             arguments={
                 "task_id": "task_research",
@@ -389,10 +359,8 @@ def test_research_task_cannot_complete_before_required_structure_artifact() -> N
         ),
     )
 
-    assert missing.ok is False
-    assert missing.error_code == "required_structure_artifact_missing"
-    assert "rcsb_pdb.download_structure" in missing.hint
     assert completed.ok is True
+    assert "rcsb_pdb.download_structure" not in (completed.hint or "")
 
 
 def test_task_finish_requires_failed_and_blocked_details() -> None:

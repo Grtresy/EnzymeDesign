@@ -121,6 +121,54 @@ def test_json_payload_repositories_tolerate_json_null_payload_rows() -> None:
     assert repositories.engine_documents.get("doc_null_payload").payload == {}
 
 
+def test_repositories_reject_invalid_domain_enum_status_values() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+
+    invalid_session = Session(
+        session_id="sess_invalid",
+        project_id="proj_001",
+        title="Invalid",
+        objective="Reject invalid enum values.",
+        status=None,  # type: ignore[arg-type]
+        created_at="2026-07-05T10:00:00+00:00",
+        updated_at="2026-07-05T10:00:00+00:00",
+    )
+    try:
+        repositories.sessions.save(invalid_session)
+    except ValueError as exc:
+        assert "Session.status must be SessionStatus" in str(exc)
+    else:
+        raise AssertionError("expected invalid Session.status to be rejected")
+
+    session = Session.create(
+        "sess_valid",
+        "proj_001",
+        "Valid",
+        "Reject invalid task statuses.",
+    )
+    repositories.sessions.save(session)
+    invalid_task = Task(
+        task_id="task_invalid_status",
+        session_id=session.session_id,
+        subject="Invalid",
+        description="Reject invalid task status.",
+        status="completed",  # type: ignore[arg-type]
+        priority=TaskPriority.NORMAL,
+        kind="general",
+        assigned_ref=None,
+        created_at="2026-07-05T10:01:00+00:00",
+        updated_at="2026-07-05T10:01:00+00:00",
+    )
+    try:
+        repositories.tasks.save(invalid_task)
+    except ValueError as exc:
+        assert "Task.status must be TaskStatus" in str(exc)
+    else:
+        raise AssertionError("expected invalid Task.status to be rejected")
+
+
 def test_core_repositories_persist_v3_control_plane_records() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

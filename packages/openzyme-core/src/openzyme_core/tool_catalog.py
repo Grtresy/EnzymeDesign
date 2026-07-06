@@ -352,6 +352,49 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
     )
 
 
+def world_tool_descriptors() -> tuple[ToolDescriptor, ...]:
+    return (
+        ToolDescriptor(
+            tool_name="world.inspect",
+            description=(
+                "Inspect structured session world facts for the current agent step, including task board, "
+                "agents, inbox, runtime signals, artifacts, capabilities, controlled operations, approvals, "
+                "outcomes, diagnostics, tool schemas, route policies, approval requirements, and input constraints. "
+                "This tool returns facts and constraints only; it does not recommend next actions or decide task completion."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "session",
+                                "tasks",
+                                "agents",
+                                "inbox",
+                                "runtime_signals",
+                                "artifacts",
+                                "capabilities",
+                                "operations",
+                                "approvals",
+                                "outcomes",
+                                "diagnostics",
+                                "affordances",
+                            ],
+                        },
+                    },
+                    "task_id": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+
 class _RuntimeDescriptorCollector:
     def __init__(self) -> None:
         self.runtimes: dict[str, ToolRuntime] = {}
@@ -607,6 +650,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             description="List lanes and their assigned work.",
             input_schema={"type": "object", "properties": {}, "additionalProperties": False},
         ),
+        *world_tool_descriptors(),
         *artifact_tool_descriptors(),
         *sandbox_tool_descriptors(),
         ToolDescriptor(
@@ -665,4 +709,5 @@ __all__ = [
     "engine_tool_descriptors",
     "sandbox_tool_descriptors",
     "top_level_tool_descriptors",
+    "world_tool_descriptors",
 ]

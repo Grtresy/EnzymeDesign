@@ -497,6 +497,18 @@ class AgentRuntimeService:
                 summary=summary,
                 teammate_status="task_blocked",
             )
+        if task.status.is_terminal:
+            summary = (
+                f"Stale wakeup ignored because task {task.task_id} is already "
+                f"{task.status.value}."
+            )
+            return self._complete_stale_signal(
+                claimed,
+                agent,
+                task,
+                summary=summary,
+                teammate_status="stale_signal_ignored",
+            )
         if claimed.reason is AgentRuntimeSignalReason.TASK_AVAILABLE:
             if task.status is not TaskStatus.TODO:
                 return self._fail_ready_gate(
@@ -624,6 +636,46 @@ class AgentRuntimeService:
             ok=False,
             summary=summary,
             teammate_status=teammate_status,
+        )
+
+    def _complete_stale_signal(
+        self,
+        claimed: AgentRuntimeSignal,
+        agent: AgentMember,
+        task: Task,
+        *,
+        summary: str,
+        teammate_status: str,
+    ) -> AgentRuntimeOutcome:
+        completed, signal_write_ok = self._complete_signal(claimed)
+        updated_agent = self._update_agent(
+            agent,
+            status=AgentMemberStatus.IDLE,
+            correlation_id=claimed.correlation_id,
+            wakeup_reason=claimed.reason.value,
+            runtime_state="idle",
+            idle_since=utc_now_iso(),
+        )
+        self.context.emit(
+            "signal.stale_consumed",
+            {
+                "signal_id": completed.signal_id,
+                "agent_id": completed.agent_id,
+                "task_id": task.task_id,
+                "task_status": task.status.value,
+            },
+        )
+        return AgentRuntimeOutcome(
+            signal=completed,
+            task=task,
+            agent=updated_agent,
+            ok=signal_write_ok,
+            summary=summary
+            if signal_write_ok
+            else "session runtime lease fencing rejected; stale signal write was not applied",
+            teammate_status=teammate_status
+            if signal_write_ok
+            else "stale_signal_write_rejected",
         )
 
     def _signal_lease_claim_kwargs(self) -> dict[str, Any]:

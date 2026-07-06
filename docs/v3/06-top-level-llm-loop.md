@@ -102,6 +102,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - `task.list`
 - `task.next`
 - `task.delegate`
+- `world.inspect`
 - `memory.compact`
 - `docs.search`
 - `docs.read`
@@ -109,6 +110,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 默认使用原则：
 
 - 顶层模型优先通过 `task.*` 与 `delegation` 相关工具编排内部工作
+- 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
 - `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。`task.update` 保留为普通字段编辑和非终态状态迁移。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
@@ -131,6 +133,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
 - approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.finish` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
 - `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `outcome_unconsumed` / `capability_outcome_ready` 都不能自动写 task terminal state。terminal capability outcome 只作为 evidence 和 wakeup source；业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
+- `world.inspect` 可把 `workspace.runtime_state`、pending approval、paused/blocked/outcome-ready、controlled operation 与 engine invocation 对应关系聚合为模型可读事实；它不能替代 `task.finish`，也不能把查询结果解释为固定下一步。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 

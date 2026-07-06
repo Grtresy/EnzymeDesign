@@ -2205,6 +2205,19 @@ def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:
     assert expected <= teammate_names
 
 
+def test_master_and_teammate_catalogs_expose_world_inspection_tool() -> None:
+    master_descriptor = next(
+        tool for tool in top_level_tool_descriptors() if tool.tool_name == "world.inspect"
+    )
+    reporter_names = {
+        tool.tool_name for tool in teammate_tool_descriptors(role="reporter")
+    }
+
+    assert "world.inspect" in reporter_names
+    assert "does not recommend next actions" in master_descriptor.description
+    assert "sections" in master_descriptor.input_schema["properties"]
+
+
 def test_master_and_teammate_prompts_do_not_request_host_paths() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
