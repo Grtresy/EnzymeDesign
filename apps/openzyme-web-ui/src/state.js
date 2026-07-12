@@ -408,9 +408,17 @@ export function upsertSessionSummary(sessionSummaries, summary) {
   return next;
 }
 
+function initialProjectId() {
+  if (typeof window === "undefined") {
+    return "proj_001";
+  }
+  const params = new URLSearchParams(window.location.search);
+  return params.get("project_id") || params.get("project") || "proj_001";
+}
+
 export function buildInitialViewState() {
   return {
-    currentProjectId: "proj_001",
+    currentProjectId: initialProjectId(),
     currentSessionId: "",
     currentSection: "conversation",
     selectedTeammateAgentId: "",

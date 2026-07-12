@@ -105,7 +105,7 @@ https://mp.weixin.qq.com/s/sqHF3d3l5PX3VOs0Mtwk3A
   - 统一失败语义
 
   不应该让 MCP 工具直接变成“agent 想怎么调用就怎么调用”。
-
+#
   最不该学的是：
 
   - 不要学 Biomni 的高权限默认执行。它自己也提醒会用完整系统权限执行 LLM 生成代码。
@@ -136,3 +136,7 @@ https://mp.weixin.qq.com/s/nMRaj4aCY8DPqFC3pcItDg
 ## 论文想法
 
 从领域知识出发，对比不同形式的领域知识对最后设计效果的影响。
+
+## 分析一下openzyme现在暴露给agent的工具，学习参考 @references/codex 里面的设计，我们的工具是不是过于冗余复杂了？我在考虑进行简化以降低agent的心智负担
+
+## agent 应保留策略自由；harness 要把世界的真实约束忠实、结构化、低摩擦地呈现出来。
