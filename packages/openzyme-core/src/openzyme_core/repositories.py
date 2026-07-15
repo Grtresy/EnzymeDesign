@@ -1036,6 +1036,81 @@ class CommandReceiptRecord:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SessionAccessRecord:
+    session_id: str
+    principal_id: str
+    access_role: str
+    created_at: str
+
+
+@dataclass(slots=True)
+class SessionAccessRepository:
+    connection: sqlite3.Connection
+
+    def save(self, record: SessionAccessRecord) -> SessionAccessRecord:
+        _require_session_exists(self.connection, record.session_id)
+        if not record.principal_id.startswith("user:"):
+            raise ValueError("session access principal_id must start with 'user:'")
+        if record.access_role not in {"owner", "collaborator", "viewer"}:
+            raise ValueError(f"unsupported session access role: {record.access_role}")
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO session_access_records (
+                    session_id, principal_id, access_role, created_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id, principal_id) DO UPDATE SET
+                    access_role = excluded.access_role
+                """,
+                (
+                    record.session_id,
+                    record.principal_id,
+                    record.access_role,
+                    record.created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise OwnershipError(
+                f"session {record.session_id!r} already has a different owner"
+            ) from exc
+        _commit(self.connection)
+        stored = self.get(record.session_id, record.principal_id)
+        if stored is None:
+            raise RuntimeError("session access write did not produce a stored record")
+        return stored
+
+    def get(self, session_id: str, principal_id: str) -> SessionAccessRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT * FROM session_access_records
+            WHERE session_id = ? AND principal_id = ?
+            """,
+            (session_id, principal_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return SessionAccessRecord(
+            session_id=str(row["session_id"]),
+            principal_id=str(row["principal_id"]),
+            access_role=str(row["access_role"]),
+            created_at=str(row["created_at"]),
+        )
+
+    def list_session_ids(self, principal_id: str, *, project_id: str) -> tuple[str, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT access.session_id
+            FROM session_access_records AS access
+            JOIN sessions ON sessions.session_id = access.session_id
+            WHERE access.principal_id = ? AND sessions.project_id = ?
+            ORDER BY access.session_id
+            """,
+            (principal_id, project_id),
+        ).fetchall()
+        return tuple(str(row["session_id"]) for row in rows)
+
+
 @dataclass(slots=True)
 class DurableEventRepository:
     connection: sqlite3.Connection
@@ -5168,6 +5243,7 @@ class ResearchGapRepository:
 @dataclass(slots=True)
 class CoreRepositories:
     sessions: SessionRepository
+    session_access: SessionAccessRepository
     tasks: TaskRepository
     lanes: LaneRepository
     lane_events: LaneLifecycleEventRepository
@@ -5241,6 +5317,7 @@ class CoreRepositories:
     def from_connection(cls, connection: sqlite3.Connection) -> "CoreRepositories":
         return cls(
             sessions=SessionRepository(connection),
+            session_access=SessionAccessRepository(connection),
             tasks=TaskRepository(connection),
             lanes=LaneRepository(connection),
             lane_events=LaneLifecycleEventRepository(connection),

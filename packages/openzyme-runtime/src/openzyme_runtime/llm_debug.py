@@ -8,15 +8,41 @@ from datetime import UTC
 from datetime import datetime
 from itertools import count
 import os
+import re
 from threading import Lock
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 
 DEFAULT_LLM_DEBUG_MAX_RECORDS = 500
+DEFAULT_LLM_DEBUG_MAX_STRING_LENGTH = 16_000
+
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "credential",
+    "password",
+    "secret",
+)
+_PRIVATE_LOCATION_KEY_PARTS = (
+    "filesystem_path",
+    "host_path",
+    "remote_run_dir",
+    "storage_uri",
+)
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_KEY_VALUE_SECRET_PATTERN = re.compile(
+    r"(?i)\b(api[_-]?key|token|password|secret)\s*([=:])\s*[^\s&,;]+"
+)
+_URL_CREDENTIAL_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
+_HOST_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9._-])/(?:home|root|tmp|var|opt)/[^\s\"']+")
 
 _context: ContextVar[dict[str, Any]] = ContextVar("openzyme_llm_debug_context", default={})
 
@@ -59,6 +85,50 @@ def _jsonable(value: Any) -> Any:
     if len(payload) > 1:
         return payload
     return repr(value)
+
+
+def _sanitize_string(value: str) -> str:
+    sanitized = _BEARER_PATTERN.sub("Bearer [REDACTED]", value)
+    sanitized = _KEY_VALUE_SECRET_PATTERN.sub(r"\1\2[REDACTED]", sanitized)
+    sanitized = _URL_CREDENTIAL_PATTERN.sub(r"\1[REDACTED]@", sanitized)
+    sanitized = _HOST_PATH_PATTERN.sub("[HOST_PATH]", sanitized)
+    if len(sanitized) > DEFAULT_LLM_DEBUG_MAX_STRING_LENGTH:
+        return sanitized[:DEFAULT_LLM_DEBUG_MAX_STRING_LENGTH] + "...[TRUNCATED]"
+    return sanitized
+
+
+def _sanitize_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname or ""
+        port = "" if parsed.port is None else f":{parsed.port}"
+    except ValueError:
+        return "[REDACTED_URL]"
+    if not parsed.scheme or not parsed.netloc:
+        return _sanitize_string(value)
+    return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, "", ""))
+
+
+def sanitize_llm_debug_payload(value: Any, *, key: str | None = None) -> Any:
+    normalized_key = (key or "").lower()
+    if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS) or normalized_key.endswith(
+        "_token"
+    ):
+        return "[REDACTED]"
+    if any(part in normalized_key for part in _PRIVATE_LOCATION_KEY_PARTS):
+        return "[REDACTED_LOCATION]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): sanitize_llm_debug_payload(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_llm_debug_payload(item) for item in value]
+    if isinstance(value, str):
+        if normalized_key in {"base_url", "url", "endpoint"}:
+            return _sanitize_url(value)
+        return _sanitize_string(value)
+    return value
 
 
 def serialize_llm_payload(value: Any) -> Any:
@@ -206,7 +276,7 @@ class LlmDebugSpan:
         }
         if metadata:
             record.update(serialize_llm_payload(metadata))
-        self.recorder._append(record)
+        self.recorder._append(sanitize_llm_debug_payload(record))
 
 
 _recorder = LlmDebugRecorder()

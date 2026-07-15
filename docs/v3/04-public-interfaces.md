@@ -53,7 +53,20 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，并在同一 UoW 原子写入 finish document、task row 与 durable event，commit 后 SSE 才可见。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
 
-所有 `/v3` mutation endpoint 接受 `Idempotency-Key` header。local-dev profile 当前可省略；提供时，Host 以 command type、resource scope 与 canonical request JSON 计算 digest：相同 key/digest 返回首次完成响应且不重复写入，key 相同但 digest 不同返回 `409`。shared profile 启用后该 header 与认证/actor context 一并强制。`POST /v3/sessions/{session_id}/messages` 只做本地 conversation admission 与 signal enqueue，因此使用短 write UoW；真正 provider work 只在显式 runtime drain 中发生。
+所有 `/v3` mutation endpoint 接受 `Idempotency-Key` header。`local-dev` profile 可省略；提供时，Host 以 command type、resource scope 与 canonical request JSON 计算 digest：相同 key/digest 返回首次完成响应且不重复写入，key 相同但 digest 不同返回 `409`。`shared` profile 强制该 header，缺失返回 `428`。`POST /v3/sessions/{session_id}/messages` 只做本地 conversation admission 与 signal enqueue，因此使用短 write UoW；真正 provider work 只在显式 runtime drain 中发生。
+
+### Deployment profile、认证与授权
+
+Host 只有两个显式 profile：
+
+- `local-dev`：只能 bind loopback；请求映射为固定 `user:local-dev` principal，适合单人本机开发；debug 仍默认关闭。
+- `shared`：可对外 bind，但启动时必须提供 principal 配置。所有 `/v3` 与已启用的 `/debug` 请求使用 Bearer 认证；token 进入 settings 前即转为 SHA-256 digest，不能出现在 settings repr、event、projection 或 debug record。
+
+共享部署的 principal 声明 `roles` 与允许访问的 `project_ids`。创建 session 时，Host 在同一 write UoW 中持久化唯一 owner `SessionAccessRecord`；project claim 不是 session 可见性的替代品，同 project 的其他 principal 默认也不能 list/read/mutate 该 session。admin 可在其获准 project 内做全局访问；operator 仍需 session access，且 `POST /runtime/drain` 只允许 operator/admin。不可见资源统一按 `404` 处理，避免通过 ID 探测存在性。
+
+approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提交该字段会被拒绝，canonical `approval.resolved` event 同时记录服务端 actor。lane claim 同样使用认证 principal，不信任调用方提交的 claimed identity。
+
+`/debug/*` 默认返回 `404`。显式启用后，shared profile 只允许 operator/admin，且 LLM request/response/error 在入 recorder 时已经做 secret、Bearer、credentialed URL、Host path 与长度脱敏。debug 页面与 endpoint 使用相同 gate，不存在只保护 JSON 而遗漏静态 debug UI 的旁路。
 
 默认内部 tool surface 还应包括最小 report draft 操作：
 
@@ -371,7 +384,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `agent.idle` 表示 agent 没有立即可执行工作，LLM loop 已停止，但 agent identity、inbox 与 status 继续保留
 - `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
 - `runtime.session_locked` 表示某个 session 当前由另一个 runtime owner 持有推进权；manual drain / background tick 必须尊重该状态
-- `runtime.lease_heartbeat_failed` / `runtime.lease_lost` 表示当前 scheduler 无法继续证明 session ownership；payload 只暴露 lease/fencing/worker identity 与安全 error type，不暴露数据库路径或内部异常全文
+- `runtime.lease_heartbeat_failed` / `runtime.lease_lost` 表示当前 scheduler 无法继续证明 session ownership；payload 只暴露非凭据型 fencing/worker identity 与安全 error type，不暴露 lease token、数据库路径或内部异常全文
 - `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果
 - `runtime.consistency.warning` / `runtime.state_attention` 是只读诊断事件；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed
 

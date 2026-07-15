@@ -107,7 +107,7 @@ def _manual_debug_drain_until_report(
             _log_phase(f"approving V3 approval {approval['approval_id']}")
             resolved = client.post(
                 f"/v3/approvals/{approval['approval_id']}/resolve",
-                json={"decision": "approved", "actor_ref": "seeded_live_smoke"},
+                json={"decision": "approved"},
             )
             _raise_for_status_with_body(resolved, step="resolve_v3_approval")
             continue

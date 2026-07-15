@@ -134,7 +134,6 @@ class AgentRuntimeScheduler:
                                     {
                                         "signal_id": signal.signal_id,
                                         "attempted_status": "failed",
-                                        "session_lease_token": session_lease.lease_token,
                                         "session_fencing_token": session_lease.fencing_token,
                                         "worker_id": self.worker_id,
                                     },
@@ -281,7 +280,6 @@ class AgentRuntimeScheduler:
                     "runtime.lease_heartbeat_failed",
                     {
                         "session_id": lease.session_id,
-                        "lease_token": lease.lease_token,
                         "fencing_token": lease.fencing_token,
                         "worker_id": self.worker_id,
                         "error_type": exc.__class__.__name__,
@@ -293,7 +291,6 @@ class AgentRuntimeScheduler:
                     "runtime.lease_lost",
                     {
                         "session_id": lease.session_id,
-                        "lease_token": lease.lease_token,
                         "fencing_token": lease.fencing_token,
                         "worker_id": self.worker_id,
                     },

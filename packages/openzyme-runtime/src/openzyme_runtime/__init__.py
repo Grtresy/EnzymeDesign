@@ -115,6 +115,7 @@ from .settings import DEFAULT_OPENAI_COMPAT_USER_AGENT
 from .settings import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from .settings import ExecutionSettings
 from .settings import HostApiSettings
+from .settings import HostApiPrincipalSettings
 from .settings import HostCliSettings
 from .settings import LiveLlmTestSettings
 from .settings import LimiterSettings
@@ -185,6 +186,7 @@ __all__ = [
     "ExecutionSettings",
     "get_settings",
     "HostApiSettings",
+    "HostApiPrincipalSettings",
     "HostCliSettings",
     "HpcCatalogEntrySummary",
     "HpcCatalogProvider",

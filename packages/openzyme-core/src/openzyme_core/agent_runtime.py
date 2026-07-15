@@ -711,9 +711,9 @@ class AgentRuntimeService:
                 "agent_id": signal.agent_id,
                 "attempted_status": attempted_status,
                 "current_status": signal.status.value,
-                "signal_session_lease_token": signal.session_lease_token,
+                "signal_has_session_lease": signal.session_lease_token is not None,
                 "signal_session_fencing_token": signal.session_fencing_token,
-                "worker_session_lease_token": None if lease is None else lease.lease_token,
+                "worker_has_session_lease": lease is not None,
                 "worker_session_fencing_token": None if lease is None else lease.fencing_token,
             },
         )

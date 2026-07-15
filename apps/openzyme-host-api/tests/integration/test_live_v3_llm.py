@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from openzyme_runtime.live_testing import LiveStageTimeout
 from openzyme_runtime.live_testing import derive_live_stage_timeout_seconds
 from openzyme_host_api import HostApiDependencies
+from openzyme_host_api import HostSecurityPolicy
 from openzyme_host_api import create_app
 from openzyme_host_api.evals import run_v3_live_evals
 from openzyme_host_api.foundation import build_configured_foundation
@@ -86,6 +87,11 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm() -> None:
     app = create_app(
         HostApiDependencies(
             foundation=foundation,
+            security_policy=HostSecurityPolicy(
+                deployment_profile="local-dev",
+                principals_by_digest={},
+                debug_enabled=True,
+            ),
             v3_background_runtime_enabled=True,
         )
     )

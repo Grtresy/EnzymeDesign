@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import create_app
+from openzyme_host_api.security import HostSecurityPolicy
 from openzyme_host_api.foundation import apply_live_llm_test_budget
 from openzyme_host_api.foundation import build_configured_foundation
 from openzyme_runtime import get_settings
@@ -76,7 +77,7 @@ def _poll_until_product_path_quiescent(
             log_live_phase(f"approving V3 approval {approval['approval_id']}")
             resolved = client.post(
                 f"/v3/approvals/{approval['approval_id']}/resolve",
-                json={"decision": "approved", "actor_ref": "live_e2e"},
+                json={"decision": "approved"},
             )
             _raise_for_status_with_body(resolved, step="resolve_v3_approval")
             time.sleep(1.0)
@@ -157,8 +158,13 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
     session_id = "sess_live_v3_e2e"
     with TestClient(
         create_app(
-            HostApiDependencies(
-                foundation=foundation,
+        HostApiDependencies(
+            foundation=foundation,
+            security_policy=HostSecurityPolicy(
+                deployment_profile="local-dev",
+                principals_by_digest={},
+                debug_enabled=True,
+            ),
                 v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
             )

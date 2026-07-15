@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 from typing import Any
 from typing import Protocol
+from uuid import uuid4
 
 import httpx
 
@@ -49,23 +50,30 @@ class HostApiClient:
         self,
         base_url: str,
         *,
+        auth_token: str | None = None,
         session: SessionProtocol | None = None,
     ) -> None:
         self._owns_session = session is None
         self._session = session or httpx.Client(base_url=base_url.rstrip("/"), timeout=30.0)
         self._base_url = base_url.rstrip("/")
+        self._auth_token = auth_token
 
     def close(self) -> None:
         if self._owns_session:
             self._session.close()
 
     def _request_json(self, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> Any:
+        headers: dict[str, str] = {}
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
+        if method != "GET":
+            headers["Idempotency-Key"] = f"cli-{uuid4().hex}"
         if method == "GET":
-            response = self._session.get(path)
+            response = self._session.get(path, headers=headers)
         elif method == "PATCH":
-            response = self._session.patch(path, json=json_body)
+            response = self._session.patch(path, json=json_body, headers=headers)
         else:
-            response = self._session.post(path, json=json_body)
+            response = self._session.post(path, json=json_body, headers=headers)
         if response.status_code >= 400:
             raise HostApiError(response.status_code, _normalize_error_text(response))
         return response.json()

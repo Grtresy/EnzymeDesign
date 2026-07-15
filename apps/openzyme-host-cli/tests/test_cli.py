@@ -9,14 +9,17 @@ from openzyme_runtime import reset_settings_cache
 class FakeSession:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, object | None]] = []
+        self.last_headers: dict[str, str] = {}
 
     def get(self, url: str, **kwargs):
+        self.last_headers = dict(kwargs.get("headers") or {})
         self.calls.append(("GET", url, None))
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
             return FakeResponse(200, build_v3_workspace())
         return FakeResponse(200, [])
 
     def post(self, url: str, **kwargs):
+        self.last_headers = dict(kwargs.get("headers") or {})
         self.calls.append(("POST", url, kwargs.get("json")))
         return FakeResponse(
             200,
@@ -30,6 +33,7 @@ class FakeSession:
         )
 
     def patch(self, url: str, **kwargs):
+        self.last_headers = dict(kwargs.get("headers") or {})
         self.calls.append(("PATCH", url, kwargs.get("json")))
         return FakeResponse(
             200,
@@ -99,6 +103,7 @@ def build_v3_workspace() -> dict[str, object]:
 def test_cli_uses_env_defaults_and_wires_session_create(monkeypatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENZYME_PROJECT_ID", "proj_001")
+    monkeypatch.setenv("OPENZYME_HOST_AUTH_TOKEN", "cli-secret-token")
     stdout = StringIO()
     stderr = StringIO()
     session = FakeSession()
@@ -117,6 +122,8 @@ def test_cli_uses_env_defaults_and_wires_session_create(monkeypatch) -> None:
         {"project_id": "proj_001", "objective": "Design an artifact workspace"},
     )
     assert "Session sess_001" in stdout.getvalue()
+    assert session.last_headers["Authorization"] == "Bearer cli-secret-token"
+    assert session.last_headers["Idempotency-Key"].startswith("cli-")
     reset_settings_cache()
 
 

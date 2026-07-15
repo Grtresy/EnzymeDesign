@@ -75,6 +75,7 @@ V3 的产品主语义是：
 - `capability engines` 被 harness 按需调用
 - `report draft` 作为可恢复、可修订、可发布的中间交付物
 - `workspace projection` 统一对外暴露当前状态
+- 显式 `local-dev` / `shared` deployment profile，以及持久化 session ownership
 
 V3 里不再要求所有产品动作都投射为顶层 phase。
 
@@ -99,6 +100,7 @@ V3 里不再要求所有产品动作都投射为顶层 phase。
 - 提供统一 API / streaming / projection
 - 将用户动作与 control-plane 变化转换为 agent wakeup signal
 - 为 UI / CLI 提供 canonical workspace snapshot
+- 在 shared profile 执行 Bearer AuthN、project allowlist、session owner/collaborator AuthZ、operator command gate 与服务端 actor attribution
 
 不负责：
 

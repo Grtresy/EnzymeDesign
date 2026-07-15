@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from functools import lru_cache
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -366,6 +367,7 @@ class HostCliSettings:
     base_url: str
     project_id: str | None
     output_format: str
+    auth_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "HostCliSettings":
@@ -373,20 +375,115 @@ class HostCliSettings:
             base_url=os.getenv("OPENZYME_HOST_BASE_URL", DEFAULT_HOST_BASE_URL),
             project_id=os.getenv("OPENZYME_PROJECT_ID") or None,
             output_format=os.getenv("OPENZYME_OUTPUT_FORMAT", "text"),
+            auth_token=os.getenv("OPENZYME_HOST_AUTH_TOKEN") or None,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class HostApiPrincipalSettings:
+    principal_id: str
+    token_sha256: str = field(repr=False)
+    roles: frozenset[str]
+    project_ids: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
 class HostApiSettings:
     bind_host: str
     bind_port: int
+    deployment_profile: str = "local-dev"
+    principals: tuple[HostApiPrincipalSettings, ...] = ()
+    debug_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        if self.deployment_profile not in {"local-dev", "shared"}:
+            raise ValueError(
+                "OPENZYME_HOST_DEPLOYMENT_PROFILE must be 'local-dev' or 'shared'"
+            )
+        if self.deployment_profile == "local-dev" and self.bind_host not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
+            raise ValueError(
+                "local-dev Host API must bind to a loopback address; use the "
+                "shared profile for a remotely reachable service"
+            )
+        if self.deployment_profile == "shared" and not self.principals:
+            raise ValueError(
+                "shared Host API requires OPENZYME_HOST_AUTH_PRINCIPALS_JSON"
+            )
+        principal_ids = [item.principal_id for item in self.principals]
+        token_digests = [item.token_sha256 for item in self.principals]
+        if len(principal_ids) != len(set(principal_ids)):
+            raise ValueError("Host API principal_id values must be unique")
+        if len(token_digests) != len(set(token_digests)):
+            raise ValueError("Host API bearer tokens must be unique")
 
     @classmethod
     def from_env(cls) -> "HostApiSettings":
+        deployment_profile = os.getenv(
+            "OPENZYME_HOST_DEPLOYMENT_PROFILE", "local-dev"
+        ).strip()
         return cls(
             bind_host=os.getenv("OPENZYME_HOST_API_HOST", DEFAULT_HOST_API_BIND_HOST),
             bind_port=_parse_int(os.getenv("OPENZYME_HOST_API_PORT"), DEFAULT_HOST_API_BIND_PORT),
+            deployment_profile=deployment_profile,
+            principals=_parse_host_api_principals(
+                os.getenv("OPENZYME_HOST_AUTH_PRINCIPALS_JSON")
+            ),
+            debug_enabled=_parse_bool(
+                os.getenv("OPENZYME_HOST_DEBUG_ENABLED"), default=False
+            ),
         )
+
+
+def _parse_host_api_principals(
+    value: str | None,
+) -> tuple[HostApiPrincipalSettings, ...]:
+    if value in {None, ""}:
+        return ()
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        raise ValueError("OPENZYME_HOST_AUTH_PRINCIPALS_JSON must be a JSON array")
+    principals: list[HostApiPrincipalSettings] = []
+    valid_roles = {"user", "operator", "admin"}
+    for index, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(f"Host API principal at index {index} must be an object")
+        principal_id = str(item.get("principal_id") or "").strip()
+        token = str(item.get("token") or "")
+        roles_raw = item.get("roles")
+        projects_raw = item.get("project_ids")
+        if len(principal_id) <= len("user:") or not principal_id.startswith("user:"):
+            raise ValueError(
+                "Host API principal_id must be non-empty and start with 'user:'"
+            )
+        if len(token) < 32:
+            raise ValueError("Host API bearer tokens must contain at least 32 characters")
+        if token != token.strip() or any(char.isspace() for char in token):
+            raise ValueError("Host API bearer tokens cannot contain whitespace")
+        if not isinstance(roles_raw, list) or not roles_raw:
+            raise ValueError("Host API principal roles must be a non-empty array")
+        if not isinstance(projects_raw, list) or not projects_raw:
+            raise ValueError("Host API principal project_ids must be a non-empty array")
+        roles = frozenset(str(role).strip() for role in roles_raw)
+        project_ids = frozenset(str(project_id).strip() for project_id in projects_raw)
+        if not roles <= valid_roles:
+            raise ValueError(
+                f"unsupported Host API principal role: {sorted(roles - valid_roles)[0]}"
+            )
+        if "" in project_ids:
+            raise ValueError("Host API principal project_ids cannot contain empty values")
+        principals.append(
+            HostApiPrincipalSettings(
+                principal_id=principal_id,
+                token_sha256=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                roles=roles,
+                project_ids=project_ids,
+            )
+        )
+    return tuple(principals)
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +690,7 @@ __all__ = [
     "DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API",
     "ExecutionSettings",
     "HostApiSettings",
+    "HostApiPrincipalSettings",
     "HostCliSettings",
     "LiveLlmTestSettings",
     "LimiterSettings",

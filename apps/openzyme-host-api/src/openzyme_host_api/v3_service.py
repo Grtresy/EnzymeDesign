@@ -254,6 +254,8 @@ class V3HostApiService:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = session_id or _new_id("sess")
+        if self.repositories.sessions.get(resolved_session_id) is not None:
+            raise ValueError(f"session {resolved_session_id!r} already exists")
         session = Session.create(
             session_id=resolved_session_id,
             project_id=project_id,
@@ -619,7 +621,6 @@ class V3HostApiService:
                 "status": "locked",
                 "owner_id": exc.active_lease.owner_id,
                 "mode": exc.active_lease.mode.value,
-                "lease_token": exc.active_lease.lease_token,
                 "fencing_token": exc.active_lease.fencing_token,
                 "expires_at": exc.active_lease.expires_at,
                 "retry_after_seconds": exc.retry_after_seconds,
@@ -888,20 +889,20 @@ class V3HostApiService:
                 )
             raise ValueError(f"approval {approval_id!r} is not pending")
         events: list[dict[str, Any]] = []
+        resolved_event = _event(
+            "approval.resolved",
+            approval.session_id,
+            {
+                "approval_id": approval_id,
+                "decision": decision,
+                "actor_ref": actor_ref,
+            },
+        )
+        resolved_event["actor_ref"] = actor_ref
         self._record_events(
             approval.session_id,
             events,
-            [
-                _event(
-                    "approval.resolved",
-                    approval.session_id,
-                    {
-                        "approval_id": approval_id,
-                        "decision": decision,
-                        "actor_ref": actor_ref,
-                    },
-                )
-            ],
+            [resolved_event],
         )
         resolved = self._resolve_approval_record(approval, decision=decision, actor_ref=actor_ref)
         if approval.kind == "sdk_controlled_operation":

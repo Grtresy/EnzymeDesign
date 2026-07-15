@@ -32,6 +32,7 @@ def test_migration_asset_is_available() -> None:
     agent_identity_sql = get_migration_sql("019_v3_agent_identity_fields")
     task_integrity_sql = get_migration_sql("020_v3_task_integrity")
     durable_event_sql = get_migration_sql("021_v3_durable_event_outbox")
+    access_control_sql = get_migration_sql("022_v3_session_access_control")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -69,6 +70,7 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS durable_event_records" in durable_event_sql
     assert "CREATE TABLE IF NOT EXISTS command_receipt_records" in durable_event_sql
     assert "durable_event_records_append_only_update" in durable_event_sql
+    assert "CREATE TABLE IF NOT EXISTS session_access_records" in access_control_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -91,6 +93,7 @@ def test_migration_asset_is_available() -> None:
         "019_v3_agent_identity_fields",
         "020_v3_task_integrity",
         "021_v3_durable_event_outbox",
+        "022_v3_session_access_control",
     )
 
 

@@ -129,6 +129,8 @@ from .repositories import SessionArtifactRepository
 from .repositories import SessionRuntimeLeaseAcquireResult
 from .repositories import SessionRuntimeLeaseRepository
 from .repositories import SessionRepository
+from .repositories import SessionAccessRecord
+from .repositories import SessionAccessRepository
 from .repositories import SQLiteRepositoryProvider
 from .repositories import LaneRepository
 from .repositories import TaskRepository
@@ -265,6 +267,8 @@ __all__ = [
     "SessionReportRepository",
     "SessionRuntimeLeaseAcquireResult",
     "SessionRuntimeLeaseRepository",
+    "SessionAccessRecord",
+    "SessionAccessRepository",
     "SQLiteSchemaMismatchError",
     "RestoreFocus",
     "ResumeDecision",

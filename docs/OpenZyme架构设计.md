@@ -16,6 +16,8 @@
 语义。旧 `episode + phase graph` 产品面、接口、包和规格已经从主线删除；新产品行为不再以
 `intake -> design -> report_review` 作为顶层真状态，也不再维护双栈兼容入口。
 
+部署边界采用显式双 profile：`local-dev` 只允许 loopback 且使用固定本地 principal；`shared` 必须配置 Bearer principal、project allowlist 与 role，并以 SQLite `SessionAccessRecord` 保存 session owner/access 真状态。共享模式的 mutation 强制 `Idempotency-Key`，approval/lane actor 由 Host 认证结果确定；debug 默认关闭，启用后仍要求 operator/admin 且只返回脱敏记录。近期运行边界仍是单进程、file-backed SQLite，不把该 profile 设计误称为多进程扩展已经完成。
+
 V3 稳定文档入口见：
 
 - [docs/v3/README.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/README.md)

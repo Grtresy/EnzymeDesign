@@ -1,3 +1,5 @@
+import pytest
+
 from openzyme_runtime import DEFAULT_HOST_BASE_URL
 from openzyme_runtime import DEFAULT_HOST_API_BIND_HOST
 from openzyme_runtime import DEFAULT_HOST_API_BIND_PORT
@@ -11,6 +13,7 @@ from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USER_AGENT
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
 from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import get_settings
+from openzyme_runtime import HostApiSettings
 from openzyme_runtime import reset_settings_cache
 
 
@@ -49,6 +52,10 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_RESEARCH_MAX_UNITS",
         "OPENZYME_TAVILY_TIMEOUT_SECONDS",
         "OPENZYME_HOST_BASE_URL",
+        "OPENZYME_HOST_AUTH_TOKEN",
+        "OPENZYME_HOST_DEPLOYMENT_PROFILE",
+        "OPENZYME_HOST_AUTH_PRINCIPALS_JSON",
+        "OPENZYME_HOST_DEBUG_ENABLED",
         "OPENZYME_LANGSMITH_TRACING",
         "LANGSMITH_TRACING",
         "OPENZYME_TEST_ENABLE_LIVE_LLM",
@@ -123,6 +130,8 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.limits.provider_limits == DEFAULT_PROVIDER_LIMITS
     assert settings.host_api.bind_host == DEFAULT_HOST_API_BIND_HOST
     assert settings.host_api.bind_port == DEFAULT_HOST_API_BIND_PORT
+    assert settings.host_api.deployment_profile == "local-dev"
+    assert settings.host_api.debug_enabled is False
     assert settings.v3_background_runtime.enabled is True
     assert settings.v3_background_runtime.poll_interval_seconds == 2.0
     assert settings.v3_background_runtime.max_signals_per_tick == 3
@@ -142,6 +151,17 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         settings.test.live_llm.token_ledger_path
         == str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH)
     )
+
+
+def test_host_api_profiles_fail_closed_for_unsafe_or_unconfigured_deployment() -> None:
+    with pytest.raises(ValueError, match="loopback"):
+        HostApiSettings(bind_host="0.0.0.0", bind_port=8000)
+    with pytest.raises(ValueError, match="requires"):
+        HostApiSettings(
+            bind_host="0.0.0.0",
+            bind_port=8000,
+            deployment_profile="shared",
+        )
 
 
 def test_settings_honor_env_overrides(monkeypatch) -> None:
@@ -179,6 +199,13 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_OUTPUT_FORMAT", "json")
     monkeypatch.setenv("OPENZYME_HOST_API_HOST", "0.0.0.0")
     monkeypatch.setenv("OPENZYME_HOST_API_PORT", "9000")
+    monkeypatch.setenv("OPENZYME_HOST_DEPLOYMENT_PROFILE", "shared")
+    monkeypatch.setenv(
+        "OPENZYME_HOST_AUTH_PRINCIPALS_JSON",
+        '[{"principal_id":"user:test","token":"0123456789abcdef0123456789abcdef",'
+        '"roles":["admin"],"project_ids":["proj_test"]}]',
+    )
+    monkeypatch.setenv("OPENZYME_HOST_DEBUG_ENABLED", "true")
     monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED", "false")
     monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS", "0.25")
     monkeypatch.setenv("OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK", "5")
@@ -246,6 +273,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.host_cli.output_format == "json"
     assert settings.host_api.bind_host == "0.0.0.0"
     assert settings.host_api.bind_port == 9000
+    assert settings.host_api.deployment_profile == "shared"
+    assert settings.host_api.debug_enabled is True
+    assert settings.host_api.principals[0].principal_id == "user:test"
+    assert settings.host_api.principals[0].token_sha256 != (
+        "0123456789abcdef0123456789abcdef"
+    )
     assert settings.v3_background_runtime.enabled is False
     assert settings.v3_background_runtime.poll_interval_seconds == 0.25
     assert settings.v3_background_runtime.max_signals_per_tick == 5

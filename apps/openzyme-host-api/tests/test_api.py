@@ -14,6 +14,7 @@ from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_host_api import HostApiDependencies
+from openzyme_host_api import HostSecurityPolicy
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_host_api.app import PostV3MessageRequest
@@ -78,6 +79,14 @@ from openzyme_engines import ResearchUnitPlan as EngineResearchUnitPlan
 from openzyme_engines.execution import ExecutionStartResult
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
+
+
+def _local_test_security(*, debug_enabled: bool = True) -> HostSecurityPolicy:
+    return HostSecurityPolicy(
+        deployment_profile="local-dev",
+        principals_by_digest={},
+        debug_enabled=debug_enabled,
+    )
 
 
 def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
@@ -1371,6 +1380,7 @@ def _build_client(
             create_app(
                 HostApiDependencies(
                     foundation=foundation,
+                    security_policy=_local_test_security(),
                 )
             )
         ),
@@ -1551,7 +1561,7 @@ def _wait_for_v3_background_workspace(
             approval_id = pending_approvals[0]["approval_id"]
             resolved = client.post(
                 f"/v3/approvals/{approval_id}/resolve",
-                json={"decision": "approved", "actor_ref": "background_test"},
+                json={"decision": "approved"},
             )
             assert resolved.status_code == 200, resolved.text
             resolved_approvals.append(approval_id)
@@ -1992,6 +2002,7 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
     del client
     dependencies = HostApiDependencies(
         foundation=replace(foundation, model_factory=FakeHarnessModelFactory()),
+        security_policy=_local_test_security(),
         v3_background_runtime_enabled=True,
     )
     app = create_app(dependencies)
@@ -2285,6 +2296,7 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
     model_factory = FakeEngineHarnessModelFactory()
     dependencies = HostApiDependencies(
         foundation=replace(foundation, model_factory=model_factory),
+        security_policy=_local_test_security(),
         v3_repository_provider=repository_provider,
         v3_background_runtime_enabled=True,
     )
@@ -2481,6 +2493,7 @@ def test_v3_background_runtime_debug_exposes_model_factory_disabled_reason(
     app = create_app(
         HostApiDependencies(
             foundation=foundation,
+            security_policy=_local_test_security(),
             v3_background_runtime_enabled=True,
         )
     )
@@ -3808,7 +3821,7 @@ def test_v3_engine_backed_research_execution_report_draft_loop(monkeypatch) -> N
     approval_id = pending[0]["approval_id"]
     resolved = client.post(
         f"/v3/approvals/{approval_id}/resolve",
-        json={"decision": "approved", "actor_ref": "tester"},
+        json={"decision": "approved"},
     )
     assert resolved.status_code == 200
     resolved_payload = resolved.json()
@@ -3935,11 +3948,12 @@ def test_debug_llm_calls_endpoint_lists_details_and_clears_records(monkeypatch) 
     client, foundation = _build_client(monkeypatch)
     debug_client = TestClient(
         create_app(
-            HostApiDependencies(
-                foundation=replace(
-                    foundation, model_factory=DebugRecordingModelFactory()
-                ),
-            )
+                HostApiDependencies(
+                    foundation=replace(
+                        foundation, model_factory=DebugRecordingModelFactory()
+                    ),
+                    security_policy=_local_test_security(),
+                )
         )
     )
 

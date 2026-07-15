@@ -22,4 +22,5 @@ uv --project apps/openzyme-host-cli run openzyme tasks create --session-id sess_
 The CLI resolves defaults from flags first, then environment variables:
 
 - `OPENZYME_HOST_BASE_URL`
+- `OPENZYME_HOST_AUTH_TOKEN`（shared Host 的 Bearer token；CLI 对 mutation 自动生成 `Idempotency-Key`）
 - `OPENZYME_PROJECT_ID`

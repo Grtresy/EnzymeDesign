@@ -1,5 +1,7 @@
 from .app import HostApiDependencies
 from .app import create_app
+from .security import HostPrincipal
+from .security import HostSecurityPolicy
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
 from .tracing import build_trace_metadata
@@ -17,5 +19,7 @@ __all__ = [
     "build_trace_metadata",
     "build_trace_tags",
     "create_app",
+    "HostPrincipal",
+    "HostSecurityPolicy",
     "tracing_enabled",
 ]

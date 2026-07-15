@@ -46,10 +46,19 @@ from .app import HostApiDependencies
 from .app import create_app
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
+from .security import HostSecurityPolicy
 from .tracing import workflow_trace
 
 
 FoundationBuilder = Callable[[], RuntimeFoundation]
+
+
+def _eval_security_policy() -> HostSecurityPolicy:
+    return HostSecurityPolicy(
+        deployment_profile="local-dev",
+        principals_by_digest={},
+        debug_enabled=True,
+    )
 
 
 def _message_role(message: object) -> str | None:
@@ -2612,7 +2621,7 @@ def _poll_v3_background_workspace(
         if approvals:
             resolved = client.post(
                 f"/v3/approvals/{approvals[0]['approval_id']}/resolve",
-                json={"decision": "approved", "actor_ref": "eval"},
+                json={"decision": "approved"},
             )
             resolved.raise_for_status()
             time.sleep(0.2)
@@ -2718,6 +2727,7 @@ def _run_v3_design_cutover_scenario(
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
+                security_policy=_eval_security_policy(),
                 v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
             )
@@ -2884,6 +2894,7 @@ def _run_v3_aox_hmm_prompt_scenario(
             )
         dependencies_kwargs: dict[str, Any] = {
             "foundation": foundation,
+            "security_policy": _eval_security_policy(),
             "v3_repository_provider": v3_repository_provider,
             "v3_background_runtime_enabled": True,
         }
@@ -3202,6 +3213,7 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
+                security_policy=_eval_security_policy(),
                 v3_repository_provider=build_v3_eval_repository_provider(temp_dir),
                 v3_background_runtime_enabled=True,
             )

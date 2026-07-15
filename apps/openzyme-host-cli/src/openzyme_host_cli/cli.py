@@ -92,6 +92,7 @@ def _resolve_config(args: argparse.Namespace) -> HostCliConfig:
         base_url=args.base_url or env_config.base_url,
         project_id=getattr(args, "project_id", None) or env_config.project_id,
         output_format=args.format or env_config.output_format,
+        auth_token=env_config.auth_token,
     )
 
 
@@ -117,7 +118,11 @@ def run_cli(
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     config = _resolve_config(args)
-    client = HostApiClient(config.base_url, session=session)
+    client = HostApiClient(
+        config.base_url,
+        auth_token=config.auth_token,
+        session=session,
+    )
     try:
         if args.resource == "sessions":
             if args.sessions_command == "create":

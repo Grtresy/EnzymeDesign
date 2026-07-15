@@ -26,6 +26,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "019_v3_agent_identity_fields",
     "020_v3_task_integrity",
     "021_v3_durable_event_outbox",
+    "022_v3_session_access_control",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 
@@ -42,6 +43,7 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "continuation_state_records",
         "durable_event_records",
         "command_receipt_records",
+        "session_access_records",
     }
 )
 

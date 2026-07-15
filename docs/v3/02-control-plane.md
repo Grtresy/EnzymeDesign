@@ -28,6 +28,7 @@ SQLite connection / transaction ownership：
 - WAL、foreign keys 与有限 `busy_timeout` 是固定连接配置；它们不允许跨线程复用，也不构成 command 幂等、outbox 或 lease fencing 的替代品
 - `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
 - `021_v3_durable_event_outbox` 将 durable event、command receipt 与 append-only/immutable triggers 纳入 current schema；缺少任一项同样 fail fast
+- `022_v3_session_access_control` 将 session principal/role 授权事实纳入 current schema；授权不能只存在于 API token claims、浏览器状态或 project 字符串比较
 
 ## 2. Canonical Objects
 
@@ -47,6 +48,12 @@ SQLite connection / transaction ownership：
 - `status`
 - `created_at`
 - `updated_at`
+
+#### Session access
+
+共享部署中，`SessionAccessRecord(session_id, principal_id, access_role, created_at)` 是 session 可见性与写权限的 canonical truth。每个 session 恰有一个 owner，未来可以显式增加 collaborator/viewer；同 project 不自动获得 session access。session row、owner access row、`session.created` durable event 与 command receipt 必须在一个短 write UoW 中提交或整体回滚。
+
+认证 principal 与 agent identity 是两套命名空间：外部用户使用 `user:<opaque-id>`，resident agent 使用 `agent:<role>:<opaque-id>`。审批审计、lane claim 和 user message context 使用服务端认证得到的 user principal，不能接受客户端伪造 actor。
 
 ### 2.2 Task
 

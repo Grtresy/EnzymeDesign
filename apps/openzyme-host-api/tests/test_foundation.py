@@ -308,7 +308,7 @@ def test_app_can_mount_ui_when_dist_exists(tmp_path) -> None:
 
     assert response.status_code == 307
     assert response.headers["location"] == "/ui/"
-    assert client.get("/debug").text == "<html><body>debug</body></html>"
+    assert client.get("/debug").status_code == 404
 
 
 def test_deterministic_execution_adapter_scopes_run_ids_per_session_and_call_count() -> None:

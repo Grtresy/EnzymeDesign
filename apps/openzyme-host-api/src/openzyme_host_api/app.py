@@ -20,10 +20,12 @@ from fastapi import HTTPException
 from fastapi import Header
 from fastapi import Request
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from pydantic import ConfigDict
 
 from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import LimiterRegistry
@@ -34,6 +36,9 @@ from openzyme_runtime import llm_debug_context
 from .background_runtime import RuntimeSignalNotifier
 from .background_runtime import V3BackgroundRuntimeService
 from .tracing import host_request_trace_context
+from .security import HostAuthenticationError
+from .security import HostPrincipal
+from .security import HostSecurityPolicy
 from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
 
@@ -42,6 +47,7 @@ from openzyme_core import CommandIdempotencyConflictError
 from openzyme_core import CommandReceiptRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import SessionAccessRecord
 from openzyme_engines import DeepResearchEngine
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
@@ -77,8 +83,9 @@ class DrainV3RuntimeRequest(BaseModel):
 
 
 class ResolveV3ApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     decision: str
-    actor_ref: str = "user"
 
 
 @dataclass(slots=True)
@@ -220,6 +227,7 @@ class V3ExecutionRunnerAdapter:
 @dataclass(slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
+    security_policy: HostSecurityPolicy | None = None
     v3_repository_provider: SQLiteRepositoryProvider | None = None
     # Explicit compatibility seam for thread-aware tests that still need one
     # process-local fixture connection. Production composition must use the provider.
@@ -238,6 +246,11 @@ class HostApiDependencies:
     )
 
     def __post_init__(self) -> None:
+        if self.security_policy is None:
+            settings = getattr(self.foundation, "settings", None)
+            self.security_policy = HostSecurityPolicy.from_settings(
+                None if settings is None else settings.host_api
+            )
         if (
             self.v3_repository_provider is not None
             and self.v3_legacy_repositories_for_tests is not None
@@ -362,6 +375,8 @@ class HostApiDependencies:
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, CommandIdempotencyConflictError):
@@ -433,6 +448,42 @@ def _execute_idempotent_command(
     return receipt.response
 
 
+def _request_principal(request: Request) -> HostPrincipal:
+    principal = getattr(request.state, "openzyme_principal", None)
+    if not isinstance(principal, HostPrincipal):
+        raise HTTPException(status_code=401, detail="request is not authenticated")
+    return principal
+
+
+def _require_project_access(principal: HostPrincipal, project_id: str) -> None:
+    if not principal.can_access_project(project_id):
+        raise HTTPException(status_code=404, detail="project does not exist")
+
+
+def _require_session_access(
+    service: V3HostApiService,
+    *,
+    principal: HostPrincipal,
+    security: HostSecurityPolicy,
+    session_id: str,
+) -> None:
+    session = service.repositories.sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session does not exist")
+    if not security.shared:
+        return
+    if not principal.can_access_project(session.project_id):
+        raise HTTPException(status_code=404, detail="session does not exist")
+    if principal.has_role("admin"):
+        return
+    access = service.repositories.session_access.get(
+        session_id,
+        principal.principal_id,
+    )
+    if access is None:
+        raise HTTPException(status_code=404, detail="session does not exist")
+
+
 def _sse_encode(event: dict[str, Any]) -> str:
     payload = json.dumps(event, separators=(",", ":"), sort_keys=True)
     return (
@@ -448,6 +499,13 @@ def create_app(
     ui_dist_dir: Path | None = None,
 ) -> FastAPI:
     background_runtime = _build_background_runtime_service(dependencies)
+    security = getattr(dependencies, "security_policy", None)
+    if security is None:
+        foundation = getattr(dependencies, "foundation", None)
+        settings = getattr(foundation, "settings", None)
+        security = HostSecurityPolicy.from_settings(
+            None if settings is None else settings.host_api
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
@@ -466,47 +524,123 @@ def create_app(
     @app.middleware("http")
     async def add_trace_context(request, call_next):  # type: ignore[no-untyped-def]
         with host_request_trace_context(method=request.method, path=request.url.path):
-            return await call_next(request)
+            path = request.url.path
+            is_v3 = path == "/v3" or path.startswith("/v3/")
+            is_debug = path == "/debug" or path.startswith("/debug/")
+            if is_debug and not security.debug_enabled:
+                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+            if is_v3 or is_debug:
+                try:
+                    principal = security.authenticate(request.headers.get("authorization"))
+                except HostAuthenticationError as exc:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": str(exc)},
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                if is_debug and security.shared and not principal.has_role(
+                    "operator", "admin"
+                ):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "operator role is required"},
+                    )
+                if (
+                    is_v3
+                    and security.shared
+                    and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+                    and not (request.headers.get("idempotency-key") or "").strip()
+                ):
+                    return JSONResponse(
+                        status_code=428,
+                        content={
+                            "detail": "Idempotency-Key is required for shared-profile mutations"
+                        },
+                    )
+                request.state.openzyme_principal = principal
+            response = await call_next(request)
+            response.headers["X-OpenZyme-Deployment-Profile"] = (
+                security.deployment_profile
+            )
+            return response
 
     @app.post("/v3/sessions")
     def create_v3_session(
         request: CreateV3SessionRequest,
+        http_request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(http_request)
+            _require_project_access(principal, request.project_id)
             with dependencies.v3_service_scope(mode="write") as service:
-                return _execute_idempotent_command(
-                    service,
-                    command_type="session.create",
-                    scope_ref=f"project:{request.project_id}",
-                    session_id=request.session_id,
-                    idempotency_key=idempotency_key,
-                    request_payload=request.model_dump(mode="json"),
-                    operation=lambda: service.create_session(
+                def create_owned_session() -> dict[str, Any]:
+                    result = service.create_session(
                         project_id=request.project_id,
                         objective=request.objective,
                         title=request.title,
                         session_id=request.session_id,
+                    )
+                    service.repositories.session_access.save(
+                        SessionAccessRecord(
+                            session_id=str(result["session_id"]),
+                            principal_id=principal.principal_id,
+                            access_role="owner",
+                            created_at=utc_now_iso(),
+                        )
+                    )
+                    return result
+
+                return _execute_idempotent_command(
+                    service,
+                    command_type="session.create",
+                    scope_ref=(
+                        f"principal:{principal.principal_id}:project:{request.project_id}"
                     ),
+                    session_id=request.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload=request.model_dump(mode="json"),
+                    operation=create_owned_session,
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/projects/{project_id}/sessions")
-    def list_v3_project_sessions(project_id: str) -> list[dict[str, Any]]:
+    def list_v3_project_sessions(
+        project_id: str,
+        request: Request,
+    ) -> list[dict[str, Any]]:
         try:
+            principal = _request_principal(request)
+            _require_project_access(principal, project_id)
             with dependencies.v3_service_scope(mode="read") as service:
-                return service.list_sessions(project_id)
+                sessions = service.list_sessions(project_id)
+                if not security.shared or principal.has_role("admin"):
+                    return sessions
+                allowed = set(
+                    service.repositories.session_access.list_session_ids(
+                        principal.principal_id,
+                        project_id=project_id,
+                    )
+                )
+                return [item for item in sessions if item["session_id"] in allowed]
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}")
-    def get_v3_session(session_id: str) -> dict[str, Any]:
+    def get_v3_session(session_id: str, request: Request) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 workspace = service.workspace(session_id)
                 return {"session": workspace["session"], "workspace": workspace}
         except Exception as exc:  # pragma: no cover - normalized below
@@ -516,21 +650,29 @@ def create_app(
     def post_v3_message(
         session_id: str,
         request: PostV3MessageRequest,
+        http_request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(http_request)
             # Message admission only persists conversation state and queues a
             # runtime signal; provider work belongs to the explicit drain command.
             with dependencies.v3_service_scope(mode="write") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 with llm_debug_context(
                     request_path=f"/v3/sessions/{session_id}/messages",
                     session_id=session_id,
                     task_id=request.task_id,
                     lane_id=request.lane_id,
-                    actor="user",
+                    actor=principal.principal_id,
                 ):
                     return _execute_idempotent_command(
                         service,
@@ -554,19 +696,29 @@ def create_app(
     def drain_v3_runtime(
         session_id: str,
         request: DrainV3RuntimeRequest,
+        http_request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(http_request)
+            if security.shared and not principal.has_role("operator", "admin"):
+                raise HTTPException(status_code=403, detail="operator role is required")
             # Runtime drain may call LLM/provider/runner boundaries. It owns a
             # connection, but intentionally does not hold a SQLite transaction.
             with dependencies.v3_service_scope(mode="connection") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 with llm_debug_context(
                     request_path=f"/v3/sessions/{session_id}/runtime/drain",
                     session_id=session_id,
-                    actor="scheduler",
+                    actor=principal.principal_id,
                 ):
                     return _execute_idempotent_command(
                         service,
@@ -586,9 +738,16 @@ def create_app(
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}/workspace")
-    def get_v3_workspace(session_id: str) -> dict[str, Any]:
+    def get_v3_workspace(session_id: str, request: Request) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 return service.workspace(session_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
@@ -601,9 +760,14 @@ def create_app(
         follow: bool = False,
         after_cursor: int | None = None,
     ) -> StreamingResponse:
+        principal = _request_principal(request)
         with dependencies.v3_service_scope(mode="read") as service:
-            if service.repositories.sessions.get(session_id) is None:
-                raise _as_http_error(KeyError(f"session {session_id!r} does not exist"))
+            _require_session_access(
+                service,
+                principal=principal,
+                security=security,
+                session_id=session_id,
+            )
 
         last_event_id = request.headers.get("last-event-id")
         if after_cursor is not None and last_event_id is not None:
@@ -661,14 +825,22 @@ def create_app(
     @app.post("/v3/tasks")
     def create_v3_task(
         payload: dict[str, Any],
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 session_id = str(payload.get("session_id") or "")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="task.create",
@@ -685,16 +857,24 @@ def create_app(
     def update_v3_task(
         task_id: str,
         payload: dict[str, Any],
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 task = service.repositories.tasks.get(task_id)
                 if task is None:
                     raise KeyError(f"task {task_id!r} does not exist")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=task.session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="task.update",
@@ -710,14 +890,22 @@ def create_app(
     @app.post("/v3/lanes")
     def create_v3_lane(
         payload: dict[str, Any],
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 session_id = str(payload.get("session_id") or "")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="lane.create",
@@ -734,16 +922,24 @@ def create_app(
     def claim_v3_lane(
         lane_id: str,
         payload: dict[str, Any],
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 lane = service.repositories.lanes.get(lane_id)
                 if lane is None:
                     raise KeyError(f"lane {lane_id!r} does not exist")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=lane.session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="lane.claim",
@@ -753,7 +949,7 @@ def create_app(
                     request_payload=payload,
                     operation=lambda: service.claim_lane(
                         lane_id,
-                        claimed_ref=str(payload.get("claimed_ref") or "user"),
+                        claimed_ref=principal.principal_id,
                     ),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
@@ -762,16 +958,24 @@ def create_app(
     @app.post("/v3/lanes/{lane_id}/keep")
     def keep_v3_lane(
         lane_id: str,
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 lane = service.repositories.lanes.get(lane_id)
                 if lane is None:
                     raise KeyError(f"lane {lane_id!r} does not exist")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=lane.session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="lane.keep",
@@ -787,16 +991,24 @@ def create_app(
     @app.post("/v3/lanes/{lane_id}/remove")
     def remove_v3_lane(
         lane_id: str,
+        request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
                 lane = service.repositories.lanes.get(lane_id)
                 if lane is None:
                     raise KeyError(f"lane {lane_id!r} does not exist")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=lane.session_id,
+                )
                 return _execute_idempotent_command(
                     service,
                     command_type="lane.remove",
@@ -813,32 +1025,43 @@ def create_app(
     def resolve_v3_approval(
         approval_id: str,
         request: ResolveV3ApprovalRequest,
+        http_request: Request,
         idempotency_key: str | None = Header(
             default=None,
             alias="Idempotency-Key",
         ),
     ) -> dict[str, Any]:
         try:
+            principal = _request_principal(http_request)
             with dependencies.v3_service_scope(mode="write") as service:
+                approval = service.repositories.approvals.get(approval_id)
+                if approval is None:
+                    raise KeyError(f"approval {approval_id!r} does not exist")
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=approval.session_id,
+                )
                 with llm_debug_context(
                     request_path=f"/v3/approvals/{approval_id}/resolve",
                     approval_id=approval_id,
-                    actor=request.actor_ref,
+                    actor=principal.principal_id,
                 ):
-                    approval = service.repositories.approvals.get(approval_id)
-                    if approval is None:
-                        raise KeyError(f"approval {approval_id!r} does not exist")
                     return _execute_idempotent_command(
                         service,
                         command_type="approval.resolve",
                         scope_ref=f"approval:{approval_id}",
                         session_id=approval.session_id,
                         idempotency_key=idempotency_key,
-                        request_payload=request.model_dump(mode="json"),
+                        request_payload={
+                            **request.model_dump(mode="json"),
+                            "actor_ref": principal.principal_id,
+                        },
                         operation=lambda: service.resolve_approval(
                             approval_id,
                             decision=request.decision,
-                            actor_ref=request.actor_ref,
+                            actor_ref=principal.principal_id,
                         ).to_dict(),
                     )
         except Exception as exc:  # pragma: no cover - normalized below
