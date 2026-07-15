@@ -51,6 +51,8 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `POST /v3/lanes/{lane_id}/keep`
 - `POST /v3/lanes/{lane_id}/remove`
 
+task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，原子写入 finish document 与 task row，commit 后才投影 events。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
+
 默认内部 tool surface 还应包括最小 report draft 操作：
 
 - `report_draft.get`
@@ -216,7 +218,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `artifact.create_text` 创建不可变 Python pipeline source artifact，并写入 SHA-256 `content_digest` 与 version 1 lineage metadata；只接受安全 `.py` basename，不接受 Host path 或目录路径。它是兼容/直接 catalog 编辑面，不是 executor 在 persistent sandbox 中日常 authoring 的主路径
 - `artifact.patch_text` 基于 `base_artifact_id + base_content_digest + content` 创建新的不可变源码版本；digest 不匹配、非 code artifact、非法文件名、非 UTF-8 或超限内容必须返回结构化 tool error，不得覆盖旧 artifact。它保留为受控源码版本工具，不替代 sandbox file CRUD
 - `artifact.diff_text` 返回两个 Python pipeline source artifact/version 之间的 bounded unified diff，结果只包含安全 artifact 投影和 digest
-- `artifacts.materialize` 通过 catalog 授权把 artifact 显式复制或映射到 executor sandbox；返回 sandbox-safe path，不返回 Host `storage_uri`；同一 artifact digest、target path 和 mode 幂等复用，目标路径 digest 冲突结构化失败，`target` 必须位于 `/workspace/input`
+- `artifacts.materialize` 通过 catalog 授权把 artifact 显式复制或映射到 executor sandbox；返回 sandbox-safe path，不返回 Host `storage_uri`；Host 必须验证 catalog 声明 digest、实际 sealed Blob、复制后 target 三者一致，并在复制后复核 source 未漂移；同一 artifact digest、target path 和 mode 幂等复用，目标或 Blob digest 冲突结构化失败，`target` 必须位于 `/workspace/input`
 - `artifacts.register` 只登记 `/workspace/output` 下的 sandbox output 或 Host-supervised fetched output；Host 在创建 visible Artifact row 前必须完成 validator、copy/seal、sealed digest recheck 和 provenance 完整性检查；同一路径不同 digest 创建不同 `artifact_id`，不覆盖旧 artifact
 - `artifacts.snapshot_code` 把 sandbox `/workspace/src` 中的 pipeline source 固化为 `ArtifactKind.CODE`；execution plan、approval、run 与 output provenance 必须引用这个快照，而不是引用可漂移的 working copy；source tree digest canonicalization 必须稳定
 - `sandbox.exec` 在同一 `sandbox_workspace_id` 下默认单活执行；active run 期间第二个 exec 和 agent-facing write/patch/delete 返回 conflict，read/list 可并发

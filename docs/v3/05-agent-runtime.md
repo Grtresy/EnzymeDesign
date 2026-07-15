@@ -140,7 +140,7 @@ sender teammate
 
 request-response protocol 统一使用 correlation id 追踪 pending、approved、rejected、completed、failed 等状态。shutdown、plan review、handoff、clarification、result completion 都应复用同一套 thread/read model，而不是各自发明独立消息机制。
 
-teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update` 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移工具；tool handler 必须拒绝 completed / failed / blocked / cancelled 业务出口。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
+teammate 完成、阻塞、失败或取消当前 task stage 时必须通过 `task.finish` 显式写入 task 业务出口，并在同一 correlation thread 上写 `delegation_result` 或普通 follow-up response。`task.update`、HarnessStep task update 与 Host task CRUD 保留为普通 task 字段编辑和 `todo` / `in_progress` 等非出口状态迁移；tool/service/repository 三层都必须拒绝把普通 update 用作 completed / failed / blocked / cancelled 业务出口。blocked task 保持 blocked 时允许非状态 edit，但不能再次 finish，必须先显式 resume/reopen；completed / failed / cancelled task edit fail closed。finish intent 只允许 status / updated_at / failure fields 变化，并在单个 transaction 内写 finish document 与 task row，commit 后才发送 task mutation / finished events；rollback 不得泄漏 document、terminal status 或 event。runtime 不根据 teammate loop 的 `idle`、`failed` 或 `max_steps_exceeded` 推断业务 task 已完成或失败。teammate terminal outcome 只更新 canonical state / protocol，并排队 `agent:master` wakeup；master 由 scheduler claim signal 后读取 restore context 和 `protocol.thread(correlation_id)`，再决定是否回复用户、追问 teammate、更新 task 或请求用户澄清。approval resolve 只负责写入 approval 与对应恢复状态：agent-level approval 可以排队必要 wakeup；S10 SDK controlled-operation approval 先恢复 Host-owned sandbox continuation，不能直接 drain teammate 或触发 master response turn。
 
 ### Failed Delegation Follow-up Flow
 
@@ -207,7 +207,9 @@ auto-claim 启用时也只能做窄范围机械匹配：
 
 runtime wakeup 也必须执行同一防线：`TASK_AVAILABLE` 只允许 claim `todo + unassigned + no blockers` 的 task；普通 delegation / inbox wakeup 不得把 `blocked` task 机械推进到 `in_progress`。agent-level approval resume 是例外：`APPROVAL_RESOLVED` 可以把已 assigned 给该 agent、且没有未完成 `blocked_by` 的 approval-blocked task 恢复到 `in_progress`。S10 SDK controlled-operation approval 不使用 `APPROVAL_RESOLVED` 恢复 agent turn；它恢复 blocked SDK RPC / sandbox continuation，agent 只在 `sandbox.exec` tool result 返回后继续。
 
-除 task claim 和 pending approval 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.finish` 写入。
+除 task claim、pending approval block 与 approval resume 这类已文档化机械迁移外，业务终态必须由 agent 显式 `task.finish` 写入。mechanical transition 必须调用窄范围命名 command、携带 repository mechanical intent并真实改变 status；除 status / updated_at 与 claim 所需 assigned_ref 外不得修改其它 task 字段。raw save、generic update 与 runtime recovery 不得复用该 intent。测试 fixture 若需要预置历史终态，只能显式调用 fixture seed path，该 path 不属于产品 runtime surface。
+
+task dependency 是 runtime 调度前置约束而不是 UI hint。任一 dependency mutation 都必须保持 same-session DAG；service 先返回可读 cycle path，SQLite INSERT / UPDATE triggers 再作为并发与 raw SQL 防线。检测到 cycle 或 cross-session edge 时保持原 task row 与 dependency set 不变，不创建 wakeup，也不尝试替 agent 改写依赖图。
 
 ## 6. Restore Context
 

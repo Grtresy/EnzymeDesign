@@ -18,6 +18,7 @@ SQLite schema 兼容策略：
 - `user_version` 等于当前 schema version 的库只做关键表校验后复用
 - 旧版本、未知版本、非空但 `user_version = 0` 的库 fail fast
 - Host 不做隐式 migration、自动修复、自动删除或自动备份；operator 需要手动删除旧库，或指定新的 `--v3-sqlite-db` 路径
+- `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
 
 ## 2. Canonical Objects
 
@@ -53,6 +54,11 @@ SQLite schema 兼容策略：
 - `task` 是 delegated teammate、lane、approval、engine invocation、artifact、report draft、report、protocol thread 的默认关联锚点
 - `task` 的存在意义是让内部执行和外部对话解耦：用户与 master agent 对话，内部团队围绕 task 推进工作
 - `blocked_by` 是执行闸门：下游 task 可提前创建，但在 blocker terminal 前不能被 `task.delegate`、auto-claim 或普通 wakeup 推进执行
+- `blocked_by` 同时是 canonical same-session DAG：service 写前验证 cycle path，SQLite INSERT / UPDATE triggers 拒绝跨 session edge 与任意长度的 cycle；task row 和该 task 的完整 dependency replacement 原子提交
+- generic create/edit 不能写入或跨越 business-exit status。除 pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 只能由 `task.finish` 写入；blocked task 保持 blocked 时允许描述修正、lane unbind 等非状态 edit，completed / failed / cancelled task 的 edit 则 fail closed。测试构造历史状态必须显式标记 fixture seed intent
+- 已处于任一 business-exit status 的 task 不能再次调用 `task.finish`；blocked task 必须先经显式 resume/reopen 回到 `in_progress`。finish intent 只允许改变 status、updated_at、failure_summary 与 failure_ref
+- `task.finish` 将 `task_finish` document 与 task status 写入同一 transaction，并在 commit 后才发出 canonical events；不能出现 finish document 已存在而 task 未退出，或 rollback 后仍泄漏 `task.finished` event
+- task claim、pending approval block、approval resume 是窄范围、已文档化的 mechanical commands；它们必须发生允许的 status transition，且除 status / updated_at 与 claim 必需的 assigned_ref 外不能夹带字段修改
 
 建议字段：
 
@@ -322,12 +328,13 @@ claimed --operator release--> pending
 - preprocess 生成的中间文件也是 session artifact；它们可以作为后续 execution input，但必须保留来源 artifact 与转换工具 metadata
 - `artifact.relative_path` 是 workspace-facing path，用于 UI 路径树、CLI 列表和 agent 对共享工作面的理解；它不是 Host 本地 filesystem path，也不能替代 artifact catalog 授权
 - artifact storage 采用两层模型：Host-private Blob 层按 `content_digest` / `tree_digest` 封存与去重内容；Artifact 层按不可变 `artifact_id` 记录 session/task/lane/run/invocation、kind、format、validation、producer metadata、provenance、sealed digest 与展示用 `relative_path`
+- Blob 路径只是 content-addressed locator，不是完整性证明。register 幂等复用、source snapshot 复用、materialize 读取和复制完成后都必须从实际 bytes/tree manifest 重算 digest；与 Artifact row 声明不一致时必须 fail closed、记录 quarantine/GC 原因并保留异常 Blob 供取证，绝不能以同 digest 路径存在为由跳过验证或覆盖异常内容
 - 外部 provider 下载产物进入 Artifact 层时默认必须 sealed：Host 按实际下载 bytes 记录 SHA-256 `content_digest` / `sealed_digest`、provider、external id/source locator、format、retrieved_at 与 provenance。sealed 只证明 catalog 内容不可变且可授权搬运；PDB/FASTA 内容是否满足 fpocket、docking 或其它 execution tool 的业务输入要求，由对应 capability/tool validator 单独判断
 - `storage_uri` 或后续等价 Host-private storage field 只能指向 sealed Blob/Artifact storage；不得指向 mutable sandbox `/workspace/output`、sandbox host path、runner path 或 Host repo path
 - 同一 `relative_path` 可以存在多个 artifact leaf；重复 path 不覆盖、不合并、不作为唯一键，UI/CLI 只能用 `artifact_id` 区分，并可按 created_at、version、run 或 artifact id 排序
 - executor sandbox 的 `/workspace` working copy 不是 canonical artifact store；只有 `artifacts.materialize`、`artifacts.register`、`artifacts.snapshot_code` 产生或回链的 Host-owned records 才进入 canonical workspace
 - `artifacts.register` 的 canonical visible boundary 是 Artifact row commit；validation、Blob 写入、sealed digest recheck、provenance 完整性或 row commit 任一步失败都不得创建 visible Artifact record，也不得 fallback 到 mutable workspace path
-- `artifacts.snapshot_code` 生成 `ArtifactKind.CODE` source tree snapshot，记录 `sandbox_workspace_id`、entrypoint、`source_tree_digest`、file digest manifest 和 parent snapshot；后续 run、approval、SDK operation 与 registered output provenance 必须绑定 snapshot id / digest
+- `artifacts.snapshot_code` 生成 `ArtifactKind.CODE` source tree snapshot，记录 `sandbox_workspace_id`、entrypoint、`source_tree_digest`、file digest manifest 和 parent snapshot；snapshot 必须先在同 Blob store 内构造并核对临时树，再原子安装为只读 sealed tree，后续复用仍重算 tree digest；后续 run、approval、SDK operation 与 registered output provenance 必须绑定 snapshot id / digest
 - canonical artifact 来源仍是 artifact row 的关系字段与 `metadata_json`；workspace projection 中的 `artifact.provenance` 是从这些 canonical 字段派生的展示模型，不是新的数据库字段或 migration 要求
 
 `report_draft` 建议最小字段：

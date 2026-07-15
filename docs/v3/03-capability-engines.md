@@ -209,7 +209,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 
 `openzyme_pipeline` SDK 至少提供概念能力：
 
-- `artifacts.materialize(artifact_id, target_path=None)`：把授权 artifact 显式搬入 sandbox working tree 或 input view，返回 sandbox-safe path
+- `artifacts.materialize(artifact_id, target_path=None)`：把授权 artifact 显式搬入 sandbox working tree 或 input view，返回 sandbox-safe path；Host 在复制前验证 sealed source digest、复制后验证 target digest 并再次确认 source 未漂移，任何不一致都结构化失败且不得留下 materialization record
 - `artifacts.get(artifact_id)`：读取授权 artifact 的 sandbox 视图，保留为轻量兼容入口
 - `artifacts.register(path, kind, format, metadata)`：登记 pipeline output artifact
 - `artifacts.snapshot_code(paths, entrypoint, metadata)`：把 sandbox `/workspace/src` 中的源码固化为 `ArtifactKind.CODE` 审计快照，供 plan、approval 与 run provenance 绑定
