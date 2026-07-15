@@ -17,9 +17,16 @@ def test_podman_runner_can_bind_existing_sandbox_workspace(
     def fake_run(command, **kwargs):  # noqa: ANN001, ANN202
         del kwargs
         calls.append(list(command))
+        if command[1:3] == ["image", "inspect"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="sha256:" + "a" * 64 + "\n",
+                stderr="",
+            )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("openzyme_engines.podman_sandbox.subprocess.run", fake_run)
+    monkeypatch.setattr("openzyme_engines.podman_sandbox.shutil.which", lambda binary: f"/usr/bin/{binary}")
     monkeypatch.setattr("openzyme_engines.podman_sandbox._ControlSocketServer.start", lambda self: None)
     monkeypatch.setattr("openzyme_engines.podman_sandbox._ControlSocketServer.stop", lambda self: None)
     workspace_id = "sw_existing_workspace"
@@ -41,10 +48,15 @@ def test_podman_runner_can_bind_existing_sandbox_workspace(
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert outcome.remote_run_dir == f"podman://{workspace_id}"
+    podman_run = next(command for command in calls if command[1] == "run")
     assert any(
         item == f"{workspace_root / workspace_id}:/workspace:Z"
-        for item in calls[0]
+        for item in podman_run
     )
+    assert podman_run[-1] == "sha256:" + "a" * 64
+    runtime_identity = outcome.raw_result["sandbox_runtime_identity"]
+    assert runtime_identity["image_digest"] == "sha256:" + "a" * 64
+    assert runtime_identity["pipeline_sdk_digest"].startswith("sha256:")
 
 
 def test_control_socket_materialize_copies_input_to_requested_workspace_target(

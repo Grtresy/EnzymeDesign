@@ -32,6 +32,7 @@ from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain.control_plane import utc_now_iso
+from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import S12_ROUTE_POLICIES
 
 from .artifact_boundary import ArtifactBoundaryError
@@ -123,6 +124,17 @@ def _sha256_bytes(content: bytes) -> str:
 
 def _json_digest(value: Any) -> str:
     return _sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _is_sha256_digest(value: str) -> bool:
+    prefix, separator, digest = value.partition(":")
+    if prefix != "sha256" or separator != ":" or len(digest) != 64:
+        return False
+    try:
+        int(digest, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _scrub_private_adapter_payload(value: Any) -> Any:
@@ -1650,10 +1662,55 @@ class SandboxRuntimeService:
         runtime_src = workspace_path / "sdk_src"
         if runtime_src.exists():
             shutil.rmtree(runtime_src)
-        shutil.copytree(sdk_src, runtime_src)
+        shutil.copytree(
+            sdk_src,
+            runtime_src,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
         for path in (runtime_src, *runtime_src.rglob("*")):
             path.chmod(0o755 if path.is_dir() else 0o644)
         return runtime_src
+
+    def _pipeline_sdk_digest(self) -> str:
+        sdk_src = self._local_pipeline_sdk_src()
+        if sdk_src is None:
+            raise SandboxRuntimeError(
+                "sandbox_runtime_identity_unavailable",
+                "openzyme_pipeline SDK source is not available",
+            )
+        return immutable_source_tree_digest(sdk_src)
+
+    def _sandbox_runtime_identity(
+        self,
+        workspace: SandboxWorkspaceRecord,
+        *,
+        pipeline_sdk_digest: str,
+    ) -> dict[str, str | None]:
+        immutable_image_ref: str | None = None
+        if self.execution_backend == "podman":
+            if not isinstance(workspace.image_digest, str) or not _is_sha256_digest(
+                workspace.image_digest
+            ):
+                raise SandboxRuntimeError(
+                    "sandbox_image_identity_invalid",
+                    "sandbox.exec requires a full immutable Podman image digest",
+                    hint="Register the sandbox image by resolved sha256 image id before executing.",
+                )
+            immutable_image_ref = workspace.image_digest
+        identity_without_digest: dict[str, str | None] = {
+            "execution_backend": self.execution_backend,
+            "configured_image_ref": workspace.image_ref,
+            "immutable_image_ref": immutable_image_ref,
+            "image_digest": workspace.image_digest,
+            "pipeline_sdk_digest": pipeline_sdk_digest,
+            "sandbox_protocol_version": workspace.sandbox_protocol_version,
+            "workspace_manifest_version": workspace.manifest_version,
+            "exec_policy_version": EXEC_POLICY_VERSION,
+        }
+        return {
+            **identity_without_digest,
+            "runtime_identity_digest": _json_digest(identity_without_digest),
+        }
 
     def list_files(
         self,
@@ -1900,6 +1957,11 @@ class SandboxRuntimeService:
         cwd_host = _resolve_host_path(workspace_path, cwd_public, allow_workspace_root=True)
         if not cwd_host.is_dir():
             raise SandboxRuntimeError("sandbox_path_forbidden", "cwd must be a directory under /workspace")
+        pipeline_sdk_digest = self._pipeline_sdk_digest()
+        runtime_identity = self._sandbox_runtime_identity(
+            workspace,
+            pipeline_sdk_digest=pipeline_sdk_digest,
+        )
         source_snapshot = self._snapshot_source(
             session_id=session_id,
             sandbox_workspace_id=sandbox_workspace_id,
@@ -1928,12 +1990,7 @@ class SandboxRuntimeService:
             source_tree_digest=source_snapshot["source_tree_digest"],
             status=SandboxRunStatus.QUEUED,
             changed_files_summary={},
-            compatibility={
-                "image_digest": workspace.image_digest,
-                "sandbox_protocol_version": workspace.sandbox_protocol_version,
-                "workspace_manifest_version": workspace.manifest_version,
-                "exec_policy_version": EXEC_POLICY_VERSION,
-            },
+            compatibility=runtime_identity,
             created_at=now,
             updated_at=now,
         )
@@ -1975,6 +2032,7 @@ class SandboxRuntimeService:
                 session_id=session_id,
                 sandbox_workspace_id=sandbox_workspace_id,
                 sandbox_run_id=run.sandbox_run_id,
+                expected_pipeline_sdk_digest=pipeline_sdk_digest,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
             return self._finish_run(
@@ -2300,7 +2358,14 @@ class SandboxRuntimeService:
         session_id: str,
         sandbox_workspace_id: str,
         sandbox_run_id: str,
+        expected_pipeline_sdk_digest: str,
     ) -> subprocess.CompletedProcess[str]:
+        current_sdk_digest = self._pipeline_sdk_digest()
+        if current_sdk_digest != expected_pipeline_sdk_digest:
+            raise SandboxRuntimeError(
+                "sandbox_runtime_identity_drift",
+                "openzyme_pipeline SDK source changed after sandbox run creation",
+            )
         if self.execution_backend == "local":
             return self._run_process_with_active_timeout(
                 list(argv),
@@ -2329,6 +2394,7 @@ class SandboxRuntimeService:
                     session_id=session_id,
                     sandbox_workspace_id=sandbox_workspace_id,
                     sandbox_run_id=sandbox_run_id,
+                    expected_pipeline_sdk_digest=expected_pipeline_sdk_digest,
                 ),
                 timeout_seconds=timeout_seconds,
                 sandbox_run_id=sandbox_run_id,
@@ -2426,6 +2492,7 @@ class SandboxRuntimeService:
         session_id: str,
         sandbox_workspace_id: str,
         sandbox_run_id: str,
+        expected_pipeline_sdk_digest: str,
     ) -> list[str]:
         env_args = [
             item
@@ -2452,8 +2519,18 @@ class SandboxRuntimeService:
             f"{workspace_path / 'work'}:/openzyme/work:Z",
             f"{socket_path}:/openzyme/control.sock:Z",
         ]
-        if sdk_src := self._prepare_pipeline_sdk_src(workspace_path=workspace_path):
-            mounts.append(f"{sdk_src}:/openzyme/sdk:ro,Z")
+        sdk_src = self._prepare_pipeline_sdk_src(workspace_path=workspace_path)
+        if sdk_src is None:
+            raise SandboxRuntimeError(
+                "sandbox_runtime_identity_unavailable",
+                "openzyme_pipeline SDK source is not available",
+            )
+        if immutable_source_tree_digest(sdk_src) != expected_pipeline_sdk_digest:
+            raise SandboxRuntimeError(
+                "sandbox_runtime_identity_drift",
+                "pipeline SDK source drifted during sandbox materialization",
+            )
+        mounts.append(f"{sdk_src}:/openzyme/sdk:ro,Z")
         mount_args = [item for mount in mounts for item in ("-v", mount)]
         return [
             self.podman_binary,
@@ -2475,7 +2552,7 @@ class SandboxRuntimeService:
             "-w",
             cwd_public.as_posix(),
             *env_args,
-            workspace.image_ref,
+            str(workspace.image_digest),
             *argv,
         ]
 

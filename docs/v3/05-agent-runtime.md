@@ -226,6 +226,7 @@ task dependency 是 runtime 调度前置约束而不是 UI hint。任一 depende
 - task board 中与该 role/focus 相关的任务
 - session-wide artifact catalog、report drafts、engine invocations 与 source refs 的摘要
 - executor restore context 还应包含其 persistent sandbox workspace 摘要：`sandbox_workspace_id`、最近显式 materialized artifacts、working copy dirty 状态、最近 source snapshot、最近 execution plan/run 与可检索 sandbox docs 关键词
+- `sandbox.exec` 的 canonical `SandboxRun.compatibility` 记录实际 execution backend、配置 image ref、resolved immutable image id/digest、Pipeline SDK source-tree digest、sandbox protocol/manifest/exec-policy version 与组合 `runtime_identity_digest`；adapter continuation 只能从对应 run 继承这组身份，不能由 restore context、workspace projection 或 mutable tag 重建
 - memory summary 与压缩后的 continuity notes
 
 master restore context 还必须包含最新 user message、conversation timeline、pending approvals、teammate protocol threads、task state、approval / execution / artifact / report 变化，以及每个 teammate 的 runtime status。发生 compaction 或长时间 idle 后，identity 必须重新注入，避免 agent 忘记自己是谁、负责什么、应该向谁回复。

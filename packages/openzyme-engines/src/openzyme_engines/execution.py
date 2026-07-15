@@ -3235,6 +3235,44 @@ class ExecutionEngine:
         params: dict[str, Any],
     ) -> tuple[EngineInvocation, str]:
         operation_key = self._pipeline_operation_key(method, params)
+        sandbox_run = self.repositories.sandbox_runs.get(operation.sandbox_run_id)
+        if (
+            sandbox_run is None
+            or sandbox_run.session_id != operation.session_id
+            or sandbox_run.sandbox_workspace_id != operation.sandbox_workspace_id
+        ):
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_unavailable",
+                message="Sandbox adapter operation is not linked to its originating sandbox run.",
+                hint="Execute the adapter only from a persisted sandbox run in the same session and workspace.",
+                stage="adapter_context_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"sandbox_run_id": operation.sandbox_run_id},
+            )
+        runtime_identity = dict(sandbox_run.compatibility or {})
+        required_identity_fields = {
+            "configured_image_ref",
+            "immutable_image_ref",
+            "image_digest",
+            "pipeline_sdk_digest",
+            "sandbox_protocol_version",
+            "runtime_identity_digest",
+        }
+        missing_identity_fields = sorted(required_identity_fields - set(runtime_identity))
+        if missing_identity_fields:
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_unavailable",
+                message="Originating sandbox run does not carry a complete immutable runtime identity.",
+                hint="Create a new sandbox run after resolving the image and Pipeline SDK digests.",
+                stage="adapter_context_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "sandbox_run_id": operation.sandbox_run_id,
+                    "missing_fields": missing_identity_fields,
+                },
+            )
         invocation_id = f"inv_sandbox_adapter_{operation.operation_id}"
         input_id = f"eng_in_sandbox_adapter_{hashlib.sha256(invocation_id.encode('utf-8')).hexdigest()[:20]}"
         now = utc_now_iso()
@@ -3269,6 +3307,7 @@ class ExecutionEngine:
             "approval_id": operation.approval_id,
             "sandbox_status": "running",
             "adapter_operation_id": operation.operation_id,
+            "sandbox_runtime_identity": runtime_identity,
         }
         document = self.repositories.engine_documents.get(input_id)
         if document is not None:
@@ -3586,11 +3625,31 @@ class ExecutionEngine:
                 ),
                 source_metadata=source_metadata,
             )
+        try:
+            sandbox_runtime_identity = self._resolve_sandbox_runtime_identity()
+        except PipelineSdkFailure as exc:
+            return self._fail_pipeline_start(
+                session_id=session_id,
+                task_id=task_id,
+                code_digest=code_digest,
+                inputs=pipeline_inputs,
+                invocation_id=invocation_id,
+                lane_id=lane_id,
+                idempotency_key=idempotency_key,
+                error_code=exc.error_type,
+                message=exc.message,
+                hint=exc.hint,
+                error_type=exc.error_type,
+                stage=exc.stage,
+                retryable=exc.retryable,
+                source_metadata=source_metadata,
+            )
         execution_plan = self._build_execution_plan(
             code=code,
             code_digest=code_digest,
             inputs=pipeline_inputs,
             source_metadata=source_metadata,
+            sandbox_runtime_identity=sandbox_runtime_identity,
         )
         plan_validation_error = self._validate_pipeline_plan_inputs(
             session_id=session_id,
@@ -3621,6 +3680,7 @@ class ExecutionEngine:
             "dry_run": dry_run,
             "execution_plan": execution_plan,
             "plan_digest": execution_plan["plan_digest"],
+            "sandbox_runtime_identity": sandbox_runtime_identity,
             "sdk_operation_log": execution_plan["operations"],
             "approved_operation_keys": [],
             "approved_plan_digest": None,
@@ -4143,9 +4203,32 @@ class ExecutionEngine:
         sandbox_inputs = self._resolve_artifacts(session.session_id, (*artifact_ids, *context_ids))
         if self.sandbox_runner is None:
             raise RuntimeError("pipeline sandbox runner is not configured")
-        preflight = self.sandbox_runner.preflight() if hasattr(self.sandbox_runner, "preflight") else None
-        if preflight is not None and not preflight.ok:
-            raise RuntimeError(f"pipeline sandbox preflight failed: {preflight.message}")
+        expected_runtime_identity = dict(
+            (pipeline.get("execution_plan") or {}).get("sandbox_runtime_identity") or {}
+        )
+        try:
+            current_runtime_identity = self._resolve_sandbox_runtime_identity()
+        except PipelineSdkFailure as exc:
+            return self._finalize_pipeline_sdk_failure(invocation=invocation, failure=exc)
+        if current_runtime_identity != expected_runtime_identity:
+            return self._finalize_pipeline_sdk_failure(
+                invocation=invocation,
+                failure=PipelineSdkFailure(
+                    error_type="sandbox_runtime_identity_drift",
+                    message="Sandbox image or pipeline SDK identity changed after plan creation.",
+                    hint="Create and approve a new execution plan for the current immutable runtime identity.",
+                    stage="sandbox_preflight",
+                    retryable=False,
+                    details={
+                        "expected_runtime_identity_digest": expected_runtime_identity.get(
+                            "runtime_identity_digest"
+                        ),
+                        "current_runtime_identity_digest": current_runtime_identity.get(
+                            "runtime_identity_digest"
+                        ),
+                    },
+                ),
+            )
         try:
             outcome = self.sandbox_runner.run_pipeline(
                 session_id=session.session_id,
@@ -4159,6 +4242,7 @@ class ExecutionEngine:
                     method=method,
                     params=params,
                 ),
+                expected_runtime_identity=expected_runtime_identity,
             )
         except PipelineApprovalRequired as exc:
             waiting = self.repositories.invocations.get(invocation.invocation_id) or invocation
@@ -4173,6 +4257,60 @@ class ExecutionEngine:
         if waiting is not None and waiting.status is EngineInvocationStatus.WAITING_APPROVAL:
             return ExecutionStartResult(invocation=waiting, run=None, approval=self._load_approval(waiting))
         return self._finalize_pipeline_terminal(invocation=invocation, outcome=outcome)
+
+    def _resolve_sandbox_runtime_identity(self) -> dict[str, str]:
+        if self.sandbox_runner is None or not hasattr(self.sandbox_runner, "preflight"):
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_unavailable",
+                message="Execution pipeline sandbox runtime identity is unavailable.",
+                hint="Configure a sandbox runner that resolves immutable image and SDK digests.",
+                stage="sandbox_preflight",
+                retryable=False,
+            )
+        preflight = self.sandbox_runner.preflight()
+        if not preflight.ok:
+            raise PipelineSdkFailure(
+                error_type="sandbox_preflight_failed",
+                message=str(preflight.message or "pipeline sandbox preflight failed"),
+                hint="Install and register the approved immutable sandbox image and pipeline SDK.",
+                stage="sandbox_preflight",
+                retryable=False,
+            )
+        identity = dict(getattr(preflight, "runtime_identity", None) or {})
+        required = {
+            "configured_image_ref",
+            "immutable_image_ref",
+            "image_digest",
+            "pipeline_sdk_digest",
+            "sandbox_protocol_version",
+        }
+        missing = sorted(required - set(identity))
+        if missing:
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_unavailable",
+                message="Sandbox preflight did not return a complete immutable runtime identity.",
+                hint="Resolve the image id and pipeline SDK tree digest before creating an execution plan.",
+                stage="sandbox_preflight",
+                retryable=False,
+                details={"missing_fields": missing},
+            )
+        identity_without_digest = {
+            key: str(identity[key])
+            for key in sorted(required)
+        }
+        expected_digest = "sha256:" + hashlib.sha256(
+            json.dumps(identity_without_digest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        supplied_digest = str(identity.get("runtime_identity_digest") or expected_digest)
+        if supplied_digest != expected_digest:
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_invalid",
+                message="Sandbox runtime identity digest does not match its immutable components.",
+                hint="Re-resolve the image and SDK identities; do not reuse stale preflight metadata.",
+                stage="sandbox_preflight",
+                retryable=False,
+            )
+        return {**identity_without_digest, "runtime_identity_digest": expected_digest}
 
     def _handle_pipeline_sdk_call_in_owned_scope(
         self,
@@ -4796,12 +4934,53 @@ class ExecutionEngine:
         self,
         invocation: EngineInvocation,
     ) -> ArtifactBoundaryService:
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        runtime_identity = dict(pipeline.get("sandbox_runtime_identity") or {})
+        required_identity_fields = {
+            "configured_image_ref",
+            "immutable_image_ref",
+            "image_digest",
+            "pipeline_sdk_digest",
+            "sandbox_protocol_version",
+            "runtime_identity_digest",
+        }
+        missing_identity_fields = sorted(required_identity_fields - set(runtime_identity))
+        if missing_identity_fields:
+            raise PipelineSdkFailure(
+                error_type="sandbox_runtime_identity_unavailable",
+                message="Pipeline artifact registration requires the approved sandbox runtime identity.",
+                hint="Recreate the execution plan with an immutable image and Pipeline SDK identity.",
+                stage="artifact_registration",
+                retryable=False,
+                details={"missing_fields": missing_identity_fields},
+            )
         sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
         workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         workspace_path = workspace_root / sandbox_workspace_id
         for directory in ("src", "input", "work", "output", "logs", "manifest"):
             (workspace_path / directory).mkdir(parents=True, exist_ok=True)
         workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id)
+        if workspace is not None:
+            workspace_identity = {
+                "configured_image_ref": workspace.image_ref,
+                "image_digest": workspace.image_digest,
+                "sandbox_protocol_version": workspace.sandbox_protocol_version,
+            }
+            approved_workspace_identity = {
+                key: str(runtime_identity[key]) for key in workspace_identity
+            }
+            if workspace_identity != approved_workspace_identity:
+                raise PipelineSdkFailure(
+                    error_type="sandbox_runtime_identity_drift",
+                    message="Sandbox workspace image identity differs from the approved runtime identity.",
+                    hint="Create a new execution plan or sandbox run after refreshing the workspace image.",
+                    stage="artifact_registration",
+                    retryable=False,
+                    details={
+                        "workspace_identity": workspace_identity,
+                        "approved_workspace_identity": approved_workspace_identity,
+                    },
+                )
         if workspace is None:
             now = utc_now_iso()
             member_id = f"member_{hashlib.sha256(sandbox_workspace_id.encode('utf-8')).hexdigest()[:16]}"
@@ -4830,10 +5009,10 @@ class ExecutionEngine:
                 focus_task_id=invocation.task_id,
                 focus_lane_id=invocation.lane_id,
                 status=SandboxWorkspaceStatus.READY,
-                image_ref="openzyme-pipeline-sandbox:s11-compat",
-                image_digest="sha256:s11-compat",
-                image_version="s11-compat",
-                sandbox_protocol_version="s11",
+                image_ref=str(runtime_identity["configured_image_ref"]),
+                image_digest=str(runtime_identity["image_digest"]),
+                image_version=str(runtime_identity["runtime_identity_digest"]),
+                sandbox_protocol_version=str(runtime_identity["sandbox_protocol_version"]),
                 image_compatibility=SandboxImageCompatibility.COMPATIBLE,
                 manifest_version="s11.workspace_manifest.v1",
                 volume_digest="",
@@ -4849,7 +5028,6 @@ class ExecutionEngine:
         boundary = ArtifactBoundaryService(self.repositories, workspace_root=workspace_root)
         workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id) or workspace
         if not workspace.source_code_artifact_ids:
-            pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
             source = self._reload_pipeline_source(invocation, pipeline)
             (workspace_path / "src" / "pipeline.py").write_text(source.code, encoding="utf-8")
             try:
@@ -6929,6 +7107,7 @@ class ExecutionEngine:
         runspec = dict(request.get("runspec") or {})
         metadata = dict(runspec.get("metadata") or {})
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        runtime_identity = dict(pipeline.get("sandbox_runtime_identity") or {})
         metadata.update(
             {
                 "pipeline_invocation_id": invocation.invocation_id,
@@ -6942,6 +7121,11 @@ class ExecutionEngine:
                 "hpc_workspace_id": hpc_workspace_id,
                 "stage_refs": stage_refs,
                 "declared_outputs": declared_outputs,
+                "sandbox_runtime_identity_digest": runtime_identity.get(
+                    "runtime_identity_digest"
+                ),
+                "sandbox_image_digest": runtime_identity.get("image_digest"),
+                "pipeline_sdk_digest": runtime_identity.get("pipeline_sdk_digest"),
             }
         )
         runspec["metadata"] = metadata
@@ -8619,6 +8803,7 @@ class ExecutionEngine:
         code_digest: str,
         inputs: dict[str, Any],
         source_metadata: dict[str, Any],
+        sandbox_runtime_identity: dict[str, str],
     ) -> dict[str, Any]:
         operations = self._dry_run_operation_log(code)
         approval_policy = str(inputs.get("approval_policy") or "").lower()
@@ -8783,6 +8968,7 @@ class ExecutionEngine:
         plan_without_digest = {
             "code_digest": code_digest,
             **source_metadata,
+            "sandbox_runtime_identity": sandbox_runtime_identity,
             "approval_policy": approval_policy or None,
             "artifact_reads": artifact_reads,
             "bio_operations": bio_operations,
@@ -9145,6 +9331,29 @@ class ExecutionEngine:
             inputs=inputs,
             phase="validation_error",
         )
+        existing_invocation = self._find_invocation_by_idempotency_key(
+            session_id=session_id,
+            idempotency_key=resolved_idempotency_key,
+        )
+        if existing_invocation is not None:
+            existing_payload: dict[str, Any] = {}
+            if existing_invocation.output_ref is not None:
+                existing_output = self.repositories.engine_documents.get(
+                    existing_invocation.output_ref
+                )
+                if existing_output is not None:
+                    existing_payload = dict(existing_output.payload.get("pipeline") or {})
+            return ExecutionStartResult(
+                invocation=existing_invocation,
+                run=None,
+                approval=None,
+                parsed_result=ExecutionParsedResult(
+                    result_summary=str(
+                        dict(existing_payload.get("error") or {}).get("message") or message
+                    ),
+                    structured_findings=existing_payload,
+                ),
+            )
         invocation = EngineInvocation(
             invocation_id=invocation_id,
             session_id=session_id,

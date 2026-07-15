@@ -97,8 +97,8 @@ def _seed_workspace(
     assert agent.member_id is not None
     repositories.sandbox_images.save(
         sandbox_image_record(
-            image_ref="localhost/openzyme-pipeline-sandbox@sha256:s09",
-            image_digest="sha256:s09",
+            image_ref="localhost/openzyme-pipeline-sandbox@sha256:" + "9" * 64,
+            image_digest="sha256:" + "9" * 64,
         )
     )
     workspace_root = tmp_path / "workspaces"
@@ -2276,8 +2276,8 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
         argv=["python", "src/podman.py"],
     )
 
+    assert run.status is SandboxRunStatus.COMPLETED, (run.error_code, run.stderr_summary)
     command = captured["command"]
-    assert run.status is SandboxRunStatus.COMPLETED
     assert "--network=none" in command
     assert "--read-only" in command
     assert "--memory=2g" in command
@@ -2288,4 +2288,75 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     assert any(item.endswith(":/openzyme/sdk:ro,Z") for item in command)
     assert "PYTHONPATH=/openzyme/sdk" in command
     assert "/openzyme/control.sock" in " ".join(command)
-    assert command[-3:] == [workspace.image_ref, "python", "src/podman.py"]
+    assert command[-3:] == [workspace.image_digest, "python", "src/podman.py"]
+    assert run.compatibility is not None
+    assert run.compatibility["pipeline_sdk_digest"].startswith("sha256:")
+    assert run.compatibility["runtime_identity_digest"].startswith("sha256:")
+
+
+def test_sandbox_exec_podman_rejects_non_immutable_image_identity(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    repositories.sandbox_workspaces.save(
+        replace(
+            workspace,
+            image_ref="localhost/openzyme-pipeline-sandbox:mutable",
+            image_digest="sha256:short",
+        )
+    )
+    service = SandboxRuntimeService(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        execution_backend="podman",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/podman.py",
+        content="print('podman')\n",
+        create_dirs=True,
+    )
+
+    with pytest.raises(SandboxRuntimeError) as error:
+        service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/podman.py"],
+        )
+
+    assert error.value.error_code == "sandbox_image_identity_invalid"
+    assert repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id) == []
+
+
+def test_sandbox_exec_rejects_pipeline_sdk_digest_drift_before_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/drift.py",
+        content="print('must not run')\n",
+        create_dirs=True,
+    )
+    digests = iter(("sha256:" + "a" * 64, "sha256:" + "b" * 64))
+    monkeypatch.setattr(SandboxRuntimeService, "_pipeline_sdk_digest", lambda self: next(digests))
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/drift.py"],
+    )
+
+    assert run.status is SandboxRunStatus.FAILED
+    assert run.error_code == "sandbox_runtime_identity_drift"
+    assert run.compatibility is not None
+    assert run.compatibility["pipeline_sdk_digest"] == "sha256:" + "a" * 64

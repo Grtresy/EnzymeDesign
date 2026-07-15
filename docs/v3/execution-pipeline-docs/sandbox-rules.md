@@ -20,6 +20,7 @@ Rules:
 - Use sandbox file/command tools for ordinary CRUD, bash, and Python inside `/workspace`.
 - Use `artifacts.materialize` to move catalog inputs into the sandbox.
 - Use `artifacts.snapshot_code` before dry-run / execution so plans and approvals bind to an immutable source digest.
+- Treat the configured sandbox image tag as discovery metadata only. The Host binds the plan to the resolved immutable image id, the exact Pipeline SDK source-tree digest, and the sandbox protocol; it revalidates all three before execution and starts Podman by digest. Image-tag or SDK drift fails before any external operation.
 - Use `artifacts.register` for outputs that should become canonical workspace artifacts.
 - Do not read host repo paths, user home, `.ssh`, database files, or runner config.
 - Do not use SSH, Slurm, or direct network access.
@@ -28,6 +29,7 @@ Rules:
 - Do not implement approval or resume logic in pipeline code; approval-gated operations are paused and resumed by the Host supervisor through the control plane.
 - Approval resume only wakes the executor to finish the delegated task result; it does not authorize executor output to be written directly into user chat. The master reports terminal execution results.
 - Inside the sandbox, external SDK calls are Host-supervised blocking calls. The sandbox process waits while the Host handles provider requests, local tool execution, runner submission, polling, and fetched artifacts.
+- A persistent `sandbox.exec` records this runtime identity on its `SandboxRun`. Provider/tool/HPC adapter work must inherit that originating run identity; it cannot manufacture provenance from a workspace default or mutable tag.
 - `Pipeline sandbox completed` means only that the wrapper process reached a successful terminal state. It is internal run metadata, not the tool-level user result; executor-facing status/artifacts must be used to summarize fpocket, Vina, or other SDK outputs.
 - SSH/HPC runner timeouts during an active runner-backed call are classified as `hpc_runner_timeout` with a runner stage, not as sandbox startup or Podman preflight failures.
 - Workspace disk quota is a hard Host boundary. File writes and patches are rejected before replacement when their prospective size would exceed quota. After every command, the Host remeasures the whole workspace; a process or SDK write that crosses the limit ends the run as `resource_exceeded`, marks the workspace `quota_exceeded`, and blocks further execution until cleanup brings it under quota.

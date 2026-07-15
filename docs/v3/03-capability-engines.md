@@ -196,6 +196,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - sandbox 运行在 rootless Podman 容器中，默认无网络、非 root、资源受限，并按 executor/session 持久化工作目录
 - 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 container process 并挂载各自的 persistent `/workspace`；image layer 可以共享，sandbox workspace volume 不共享
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
+- `image_ref` 只用于配置与 preflight 查找。plan 创建时 Host 必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；两者连同 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
 - 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
 - sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
 - `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog
@@ -234,7 +235,7 @@ Host supervisor 负责：
 - 对 approval-gated SDK operation 创建 canonical `ApprovalRequest`，并把 pending operation 与 session/task/lane/invocation/step id 关联，供 Web UI 通过 workspace projection 展示 approval card
 - 把每个外部 backend/tool adapter 调用转换为 `packages/openzyme-tools` 的 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
 - 由 Host API composition root 实例化 `apps/mcp-hpc-runner` server 并注入 `packages/openzyme-execution` adapter；package adapter 只规范化 runner boundary 调用和输出，不直接依赖 app
-- 记录 `sandbox_workspace_id`、pipeline code digest、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按完整 operation digest 复用，digest 漂移必须重新审批或失败；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
+- 记录 `sandbox_workspace_id`、pipeline code digest、immutable image digest、Pipeline SDK digest、`runtime_identity_digest`、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按包含 runtime identity 的完整 plan/operation digest 复用，任一 digest 漂移必须重新审批或失败。persistent `sandbox.exec` 将 runtime identity 持久化到 `SandboxRun.compatibility`，其 Host adapter operation 必须从原始 run 继承 identity，不得从 workspace/tag 猜测；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
 - Provider cache 只能作为 Host-private optimization；cache key/digest 可进入 provenance，但不能作为 live cutover passed 证据。AOX/HMM live cutover 必须生成 sealed evidence bundle。
 
 ### 3.2 Pipeline SDK Docs

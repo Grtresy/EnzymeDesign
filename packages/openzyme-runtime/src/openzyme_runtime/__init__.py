@@ -33,6 +33,7 @@ from .live_token_ledger import summarize_live_micu_token_ledger
 from .provider_tools import openai_tool_from_spec
 from .provider_tools import ProviderToolAdapter
 from .provider_tools import ProviderToolCatalog
+from .runtime_identity import immutable_source_tree_digest
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
 from .artifact_boundary import ArtifactBoundaryError
@@ -235,6 +236,7 @@ __all__ = [
     "extract_llm_usage",
     "is_micu_provider_url",
     "is_retryable_llm_provider_error",
+    "immutable_source_tree_digest",
     "ResolvedLlmPolicy",
     "ResearchAdapter",
     "ResearchBriefDraft",

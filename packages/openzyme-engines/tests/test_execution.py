@@ -38,6 +38,8 @@ from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import RunStatus
 from openzyme_domain import SandboxImageCompatibility
+from openzyme_domain import SandboxRunRecord
+from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import Session
@@ -461,9 +463,29 @@ class CapturingTimeoutRunner(CapturingFailedRunner):
 
 
 class SandboxPreflight:
-    def __init__(self, ok: bool, message: str = "ok") -> None:
+    def __init__(
+        self,
+        ok: bool,
+        message: str = "ok",
+        runtime_identity: dict[str, str] | None = None,
+    ) -> None:
         self.ok = ok
         self.message = message
+        self.runtime_identity = runtime_identity
+
+
+def _test_sandbox_runtime_identity(*, suffix: str = "base") -> dict[str, str]:
+    identity = {
+        "configured_image_ref": "openzyme-pipeline-sandbox:test",
+        "immutable_image_ref": "sha256:" + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
+        "image_digest": "sha256:" + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
+        "pipeline_sdk_digest": "sha256:" + hashlib.sha256(f"sdk:{suffix}".encode()).hexdigest(),
+        "sandbox_protocol_version": "test.v1",
+    }
+    identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return identity
 
 
 class FakeHttpResponse:
@@ -488,12 +510,17 @@ class HandlerSandboxRunner:
         self.calls = 0
 
     def preflight(self) -> SandboxPreflight:
-        return SandboxPreflight(self.preflight_ok, "podman missing")
+        return SandboxPreflight(
+            self.preflight_ok,
+            "podman missing",
+            _test_sandbox_runtime_identity(),
+        )
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             _call_fpocket(control_handler)
@@ -507,6 +534,17 @@ class HandlerSandboxRunner:
         )
 
 
+class DriftingIdentitySandboxRunner(HandlerSandboxRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.preflight_calls = 0
+
+    def preflight(self) -> SandboxPreflight:
+        self.preflight_calls += 1
+        suffix = "approved" if self.preflight_calls == 1 else "drifted"
+        return SandboxPreflight(True, runtime_identity=_test_sandbox_runtime_identity(suffix=suffix))
+
+
 class BioSandboxRunner:
     def __init__(self, operations: tuple[tuple[str, dict[str, object]], ...]) -> None:
         self.operations = operations
@@ -514,12 +552,13 @@ class BioSandboxRunner:
         self.calls = 0
 
     def preflight(self) -> SandboxPreflight:
-        return SandboxPreflight(True)
+        return SandboxPreflight(True, runtime_identity=_test_sandbox_runtime_identity())
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             for method, params in self.operations:
@@ -539,10 +578,11 @@ class FetchAfterBioToolSandboxRunner(BioSandboxRunner):
         super().__init__((operation,))
         self.workspace = workspace
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             method, params = self.operations[0]
@@ -571,10 +611,11 @@ class FetchAfterEachBioToolSandboxRunner(BioSandboxRunner):
         super().__init__(operations)
         self.workspace = workspace
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             for method, params in self.operations:
@@ -603,11 +644,12 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
         super().__init__()
         self.stderr_path = stderr_path
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             _call_fpocket(control_handler)
@@ -634,10 +676,11 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
 
 
 class UnplannedHpcSandboxRunner(HandlerSandboxRunner):
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, invocation_id, code, inputs
+        assert expected_runtime_identity == _test_sandbox_runtime_identity()
         self.calls += 1
         if control_handler is not None:
             _call_vina(control_handler)
@@ -984,6 +1027,55 @@ def _seed_sandbox_adapter_workspace(repositories: CoreRepositories, sandbox_work
         )
     )
     return sandbox_workspace_id
+
+
+def _seed_sandbox_adapter_run(
+    repositories: CoreRepositories,
+    *,
+    sandbox_workspace_id: str,
+    sandbox_run_id: str,
+) -> None:
+    workspace = repositories.sandbox_workspaces.get(sandbox_workspace_id)
+    assert workspace is not None
+    assert workspace.source_code_artifact_ids
+    source_snapshot_artifact_id = workspace.source_code_artifact_ids[-1]
+    source_snapshot = repositories.artifacts.get(source_snapshot_artifact_id)
+    assert source_snapshot is not None
+    runtime_identity = {
+        "configured_image_ref": workspace.image_ref,
+        "immutable_image_ref": workspace.image_digest,
+        "image_digest": workspace.image_digest,
+        "pipeline_sdk_digest": "sha256:" + hashlib.sha256(b"adapter-sdk").hexdigest(),
+        "sandbox_protocol_version": workspace.sandbox_protocol_version,
+    }
+    runtime_identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(runtime_identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    repositories.sandbox_runs.save(
+        SandboxRunRecord(
+            sandbox_run_id=sandbox_run_id,
+            session_id="sess_001",
+            sandbox_workspace_id=sandbox_workspace_id,
+            agent_id=workspace.agent_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            argv=("python", "/workspace/src/pipeline.py"),
+            argv_digest="sha256:adapter-argv",
+            cwd="/workspace",
+            env_digest="sha256:adapter-env",
+            status=SandboxRunStatus.RUNNING,
+            source_snapshot_artifact_id=source_snapshot_artifact_id,
+            source_tree_digest=str(
+                dict(source_snapshot.metadata or {}).get("source_tree_digest")
+                or "sha256:source"
+            ),
+            changed_files_summary={},
+            compatibility=runtime_identity,
+            created_at="2026-04-20T12:00:06+00:00",
+            updated_at="2026-04-20T12:00:06+00:00",
+            started_at="2026-04-20T12:00:06+00:00",
+        )
+    )
 
 
 def _approve_request(repositories: CoreRepositories, approval: ApprovalRequest) -> None:
@@ -1539,7 +1631,11 @@ def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
         "code_duplicate_pipeline_start",
         _fpocket_pipeline_code(),
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
     registry = ToolRegistry()
     register_execution_tools(registry, engine)
     context = SessionRuntimeContext(
@@ -1620,7 +1716,7 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
         _fpocket_pipeline_code(),
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner)
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -1642,8 +1738,47 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
     assert plan["source_code_artifact_id"] == code_artifact_id
     assert plan["source_code_digest"]
     assert plan["source_code_version"] == 1
+    assert plan["sandbox_runtime_identity"] == _test_sandbox_runtime_identity()
     assert plan["hpc_operations"][0]["method"] == "structure_tools.fpocket"
     assert plan["approval_requirements"][0]["kind"] == "hpc_operation"
+
+
+def test_pipeline_rejects_runtime_identity_drift_before_sandbox_or_runner() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    sandbox = DriftingIdentitySandboxRunner()
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_runtime_identity_drift",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_runtime_identity_drift",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_runtime_identity_drift",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "sandbox_runtime_identity_drift"
+    assert error["stage"] == "sandbox_preflight"
+    assert error["details"]["expected_runtime_identity_digest"] != error["details"][
+        "current_runtime_identity_digest"
+    ]
+    assert sandbox.calls == 0
+    assert runner.payloads == []
 
 
 def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> None:
@@ -1662,7 +1797,11 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
         "code_direct_network",
         "import requests\nrequests.get('https://example.org')\n",
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
 
     dry_run = engine.start_pipeline(
         session_id="sess_001",
@@ -1719,7 +1858,11 @@ def test_pipeline_plan_counts_repeated_and_literal_bounded_sdk_calls() -> None:
         "for index in range(3):\n"
         "    bio.ncbi_fetch_proteins(accessions=[str(index)], output_dir=f'/workspace/output/bio/{index}')\n",
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
 
     repeated = engine.start_pipeline(
         session_id="sess_001",
@@ -1775,7 +1918,7 @@ def test_pipeline_plan_rejects_sdk_calls_without_static_upper_bound(body: str) -
         "from openzyme_pipeline import bio\n" + body,
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner)
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -1886,7 +2029,11 @@ def test_pipeline_dry_run_lists_bio_tool_operations_and_rejects_direct_cli() -> 
         "code_direct_shell",
         "from os import system\nsystem('mafft input.fasta')\n",
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
 
     dry_run = engine.start_pipeline(
         session_id="sess_001",
@@ -2177,6 +2324,11 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_
         resource_estimate={"network_io": True},
         idempotency_key="bio.ncbi_fetch_proteins:" + _payload_digest(params),
     )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
+    )
     engine = ExecutionEngine(
         repositories,
         ImmediateSuccessRunner(),
@@ -2282,6 +2434,11 @@ def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(tm
         resource_estimate={"network_io": True},
         idempotency_key="rcsb_pdb.download_structure:" + _payload_digest(params),
     )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
+    )
     engine = ExecutionEngine(
         repositories,
         ImmediateSuccessRunner(),
@@ -2360,6 +2517,11 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
         expected_outputs_summary={"declared_outputs": _bio_tool_outputs("bio_tools.mafft")},
         resource_estimate={"placement": "hpc", "resource_class": "hpc_batch_small"},
         idempotency_key="bio_tools.mafft:" + _payload_digest(params),
+    )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
     )
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
 
@@ -2443,6 +2605,11 @@ def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_op
         resource_estimate={"placement": "hpc", "resource_class": "hpc_batch_small"},
         planned_fetch_intent={"declared_outputs": FPOCKET_EXPECTED_OUTPUTS},
         idempotency_key="structure_tools.fpocket:" + _payload_digest(params),
+    )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
     )
     engine = ExecutionEngine(repositories, runner)
 
@@ -3675,7 +3842,7 @@ def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None
     assert "art_001" in result.parsed_result.structured_findings["error"]["hint"]
 
 
-def test_pipeline_supervisor_propagates_sandbox_preflight_failure() -> None:
+def test_pipeline_supervisor_records_sandbox_preflight_failure() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
     engine = ExecutionEngine(
@@ -3689,13 +3856,19 @@ def test_pipeline_supervisor_propagates_sandbox_preflight_failure() -> None:
         "print('hello from sandbox')\n",
     )
 
-    with pytest.raises(RuntimeError, match="sandbox preflight failed"):
-        engine.start_pipeline(
-            session_id="sess_001",
-            task_id="task_001",
-            code_artifact_id=code_artifact_id,
-            inputs={"artifact_ids": ["art_001"]},
-        )
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "sandbox_preflight_failed"
+    assert error["stage"] == "sandbox_preflight"
+    assert error["retryable"] is False
 
 
 def test_pipeline_fetch_outputs_rejects_register_parameter() -> None:
@@ -4214,6 +4387,15 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     assert provenance_artifact.metadata is not None
     assert provenance_artifact.metadata["source_code_digest"]
     assert provenance_artifact.metadata["source_code_version"] == 1
+    assert provenance_artifact.metadata["sandbox_runtime_identity_digest"] == (
+        _test_sandbox_runtime_identity()["runtime_identity_digest"]
+    )
+    assert provenance_artifact.metadata["sandbox_image_digest"] == (
+        _test_sandbox_runtime_identity()["image_digest"]
+    )
+    assert provenance_artifact.metadata["pipeline_sdk_digest"] == (
+        _test_sandbox_runtime_identity()["pipeline_sdk_digest"]
+    )
     public_status = str(status)
     assert "storage_uri" not in public_status
     assert "local_path" not in public_status
@@ -4221,6 +4403,16 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     assert "intermediate_storage_uri" not in public_status
     assert "storage_uri" not in str(resumed.parsed_result.structured_findings)
     assert len(runner.payloads) == 1
+    runtime_metadata = dict(dict(runner.payloads[0]["runspec"])["metadata"])
+    assert runtime_metadata["sandbox_runtime_identity_digest"] == _test_sandbox_runtime_identity()[
+        "runtime_identity_digest"
+    ]
+    assert runtime_metadata["sandbox_image_digest"] == _test_sandbox_runtime_identity()[
+        "image_digest"
+    ]
+    assert runtime_metadata["pipeline_sdk_digest"] == _test_sandbox_runtime_identity()[
+        "pipeline_sdk_digest"
+    ]
     assert sandbox.calls == 1
 
 

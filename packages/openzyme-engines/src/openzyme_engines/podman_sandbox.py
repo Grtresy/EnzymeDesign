@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import re
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
+from openzyme_runtime import immutable_source_tree_digest
 
 from .execution import ExecutionArtifactRef
 from .execution import ExecutionOutcome
@@ -45,6 +47,7 @@ def _ensure_within(path: Path, root: Path, *, label: str) -> Path:
 class PodmanSandboxPreflight:
     ok: bool
     message: str
+    runtime_identity: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -67,10 +70,32 @@ class PodmanPipelineSandboxRunner:
         runtime_src = root / "sdk_src"
         if runtime_src.exists():
             shutil.rmtree(runtime_src)
-        shutil.copytree(sdk_src, runtime_src)
+        shutil.copytree(
+            sdk_src,
+            runtime_src,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
         for path in (runtime_src, *runtime_src.rglob("*")):
             path.chmod(0o755 if path.is_dir() else 0o644)
         return runtime_src
+
+    def _pipeline_sdk_digest(self) -> str | None:
+        sdk_src = self._local_pipeline_sdk_src()
+        if sdk_src is None:
+            return None
+        return immutable_source_tree_digest(sdk_src)
+
+    def _inspect_image_digest(self) -> str:
+        completed = subprocess.run(
+            [self.podman_binary, "image", "inspect", "--format", "{{.Id}}", self.image],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        digest = completed.stdout.strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise RuntimeError(f"podman returned an invalid immutable image id for {self.image!r}")
+        return digest
 
     def preflight(self) -> PodmanSandboxPreflight:
         podman = shutil.which(self.podman_binary)
@@ -84,7 +109,28 @@ class PodmanPipelineSandboxRunner:
             subprocess.run([self.podman_binary, "image", "exists", self.image], check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError:
             return PodmanSandboxPreflight(False, f"sandbox image {self.image!r} is not present; run `uv run python -m openzyme_pipeline.sandbox_image build`")
-        return PodmanSandboxPreflight(True, "podman sandbox is ready")
+        try:
+            image_digest = self._inspect_image_digest()
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            return PodmanSandboxPreflight(False, str(exc))
+        sdk_digest = self._pipeline_sdk_digest()
+        if sdk_digest is None:
+            return PodmanSandboxPreflight(False, "openzyme_pipeline SDK source is not available")
+        identity_without_digest = {
+            "configured_image_ref": self.image,
+            "immutable_image_ref": image_digest,
+            "image_digest": image_digest,
+            "pipeline_sdk_digest": sdk_digest,
+            "sandbox_protocol_version": "s10",
+        }
+        identity_digest = "sha256:" + hashlib.sha256(
+            json.dumps(identity_without_digest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return PodmanSandboxPreflight(
+            True,
+            "podman sandbox is ready",
+            {**identity_without_digest, "runtime_identity_digest": identity_digest},
+        )
 
     def run_pipeline(
         self,
@@ -95,7 +141,14 @@ class PodmanPipelineSandboxRunner:
         inputs: tuple[SessionArtifactRecord, ...] = (),
         control_handler: Callable[[str, dict[str, Any]], Any] | None = None,
         sandbox_workspace_id: str | None = None,
+        expected_runtime_identity: dict[str, str] | None = None,
     ) -> ExecutionOutcome:
+        preflight = self.preflight()
+        if not preflight.ok or preflight.runtime_identity is None:
+            raise RuntimeError(preflight.message)
+        runtime_identity = dict(preflight.runtime_identity)
+        if expected_runtime_identity is not None and runtime_identity != expected_runtime_identity:
+            raise RuntimeError("sandbox runtime identity drifted after execution-plan approval")
         workspace_root = self.workspace_root.resolve()
         root_segment = _safe_host_segment(
             sandbox_workspace_id or invocation_id,
@@ -124,7 +177,6 @@ class PodmanPipelineSandboxRunner:
             artifacts=sandbox_inputs,
             control_handler=control_handler,
         )
-        server.start()
         run_id = f"podman_{uuid4().hex[:12]}"
         command = [
             self.podman_binary,
@@ -155,9 +207,15 @@ class PodmanPipelineSandboxRunner:
             "-e",
             "OPENZYME_SANDBOX_MODE=s10",
         ]
-        if sdk_src := self._prepare_pipeline_sdk_src(root=root):
-            command.extend(["-e", "PYTHONPATH=/openzyme/sdk", "-v", f"{sdk_src}:/openzyme/sdk:ro,Z"])
-        command.append(self.image)
+        sdk_src = self._prepare_pipeline_sdk_src(root=root)
+        if sdk_src is None:
+            raise RuntimeError("openzyme_pipeline SDK source is not available")
+        copied_sdk_digest = immutable_source_tree_digest(sdk_src)
+        if copied_sdk_digest != runtime_identity["pipeline_sdk_digest"]:
+            raise RuntimeError("pipeline SDK source drifted during sandbox materialization")
+        command.extend(["-e", "PYTHONPATH=/openzyme/sdk", "-v", f"{sdk_src}:/openzyme/sdk:ro,Z"])
+        command.append(runtime_identity["immutable_image_ref"])
+        server.start()
         try:
             completed = subprocess.run(
                 command,
@@ -194,6 +252,7 @@ class PodmanPipelineSandboxRunner:
                 "invocation_id": invocation_id,
                 "exit_code": completed.returncode,
                 "registered_artifact_count": len(artifacts),
+                "sandbox_runtime_identity": runtime_identity,
             },
             artifacts=(*artifacts, *log_artifacts),
             exit_code=completed.returncode,
