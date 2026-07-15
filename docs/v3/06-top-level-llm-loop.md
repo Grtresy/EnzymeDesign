@@ -113,6 +113,8 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - 顶层模型和 teammate 应优先用 `world.inspect` 读取 task、artifact、approval、operation、outcome、runtime warning、tool schema 和 route policy 等结构化事实；该工具不得提供 recommended_actions 或硬编码 workflow template
 - `task.finish` 是推荐的业务任务出口；成功调用后 harness 立即停止当前 master/teammate loop，不再执行同批后续 tool calls，也不把该 tool result 喂回模型继续探索。`task.update` 保留为普通字段编辑和非终态状态迁移。
 - 顶层模型和 teammate 需要能力用法说明时，默认通过 `docs.search` / `docs.read` 读取受控文档库，而不是通过 skill 文档把 execution 用法塞入上下文
+- 领域 SOP 不得由 prompt 关键词、task subject 或模型调用 `skill.load` 隐式激活。调用方只能通过结构化 `skill_keys` 传入完整 `workflow:<id>@<semver>#sha256:<manifest-digest>`；registry 在 provider call 前校验 manifest digest、固定 document version/digest，并在实际 teammate tool/capability surface 上验证 requirements。delegation payload 持久化同一 binding，teammate restore 时再次对照当前 registry，任何缺失或 drift 都 fail closed
+- workflow knowledge pack 只表达版本化知识、所需 capability/tool 与真实约束，不替 master/executor 选择步骤；普通用户文本即使包含 AOX、HMM、research 等词也不得改写 delegation 或隐藏可用工具
 - 顶层模型不应把用户请求直接裸翻译成 capability invocation
 - `deep_research.start` 以及迁移兼容的 execution engine start 调用默认应由 teammate loop 围绕明确的 `task_id` 发生，而不是由 master 直接调用；execution teammate 的稳定 authoring path 是 sandbox-first，不是让 master 或 executor 直接编排 `execution.pipeline.start`
 - 任一 capability tool 或其下游 SDK/supervisor 创建 pending approval 后，当前 loop 必须硬阻塞并返回 `waiting_approval`；不得继续执行同批后续 tool calls，也不得再进入下一轮 LLM planning

@@ -839,6 +839,7 @@ def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines(
                     {
                         "artifact_id": "art_private",
                         "storage_uri": "/tmp/host/private.fasta",
+                        "source_uri": "/tmp/host/runner-output.fasta",
                         "local_path": "/tmp/host/private.fasta",
                         "metadata": {
                             "source_storage_uri": "/tmp/host/source.fasta",
@@ -856,6 +857,7 @@ def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines(
     payload_text = json.dumps(workspace["capabilities"]["deep_research"])
 
     assert "storage_uri" not in payload_text
+    assert "source_uri" not in payload_text
     assert "local_path" not in payload_text
     assert "source_storage_uri" not in payload_text
     assert "intermediate_storage_uri" not in payload_text

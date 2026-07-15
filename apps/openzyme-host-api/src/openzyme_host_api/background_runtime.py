@@ -6,6 +6,8 @@ from dataclasses import field
 import inspect
 from typing import Any
 from typing import Callable
+from typing import ContextManager
+from contextlib import contextmanager
 
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import llm_debug_context
@@ -14,22 +16,25 @@ from .v3_service import V3HostApiService
 
 
 def _run_background_runtime_once_in_worker(
-    service: V3HostApiService,
+    open_service: Callable[[], ContextManager[V3HostApiService]],
     *,
     session_id: str,
     worker_id: str,
     max_signals: int,
     max_steps_per_agent: int,
 ) -> list[dict[str, Any]]:
-    result = service.run_background_runtime_once(
-        session_id=session_id,
-        worker_id=worker_id,
-        max_signals=max_signals,
-        max_steps_per_agent=max_steps_per_agent,
-    )
-    if inspect.isawaitable(result):
-        return asyncio.run(result)
-    return result
+    # The provider-backed service (and its SQLite connection) must be created
+    # inside this worker thread, not captured from the event-loop thread.
+    with open_service() as service:
+        result = service.run_background_runtime_once(
+            session_id=session_id,
+            worker_id=worker_id,
+            max_signals=max_signals,
+            max_steps_per_agent=max_steps_per_agent,
+        )
+        if inspect.isawaitable(result):
+            return asyncio.run(result)
+        return result
 
 
 @dataclass(slots=True)
@@ -69,9 +74,10 @@ class RuntimeSignalNotifier:
 
 @dataclass(slots=True)
 class V3BackgroundRuntimeService:
-    build_service: Callable[[], V3HostApiService]
+    build_service: Callable[[], V3HostApiService] | None
     notifier: RuntimeSignalNotifier
     enabled: bool
+    service_scope: Callable[[], ContextManager[V3HostApiService]] | None = None
     poll_interval_seconds: float = 2.0
     max_signals_per_tick: int = 3
     max_steps_per_agent: int = 8
@@ -87,14 +93,25 @@ class V3BackgroundRuntimeService:
     last_error: str | None = field(default=None, init=False)
     last_outcomes: list[dict[str, Any]] = field(default_factory=list, init=False)
 
+    @contextmanager
+    def _open_service(self):  # type: ignore[no-untyped-def]
+        if self.service_scope is not None:
+            with self.service_scope() as service:
+                yield service
+            return
+        if self.build_service is None:
+            raise RuntimeError("V3 background runtime service factory is not configured")
+        # Compatibility path for unit-test fakes that own no external resources.
+        yield self.build_service()
+
     def start(self) -> None:
         if not self.enabled:
             self.disabled_reason = "disabled by configuration"
             return
-        service = self.build_service()
-        if service.model_factory is None:
-            self.disabled_reason = "model_factory unavailable"
-            return
+        with self._open_service() as service:
+            if service.model_factory is None:
+                self.disabled_reason = "model_factory unavailable"
+                return
         self.disabled_reason = None
         self.notifier.bind()
         self._stop_event = asyncio.Event()
@@ -134,15 +151,17 @@ class V3BackgroundRuntimeService:
         self.last_tick_at = utc_now_iso()
         self.tick_count += 1
         self.last_error = None
-        service = self.build_service()
-        if service.model_factory is None:
-            self.disabled_reason = "model_factory unavailable"
-            self.last_outcomes = []
-            return ()
         remaining = max(0, self.max_signals_per_tick)
         outcomes: list[dict[str, Any]] = []
         try:
-            session_ids = service.repositories.runtime_signals.list_claimable_session_ids()
+            with self._open_service() as service:
+                if service.model_factory is None:
+                    self.disabled_reason = "model_factory unavailable"
+                    self.last_outcomes = []
+                    return ()
+                session_ids = (
+                    service.repositories.runtime_signals.list_claimable_session_ids()
+                )
             for session_id in session_ids:
                 if remaining <= 0:
                     break
@@ -153,7 +172,7 @@ class V3BackgroundRuntimeService:
                 ):
                     session_outcomes = await asyncio.to_thread(
                         _run_background_runtime_once_in_worker,
-                        service,
+                        self._open_service,
                         session_id=session_id,
                         worker_id=self.worker_id,
                         max_signals=remaining,

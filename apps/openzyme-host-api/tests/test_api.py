@@ -60,6 +60,7 @@ from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
 from openzyme_core import SandboxWorkspaceService
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_core import sandbox_image_record
@@ -245,6 +246,33 @@ class FakeHarnessModelFactory:
         if purpose not in self.invokers:
             self.invokers[purpose] = FakeHarnessInvoker()
         return self.invokers[purpose]
+
+
+class BlockingHarnessInvoker(FakeHarnessInvoker):
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        super().__init__()
+        self.entered = entered
+        self.release = release
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        return super().invoke_with_tools(
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+        )
+
+
+class BlockingHarnessModelFactory:
+    def __init__(self, entered: threading.Event, release: threading.Event) -> None:
+        self.invoker = BlockingHarnessInvoker(entered, release)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> BlockingHarnessInvoker:
+        assert purpose == "v3_harness_loop"
+        return self.invoker
 
 
 class PressureHarnessInvoker:
@@ -1137,7 +1165,7 @@ def _build_v3_engine_llm_client(
             create_app(
                 HostApiDependencies(
                     foundation=replace(foundation, model_factory=model_factory),
-                    v3_repositories=v3_repositories,
+                    v3_legacy_repositories_for_tests=v3_repositories,
                 )
             )
         ),
@@ -1147,7 +1175,10 @@ def _build_v3_engine_llm_client(
 
 
 def _build_v3_engine_repositories() -> CoreRepositories:
-    connection = connect_v3_sqlite(":memory:")
+    # Explicit legacy fixture: a few pure unit tests inspect one in-memory
+    # repository from both the TestClient and assertion threads. Production Host
+    # composition always uses SQLiteRepositoryProvider with thread-affine scopes.
+    connection = connect_v3_sqlite(":memory:", check_same_thread=False)
     apply_v3_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
 
@@ -1164,7 +1195,7 @@ def _build_v3_pressure_client(
             create_app(
                 HostApiDependencies(
                     foundation=replace(foundation, model_factory=model_factory),
-                    v3_repositories=v3_repositories,
+                    v3_legacy_repositories_for_tests=v3_repositories,
                 )
             )
         ),
@@ -1753,12 +1784,13 @@ def test_v3_background_runtime_processes_message_without_manual_drain(
             workspace["conversation"][1]["content"]
             == "Created task task_llm_001 and captured the goal."
         )
-        signals = [
-            signal.to_dict()
-            for signal in dependencies.v3_repositories.runtime_signals.list_by_session(
-                "sess_bg_runtime"
-            )
-        ]
+        with dependencies.v3_repository_scope(mode="read") as repositories:
+            signals = [
+                signal.to_dict()
+                for signal in repositories.runtime_signals.list_by_session(
+                    "sess_bg_runtime"
+                )
+            ]
         assert signals[0]["status"] == "completed"
         assert signals[0]["claimed_by"] == "host-api:background-runtime"
 
@@ -1926,16 +1958,94 @@ def test_v3_drain_runtime_releases_operation_lock_while_scheduler_runs() -> None
     assert result.status == "completed"
 
 
-def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_drain(
+def test_v3_blocking_provider_does_not_hold_sqlite_write_transaction(
     monkeypatch,
 ) -> None:
     client, foundation = _build_client(monkeypatch)
     del client
-    v3_repositories = _build_v3_engine_repositories()
+    entered = threading.Event()
+    release = threading.Event()
+    dependencies = HostApiDependencies(
+        foundation=replace(
+            foundation,
+            model_factory=BlockingHarnessModelFactory(entered, release),
+        )
+    )
+    drain_result: dict[str, object] = {}
+    write_result: dict[str, object] = {}
+
+    with TestClient(create_app(dependencies)) as scoped_client:
+        assert scoped_client.post(
+            "/v3/sessions",
+            json={
+                "session_id": "sess_provider_blocked",
+                "project_id": "proj_001",
+                "objective": "Block inside the provider.",
+            },
+        ).status_code == 200
+        assert scoped_client.post(
+            "/v3/sessions/sess_provider_blocked/messages",
+            json={"message": "Track this request."},
+        ).status_code == 200
+
+        drain_thread = threading.Thread(
+            target=lambda: drain_result.setdefault(
+                "response",
+                scoped_client.post(
+                    "/v3/sessions/sess_provider_blocked/runtime/drain",
+                    json={},
+                ),
+            )
+        )
+        drain_thread.start()
+        assert entered.wait(timeout=2)
+
+        write_thread = threading.Thread(
+            target=lambda: write_result.setdefault(
+                "response",
+                scoped_client.post(
+                    "/v3/sessions",
+                    json={
+                        "session_id": "sess_concurrent_short_write",
+                        "project_id": "proj_001",
+                        "objective": "Must commit while the provider is blocked.",
+                    },
+                ),
+            )
+        )
+        write_thread.start()
+        write_thread.join(timeout=1)
+        write_completed_before_provider_release = not write_thread.is_alive()
+        release.set()
+        write_thread.join(timeout=5)
+        drain_thread.join(timeout=5)
+
+    assert write_completed_before_provider_release is True
+    assert not write_thread.is_alive()
+    assert not drain_thread.is_alive()
+    assert write_result["response"].status_code == 200
+    assert drain_result["response"].status_code == 200
+
+
+def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_drain(
+    monkeypatch,
+    tmp_path: Path,
+    request,
+) -> None:
+    client, foundation = _build_client(monkeypatch)
+    del client
+    repository_provider = SQLiteRepositoryProvider(
+        str(tmp_path / "background-runtime.sqlite3")
+    )
+    repository_scope = repository_provider.connection_scope()
+    v3_repositories = repository_scope.__enter__().repositories
+    request.addfinalizer(
+        lambda: repository_scope.__exit__(None, None, None)
+    )
     model_factory = FakeEngineHarnessModelFactory()
     dependencies = HostApiDependencies(
         foundation=replace(foundation, model_factory=model_factory),
-        v3_repositories=v3_repositories,
+        v3_repository_provider=repository_provider,
         v3_background_runtime_enabled=True,
     )
     app = create_app(dependencies)
@@ -1989,12 +2099,17 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
                 "deep_research" in workspace["capabilities"]
                 and workspace["capabilities"]["deep_research"][0]["status"]
                 == "succeeded"
-                and any(
-                    item["task"]["task_id"] == "task_research_v3"
-                    and item["task"]["status"] == "completed"
-                    for item in workspace["task_board"]["items"]
-                )
-            ),
+                    and any(
+                        item["task"]["task_id"] == "task_research_v3"
+                        and item["task"]["status"] == "completed"
+                        for item in workspace["task_board"]["items"]
+                    )
+                    and any(
+                        message["role"] == "assistant"
+                        and message["content"] == "Research complete."
+                        for message in workspace["conversation"]
+                    )
+                ),
         )
         assert status["running"] is True
         assert status["worker_id"] == "host-api:background-runtime"

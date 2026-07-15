@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import hmac
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,7 @@ class DocumentRecord:
     summary: str
     tags: tuple[str, ...]
     version: str
+    content_sha256: str
     path: str
     content: str
 
@@ -26,6 +29,7 @@ class DocumentRecord:
             "summary": self.summary,
             "tags": list(self.tags),
             "version": self.version,
+            "content_sha256": self.content_sha256,
             "path": self.path,
         }
 
@@ -64,6 +68,7 @@ class DocumentRegistry:
                 summary=_extract_summary(content),
                 tags=tags,
                 version=version,
+                content_sha256=_content_sha256(content),
                 path=repo_path,
                 content=content,
             )
@@ -97,11 +102,29 @@ class DocumentRegistry:
         scored.sort(key=lambda item: (-item[0], item[1].doc_id))
         return [record for _, record in scored[: max(1, min(limit, 20))]]
 
-    def read(self, ref: str) -> DocumentRecord:
+    def read(
+        self,
+        ref: str,
+        *,
+        version: str | None = None,
+        content_sha256: str | None = None,
+    ) -> DocumentRecord:
         doc_id = self.paths.get(ref, ref)
         record = self.documents.get(doc_id)
         if record is None:
             raise ValueError(f"document {ref!r} is not registered")
+        if version is not None and record.version != version:
+            raise ValueError(
+                f"document {ref!r} version drift: expected {version!r}, "
+                f"found {record.version!r}"
+            )
+        if content_sha256 is not None and not hmac.compare_digest(
+            record.content_sha256, content_sha256
+        ):
+            raise ValueError(
+                f"document {ref!r} digest drift: expected {content_sha256!r}, "
+                f"found {record.content_sha256!r}"
+            )
         return record
 
 
@@ -137,7 +160,19 @@ def register_docs_tools(registry: ToolRegistry, document_registry: DocumentRegis
         ref = invocation.arguments.get("doc_id") or invocation.arguments.get("path")
         if not ref:
             raise ValueError("docs.read requires doc_id or path")
-        record = docs.read(str(ref))
+        record = docs.read(
+            str(ref),
+            version=(
+                None
+                if invocation.arguments.get("version") is None
+                else str(invocation.arguments["version"])
+            ),
+            content_sha256=(
+                None
+                if invocation.arguments.get("content_sha256") is None
+                else str(invocation.arguments["content_sha256"])
+            ),
+        )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -157,6 +192,11 @@ def _extract_title(content: str) -> str | None:
         if stripped.startswith("# "):
             return stripped.removeprefix("# ").strip()
     return None
+
+
+def _content_sha256(content: str) -> str:
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _extract_summary(content: str) -> str:

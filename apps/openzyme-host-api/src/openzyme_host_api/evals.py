@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -15,11 +17,11 @@ from typing import Callable
 
 from fastapi.testclient import TestClient
 from openzyme_core import CoreRepositories
-from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
-from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
+from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
@@ -120,17 +122,35 @@ def _latest_tool_payload(messages: list[object], tool_name: str) -> dict[str, ob
     return None
 
 
-def _source_artifact_ref_from_payload(payload: dict[str, object] | None) -> tuple[str, str] | None:
-    if payload is None:
-        return None
-    artifact = payload.get("artifact")
-    if not isinstance(artifact, dict):
-        return None
-    artifact_id = artifact.get("artifact_id")
-    digest = payload.get("content_digest")
-    if artifact_id is None or digest is None:
-        return None
-    return str(artifact_id), str(digest)
+def _projection_privacy_validation(
+    projection: object,
+    *,
+    forbidden_value: str,
+) -> dict[str, object]:
+    private_field_paths: list[str] = []
+    forbidden_value_paths: list[str] = []
+
+    def visit(value: object, path: str) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                child_path = f"{path}.{key}"
+                if key == "storage_uri":
+                    private_field_paths.append(child_path)
+                visit(item, child_path)
+            return
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}[{index}]")
+            return
+        if isinstance(value, str) and forbidden_value and forbidden_value in value:
+            forbidden_value_paths.append(path)
+
+    visit(projection, "$")
+    return {
+        "passed": not private_field_paths and not forbidden_value_paths,
+        "private_field_paths": sorted(set(private_field_paths)),
+        "forbidden_value_paths": sorted(set(forbidden_value_paths)),
+    }
 
 
 def _execution_start_payloads(messages: list[object]) -> list[dict[str, object]]:
@@ -658,6 +678,11 @@ S15_AOX_HMM_FIXED_PROMPT = (
     "AOX_ref.hmm, hits_raw.csv, hits_len650_700_200.csv, scored_ref_plus_hits.csv, "
     "AOX_candidates.fasta, AOX_candidates_cdhit85.fasta, nodes.csv, "
     "edges_similarity.csv, and execution_summary.json."
+)
+S15_AOX_HMM_WORKFLOW_REF = next(
+    manifest.selection_ref
+    for manifest in default_workflow_registry().list_manifests()
+    if manifest.workflow_id == "aox-hmm-live"
 )
 S15_AOX_HMM_FIXED_DELIVERABLES = {
     "aox_hmm/AOX_ref21.fasta",
@@ -1617,18 +1642,6 @@ def _s15_inline_evidence_refs(
     }
 
 
-def _aox_hmm_draft_source() -> str:
-    return (
-        "from openzyme_pipeline import bio\n\n"
-        f"AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}\n\n"
-        "reference = bio.ncbi_fetch_proteins(\n"
-        "    accessions=AOX_ACCESSIONS,\n"
-        "    output_dir='/workspace/output/bio/ncbi',\n"
-        "    fields=['definition', 'organism'],\n"
-        ")\n"
-    )
-
-
 def _aox_hmm_final_source() -> str:
     return f'''from pathlib import Path
 
@@ -1647,7 +1660,17 @@ def register_text(relative_path, content, *, kind="result", format=None, require
     artifact_metadata = dict(metadata or {{}})
     if required_columns:
         artifact_metadata["required_columns"] = list(required_columns)
-    return artifacts.register(str(target), kind=kind, format=format, metadata=artifact_metadata)
+    response = artifacts.register(
+        str(target),
+        kind=kind,
+        format=format,
+        metadata={{
+            "fixture": True,
+            "cutover_eligible": False,
+            **artifact_metadata,
+        }},
+    )
+    return response.get("artifact") or response
 
 
 def fasta_for(accessions):
@@ -1662,10 +1685,31 @@ reference = bio.ncbi_fetch_proteins(
 
 
 def artifact_id_by_suffix(result, suffix):
-    for artifact in result.get("artifacts", []):
+    artifacts = result.get("artifacts")
+    if not isinstance(artifacts, list):
+        summary = result.get("result_summary")
+        if isinstance(summary, dict):
+            artifacts = summary.get("artifacts")
+            if not isinstance(artifacts, list):
+                transcript = summary.get("transcript_manifest")
+                artifacts = (
+                    transcript.get("files", [])
+                    if isinstance(transcript, dict)
+                    else []
+                )
+        else:
+            artifacts = []
+    for artifact in artifacts:
         if str(artifact.get("relative_path", "")).endswith(suffix):
             return artifact["artifact_id"]
     raise RuntimeError(f"Missing expected artifact suffix: {{suffix}}")
+
+
+def operation_artifact_ids(result):
+    summary = result.get("result_summary")
+    transcript = summary.get("transcript_manifest") if isinstance(summary, dict) else None
+    files = transcript.get("files", []) if isinstance(transcript, dict) else []
+    return [item["artifact_id"] for item in files if item.get("artifact_id")]
 
 
 reference_fasta_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.fasta")
@@ -1751,7 +1795,10 @@ reference_fasta = register_text(
     fasta_for(AOX_ACCESSIONS),
     kind="sequence",
     format="fasta",
-    metadata={{"accession_count": len(AOX_ACCESSIONS), "provider_request_ids": reference.get("artifact_ids", [])}},
+    metadata={{
+        "accession_count": len(AOX_ACCESSIONS),
+        "provider_artifact_ids": [reference_fasta_id, reference_metadata_id],
+    }},
 )
 target_fasta = register_text(
     "target.fasta",
@@ -1826,8 +1873,10 @@ summary = {{
     "activity_score_threshold": 33.6,
     "similarity_threshold": 0.85,
     "hmmer_database": "refprot",
-    "provider_status": "ok",
-    "tool_status": "ok",
+    "provider_status": "fixture_non_cutover",
+    "tool_status": "fixture_non_cutover",
+    "fixture": True,
+    "cutover_eligible": False,
     "warning_count": 0,
     "reference_fasta_artifact_id": reference_fasta_id,
     "reference_metadata_artifact_id": reference_metadata_id,
@@ -1835,7 +1884,7 @@ summary = {{
     "alignment_artifact_ids": alignment["registered_artifact_ids"],
     "hmm_artifact_ids": hmm["registered_artifact_ids"],
     "hmmalign_artifact_ids": hmmalign["registered_artifact_ids"],
-    "hmmer_provider_artifact_ids": hmmer_provider["artifact_ids"],
+    "hmmer_provider_artifact_ids": operation_artifact_ids(hmmer_provider),
     "candidate_cdhit85_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     "derived_artifact_ids": [
         reference_fasta["artifact_id"],
@@ -1879,7 +1928,6 @@ class V3AOXHMMEvalInvoker:
         self.purpose = purpose
         self.calls = 0
         self.workflow_calls = 0
-        self._patched_source_ref: tuple[str, str] | None = None
 
     def invoke_with_tools(
         self, *, system_prompt: str, messages: list[object], tools: list[object]
@@ -1900,13 +1948,18 @@ class V3AOXHMMEvalInvoker:
                 "content": "AOX/HMM execution completed with candidate artifacts and provenance.",
                 "tool_calls": [],
             }
-        created_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.create_text"))
-        patched_ref = _source_artifact_ref_from_payload(_latest_tool_payload(messages, "artifact.patch_text"))
-        if patched_ref is not None:
-            self._patched_source_ref = patched_ref
-        diffed = any(_tool_message_name(message) == "artifact.diff_text" for message in messages)
-
-        if self.calls >= 8:
+        workspace_payload = _latest_tool_payload(
+            messages,
+            "sandbox.workspace.status",
+        )
+        source_written = any(
+            _tool_message_name(message) == "sandbox.file.write"
+            for message in messages
+        )
+        sandbox_executed = any(
+            _tool_message_name(message) == "sandbox.exec" for message in messages
+        )
+        if sandbox_executed:
             return {
                 "content": "",
                 "tool_calls": [
@@ -1921,90 +1974,35 @@ class V3AOXHMMEvalInvoker:
                     }
                 ],
             }
-        if self.calls in {5, 7} and "Existing execution pipeline invocation:" in system_prompt:
-            invocation_id = (
-                system_prompt.split("Existing execution pipeline invocation:", 1)[1]
-                .split(".", 1)[0]
-                .strip()
-            )
+        if source_written:
             return {
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "call_aox_execution_status",
-                        "name": "execution.pipeline.status",
-                        "args": {"invocation_id": invocation_id},
-                    }
-                ],
-            }
-        if self.calls >= 6 and self._patched_source_ref is not None:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_aox_execute",
-                        "name": "execution.pipeline.start",
+                        "id": "call_aox_sandbox_exec",
+                        "name": "sandbox.exec",
                         "args": {
-                            "task_id": task_id,
-                            "code_artifact_id": self._patched_source_ref[0],
-                            "inputs": {
-                                "approval_policy": "single_plan",
-                                "expected_outputs": [
-                                    {"path": path}
-                                    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES)
-                                ],
-                            },
+                            "argv": [
+                                "python",
+                                "/workspace/src/aox_hmm_pipeline.py",
+                            ],
+                            "cwd": "/workspace/src",
+                            "timeout_seconds": 120,
                         },
                     }
                 ],
             }
-        if patched_ref is not None and diffed:
+        if workspace_payload:
             return {
                 "content": "",
                 "tool_calls": [
                     {
-                        "id": "call_aox_dry_run",
-                        "name": "execution.pipeline.start",
+                        "id": "call_aox_write_source",
+                        "name": "sandbox.file.write",
                         "args": {
-                            "task_id": task_id,
-                            "code_artifact_id": patched_ref[0],
-                            "inputs": {
-                                "approval_policy": "single_plan",
-                                "expected_outputs": [
-                                    {"path": path}
-                                    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES)
-                                ],
-                            },
-                            "dry_run": True,
-                        },
-                    }
-                ],
-            }
-        if patched_ref is not None and created_ref is not None and not diffed:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_aox_diff",
-                        "name": "artifact.diff_text",
-                        "args": {
-                            "base_artifact_id": created_ref[0],
-                            "target_artifact_id": patched_ref[0],
-                        },
-                    }
-                ],
-            }
-        if created_ref is not None and patched_ref is None:
-            return {
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_aox_patch_source",
-                        "name": "artifact.patch_text",
-                        "args": {
-                            "base_artifact_id": created_ref[0],
-                            "base_content_digest": created_ref[1],
+                            "path": "/workspace/src/aox_hmm_pipeline.py",
                             "content": _aox_hmm_final_source(),
+                            "create_dirs": True,
                         },
                     }
                 ],
@@ -2013,13 +2011,9 @@ class V3AOXHMMEvalInvoker:
             "content": "",
             "tool_calls": [
                 {
-                    "id": "call_aox_create_source",
-                    "name": "artifact.create_text",
-                    "args": {
-                        "filename": "aox_hmm_pipeline.py",
-                        "title": "AOX/HMM mining pipeline",
-                        "content": _aox_hmm_draft_source(),
-                    },
+                    "id": "call_aox_workspace_status",
+                    "name": "sandbox.workspace.status",
+                    "args": {},
                 }
             ],
         }
@@ -2033,9 +2027,10 @@ class V3AOXHMMEvalInvoker:
         ):
             return {
                 "content": (
-                    "AOX/HMM mining completed. The workspace contains reference FASTA and metadata, "
-                    "CD-HIT/MAFFT/HMMER outputs, filtered and scored candidates, nodes/edges CSV, "
-                    "and an execution summary with candidate_count=5."
+                    "AOX/HMM mining completed in an explicit non-cutover fixture. The workspace "
+                    "contains reference FASTA and metadata, CD-HIT/MAFFT/HMMER fixture outputs, "
+                    "filtered and scored fixture candidates, nodes/edges CSV, and an execution "
+                    "summary with candidate_count=5. These results are not scientific evidence."
                 ),
                 "tool_calls": [],
             }
@@ -2086,8 +2081,11 @@ class V3AOXHMMEvalInvoker:
                             "task_id": "task_aox_hmm_execution",
                             "agent_role": "executor",
                             "instructions": (
-                                "Use the execution SDK docs to author an AOX/HMM pipeline from the fixed 13 accessions. "
-                                "Create a source artifact, patch it, diff it, run dry-run, then request single-plan approval before execution."
+                                "Use the explicitly selected AOX/HMM workflow knowledge pack. "
+                                "Inspect the persistent sandbox, author the source with sandbox.file.*, "
+                                "and execute it with sandbox.exec so every provider/tool operation crosses "
+                                "the Host-supervised SDK approval boundary. This local scenario is an "
+                                "explicit non-cutover fixture, not scientific evidence."
                             ),
                         },
                     }
@@ -2111,7 +2109,81 @@ class V3AOXHMMEvalModelFactory:
 
 class _AoxHmmFixturePreflight:
     ok = True
-    message = "fixture sandbox ready"
+    message = "explicit non-cutover fixture sandbox ready"
+
+
+@dataclass(slots=True)
+class AoxHmmFixtureHpcExecutionAdapter:
+    """Explicit non-cutover runner fixture for the local sandbox workflow eval."""
+
+    output_root: Path
+    call_count: int = 0
+
+    def submit_execution(
+        self,
+        session_id: str,
+        payload: dict[str, object],
+    ) -> ExecutionOutcome:
+        self.call_count += 1
+        runspec = payload.get("runspec")
+        metadata = runspec.get("metadata") if isinstance(runspec, dict) else None
+        declared_outputs = (
+            metadata.get("declared_outputs", [])
+            if isinstance(metadata, dict)
+            else []
+        )
+        artifacts: list[ExecutionArtifactRef] = []
+        for item in declared_outputs:
+            if not isinstance(item, dict):
+                continue
+            relative_path = str(item.get("path") or "")
+            if not relative_path:
+                continue
+            output_path = self.output_root / session_id / str(self.call_count) / relative_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(
+                self._content(relative_path, str(item.get("format") or "")),
+                encoding="utf-8",
+            )
+            try:
+                kind = ArtifactKind(str(item.get("kind") or "result"))
+            except ValueError:
+                kind = ArtifactKind.RESULT
+            artifacts.append(
+                ExecutionArtifactRef(
+                    storage_uri=str(output_path),
+                    relative_path=relative_path,
+                    kind=kind,
+                )
+            )
+        return ExecutionOutcome(
+            run_id=f"fixture_hpc_{self.call_count}",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="fixture_non_cutover",
+            remote_run_dir=f"fixture://{session_id}/{self.call_count}",
+            raw_result={
+                "status": "completed",
+                "fixture": True,
+                "cutover_eligible": False,
+                "exit_code": 0,
+            },
+            artifacts=tuple(artifacts),
+            exit_code=0,
+        )
+
+    def _content(self, relative_path: str, format_value: str) -> str:
+        normalized_format = format_value.casefold()
+        if normalized_format in {"fasta", "fa", "faa", "afa"} or relative_path.endswith(
+            (".fasta", ".fa", ".faa", ".afa")
+        ):
+            return ">fixture_1\nMSEQUENCEAOX\n>fixture_2\nMSEQUENCEAOY\n"
+        if normalized_format == "hmm" or relative_path.endswith(".hmm"):
+            return "HMMER3/f [fixture-non-cutover]\nNAME AOX_fixture\n//\n"
+        if normalized_format == "csv" or relative_path.endswith(".csv"):
+            if "cluster" in relative_path:
+                return "cluster_id,representative,member_count\n0,fixture_1,2\n"
+            return "target,accession,evalue,score\nfixture_1,FIXTURE1,1e-20,250\n"
+        return "fixture_non_cutover\n"
 
 
 class AoxHmmFixtureSandboxRunner:
@@ -2389,8 +2461,10 @@ class AoxHmmFixtureSandboxRunner:
                         "activity_score_threshold": 33.6,
                         "similarity_threshold": 0.85,
                         "hmmer_database": "refprot",
-                        "provider_status": "fixture",
-                        "tool_status": "fixture",
+                        "provider_status": "fixture_non_cutover",
+                        "tool_status": "fixture_non_cutover",
+                        "fixture": True,
+                        "cutover_eligible": False,
                         "warning_count": 0,
                         "reference_artifact_ids": list(reference["artifact_ids"]),
                         "cdhit90_artifact_ids": list(cdhit90["registered_artifact_ids"]),
@@ -2408,9 +2482,13 @@ class AoxHmmFixtureSandboxRunner:
         return ExecutionOutcome(
             run_id=f"fixture_{invocation_id}",
             status=RunStatus.SUCCEEDED,
-            execution_mode="fixture",
+            execution_mode="fixture_non_cutover",
             remote_run_dir=f"fixture://{invocation_id}",
-            raw_result={"registered_artifact_count": len(artifacts)},
+            raw_result={
+                "registered_artifact_count": len(artifacts),
+                "fixture": True,
+                "cutover_eligible": False,
+            },
             artifacts=artifacts,
             exit_code=0,
         )
@@ -2445,10 +2523,10 @@ def build_live_eval_foundation() -> RuntimeFoundation:
     return build_configured_foundation()
 
 
-def build_v3_eval_repositories() -> CoreRepositories:
-    connection = connect_v3_sqlite(":memory:")
-    apply_v3_sqlite_migrations(connection)
-    return CoreRepositories.from_connection(connection)
+def build_v3_eval_repository_provider(
+    runtime_dir: str | Path,
+) -> SQLiteRepositoryProvider:
+    return SQLiteRepositoryProvider(str(Path(runtime_dir) / "control-plane.sqlite3"))
 
 
 def seed_v3_eval_execution_artifact(
@@ -2632,15 +2710,15 @@ def _run_v3_design_cutover_scenario(
         "Given a literature brief on a thermostable enzyme scaffold, extract design "
         "goals and run the V3 research, execution, and report delivery path."
     )
-    with tempfile.TemporaryDirectory(prefix="openzyme-v3-eval-"):
+    with tempfile.TemporaryDirectory(prefix="openzyme-v3-eval-") as temp_dir:
         foundation = foundation_builder()
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
-        v3_repositories = build_v3_eval_repositories()
+        v3_repository_provider = build_v3_eval_repository_provider(temp_dir)
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
-                v3_repositories=v3_repositories,
+                v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
             )
         )
@@ -2655,7 +2733,11 @@ def _run_v3_design_cutover_scenario(
                 },
             )
             created.raise_for_status()
-            seed_v3_eval_execution_artifact(v3_repositories, "sess_eval_v3_cutover")
+            with v3_repository_provider.write() as scope:
+                seed_v3_eval_execution_artifact(
+                    scope.repositories,
+                    "sess_eval_v3_cutover",
+                )
 
             prompt = (
                 "Use this literature brief to run the V3 design workflow. "
@@ -2772,22 +2854,42 @@ def _run_v3_aox_hmm_prompt_scenario(
         "artifact catalog registration, and final answer evidence."
     )
     session_id = "sess_eval_aox_hmm"
-    with tempfile.TemporaryDirectory(prefix="openzyme-v3-aox-hmm-eval-") as temp_dir:
+    with (
+        tempfile.TemporaryDirectory(prefix="openzyme-v3-aox-hmm-eval-") as temp_dir,
+        ExitStack() as repository_scopes,
+    ):
         foundation = foundation_builder()
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
-        v3_repositories = build_v3_eval_repositories()
+        if use_fixture_dependencies:
+            foundation = replace(
+                foundation,
+                execution_adapter=AoxHmmFixtureHpcExecutionAdapter(
+                    Path(temp_dir) / "fixture-hpc-outputs"
+                ),
+            )
+        v3_repository_provider = build_v3_eval_repository_provider(temp_dir)
+        # Eval observation owns a non-transactional connection on the coordinator
+        # thread. Host requests/background workers still get their own connections.
+        v3_repositories = repository_scopes.enter_context(
+            v3_repository_provider.connection_scope()
+        ).repositories
         if scenario_class == "live" and prerequisite_report is not None:
             _s15_bootstrap_live_sandbox_image(v3_repositories, prerequisite_report)
+        if use_fixture_dependencies:
+            v3_repositories.sandbox_images.save(
+                sandbox_image_record(
+                    image_digest="sha256:" + "f" * 64,
+                )
+            )
         dependencies_kwargs: dict[str, Any] = {
             "foundation": foundation,
-            "v3_repositories": v3_repositories,
+            "v3_repository_provider": v3_repository_provider,
             "v3_background_runtime_enabled": True,
         }
         if use_fixture_dependencies:
             dependencies_kwargs.update(
                 {
-                    "v3_pipeline_sandbox_runner": AoxHmmFixtureSandboxRunner(),
                     "v3_bio_adapter": DeterministicBioDatabaseAdapter(),
                     "v3_allow_bio_fixture_adapter": True,
                 }
@@ -2815,7 +2917,10 @@ def _run_v3_aox_hmm_prompt_scenario(
             ) as run:
                 first_turn = client.post(
                     f"/v3/sessions/{session_id}/messages",
-                    json={"message": prompt},
+                    json={
+                        "message": prompt,
+                        "skill_keys": [S15_AOX_HMM_WORKFLOW_REF],
+                    },
                 )
                 first_turn.raise_for_status()
                 poll_timeout_seconds = 45.0 if scenario_class == "fixture" else 900.0
@@ -2836,33 +2941,10 @@ def _run_v3_aox_hmm_prompt_scenario(
 
                 artifacts = v3_repositories.artifacts.list_by_session(session_id)
                 artifact_paths = {artifact.relative_path for artifact in artifacts}
-                code_artifacts = [
-                    artifact
-                    for artifact in artifacts
-                    if artifact.kind is ArtifactKind.CODE
-                    and (artifact.metadata or {}).get("semantic_type") == "pipeline_source"
-                ]
                 execution_invocations = [
                     invocation
                     for invocation in v3_repositories.invocations.list_by_session(session_id)
                     if invocation.engine_name == "execution"
-                ]
-                dry_run_invocations = []
-                plan_payloads = []
-                for invocation in execution_invocations:
-                    document = v3_repositories.engine_documents.get(invocation.input_ref)
-                    if document is None:
-                        continue
-                    pipeline = document.payload.get("pipeline")
-                    if not isinstance(pipeline, dict):
-                        continue
-                    if pipeline.get("dry_run"):
-                        dry_run_invocations.append(invocation)
-                        plan_payloads.append(pipeline.get("execution_plan"))
-                terminal_invocations = [
-                    invocation
-                    for invocation in execution_invocations
-                    if invocation.output_ref is not None
                 ]
                 output_artifacts = [
                     artifact
@@ -2872,7 +2954,10 @@ def _run_v3_aox_hmm_prompt_scenario(
                     and artifact.relative_path != "logs/stdout.log"
                     and artifact.relative_path != "logs/stderr.log"
                 ]
-                projected_text = json.dumps(workspace, sort_keys=True)
+                projection_validation = _projection_privacy_validation(
+                    workspace,
+                    forbidden_value=str(Path(temp_dir)),
+                )
                 artifact_text_by_path: dict[str, str] = {}
                 artifact_metadata_by_path: dict[str, dict[str, object]] = {}
                 for artifact in artifacts:
@@ -2891,7 +2976,6 @@ def _run_v3_aox_hmm_prompt_scenario(
                     artifact_metadata_by_path,
                 )
                 required_paths = _s15_aox_required_artifact_paths()
-                plan = next((payload for payload in plan_payloads if isinstance(payload, dict)), {})
                 evidence_bundle = _s15_build_evidence_bundle(
                     v3_repositories,
                     scenario_id=scenario_id,
@@ -2912,6 +2996,28 @@ def _run_v3_aox_hmm_prompt_scenario(
                     workspace=workspace,
                     has_legacy_execution_pipeline=has_legacy_execution_pipeline,
                 )
+                sandbox_workspace_id = evidence_bundle.get("sandbox_workspace_id")
+                file_audit_entries = (
+                    v3_repositories.file_audit_entries.list_by_workspace(sandbox_workspace_id)
+                    if isinstance(sandbox_workspace_id, str)
+                    else []
+                )
+                sandbox_runs = list(evidence_bundle.get("sandbox_runs") or [])
+                operation_trace = list(evidence_bundle.get("operation_trace") or [])
+                fixture_sandbox_complete = any(
+                    isinstance(item, dict)
+                    and item.get("status") == "completed"
+                    and item.get("source_snapshot_artifact_id")
+                    and item.get("source_tree_digest")
+                    for item in sandbox_runs
+                )
+                fixture_operations_complete = bool(operation_trace) and all(
+                    isinstance(item, dict)
+                    and item.get("status") == "completed"
+                    and item.get("approval_id")
+                    and item.get("route_policy_id")
+                    for item in operation_trace
+                )
                 checks = {
                     "single_user_prompt": sum(1 for item in workspace["conversation"] if item["role"] == "user") == 1,
                     "delegated_executor": any(
@@ -2919,17 +3025,15 @@ def _run_v3_aox_hmm_prompt_scenario(
                         for item in workspace["delegation"]["agents"]
                     )
                     and "task.delegate" in event_text,
-                    "source_artifact_versions": scenario_class == "live" or {1, 2}.issubset(
-                        {
-                            int((artifact.metadata or {}).get("version") or 0)
-                            for artifact in code_artifacts
-                        }
+                    "source_snapshot": bool(evidence_bundle.get("source_snapshot_artifact_ids"))
+                    and bool(evidence_bundle.get("source_snapshot_digests")),
+                    "source_write_audited": any(
+                        entry.operation == "write" and entry.new_digest
+                        for entry in file_audit_entries
                     ),
-                    "source_diff_recorded": scenario_class == "live" or "artifact.diff_text" in event_text,
-                    "dry_run_plan": scenario_class == "live" or bool(dry_run_invocations)
-                    and bool(plan.get("bio_operations"))
-                    and bool(plan.get("bio_tool_operations"))
-                    and bool(plan.get("approval_requirements")),
+                    "controlled_operations": fixture_operations_complete
+                    if scenario_class == "fixture"
+                    else bool(live_product_path_validation["passed"]),
                     "approval_resolved": (
                         "event: approval.requested" in event_text
                         and "event: approval.resolved" in event_text
@@ -2940,11 +3044,14 @@ def _run_v3_aox_hmm_prompt_scenario(
                     "execution_completed": (
                         bool(live_product_path_validation["passed"])
                         if scenario_class == "live"
-                        else bool(terminal_invocations)
+                        else fixture_sandbox_complete and fixture_operations_complete
                     )
                     and any(
                         item.get("status") == "succeeded"
-                        for item in workspace["capabilities"].get("execution", [])
+                        for item in workspace["capabilities"].get(
+                            "execution" if scenario_class == "live" else "sandbox_adapter",
+                            [],
+                        )
                     )
                     if scenario_class == "fixture"
                     else bool(live_product_path_validation["passed"]),
@@ -2967,8 +3074,7 @@ def _run_v3_aox_hmm_prompt_scenario(
                     if scenario_class == "fixture"
                     else bool(evidence_bundle.get("source_snapshot_digests"))
                     and bool(evidence_bundle.get("registered_artifact_ids")),
-                    "safe_projection": "storage_uri" not in projected_text
-                    and str(Path(temp_dir)) not in projected_text,
+                    "safe_projection": bool(projection_validation["passed"]),
                     "final_answer": (
                         any(
                             message.get("role") == "assistant"
@@ -2980,10 +3086,12 @@ def _run_v3_aox_hmm_prompt_scenario(
                     ),
                     "background_runtime": runtime_status.get("worker_id") == "host-api:background-runtime"
                     and int(runtime_status.get("processed_signal_count") or 0) > 0,
-                    "legacy_pipeline_not_used": scenario_class == "fixture"
-                    or not has_legacy_execution_pipeline,
-                    "sandbox_product_path": scenario_class == "fixture"
-                    or bool(live_product_path_validation["passed"]),
+                    "legacy_pipeline_not_used": not has_legacy_execution_pipeline,
+                    "sandbox_product_path": (
+                        fixture_sandbox_complete and fixture_operations_complete
+                        if scenario_class == "fixture"
+                        else bool(live_product_path_validation["passed"])
+                    ),
                     "evidence_bundle_complete": bool(evidence_bundle_validation["passed"]),
                 }
                 live_cutover_check_names = {
@@ -3012,6 +3120,7 @@ def _run_v3_aox_hmm_prompt_scenario(
                     "status": "passed" if passed else "failed",
                     "evidence_validation": evidence_bundle_validation,
                     "live_product_path_validation": live_product_path_validation,
+                    "projection_validation": projection_validation,
                 }
                 live_evidence_refs: dict[str, object] = {
                     "fixed_prompt_digest": f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}",
@@ -3049,6 +3158,7 @@ def _run_v3_aox_hmm_prompt_scenario(
                     "evidence_bundle": evidence_bundle,
                     "evidence_bundle_validation": evidence_bundle_validation,
                     "live_product_path_validation": live_product_path_validation,
+                    "projection_validation": projection_validation,
                     "checks": checks,
                     "passed": passed,
                 }
@@ -3087,12 +3197,12 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
         "Extract enzyme design goals from a literature abstract and generate an "
         "executable V3 design workflow task plan."
     )
-    with tempfile.TemporaryDirectory(prefix="openzyme-v3-live-eval-"):
+    with tempfile.TemporaryDirectory(prefix="openzyme-v3-live-eval-") as temp_dir:
         foundation = build_live_eval_foundation()
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,
-                v3_repositories=build_v3_eval_repositories(),
+                v3_repository_provider=build_v3_eval_repository_provider(temp_dir),
                 v3_background_runtime_enabled=True,
             )
         )

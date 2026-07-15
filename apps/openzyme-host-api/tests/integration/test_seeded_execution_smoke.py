@@ -9,8 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openzyme_core import CoreRepositories
-from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
-from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_domain import ArtifactKind
 from openzyme_domain import SessionArtifactRecord
 from openzyme_host_api.app import HostApiDependencies
@@ -44,12 +43,6 @@ def _raise_for_status_with_body(response, *, step: str) -> None:
         f"{step} failed with HTTP {response.status_code}: {response.text}",
         pytrace=False,
     )
-
-
-def _build_v3_repositories() -> CoreRepositories:
-    connection = connect_v3_sqlite(":memory:")
-    apply_v3_sqlite_migrations(connection)
-    return CoreRepositories.from_connection(connection)
 
 
 def _seed_v3_structure_artifact(
@@ -155,7 +148,7 @@ def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[st
     raise AssertionError(_workspace_failure_summary(workspace))
 
 
-def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
+def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> None:
     settings = apply_live_llm_test_budget(get_settings())
     tuned_settings = replace(
         settings,
@@ -185,13 +178,17 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
     foundation = build_configured_foundation(
         settings=tuned_settings,
     )
-    v3_repositories = _build_v3_repositories()
+    v3_repository_provider = SQLiteRepositoryProvider(
+        str(tmp_path / "seeded-execution.sqlite3")
+    )
+    observer_scope = v3_repository_provider.connection_scope()
+    v3_repositories = observer_scope.__enter__().repositories
     _log_phase("creating FastAPI test client")
     client = TestClient(
         create_app(
             HostApiDependencies(
                 foundation=foundation,
-                v3_repositories=v3_repositories,
+                v3_repository_provider=v3_repository_provider,
             )
         )
     )
@@ -255,3 +252,4 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
     finally:
         _log_phase("closing FastAPI test client")
         client.close()
+        observer_scope.__exit__(None, None, None)

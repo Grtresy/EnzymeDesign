@@ -10,6 +10,7 @@ from enum import StrEnum
 import json
 import sqlite3
 from typing import Any
+from typing import Callable
 from typing import Iterator
 from uuid import uuid4
 
@@ -62,6 +63,8 @@ from openzyme_domain import Task
 from openzyme_domain import TaskPriority
 from openzyme_domain import TaskStatus
 
+from .migration_assets import apply_sqlite_migrations
+
 
 class OwnershipError(ValueError):
     """Raised when linked canonical records do not belong to the same session."""
@@ -95,11 +98,54 @@ class SessionRuntimeLeaseAcquireResult:
     retry_after_seconds: int | None = None
 
 
-def connect_sqlite(database_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(database_path, check_same_thread=False)
+class _OpenZymeSQLiteConnection(sqlite3.Connection):
+    """SQLite connection carrying transaction ownership local to the connection."""
+
+    _openzyme_managed_transaction_depth: int = 0
+
+
+def connect_sqlite(
+    database_path: str,
+    *,
+    check_same_thread: bool = True,
+    uri: bool = False,
+    busy_timeout_ms: int = 5_000,
+    enable_wal: bool = False,
+) -> sqlite3.Connection:
+    if busy_timeout_ms <= 0:
+        raise ValueError("busy_timeout_ms must be positive")
+    connection = sqlite3.connect(
+        database_path,
+        timeout=busy_timeout_ms / 1_000,
+        check_same_thread=check_same_thread,
+        uri=uri,
+        factory=_OpenZymeSQLiteConnection,
+    )
+    connection._openzyme_managed_transaction_depth = 0  # type: ignore[attr-defined]
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+    if enable_wal:
+        connection.execute("PRAGMA journal_mode = WAL").fetchone()
     return connection
+
+
+def _managed_transaction_depth(connection: sqlite3.Connection) -> int:
+    return int(getattr(connection, "_openzyme_managed_transaction_depth", 0))
+
+
+def _set_managed_transaction_depth(
+    connection: sqlite3.Connection,
+    depth: int,
+) -> None:
+    setattr(connection, "_openzyme_managed_transaction_depth", depth)
+
+
+def _commit(connection: sqlite3.Connection) -> None:
+    """Commit standalone repository calls, but never an owning UoW transaction."""
+
+    if _managed_transaction_depth(connection) == 0:
+        connection.commit()
 
 
 @contextmanager
@@ -118,6 +164,26 @@ def _sqlite_savepoint(
         raise
     else:
         connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+
+@contextmanager
+def _repository_immediate_transaction(
+    connection: sqlite3.Connection,
+    *,
+    prefix: str,
+) -> Iterator[None]:
+    if _managed_transaction_depth(connection) > 0:
+        with _sqlite_savepoint(connection, prefix=prefix):
+            yield
+        return
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        connection.rollback()
+        raise
+    else:
+        _commit(connection)
 
 
 def _find_task_dependency_cycle(
@@ -358,7 +424,7 @@ class SessionRepository:
                 session.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, session_id: str) -> Session | None:
         row = self.connection.execute(
@@ -780,7 +846,7 @@ class LaneRepository:
                 lane.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, lane_id: str) -> Lane | None:
         row = self.connection.execute(
@@ -889,7 +955,7 @@ class LaneLifecycleEventRepository:
                 event.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[LaneLifecycleEventRecord]:
         rows = self.connection.execute(
@@ -981,7 +1047,7 @@ class ApprovalRequestRepository:
                 approval.resolved_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, approval_id: str) -> ApprovalRequest | None:
         row = self.connection.execute(
@@ -1114,7 +1180,7 @@ class InboxMessageRepository:
                 message.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[InboxMessage]:
         rows = self.connection.execute(
@@ -1253,7 +1319,7 @@ class MemoryEntryRepository:
                 memory.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_scope(self, session_id: str, scope_kind: MemoryScopeKind, scope_ref: str) -> list[MemoryEntry]:
         rows = self.connection.execute(
@@ -1385,7 +1451,7 @@ class AgentMemberRepository:
                 handle,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[AgentMember]:
         rows = self.connection.execute(
@@ -1492,7 +1558,7 @@ class SandboxImageRecordRepository:
                 record.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, image_ref: str) -> SandboxImageRecord | None:
         row = self.connection.execute(
@@ -1618,7 +1684,7 @@ class SandboxWorkspaceRecordRepository:
                 record.last_attached_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, sandbox_workspace_id: str) -> SandboxWorkspaceRecord | None:
         row = self.connection.execute(
@@ -1773,7 +1839,7 @@ class SandboxRunRecordRepository:
                 record.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, sandbox_run_id: str) -> SandboxRunRecord | None:
         row = self.connection.execute(
@@ -1982,7 +2048,7 @@ class ControlledOperationRepository:
                 record.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
         self._sync_terminal_engine_invocation(record)
 
     def _sync_terminal_engine_invocation(self, record: ControlledOperation) -> None:
@@ -2012,7 +2078,7 @@ class ControlledOperationRepository:
             """,
             (next_status.value, now, invocation_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, operation_id: str) -> ControlledOperation | None:
         row = self.connection.execute(
@@ -2201,7 +2267,7 @@ class ContinuationStateRepository:
                 record.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, continuation_id: str) -> ContinuationState | None:
         row = self.connection.execute(
@@ -2449,7 +2515,7 @@ class FileAuditEntryRepository:
                 entry.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_workspace(self, sandbox_workspace_id: str) -> list[FileAuditEntry]:
         rows = self.connection.execute(
@@ -2518,7 +2584,7 @@ class CommandLogArtifactRepository:
                 record.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_run(self, sandbox_run_id: str) -> list[CommandLogArtifactRecord]:
         rows = self.connection.execute(
@@ -2565,63 +2631,68 @@ class SessionRuntimeLeaseRepository:
         expires_at = _utc_after_iso(lease_seconds)
         resolved_mode = SessionRuntimeLeaseMode(str(mode))
         try:
-            self.connection.execute("BEGIN IMMEDIATE")
-            active = self._get_unreleased_row(session_id)
-            if active is not None and str(active["expires_at"]) > now:
-                lease = self._row_to_lease(active)
-                self.connection.commit()
-                return SessionRuntimeLeaseAcquireResult(
-                    acquired=False,
-                    active_lease=lease,
-                    reason="session_runtime_lease_active",
-                    retry_after_seconds=_retry_after_seconds(lease.expires_at, now_iso=now),
+            with _repository_immediate_transaction(
+                self.connection,
+                prefix="session_runtime_lease_acquire",
+            ):
+                active = self._get_unreleased_row(session_id)
+                if active is not None and str(active["expires_at"]) > now:
+                    lease = self._row_to_lease(active)
+                    return SessionRuntimeLeaseAcquireResult(
+                        acquired=False,
+                        active_lease=lease,
+                        reason="session_runtime_lease_active",
+                        retry_after_seconds=_retry_after_seconds(
+                            lease.expires_at,
+                            now_iso=now,
+                        ),
+                    )
+                if active is not None:
+                    self.connection.execute(
+                        """
+                        UPDATE session_runtime_leases
+                        SET released_at = ?,
+                            last_error = COALESCE(last_error, ?)
+                        WHERE lease_token = ? AND released_at IS NULL
+                        """,
+                        (
+                            now,
+                            "lease expired before reclaim",
+                            active["lease_token"],
+                        ),
+                    )
+                row = self.connection.execute(
+                    """
+                    SELECT COALESCE(MAX(fencing_token), 0) + 1 AS next_fencing_token
+                    FROM session_runtime_leases
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+                fencing_token = int(
+                    row["next_fencing_token"] if row is not None else 1
                 )
-            if active is not None:
+                lease_token = f"lease_{uuid4().hex[:12]}"
                 self.connection.execute(
                     """
-                    UPDATE session_runtime_leases
-                    SET released_at = ?,
-                        last_error = COALESCE(last_error, ?)
-                    WHERE lease_token = ? AND released_at IS NULL
+                    INSERT INTO session_runtime_leases (
+                        lease_token, session_id, owner_id, mode, acquired_at, heartbeat_at,
+                        expires_at, released_at, last_error, fencing_token
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
                     """,
                     (
+                        lease_token,
+                        session_id,
+                        owner_id,
+                        resolved_mode.value,
                         now,
-                        "lease expired before reclaim",
-                        active["lease_token"],
+                        now,
+                        expires_at,
+                        fencing_token,
                     ),
                 )
-            row = self.connection.execute(
-                """
-                SELECT COALESCE(MAX(fencing_token), 0) + 1 AS next_fencing_token
-                FROM session_runtime_leases
-                WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            fencing_token = int(row["next_fencing_token"] if row is not None else 1)
-            lease_token = f"lease_{uuid4().hex[:12]}"
-            self.connection.execute(
-                """
-                INSERT INTO session_runtime_leases (
-                    lease_token, session_id, owner_id, mode, acquired_at, heartbeat_at,
-                    expires_at, released_at, last_error, fencing_token
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-                """,
-                (
-                    lease_token,
-                    session_id,
-                    owner_id,
-                    resolved_mode.value,
-                    now,
-                    now,
-                    expires_at,
-                    fencing_token,
-                ),
-            )
-            self.connection.commit()
         except sqlite3.Error:
-            self.connection.rollback()
             active_lease = self.get_active(session_id)
             if active_lease is None:
                 raise
@@ -2694,7 +2765,7 @@ class SessionRuntimeLeaseRepository:
                 now,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
         if cursor.rowcount != 1:
             return None
         return self.get_by_token(lease_token)
@@ -2719,7 +2790,7 @@ class SessionRuntimeLeaseRepository:
             """,
             (now, now, session_id, owner_id, lease_token),
         )
-        self.connection.commit()
+        _commit(self.connection)
         if cursor.rowcount != 1:
             return None
         return self.get_by_token(lease_token)
@@ -2745,7 +2816,7 @@ class SessionRuntimeLeaseRepository:
             """,
             (now, error_message, session_id, owner_id, lease_token),
         )
-        self.connection.commit()
+        _commit(self.connection)
         if cursor.rowcount != 1:
             return None
         return self.get_by_token(lease_token)
@@ -2882,7 +2953,7 @@ class AgentRuntimeSignalRepository:
                 signal.session_fencing_token,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, signal_id: str) -> AgentRuntimeSignal | None:
         row = self.connection.execute(
@@ -3036,7 +3107,7 @@ class AgentRuntimeSignalRepository:
                 now,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
         if cursor.rowcount != 1:
             return None
         return self.get(str(signal_id))
@@ -3071,7 +3142,7 @@ class AgentRuntimeSignalRepository:
             """,
             (AgentRuntimeSignalStatus.COMPLETED.value, now, signal_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
         return self.get(signal_id)
 
     def fail(
@@ -3122,7 +3193,7 @@ class AgentRuntimeSignalRepository:
                 signal_id,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
         return self.get(signal_id)
 
     def release(
@@ -3153,7 +3224,7 @@ class AgentRuntimeSignalRepository:
             """,
             (AgentRuntimeSignalStatus.PENDING.value, signal_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
         return self.get(signal_id)
 
     def _fencing_allows_signal_write(
@@ -3307,7 +3378,7 @@ class EngineInvocationRepository:
                 invocation.finished_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, invocation_id: str) -> EngineInvocation | None:
         row = self.connection.execute(
@@ -3567,7 +3638,7 @@ class RunRecordRepository:
                 run.finished_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, run_id: str) -> RunRecord | None:
         row = self.connection.execute(
@@ -3724,7 +3795,7 @@ class SessionArtifactRepository:
                 artifact.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def commit_immutable(self, artifact: SessionArtifactRecord) -> None:
         _require_session_exists(self.connection, artifact.session_id)
@@ -3784,7 +3855,7 @@ class SessionArtifactRepository:
                 artifact.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, artifact_id: str) -> SessionArtifactRecord | None:
         row = self.connection.execute(
@@ -3941,7 +4012,7 @@ class ArtifactMaterializationRepository:
                 created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, materialization_id: str) -> dict[str, Any] | None:
         row = self.connection.execute(
@@ -3965,7 +4036,7 @@ class ArtifactBlobGcRepository:
             """,
             (f"gc_{uuid4().hex[:12]}", blob_ref, reason, "pending", created_at),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_pending(self) -> list[dict[str, Any]]:
         rows = self.connection.execute(
@@ -4061,7 +4132,7 @@ class SessionReportRepository:
                 report.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, report_id: str) -> SessionReportRecord | None:
         row = self.connection.execute(
@@ -4176,7 +4247,7 @@ class SessionReportDraftRepository:
                 draft.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, draft_id: str) -> SessionReportDraftRecord | None:
         row = self.connection.execute(
@@ -4292,7 +4363,7 @@ class ResearchSummaryRepository:
                 summary.updated_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def get(self, summary_id: str) -> ResearchSummary | None:
         row = self.connection.execute(
@@ -4411,7 +4482,7 @@ class ResearchEvidenceRepository:
                 evidence.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[ResearchEvidence]:
         rows = self.connection.execute(
@@ -4442,7 +4513,7 @@ class ResearchEvidenceRepository:
             "DELETE FROM session_research_evidence WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def _row_to_evidence(self, row: sqlite3.Row) -> ResearchEvidence:
         return ResearchEvidence(
@@ -4527,7 +4598,7 @@ class ResearchSourceRefRepository:
                 source_ref.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[ResearchSourceRef]:
         rows = self.connection.execute(
@@ -4570,7 +4641,7 @@ class ResearchSourceRefRepository:
             "DELETE FROM session_research_source_refs WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def _row_to_source_ref(self, row: sqlite3.Row) -> ResearchSourceRef:
         return ResearchSourceRef(
@@ -4649,7 +4720,7 @@ class ResearchGapRepository:
                 gap.created_at,
             ),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def list_by_session(self, session_id: str) -> list[ResearchGap]:
         rows = self.connection.execute(
@@ -4680,7 +4751,7 @@ class ResearchGapRepository:
             "DELETE FROM session_research_gaps WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
         )
-        self.connection.commit()
+        _commit(self.connection)
 
     def _row_to_gap(self, row: sqlite3.Row) -> ResearchGap:
         return ResearchGap(
@@ -4764,4 +4835,189 @@ class CoreRepositories:
             research_evidence=ResearchEvidenceRepository(connection),
             research_source_refs=ResearchSourceRefRepository(connection),
             research_gaps=ResearchGapRepository(connection),
+        )
+
+
+class CoreUnitOfWork:
+    """Own one short-lived connection and its repository transaction boundary."""
+
+    def __init__(
+        self,
+        connection_factory: Callable[[], sqlite3.Connection],
+        *,
+        write: bool,
+    ) -> None:
+        self._connection_factory = connection_factory
+        self._write = write
+        self._connection: sqlite3.Connection | None = None
+        self._repositories: CoreRepositories | None = None
+        self._previous_managed_depth = 0
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("CoreUnitOfWork is not active")
+        return self._connection
+
+    @property
+    def repositories(self) -> CoreRepositories:
+        if self._repositories is None:
+            raise RuntimeError("CoreUnitOfWork is not active")
+        return self._repositories
+
+    @property
+    def write(self) -> bool:
+        return self._write
+
+    def __enter__(self) -> "CoreUnitOfWork":
+        if self._connection is not None:
+            raise RuntimeError("CoreUnitOfWork cannot be entered more than once")
+        connection = self._connection_factory()
+        try:
+            if self._write:
+                connection.execute("BEGIN IMMEDIATE")
+            else:
+                connection.execute("PRAGMA query_only = ON")
+            previous_depth = _managed_transaction_depth(connection)
+            _set_managed_transaction_depth(connection, previous_depth + 1)
+        except BaseException:
+            connection.close()
+            raise
+        self._connection = connection
+        self._repositories = CoreRepositories.from_connection(connection)
+        self._previous_managed_depth = previous_depth
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object | None,
+    ) -> bool:
+        del exc, traceback
+        connection = self.connection
+        try:
+            if self._write:
+                if exc_type is None:
+                    try:
+                        connection.commit()
+                    except BaseException:
+                        connection.rollback()
+                        raise
+                else:
+                    connection.rollback()
+            elif connection.in_transaction:
+                connection.rollback()
+        finally:
+            _set_managed_transaction_depth(
+                connection,
+                self._previous_managed_depth,
+            )
+            connection.close()
+            self._repositories = None
+            self._connection = None
+        return False
+
+
+class CoreRepositoryConnectionScope:
+    """Own one non-transactional connection for a provider-backed long flow.
+
+    Repository methods retain their standalone commit behavior in this scope.  It is
+    therefore suitable for commands that may cross an LLM, runner, network, or
+    sandbox boundary, where holding a SQLite transaction would be unsafe.  Atomic
+    local commands must use :meth:`SQLiteRepositoryProvider.write` instead.
+    """
+
+    def __init__(self, connection_factory: Callable[[], sqlite3.Connection]) -> None:
+        self._connection_factory = connection_factory
+        self._connection: sqlite3.Connection | None = None
+        self._repositories: CoreRepositories | None = None
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise RuntimeError("CoreRepositoryConnectionScope is not active")
+        return self._connection
+
+    @property
+    def repositories(self) -> CoreRepositories:
+        if self._repositories is None:
+            raise RuntimeError("CoreRepositoryConnectionScope is not active")
+        return self._repositories
+
+    def __enter__(self) -> "CoreRepositoryConnectionScope":
+        if self._connection is not None:
+            raise RuntimeError(
+                "CoreRepositoryConnectionScope cannot be entered more than once"
+            )
+        connection = self._connection_factory()
+        self._connection = connection
+        self._repositories = CoreRepositories.from_connection(connection)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object | None,
+    ) -> bool:
+        del exc, traceback
+        connection = self.connection
+        try:
+            # A repository method normally commits its own write.  Roll back any
+            # incomplete statement/transaction on both success and failure so a
+            # connection can never leave this owner with pending state.
+            if connection.in_transaction:
+                connection.rollback()
+        finally:
+            connection.close()
+            self._repositories = None
+            self._connection = None
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteRepositoryProvider:
+    """Create connection-owned read or short write scopes for a file database."""
+
+    database_path: str
+    uri: bool = False
+    busy_timeout_ms: int = 5_000
+    check_same_thread: bool = True
+
+    def __post_init__(self) -> None:
+        database_path = self.database_path.strip()
+        lowered = database_path.lower()
+        is_memory_uri = self.uri and (
+            lowered.startswith("file::memory:") or "mode=memory" in lowered
+        )
+        if not database_path or database_path == ":memory:" or is_memory_uri:
+            raise ValueError(
+                "SQLiteRepositoryProvider requires a file-backed SQLite database; "
+                "process-local or shared-memory databases have no provider anchor lifecycle"
+            )
+        if self.busy_timeout_ms <= 0:
+            raise ValueError("busy_timeout_ms must be positive")
+        connection = self._connect()
+        try:
+            apply_sqlite_migrations(connection)
+        finally:
+            connection.close()
+
+    def read(self) -> CoreUnitOfWork:
+        return CoreUnitOfWork(self._connect, write=False)
+
+    def write(self) -> CoreUnitOfWork:
+        return CoreUnitOfWork(self._connect, write=True)
+
+    def connection_scope(self) -> CoreRepositoryConnectionScope:
+        return CoreRepositoryConnectionScope(self._connect)
+
+    def _connect(self) -> sqlite3.Connection:
+        return connect_sqlite(
+            self.database_path,
+            check_same_thread=self.check_same_thread,
+            uri=self.uri,
+            busy_timeout_ms=self.busy_timeout_ms,
+            enable_wal=True,
         )

@@ -18,6 +18,14 @@ SQLite schema 兼容策略：
 - `user_version` 等于当前 schema version 的库只做关键表校验后复用
 - 旧版本、未知版本、非空但 `user_version = 0` 的库 fail fast
 - Host 不做隐式 migration、自动修复、自动删除或自动备份；operator 需要手动删除旧库，或指定新的 `--v3-sqlite-db` 路径
+
+SQLite connection / transaction ownership：
+
+- `SQLiteRepositoryProvider` 只接受 file-backed database，并在 composition 时校验/初始化当前 schema；产品路径不使用 `:memory:` 作为跨线程状态锚点
+- 每个 request、background worker、scheduler agent turn 和 sandbox SDK callback 在其实际线程内获得独立、默认 thread-affine connection，并由 scope 关闭；不得把 request thread 的 connection 交给 `asyncio.to_thread`
+- read scope 开启 `query_only`，不抢占 write lock；短 canonical command 使用 `BEGIN IMMEDIATE` Unit of Work，repository 内部 `commit` 在 owning UoW 中被抑制，异常统一 rollback
+- 会跨 LLM/provider/runner/sandbox 的流程使用非长事务 connection scope；repository 写入仍是短提交，不能用一个 write UoW 包住外部等待
+- WAL、foreign keys 与有限 `busy_timeout` 是固定连接配置；它们不允许跨线程复用，也不构成 command 幂等、outbox 或 lease fencing 的替代品
 - `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
 
 ## 2. Canonical Objects

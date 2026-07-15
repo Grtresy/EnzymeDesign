@@ -226,7 +226,7 @@ class ExplodingMasterModelFactory:
 
 
 def _build_context(*, model_factory: object | None) -> tuple[CoreRepositories, SessionRuntimeContext]:
-    connection = connect_sqlite(":memory:")
+    connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     session = Session.create("sess_scheduler", "proj_001", "Scheduler", "Scheduler")
@@ -307,7 +307,7 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
 
 
 def test_reporter_can_publish_report_and_finish_delegated_task() -> None:
-    connection = connect_sqlite(":memory:")
+    connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     session = Session.create("sess_reporter", "proj_001", "Reporter", "Write report")
@@ -407,7 +407,7 @@ def test_terminal_task_stale_signal_is_consumed_without_runtime_failure() -> Non
 
 
 def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> None:
-    connection = connect_sqlite(":memory:")
+    connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
     session = Session.create("sess_master_failure", "proj_001", "Master", "Fail once")

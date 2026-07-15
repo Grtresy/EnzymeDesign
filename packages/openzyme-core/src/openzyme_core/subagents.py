@@ -21,49 +21,11 @@ from .task_board import TaskBoardService
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 from .teammate_roster import is_valid_teammate_role
 from .teammate_roster import teammate_role_for_task_kind
+from .workflow_knowledge import is_workflow_ref
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
-
-
-_AOX_HMM_DELEGATION_MARKERS = (
-    "aox",
-    "hmm",
-    "hmmer",
-    "refprot",
-    "sequence-mining",
-    "sequence mining",
-)
-
-_AOX_HMM_EXECUTOR_INSTRUCTION = (
-    "AOX/HMM mandatory execution contract: before authoring source, read "
-    'docs.read doc_id="aox-hmm-live" and follow that controlled SDK recipe '
-    "exactly. Use sandbox.workspace.status, sandbox.file.*, sandbox.exec, and "
-    "Host-supervised openzyme_pipeline SDK calls from inside sandbox.exec. Do "
-    "not use ClustalW, MUSCLE, direct MAFFT/CD-HIT/HMMER binaries, direct "
-    "provider files, local pseudo computations, synthetic hits, or dependency "
-    "installs. Do not mark the task completed until the fixed aox_hmm/* "
-    "deliverables are registered or a structured failure is recorded."
-)
-
-
-def _delegation_instructions_for_task(
-    *,
-    agent_role: str,
-    task: Task,
-    instructions: str,
-) -> str:
-    if agent_role != "executor":
-        return instructions
-    haystack = " ".join(
-        (task.subject or "", task.description or "", task.kind or "", instructions)
-    ).lower()
-    if not any(marker in haystack for marker in _AOX_HMM_DELEGATION_MARKERS):
-        return instructions
-    if 'docs.read doc_id="aox-hmm-live"' in instructions:
-        return instructions
-    return f"{instructions}\n\n{_AOX_HMM_EXECUTOR_INSTRUCTION}"
 
 
 def default_agent_role_for_task(task: Task) -> str:
@@ -318,13 +280,23 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
             )
         agent_id = agent.agent_id
         correlation_id = str(arguments.get("correlation_id") or _new_id("corr"))
-        instructions = _delegation_instructions_for_task(
-            agent_role=agent_role,
-            task=task,
-            instructions=str(
-                arguments.get("instructions") or task.description or task.subject
-            ),
+        instructions = str(
+            arguments.get("instructions") or task.description or task.subject
         )
+        workflow_refs = tuple(
+            key for key in context.active_skill_keys if is_workflow_ref(key)
+        )
+        workflow_manifests: list[dict[str, object]] = []
+        if workflow_refs:
+            if context.skill_registry is None:
+                raise ValueError(
+                    "structured workflow selection requires a workflow-aware registry"
+                )
+            workflow_manifests = [
+                context.skill_registry.load_workflow_pack(workflow_ref)
+                .manifest.to_dict()
+                for workflow_ref in workflow_refs
+            ]
         protocol = _protocol_service(context)
         payload_ref = protocol.persist_payload(
             session_id=task.session_id,
@@ -337,6 +309,8 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 "nickname": agent.nickname,
                 "display_name": display_name_for_agent(agent),
                 "handle": handle_for_agent(agent),
+                "workflow_refs": list(workflow_refs),
+                "workflow_manifests": workflow_manifests,
             },
         )
         task = service.claim_task(

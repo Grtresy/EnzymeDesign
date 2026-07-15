@@ -5,7 +5,7 @@ import subprocess
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
-from openzyme_host_api.dev_web_ui import _build_v3_repositories
+from openzyme_host_api.dev_web_ui import _build_v3_repository_provider
 from openzyme_host_api.dev_web_ui import _register_existing_sandbox_image
 from openzyme_host_api.dev_web_ui import build_parser
 
@@ -62,7 +62,7 @@ def test_configured_web_ui_does_not_build_missing_sandbox_image(monkeypatch) -> 
     assert repositories.sandbox_images.get_default() is None
 
 
-def test_build_v3_repositories_reports_legacy_sqlite_database(tmp_path) -> None:
+def test_build_v3_repository_provider_reports_legacy_sqlite_database(tmp_path) -> None:
     sqlite_db_path = tmp_path / "legacy-v3.sqlite3"
     connection = connect_sqlite(str(sqlite_db_path))
     connection.execute("CREATE TABLE legacy_state (id TEXT PRIMARY KEY)")
@@ -70,7 +70,7 @@ def test_build_v3_repositories_reports_legacy_sqlite_database(tmp_path) -> None:
     connection.close()
 
     try:
-        _build_v3_repositories(sqlite_db_path)
+        _build_v3_repository_provider(sqlite_db_path)
     except SystemExit as exc:
         message = str(exc)
     else:

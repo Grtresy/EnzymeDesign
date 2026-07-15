@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 from dataclasses import replace
@@ -15,6 +16,7 @@ from openzyme_core import CoreRepositories
 from openzyme_core import SandboxRuntimeError
 from openzyme_core import SandboxRuntimeService
 from openzyme_core import SandboxWorkspaceService
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
@@ -29,12 +31,14 @@ from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import ArtifactKind
 from openzyme_domain import Session
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
 
 
 def _build_repositories() -> CoreRepositories:
-    connection = connect_sqlite(":memory:")
+    connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
 
@@ -111,6 +115,7 @@ def _service(
     log_root: Path,
     adapter_executor=None,
     hpc_fetch_executor=None,
+    repository_scope_factory=None,
 ) -> SandboxRuntimeService:
     return SandboxRuntimeService(
         repositories,
@@ -119,6 +124,7 @@ def _service(
         execution_backend="local",
         adapter_executor=adapter_executor,
         hpc_fetch_executor=hpc_fetch_executor,
+        repository_scope_factory=repository_scope_factory,
     )
 
 
@@ -358,6 +364,68 @@ def test_sandbox_exec_transport_smoke_returns_identity_binding(tmp_path: Path) -
     assert payload["sandbox_run_id"] == run.sandbox_run_id
     assert payload["source_snapshot_artifact_id"] == run.source_snapshot_artifact_id
     assert payload["call_identity"] == "smoke_001"
+
+
+def test_control_socket_opens_thread_owned_repository_scope(tmp_path: Path) -> None:
+    provider = SQLiteRepositoryProvider(str(tmp_path / "control-plane.sqlite3"))
+
+    @contextmanager
+    def open_repositories():
+        with provider.connection_scope() as owned_scope:
+            yield owned_scope.repositories
+
+    with provider.connection_scope() as scope:
+        repositories = scope.repositories
+        session, agent, workspace, workspace_root = _seed_workspace(
+            repositories,
+            tmp_path,
+        )
+        service = _service(
+            repositories,
+            workspace_root=workspace_root,
+            log_root=tmp_path / "logs",
+            repository_scope_factory=open_repositories,
+        )
+        input_path = tmp_path / "thread-owned-input.txt"
+        input_path.write_text("owned\n", encoding="utf-8")
+        repositories.artifacts.save(
+            SessionArtifactRecord(
+                artifact_id="art_thread_owned",
+                session_id=session.session_id,
+                task_id=None,
+                lane_id=None,
+                run_id=None,
+                invocation_id=None,
+                storage_uri=str(input_path),
+                relative_path="inputs/thread-owned.txt",
+                kind=ArtifactKind.RESULT,
+                metadata={"content_digest": _digest_text("owned\n")},
+                created_at="2026-05-28T00:01:30+00:00",
+            )
+        )
+        service.write_file(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            actor_ref=agent.agent_id,
+            path="/workspace/src/thread_owned.py",
+            content=(
+                "import json\n"
+                "from openzyme_pipeline.client import call\n"
+                "result = call('artifacts.get', {'artifact_id': 'art_thread_owned'})\n"
+                "print(json.dumps(result, sort_keys=True))\n"
+            ),
+            create_dirs=True,
+        )
+
+        run = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/thread_owned.py"],
+        )
+
+        assert run.status is SandboxRunStatus.COMPLETED
+        assert json.loads(str(run.stdout_summary))["artifact_id"] == "art_thread_owned"
 
 
 def test_sandbox_exec_controlled_operation_approval_resumes_same_rpc(tmp_path: Path) -> None:

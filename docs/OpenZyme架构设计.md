@@ -146,6 +146,8 @@ V3 master / teammate LLM 调用必须先经过统一 token budget preflight。ha
 
 旧 schema、未知 schema、非空但未标记 `user_version` 的 SQLite 文件不做隐式迁移、修复、备份或删除；启动路径必须 fail fast，并提示 operator 手动删除旧库或指定新的 `--v3-sqlite-db` 路径。`020_v3_task_integrity` 把 task dependency 的同 session DAG trigger 纳入 current schema 校验，因此升级后的旧本地库也必须按上述 fresh/current-version 规则处理，不能绕过 trigger 校验继续运行。需要长期保留的研究结果、execution 输出与报告应通过 artifact、report 或 export 留存，而不是依赖旧 SQLite runtime 文件跨 schema 版本继续可用。
 
+单进程不等于共享一个 SQLite connection。Host 以 file-backed `SQLiteRepositoryProvider` 为 composition root；每个 request、background worker、scheduler bounded turn 与 sandbox SDK control callback 都在实际执行线程内创建并关闭自己的 thread-affine connection。纯读使用 `query_only` read scope；不跨外部边界的 canonical command 使用短 `BEGIN IMMEDIATE` Unit of Work，使多个 repository mutation all-or-nothing；可能等待 LLM、provider、runner 或 sandbox 的长流程只能使用无长事务的 connection scope，由内部短写自行提交，严禁持有 SQLite write lock 跨外部调用。WAL 与 `busy_timeout` 只改善单进程并发，不替代 ownership、UoW 或后续 fencing。
+
 ---
 
 ## 4. 顶层架构
@@ -263,6 +265,7 @@ GET /v3/sessions/{session_id}/workspace
 - `auto_enqueue_ready_tasks` 默认关闭，只用于显式 operator/debug/recovery 场景
 - approval resolve 只改变 approval/resolution/continuation 状态并排队必要 wakeup，不直接恢复 execution、不直接运行 master loop，也不直接替用户或 agent 批准后续未知动作
 - `world.inspect` 是 agent-facing 结构化世界读取工具，只暴露事实、约束、tool schema、route policy、approval requirement、outcome 与 runtime diagnostics；不得输出 `recommended_actions` 或替 agent 判断 workflow / 完成条件
+- 通用 harness 不按 AOX/HMM、research 或其他领域关键词注入 recipe、改写 delegation 或剥夺工具。领域 SOP 进入 `docs/v3/workflow-packs/*.workflow.json`：只有 caller 显式提交完整 `workflow:<id>@<semver>#sha256:<manifest-digest>` 才会选择；manifest 固定 knowledge document version/digest，并声明 capability/tool requirements。master delegation 持久化该 binding，teammate restore 与实际 tool surface 再次校验；unknown、missing、digest drift 或 requirement 不满足都在 provider call 前 fail closed。模型的 `skill.load` 不能自行激活 workflow pack，agent 在版本化真实约束内仍保留策略自由
 - terminal task 上残留的 wakeup signal 是 stale runtime fact，应被安全消费为 completed signal，不应再次驱动 teammate loop 或制造 runtime failure
 - controlled operation 进入 terminal 后，对应 `inv_sandbox_adapter_<operation_id>` engine invocation 必须稳定进入 terminal；该不变量只收口 runtime 状态，不代表业务 task completed
 

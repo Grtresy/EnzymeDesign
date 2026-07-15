@@ -44,6 +44,7 @@ from openzyme_core import ToolResult
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import run_agent_harness_loop
+from openzyme_core import run_teammate_loop
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineRegistry
 from openzyme_core import builtin_tool_descriptors
@@ -61,6 +62,8 @@ from openzyme_core.harness import build_agent_step_context
 from openzyme_core.harness import budget_tool_results_for_prompt
 from openzyme_core.harness import ensure_prompt_budget_before_model_call
 from openzyme_core.harness import PromptPayload
+from openzyme_core.skills import register_skill_tools
+from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_research import DeterministicBioResearchService
 from openzyme_research import TavilyResearchAdapter
 from openzyme_runtime import get_llm_debug_recorder
@@ -1136,30 +1139,17 @@ def test_harness_docs_read_exposes_aox_hmm_live_recipe() -> None:
     assert result.outputs == ("docs:aox-hmm-live",)
     payload = json.loads(result.tool_results[0].content)
     content = payload["content"]
+    assert payload["version"] == "v3"
+    assert payload["content_sha256"].startswith("sha256:")
     assert "bio.ncbi_fetch_proteins" in content
     assert "bio_tools.hmmbuild" in content
-    assert '"AAC72747.1"' in content
-    assert '"CAQ19344.1"' in content
-    assert "bio_tools/cdhit/clustered.fasta" in content
-    assert "bio_tools/cdhit/clusters.csv" in content
-    assert "bio_tools/mafft/alignment.fasta" in content
-    assert "bio_tools/hmmbuild/model.hmm" in content
-    assert "bio_tools/hmmalign/aligned.fasta" in content
+    assert "AAC72747.1" in content
+    assert "CAQ19344.1" in content
     assert "aox_hmm/execution_summary.json" in content
-    assert "adapter_result_envelope" in content
-    assert "artifact_payload = artifacts.get(artifact_id)" in content
-    assert 'artifact_payload.get("artifact") or artifact_payload' in content
-    assert "INPUT_TMP = Path(\"/workspace/input/aox_hmm_tmp\")" in content
-    assert "BIO_OUTPUT_BASE = f\"/workspace/output/bio/aox_hmm_runs/{RUN_TAG}\"" in content
-    assert "Host artifact materialization creates" in content
-    assert "TMP.mkdir" not in content
-    assert "INPUT_TMP.mkdir" not in content
-    assert "pseudo-HMMs" in content
-    assert "dependency installs" in content
-    assert "bio_tools/cdhit/reference90.fasta" not in content
-    assert "bio_tools/mafft/AOX_ref21.aligned.fasta" not in content
-    assert "bio_tools/hmmbuild/AOX_ref.hmm" not in content
-    assert "bio_tools/hmmalign/AOX_ref21.hmmaligned.fasta" not in content
+    assert "scientific_prerequisite_missing" in content
+    assert "do not manufacture `40-index`" in content
+    assert "constant `0.91` edges" in content
+    assert "reference accessions to make the result non-empty" in content
 
 
 class ExplicitCompactionDriver:
@@ -1887,7 +1877,7 @@ def test_task_delegate_rejects_mismatched_role_alias_agent_ref() -> None:
     assert task.status is TaskStatus.TODO
 
 
-def test_delegate_executor_aox_task_persists_mandatory_recipe_instructions() -> None:
+def test_delegate_executor_does_not_rewrite_domain_words_into_a_workflow() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     task = repositories.tasks.get("task_001")
@@ -1947,12 +1937,223 @@ def test_delegate_executor_aox_task_persists_mandatory_recipe_instructions() -> 
     assert delegation_message.payload_ref is not None
     payload = repositories.engine_documents.get(delegation_message.payload_ref).payload
     instructions = str(payload["instructions"])
-    assert "Run the assigned computational workflow." in instructions
-    assert 'docs.read doc_id="aox-hmm-live"' in instructions
-    assert "sandbox.workspace.status" in instructions
-    assert "sandbox.exec" in instructions
-    assert "direct MAFFT/CD-HIT/HMMER binaries" in instructions
-    assert "fixed aox_hmm/* deliverables are registered" in instructions
+    assert instructions == "Run the assigned computational workflow."
+    assert payload["workflow_refs"] == []
+    assert payload["workflow_manifests"] == []
+
+
+def test_explicit_workflow_selection_propagates_through_delegation_to_teammate() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow = next(
+        manifest
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    workflow_ref = workflow.selection_ref
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_workflow",
+        subject="Execute explicitly selected workflow",
+        description="Use the structured workflow binding.",
+        kind="execution",
+    )
+
+    class DelegateWorkflowDriver:
+        def plan(
+            self,
+            context: SessionRuntimeContext,
+            harness_input: HarnessInput,
+            tool_results: tuple[object, ...],
+        ) -> HarnessStep:
+            del context, harness_input
+            if not tool_results:
+                return HarnessStep(
+                    tool_invocations=(
+                        ToolInvocation(
+                            call_id="call_delegate_workflow",
+                            tool_name="task.delegate",
+                            arguments={
+                                "task_id": "task_workflow",
+                                "agent_role": "executor",
+                                "instructions": "Execute the selected workflow.",
+                            },
+                        ),
+                    )
+                )
+            return HarnessStep(assistant_message="delegated")
+
+    delegated = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            restore_focus=RestoreFocus(
+                task_id="task_workflow",
+                skill_keys=(workflow_ref,),
+            ),
+        ),
+        driver=DelegateWorkflowDriver(),
+    )
+
+    assert delegated.status is HarnessStatus.COMPLETED
+    delegation_message = next(
+        message
+        for message in repositories.inbox.list_by_session(session.session_id)
+        if message.message_type == "delegation_request"
+        and message.correlation_id is not None
+    )
+    payload = repositories.engine_documents.get(
+        str(delegation_message.payload_ref)
+    ).payload
+    assert payload["workflow_refs"] == [workflow_ref]
+    assert payload["workflow_manifests"][0]["content_sha256"] == (
+        workflow.content_sha256
+    )
+    assert not str(payload["workflow_manifests"][0]["manifest_path"]).startswith(
+        "/"
+    )
+
+    executor = next(
+        agent
+        for agent in repositories.agents.list_by_session(session.session_id)
+        if agent.role == "executor"
+    )
+    model_factory = FakeModelFactory(
+        {"content": "I retained the selected workflow binding.", "tool_calls": []}
+    )
+    authoritative_registry = default_workflow_registry()
+
+    class TrackingWorkflowRegistry:
+        def __init__(self) -> None:
+            self.resolved_refs: list[str] = []
+
+        def resolve(self, selection_ref: str):
+            self.resolved_refs.append(selection_ref)
+            return authoritative_registry.resolve(selection_ref)
+
+    tracking_registry = TrackingWorkflowRegistry()
+    engine_registry = EngineRegistry()
+    engine_registry.register(FakeExecutionPipelineEngine(repositories))
+    parent_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(task_id="task_workflow"),
+        model_factory=model_factory,
+        engine_registry=engine_registry,
+        skill_registry=SkillRegistry(workflow_registry=tracking_registry),
+    )
+
+    teammate_result = run_teammate_loop(
+        parent_context,
+        agent_id=executor.agent_id,
+        role="executor",
+        task_id="task_workflow",
+        lane_id=None,
+        correlation_id=str(delegation_message.correlation_id),
+        instructions="Execute the selected workflow.",
+        max_steps=1,
+    )
+
+    assert teammate_result.status is HarnessStatus.COMPLETED
+    prompt = str(
+        model_factory.invokers["v3_teammate_loop:executor"].calls[0][
+            "system_prompt"
+        ]
+    )
+    assert "# Explicitly selected workflow knowledge pack" in prompt
+    assert f"content_sha256: {workflow.content_sha256}" in prompt
+    assert "scientific_prerequisite_missing" in prompt
+    assert tracking_registry.resolved_refs == [workflow_ref]
+
+
+def test_model_cannot_activate_workflow_through_skill_load() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = default_workflow_registry().list_manifests()[0].selection_ref
+    registry = ToolRegistry()
+    register_skill_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        skill_registry=SkillRegistry(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_infer_workflow",
+            tool_name="skill.load",
+            arguments={"skill_key": workflow_ref},
+        ),
+    )
+
+    assert result.ok is False
+    assert "cannot be activated by model inference" in result.content
+
+
+def test_domain_words_in_user_text_do_not_select_workflow_pack() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    model_factory = FakeModelFactory({"content": "ordinary answer", "tool_calls": []})
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            message="Explain what AOX/HMM means without starting a workflow.",
+            max_steps=1,
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    prompt = str(
+        model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"]
+    )
+    assert "# Explicitly selected workflow knowledge pack" not in prompt
+    assert "aox-hmm-live" not in prompt
+
+
+def test_explicit_workflow_focus_presents_version_digest_and_sop_to_master() -> (
+    None
+):
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow = next(
+        manifest
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    model_factory = FakeModelFactory({"content": "selected", "tool_calls": []})
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            restore_focus=RestoreFocus(skill_keys=(workflow.selection_ref,)),
+            max_steps=1,
+        ),
+        driver=LlmConversationDriver(model_factory),
+        model_factory=model_factory,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    prompt = str(
+        model_factory.invokers["v3_harness_loop"].calls[0]["system_prompt"]
+    )
+    assert "# Explicitly selected workflow knowledge pack" in prompt
+    assert f"workflow_id: {workflow.workflow_id}" in prompt
+    assert f"version: {workflow.version}" in prompt
+    assert f"content_sha256: {workflow.content_sha256}" in prompt
+    assert "scientific_prerequisite_missing" in prompt
 
 
 def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_when_ready() -> None:
@@ -2109,7 +2310,7 @@ def test_researcher_tool_descriptors_include_web_tools_when_adapter_supports_the
     assert "web.fetch" in tool_names
 
 
-def test_researcher_runtime_requires_deep_research_before_direct_open_research_tools() -> (
+def test_research_words_do_not_hide_direct_research_tools() -> (
     None
 ):
     repositories = _build_repositories()
@@ -2158,8 +2359,8 @@ def test_researcher_runtime_requires_deep_research_before_direct_open_research_t
     second_tool_names = {tool.tool_name for tool in driver._allowed_tools(context)}
 
     assert "deep_research.start" in first_tool_names
-    assert "web.search" not in first_tool_names
-    assert "rcsb_pdb.download_structure" not in first_tool_names
+    assert "web.search" in first_tool_names
+    assert "rcsb_pdb.download_structure" in first_tool_names
     assert "web.search" in second_tool_names
     assert "rcsb_pdb.download_structure" in second_tool_names
 
@@ -3170,12 +3371,10 @@ def test_llm_conversation_driver_system_prompt_lists_teammates_not_capability_to
     assert "Protocol threads available via protocol.thread:" in prompt
     assert "Teammate agents are internal workers" in prompt
     assert "fpocket" in prompt
-    assert 'docs.read doc_id="aox-hmm-live"' in prompt
-    assert "controlled SDK recipe" in prompt
-    assert "ClustalW" in prompt
-    assert "MUSCLE" in prompt
-    assert "direct MAFFT/CD-HIT/HMMER binaries" in prompt
-    assert "synthetic hits" in prompt
+    assert "Do not rewrite a task or delegation because its free text" in prompt
+    assert "explicit structured workflow reference" in prompt
+    assert "AOX" not in prompt
+    assert "HMM" not in prompt
 
 
 def test_llm_conversation_driver_does_not_duplicate_current_user_message_in_harness_loop() -> (
@@ -3791,15 +3990,16 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     )
     assert "when the assigned task asks for fpocket" not in prompt
     assert "runner-backed hpc tool shorthand" not in prompt
-    assert "first use docs.search or docs.read" in prompt
+    assert "use controlled docs when capability details are needed" in prompt
     assert "sandbox.workspace.status" in prompt
     assert "Author source with sandbox.file.* and run it with sandbox.exec" in prompt
     assert "Host-supervised SDK from inside that sandbox run" in prompt
+    assert "Never call a runner, SSH, Slurm" in prompt
     assert "Do not treat execution.pipeline.start as the required authoring path" in prompt
-    assert 'docs.read doc_id="aox-hmm-live"' in prompt
-    assert "fixed aox_hmm/* deliverables are registered" in prompt
-    assert "never substitute sandbox-local pseudo-HMMs" in prompt
-    assert "direct provider raw-file parsing" in prompt
+    assert "Never present synthetic output" in prompt
+    assert "Do not infer a workflow from task words" in prompt
+    assert "AOX" not in prompt
+    assert "HMM" not in prompt
 
 
 def test_llm_conversation_driver_backfills_delegate_task_id_from_same_turn_task_create() -> (

@@ -66,7 +66,7 @@ class FakeModelFactory:
 
 
 def _build_repositories() -> CoreRepositories:
-    connection = connect_sqlite(":memory:")
+    connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
 

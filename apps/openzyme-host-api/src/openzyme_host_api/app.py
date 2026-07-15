@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
-from threading import RLock
+import tempfile
 from typing import Any
 from typing import Callable
+from typing import Iterator
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -32,8 +35,7 @@ from .v3_service import V3HostApiService
 
 from openzyme_core import CoreRepositories
 from openzyme_core import EngineRegistry
-from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
-from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_engines import DeepResearchEngine
 from openzyme_engines import ExecutionEngine
 from openzyme_engines import ExecutionOutcome as V3ExecutionOutcome
@@ -69,12 +71,6 @@ class DrainV3RuntimeRequest(BaseModel):
 class ResolveV3ApprovalRequest(BaseModel):
     decision: str
     actor_ref: str = "user"
-
-
-def _build_default_v3_repositories() -> CoreRepositories:
-    connection = connect_v3_sqlite(":memory:")
-    apply_v3_sqlite_migrations(connection)
-    return CoreRepositories.from_connection(connection)
 
 
 @dataclass(slots=True)
@@ -213,43 +209,118 @@ class V3ExecutionRunnerAdapter:
         return self.limiter_registry.sync_limiter("execution_provider").run(operation)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class HostApiDependencies:
     foundation: RuntimeFoundation
-    v3_repositories: CoreRepositories = field(
-        default_factory=_build_default_v3_repositories
-    )
+    v3_repository_provider: SQLiteRepositoryProvider | None = None
+    # Explicit compatibility seam for thread-aware tests that still need one
+    # process-local fixture connection. Production composition must use the provider.
+    v3_legacy_repositories_for_tests: CoreRepositories | None = None
     v3_event_store: V3EventStore = field(default_factory=V3EventStore)
     v3_signal_notifier: RuntimeSignalNotifier = field(
         default_factory=RuntimeSignalNotifier
     )
-    v3_operation_lock: RLock = field(default_factory=RLock)
     v3_background_runtime_enabled: bool | None = None
     v3_pipeline_sandbox_runner: Any | None = None
     v3_bio_adapter: Any | None = None
     v3_allow_bio_fixture_adapter: bool = False
+    _owned_v3_temp_directory: tempfile.TemporaryDirectory[str] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
-    def build_v3_service(self) -> V3HostApiService:
+    def __post_init__(self) -> None:
+        if (
+            self.v3_repository_provider is not None
+            and self.v3_legacy_repositories_for_tests is not None
+        ):
+            raise ValueError(
+                "configure either v3_repository_provider or "
+                "v3_legacy_repositories_for_tests, not both"
+            )
+        if self.v3_legacy_repositories_for_tests is None:
+            self._ensure_v3_repository_provider()
+
+    def _ensure_v3_repository_provider(self) -> SQLiteRepositoryProvider:
+        provider = self.v3_repository_provider
+        if provider is not None:
+            return provider
+        owner = tempfile.TemporaryDirectory(prefix="openzyme-host-v3-")
+        provider = SQLiteRepositoryProvider(
+            str(Path(owner.name) / "control-plane.sqlite3")
+        )
+        self._owned_v3_temp_directory = owner
+        self.v3_repository_provider = provider
+        return provider
+
+    def close_owned_v3_storage(self) -> None:
+        owner = self._owned_v3_temp_directory
+        if owner is None:
+            return
+        owner.cleanup()
+        self._owned_v3_temp_directory = None
+        self.v3_repository_provider = None
+
+    @contextmanager
+    def v3_repository_scope(
+        self,
+        *,
+        mode: Literal["read", "write", "connection"] = "connection",
+    ) -> Iterator[CoreRepositories]:
+        legacy = self.v3_legacy_repositories_for_tests
+        if legacy is not None:
+            yield legacy
+            return
+        provider = self._ensure_v3_repository_provider()
+        if mode == "read":
+            owner = provider.read()
+        elif mode == "write":
+            owner = provider.write()
+        elif mode == "connection":
+            owner = provider.connection_scope()
+        else:  # pragma: no cover - Literal protects production callers
+            raise ValueError(f"unsupported V3 repository scope mode {mode!r}")
+        with owner as scope:
+            yield scope.repositories
+
+    @contextmanager
+    def v3_service_scope(
+        self,
+        *,
+        mode: Literal["read", "write", "connection"] = "connection",
+    ) -> Iterator[V3HostApiService]:
+        with self.v3_repository_scope(mode=mode) as repositories:
+            yield self._build_v3_service(repositories)
+
+    def _build_v3_service(
+        self,
+        repositories: CoreRepositories,
+    ) -> V3HostApiService:
         return V3HostApiService(
-            repositories=self.v3_repositories,
+            repositories=repositories,
             event_store=self.v3_event_store,
-            engine_registry=self.build_v3_engine_registry(),
+            engine_registry=self.build_v3_engine_registry(repositories),
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
             signal_notifier=self.v3_signal_notifier,
-            operation_lock=self.v3_operation_lock,
+            runtime_repository_scope_factory=self.v3_repository_scope,
+            engine_registry_factory=self.build_v3_engine_registry,
             scheduler_limits={}
             if self.foundation.settings is None
             else dict(self.foundation.settings.limits.provider_limits),
         )
 
-    def build_v3_engine_registry(self) -> EngineRegistry:
+    def build_v3_engine_registry(
+        self,
+        repositories: CoreRepositories,
+    ) -> EngineRegistry:
         return build_engine_registry(
             DeepResearchEngine(
-                self.v3_repositories,
+                repositories,
                 NativeDeepResearchRunner(
-                    repositories=self.v3_repositories,
+                    repositories=repositories,
                     research_adapter=self.foundation.research_adapter,
                     research_tool_provider=self.foundation.research_tool_provider,
                     model_factory=self.foundation.model_factory,
@@ -258,7 +329,7 @@ class HostApiDependencies:
                 ),
             ),
             ExecutionEngine(
-                self.v3_repositories,
+                repositories,
                 V3ExecutionRunnerAdapter(
                     self.foundation.execution_adapter,
                     self.foundation.limiter_registry,
@@ -268,6 +339,7 @@ class HostApiDependencies:
                 allow_bio_fixture_adapter=self.v3_allow_bio_fixture_adapter,
                 sandbox_runner=self.v3_pipeline_sandbox_runner
                 or PodmanPipelineSandboxRunner(),
+                repository_scope_factory=self.v3_repository_scope,
             ),
         )
 
@@ -297,12 +369,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         app.state.v3_background_runtime = background_runtime
-        dependencies.build_v3_service().recover_abandoned_sdk_continuations()
+        with dependencies.v3_service_scope(mode="write") as service:
+            service.recover_abandoned_sdk_continuations()
         background_runtime.start()
         try:
             yield
         finally:
             await background_runtime.stop()
+            dependencies.close_owned_v3_storage()
 
     app = FastAPI(title="OpenZyme Host API", version="0.1.0", lifespan=lifespan)
 
@@ -313,31 +387,31 @@ def create_app(
 
     @app.post("/v3/sessions")
     def create_v3_session(request: CreateV3SessionRequest) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.create_session(
-                project_id=request.project_id,
-                objective=request.objective,
-                title=request.title,
-                session_id=request.session_id,
-            )
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.create_session(
+                    project_id=request.project_id,
+                    objective=request.objective,
+                    title=request.title,
+                    session_id=request.session_id,
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/projects/{project_id}/sessions")
     def list_v3_project_sessions(project_id: str) -> list[dict[str, Any]]:
-        service = dependencies.build_v3_service()
         try:
-            return service.list_sessions(project_id)
+            with dependencies.v3_service_scope(mode="read") as service:
+                return service.list_sessions(project_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}")
     def get_v3_session(session_id: str) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            workspace = service.workspace(session_id)
-            return {"session": workspace["session"], "workspace": workspace}
+            with dependencies.v3_service_scope(mode="read") as service:
+                workspace = service.workspace(session_id)
+                return {"session": workspace["session"], "workspace": workspace}
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -345,22 +419,25 @@ def create_app(
     def post_v3_message(
         session_id: str, request: PostV3MessageRequest
     ) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            with llm_debug_context(
-                request_path=f"/v3/sessions/{session_id}/messages",
-                session_id=session_id,
-                task_id=request.task_id,
-                lane_id=request.lane_id,
-                actor="user",
-            ):
-                return service.post_message(
+            # Message admission remains connection-owned because future harness
+            # hooks may cross provider boundaries. Local repository writes commit
+            # independently; no BEGIN IMMEDIATE spans the request.
+            with dependencies.v3_service_scope(mode="connection") as service:
+                with llm_debug_context(
+                    request_path=f"/v3/sessions/{session_id}/messages",
                     session_id=session_id,
-                    message=request.message,
                     task_id=request.task_id,
                     lane_id=request.lane_id,
-                    skill_keys=tuple(request.skill_keys),
-                ).to_dict()
+                    actor="user",
+                ):
+                    return service.post_message(
+                        session_id=session_id,
+                        message=request.message,
+                        task_id=request.task_id,
+                        lane_id=request.lane_id,
+                        skill_keys=tuple(request.skill_keys),
+                    ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -368,27 +445,29 @@ def create_app(
     def drain_v3_runtime(
         session_id: str, request: DrainV3RuntimeRequest
     ) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            with llm_debug_context(
-                request_path=f"/v3/sessions/{session_id}/runtime/drain",
-                session_id=session_id,
-                actor="scheduler",
-            ):
-                return service.drain_runtime(
+            # Runtime drain may call LLM/provider/runner boundaries. It owns a
+            # connection, but intentionally does not hold a SQLite transaction.
+            with dependencies.v3_service_scope(mode="connection") as service:
+                with llm_debug_context(
+                    request_path=f"/v3/sessions/{session_id}/runtime/drain",
                     session_id=session_id,
-                    max_signals=request.max_signals,
-                    max_steps_per_agent=request.max_steps_per_agent,
-                    auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
-                ).to_dict()
+                    actor="scheduler",
+                ):
+                    return service.drain_runtime(
+                        session_id=session_id,
+                        max_signals=request.max_signals,
+                        max_steps_per_agent=request.max_steps_per_agent,
+                        auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
+                    ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.get("/v3/sessions/{session_id}/workspace")
     def get_v3_workspace(session_id: str) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.workspace(session_id)
+            with dependencies.v3_service_scope(mode="read") as service:
+                return service.workspace(session_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -396,25 +475,31 @@ def create_app(
     def stream_v3_events(
         session_id: str, replay: bool = True, follow: bool = False
     ) -> StreamingResponse:
-        service = dependencies.build_v3_service()
-        if service.repositories.sessions.get(session_id) is None:
-            raise _as_http_error(KeyError(f"session {session_id!r} does not exist"))
+        with dependencies.v3_service_scope(mode="read") as service:
+            if service.repositories.sessions.get(session_id) is None:
+                raise _as_http_error(KeyError(f"session {session_id!r} does not exist"))
+
+        def read_events() -> list[dict[str, Any]]:
+            # StreamingResponse starts consuming after the route returns. Never
+            # capture a request-scoped service/connection in the generator.
+            with dependencies.v3_service_scope(mode="read") as scoped_service:
+                return scoped_service.events(session_id)
 
         async def event_stream() -> Any:
             next_index = 0
             if replay:
-                existing = service.events(session_id)
+                existing = read_events()
                 for event in existing:
                     yield _sse_encode(event)
                 next_index = len(existing)
             else:
-                next_index = len(service.events(session_id))
+                next_index = len(read_events())
 
             if not follow:
                 return
 
             while True:
-                current = service.events(session_id)
+                current = read_events()
                 while next_index < len(current):
                     yield _sse_encode(current[next_index])
                     next_index += 1
@@ -424,51 +509,51 @@ def create_app(
 
     @app.post("/v3/tasks")
     def create_v3_task(payload: dict[str, Any]) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.create_task(payload)
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.create_task(payload)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.patch("/v3/tasks/{task_id}")
     def update_v3_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.update_task(task_id, payload)
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.update_task(task_id, payload)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes")
     def create_v3_lane(payload: dict[str, Any]) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.create_lane(payload)
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.create_lane(payload)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/claim")
     def claim_v3_lane(lane_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.claim_lane(
-                lane_id, claimed_ref=str(payload.get("claimed_ref") or "user")
-            )
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.claim_lane(
+                    lane_id, claimed_ref=str(payload.get("claimed_ref") or "user")
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/keep")
     def keep_v3_lane(lane_id: str) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.keep_lane(lane_id)
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.keep_lane(lane_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/remove")
     def remove_v3_lane(lane_id: str) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            return service.remove_lane(lane_id)
+            with dependencies.v3_service_scope(mode="write") as service:
+                return service.remove_lane(lane_id)
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -476,18 +561,18 @@ def create_app(
     def resolve_v3_approval(
         approval_id: str, request: ResolveV3ApprovalRequest
     ) -> dict[str, Any]:
-        service = dependencies.build_v3_service()
         try:
-            with llm_debug_context(
-                request_path=f"/v3/approvals/{approval_id}/resolve",
-                approval_id=approval_id,
-                actor=request.actor_ref,
-            ):
-                return service.resolve_approval(
-                    approval_id,
-                    decision=request.decision,
-                    actor_ref=request.actor_ref,
-                ).to_dict()
+            with dependencies.v3_service_scope(mode="write") as service:
+                with llm_debug_context(
+                    request_path=f"/v3/approvals/{approval_id}/resolve",
+                    approval_id=approval_id,
+                    actor=request.actor_ref,
+                ):
+                    return service.resolve_approval(
+                        approval_id,
+                        decision=request.decision,
+                        actor_ref=request.actor_ref,
+                    ).to_dict()
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -553,13 +638,11 @@ def _build_background_runtime_service(
         if enabled_override is not None
         else (False if runtime_settings is None else bool(runtime_settings.enabled))
     )
-    build_service = getattr(dependencies, "build_v3_service", None)
-    if build_service is None:
-        def build_service() -> V3HostApiService:
-            raise RuntimeError("V3 service dependencies are not configured")
+    service_scope = getattr(dependencies, "v3_service_scope", None)
 
     return V3BackgroundRuntimeService(
-        build_service=build_service,
+        build_service=None,
+        service_scope=service_scope,
         notifier=notifier,
         enabled=enabled,
         poll_interval_seconds=2.0

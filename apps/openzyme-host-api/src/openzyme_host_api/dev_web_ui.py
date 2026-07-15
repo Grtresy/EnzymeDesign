@@ -14,9 +14,8 @@ from .app import create_app
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
 from openzyme_core import CoreRepositories
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SQLiteSchemaMismatchError
-from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
-from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_core import sandbox_image_record
 
 
@@ -31,13 +30,13 @@ def _default_v3_sqlite_db() -> Path:
     return Path("/tmp/openzyme-web-ui-v3.sqlite3")
 
 
-def _build_v3_repositories(sqlite_db_path: Path) -> CoreRepositories:
+def _build_v3_repository_provider(
+    sqlite_db_path: Path,
+) -> SQLiteRepositoryProvider:
     sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = connect_v3_sqlite(str(sqlite_db_path))
     try:
-        apply_v3_sqlite_migrations(connection)
+        return SQLiteRepositoryProvider(str(sqlite_db_path))
     except SQLiteSchemaMismatchError as exc:
-        connection.close()
         msg = (
             f"V3 SQLite database is not compatible: {sqlite_db_path}. "
             "Old or unmarked V3 SQLite runtime state is not automatically "
@@ -45,7 +44,6 @@ def _build_v3_repositories(sqlite_db_path: Path) -> CoreRepositories:
             f"--v3-sqlite-db path. Details: {exc}"
         )
         raise SystemExit(msg) from exc
-    return CoreRepositories.from_connection(connection)
 
 
 def _register_existing_sandbox_image(
@@ -126,13 +124,14 @@ def main(argv: list[str] | None = None) -> int:
         build_configured_foundation if args.configured else build_local_eval_foundation
     )
     foundation = foundation_builder()
-    v3_repositories = _build_v3_repositories(args.v3_sqlite_db)
+    v3_repository_provider = _build_v3_repository_provider(args.v3_sqlite_db)
     if args.configured:
-        _register_existing_sandbox_image(v3_repositories)
+        with v3_repository_provider.write() as scope:
+            _register_existing_sandbox_image(scope.repositories)
     app = create_app(
         HostApiDependencies(
             foundation=foundation,
-            v3_repositories=v3_repositories,
+            v3_repository_provider=v3_repository_provider,
         ),
         ui_dist_dir=ui_dist,
     )

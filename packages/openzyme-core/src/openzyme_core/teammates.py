@@ -45,12 +45,16 @@ from .report_drafts import register_report_draft_tools
 from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_runtime import register_sandbox_runtime_tools
 from .task_board import register_task_board_tools
+from .skills import SkillRegistry
+from .skills import render_selected_workflow_context
 from .tool_catalog import artifact_tool_descriptors
 from .tool_catalog import engine_tool_descriptors
 from .tool_catalog import sandbox_tool_descriptors
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import world_tool_descriptors
 from .world_inspection import register_world_inspection_tools
+from .workflow_knowledge import is_workflow_ref
+from .workflow_knowledge import validate_workflow_requirements
 
 
 def _web_tool_enabled(adapter: object | None) -> bool:
@@ -440,12 +444,17 @@ def teammate_tool_descriptors(
                 ),
                 ToolDescriptor(
                     tool_name="docs.read",
-                    description="Read one controlled V3 execution pipeline document by doc_id or registered path.",
+                    description=(
+                        "Read one controlled V3 execution pipeline document by doc_id "
+                        "or registered path, optionally requiring an exact version and digest."
+                    ),
                     input_schema={
                         "type": "object",
                         "properties": {
                             "doc_id": {"type": "string"},
                             "path": {"type": "string"},
+                            "version": {"type": "string"},
+                            "content_sha256": {"type": "string"},
                         },
                         "additionalProperties": False,
                     },
@@ -551,6 +560,7 @@ def build_teammate_registry(
             engine.register_tools(registry)
     adapter_executor = None
     hpc_fetch_executor = None
+    repository_scope_factory = None
     if engine_registry is not None:
         execution_engine = engine_registry.get("execution")
         candidate = getattr(execution_engine, "execute_sandbox_adapter_operation", None)
@@ -559,6 +569,11 @@ def build_teammate_registry(
         candidate = getattr(execution_engine, "fetch_sandbox_hpc_outputs", None)
         if callable(candidate):
             hpc_fetch_executor = candidate
+        repository_scope_factory = getattr(
+            execution_engine,
+            "repository_scope_factory",
+            None,
+        )
     register_web_research_tools(registry, adapter=research_adapter)
     register_bio_research_tools(registry, service=bio_research_service)
     register_artifact_tools(registry)
@@ -569,6 +584,7 @@ def build_teammate_registry(
         agent_id=agent_id,
         adapter_executor=adapter_executor,
         hpc_fetch_executor=hpc_fetch_executor,
+        repository_scope_factory=repository_scope_factory,
     )
     register_protocol_tools(registry)
     register_report_draft_tools(registry)
@@ -742,8 +758,7 @@ class TeammateConversationDriver(HarnessDriver):
         )
         display_name = self._display_name(context)
         handle = self._handle(context) or "none"
-        return "\n".join(
-            [
+        sections = [
                 f"You are teammate {display_name} ({handle}).",
                 f"Canonical agent_id: {self.agent_id}. Use this for task ownership, runtime signals, leases, protocol routing, and task.finish authorization.",
                 f"Role: {self.role}. Role is a capability type for prompts, tools, and runtime policy; it is not your identity.",
@@ -755,10 +770,11 @@ class TeammateConversationDriver(HarnessDriver):
                 "You may read any session artifact through artifact tools by artifact_id. Compatibility catalog tools such as artifact.create_text, artifact.patch_text, and artifact.diff_text remain available for immutable CODE snapshots. For execution, first inspect your persistent sandbox workspace with sandbox.workspace.status; day-to-day source authoring belongs in that sandbox workspace, while CODE artifacts are audit snapshots when approval, external SDK operations, or provenance require one. Stay focused on your assigned task and lane. Never request or use Host local paths, storage_uri, runner paths, or sandbox host paths.",
                 "Never request more than 3 tool calls in one response.",
                 "After every tool call, read ok, status, summary, error_code, hint, and details first. If ok is false, do not assume the requested action completed.",
-                "Researcher contract: for open-ended literature/evidence gathering, start with deep_research.start for this assigned task. Use direct web/provider tools only for deterministic follow-up lookup, fetch, or downloads.",
+                "Researcher contract: choose between direct provider/web tools and available research engines based on the assigned task, evidence needs, cost, and uncertainty. No task wording forces one tool to run before another.",
                 "For structure-dependent research, distinguish source refs from persisted workspace artifacts; if you decide a real structure file is needed, use provider/download tools to create a catalog artifact instead of treating a fetched web page as one.",
-                "Executor contract: for execution, HPC, or sandbox tasks, first use docs.search or docs.read to find the relevant capability docs, then call sandbox.workspace.status to inspect the persistent sandbox workspace. Author source with sandbox.file.* and run it with sandbox.exec; external provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Do not treat execution.pipeline.start as the required authoring path.",
-                "AOX/HMM execution tasks: read docs.read doc_id=\"aox-hmm-live\" before authoring source, follow that recipe exactly, and do not mark task completed until the fixed aox_hmm/* deliverables are registered or a structured failure is recorded. If the recipe SDK path fails, fix the SDK call or report the structured error; never substitute sandbox-local pseudo-HMMs, local clustering, dependency installs, direct provider raw-file parsing, direct binaries, or synthetic hits for the required Host-supervised SDK operations.",
+                "Executor contract: inspect the persistent sandbox workspace before changing it and use controlled docs when capability details are needed. Author source with sandbox.file.* and run it with sandbox.exec; external provider, tool, or HPC work must go through the Host-supervised SDK from inside that sandbox run. Never call a runner, SSH, Slurm, runner config, or external network directly. Do not treat execution.pipeline.start as the required authoring path.",
+                "Execution evidence must come from the real controlled operation and declared artifacts. Never present synthetic output, a local stand-in, or an undeclared fallback as a successful external/scientific result; return the structured failure and preserve evidence when the required route cannot complete.",
+                "Do not infer a workflow from task words. Only an explicit structured workflow reference selects versioned workflow knowledge; missing or digest-drifted references must fail closed.",
                 f"Assigned task: {self.task_id}",
                 f"Correlation thread: {self.correlation_id}",
                 f"Instructions: {instructions}",
@@ -772,7 +788,19 @@ class TeammateConversationDriver(HarnessDriver):
                 "Ready tasks: "
                 + (", ".join(task.task_id for task in restore.ready_tasks) or "none"),
             ]
+        selected_workflow_context = render_selected_workflow_context(
+            restore.skill_documents
         )
+        if selected_workflow_context is not None:
+            sections.extend(
+                (
+                    "Explicit structured workflow selection follows. Its version, "
+                    "manifest digest, and knowledge digests are binding constraints; "
+                    "you retain strategy choice within those real constraints.",
+                    selected_workflow_context,
+                )
+            )
+        return "\n".join(sections)
 
     def _seed_messages(
         self,
@@ -805,51 +833,8 @@ class TeammateConversationDriver(HarnessDriver):
     def _allowed_tools(
         self, context: SessionRuntimeContext
     ) -> tuple[ToolDescriptor, ...]:
-        descriptors = teammate_tool_descriptors(
+        return teammate_tool_descriptors(
             role=self.role, research_adapter=self.research_adapter
-        )
-        if self.role != "researcher":
-            return descriptors
-        task = context.repositories.tasks.get(self.task_id)
-        task_text = "" if task is None else f"{task.subject}\n{task.description}"
-        session_text = context.snapshot.session.objective
-        open_ended_needles = (
-            "research",
-            "evidence",
-            "literature",
-            "paper",
-            "papers",
-            "web",
-            "identify",
-            "search",
-        )
-        combined = f"{task_text}\n{self.instructions}\n{session_text}".lower()
-        requires_deep_research_first = any(
-            needle in combined for needle in open_ended_needles
-        )
-        if not requires_deep_research_first:
-            return descriptors
-        has_deep_research_invocation = any(
-            invocation.engine_name == "deep_research"
-            for invocation in context.repositories.invocations.list_by_task(
-                context.snapshot.session.session_id, self.task_id
-            )
-        )
-        if has_deep_research_invocation:
-            return descriptors
-        return tuple(
-            descriptor
-            for descriptor in descriptors
-            if not descriptor.tool_name.startswith(
-                (
-                    "web.",
-                    "pubmed.",
-                    "semantic_scholar.",
-                    "uniprot.",
-                    "rcsb_pdb.",
-                    "interpro.",
-                )
-            )
         )
 
     def _prepare_step_context(
@@ -865,6 +850,29 @@ class TeammateConversationDriver(HarnessDriver):
                 *descriptors,
                 *engine_tool_descriptors(context.engine_registry),
             )
+        workflow_refs = tuple(
+            key for key in context.active_skill_keys if is_workflow_ref(key)
+        )
+        if workflow_refs:
+            skill_registry = context.skill_registry or SkillRegistry()
+            available_capabilities = {f"role:{self.role}"}
+            if context.engine_registry is not None:
+                for engine_descriptor in context.engine_registry.list_descriptors():
+                    available_capabilities.add(
+                        f"engine:{engine_descriptor.engine_name}"
+                    )
+                    available_capabilities.add(
+                        f"engine:{engine_descriptor.capability_key}"
+                    )
+            available_tools = {
+                descriptor.tool_name for descriptor in descriptors
+            }
+            for workflow_ref in workflow_refs:
+                validate_workflow_requirements(
+                    skill_registry.load_workflow_pack(workflow_ref),
+                    available_tools=available_tools,
+                    available_capabilities=available_capabilities,
+                )
         router = context.tool_registry.to_tool_router(
             context,
             descriptors=descriptors,
@@ -1078,6 +1086,78 @@ class TeammateConversationDriver(HarnessDriver):
         )
 
 
+def _delegated_workflow_refs(
+    parent_context: SessionRuntimeContext,
+    *,
+    task_id: str,
+    correlation_id: str,
+) -> tuple[str, ...]:
+    messages = tuple(
+        message
+        for message in parent_context.repositories.inbox.list_by_session(
+            parent_context.snapshot.session.session_id
+        )
+        if message.correlation_id == correlation_id
+        and message.message_type == "delegation_request"
+        and message.payload_ref is not None
+    )
+    if not messages:
+        return ()
+    document = parent_context.repositories.engine_documents.get(
+        str(messages[-1].payload_ref)
+    )
+    if document is None:
+        raise ValueError("delegation workflow binding payload is missing")
+    payload = document.payload
+    if str(payload.get("task_id") or "") != task_id:
+        raise ValueError("delegation workflow binding task does not match")
+    raw_refs = payload.get("workflow_refs", [])
+    raw_manifests = payload.get("workflow_manifests", [])
+    if not isinstance(raw_refs, list) or not all(
+        isinstance(item, str) and is_workflow_ref(item) for item in raw_refs
+    ):
+        raise ValueError("delegation workflow_refs must be explicit workflow references")
+    workflow_refs = tuple(raw_refs)
+    if len(workflow_refs) != len(set(workflow_refs)):
+        raise ValueError("delegation workflow_refs contain duplicates")
+    if not workflow_refs:
+        return ()
+    if not isinstance(raw_manifests, list) or len(raw_manifests) != len(
+        workflow_refs
+    ):
+        raise ValueError("delegation workflow manifests do not match workflow_refs")
+    stored_manifests: dict[str, dict[str, Any]] = {}
+    for item in raw_manifests:
+        if not isinstance(item, dict):
+            raise ValueError("delegation workflow manifest must be an object")
+        selection_ref = item.get("selection_ref")
+        if not isinstance(selection_ref, str) or selection_ref in stored_manifests:
+            raise ValueError("delegation workflow manifest selection_ref is invalid")
+        stored_manifests[selection_ref] = item
+    registry = parent_context.skill_registry or SkillRegistry()
+    for workflow_ref in workflow_refs:
+        stored = stored_manifests.get(workflow_ref)
+        if stored is None:
+            raise ValueError(
+                f"delegation workflow manifest missing for {workflow_ref!r}"
+            )
+        current = registry.load_workflow_pack(workflow_ref).manifest.to_dict()
+        for field_name in (
+            "workflow_id",
+            "version",
+            "content_sha256",
+            "capability_requirements",
+            "tool_requirements",
+            "knowledge_refs",
+        ):
+            if stored.get(field_name) != current[field_name]:
+                raise ValueError(
+                    f"delegation workflow binding drift for {workflow_ref!r}: "
+                    f"field {field_name!r} changed"
+                )
+    return workflow_refs
+
+
 def run_teammate_loop(
     parent_context: SessionRuntimeContext,
     *,
@@ -1094,6 +1174,17 @@ def run_teammate_loop(
 ) -> HarnessResult:
     if parent_context.model_factory is None:
         raise ValueError("teammate loop requires model_factory")
+    workflow_refs = _delegated_workflow_refs(
+        parent_context,
+        task_id=task_id,
+        correlation_id=correlation_id,
+    )
+    if not workflow_refs and parent_context.restore_focus.task_id == task_id:
+        workflow_refs = tuple(
+            key
+            for key in parent_context.active_skill_keys
+            if is_workflow_ref(key)
+        )
     registry = build_teammate_registry(
         agent_id=agent_id,
         engine_registry=parent_context.engine_registry,
@@ -1117,7 +1208,11 @@ def run_teammate_loop(
             max_steps=max_steps,
             sender=agent_id,
             sender_kind=InboxParticipantKind.AGENT,
-            restore_focus=RestoreFocus(task_id=task_id, lane_id=lane_id),
+            restore_focus=RestoreFocus(
+                task_id=task_id,
+                lane_id=lane_id,
+                skill_keys=workflow_refs,
+            ),
             persist_conversation=False,
             skip_resume_resolution=resume is not None,
             agent_id=agent_id,

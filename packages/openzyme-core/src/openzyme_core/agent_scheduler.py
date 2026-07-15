@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
 from typing import Any
+from typing import Callable
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -16,7 +18,10 @@ from openzyme_runtime import classify_llm_provider_error
 
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
+from .engines import EngineRegistry
+from .repositories import CoreRepositories
 from .harness import SessionRuntimeContext
+from .harness import SessionRuntimeSnapshot
 
 
 class SessionRuntimeLeaseLockedError(RuntimeError):
@@ -46,6 +51,10 @@ class AgentRuntimeScheduler:
     max_global_concurrency: int = 1
     max_session_concurrency: int = 1
     max_agent_concurrency: int = 1
+    repository_scope_factory: Callable[
+        [], AbstractContextManager[CoreRepositories]
+    ] | None = None
+    engine_registry_factory: Callable[[CoreRepositories], EngineRegistry] | None = None
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -91,8 +100,8 @@ class AgentRuntimeScheduler:
                     async with agent_limiter:
                         try:
                             return await asyncio.to_thread(
-                                AgentRuntimeService(self.context).wake_agent,
-                                signal,
+                                self._wake_signal_in_worker,
+                                signal=signal,
                                 max_steps=max_steps_per_agent,
                             )
                         except Exception as exc:
@@ -181,6 +190,43 @@ class AgentRuntimeScheduler:
                     owner_id=self.worker_id,
                     lease_token=session_lease.lease_token,
                 )
+
+    def _wake_signal_in_worker(
+        self,
+        *,
+        signal: AgentRuntimeSignal,
+        max_steps: int,
+    ) -> AgentRuntimeOutcome:
+        """Run one bounded turn with repositories owned by the worker thread.
+
+        The scheduler claims signals and owns the session lease on its coordinator
+        thread.  Agent execution is intentionally offloaded because provider calls
+        are blocking.  A file-backed Host therefore supplies a scope factory so the
+        worker never touches the coordinator's thread-affine SQLite connection.
+        """
+
+        if self.repository_scope_factory is None:
+            return AgentRuntimeService(self.context).wake_agent(
+                signal,
+                max_steps=max_steps,
+            )
+        with self.repository_scope_factory() as repositories:
+            engine_registry = self.context.engine_registry
+            if self.engine_registry_factory is not None:
+                engine_registry = self.engine_registry_factory(repositories)
+            scoped_context = replace(
+                self.context,
+                repositories=repositories,
+                snapshot=SessionRuntimeSnapshot.load(
+                    repositories,
+                    signal.session_id,
+                ),
+                engine_registry=engine_registry,
+            )
+            return AgentRuntimeService(scoped_context).wake_agent(
+                signal,
+                max_steps=max_steps,
+            )
 
     async def run_forever(
         self,

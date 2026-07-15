@@ -9,6 +9,7 @@ PRIVATE_ARTIFACT_KEYS = {
     "host_path",
     "sandbox_host_path",
     "source_storage_uri",
+    "source_uri",
     "intermediate_storage_uri",
     "runner_path",
     "runner_config",

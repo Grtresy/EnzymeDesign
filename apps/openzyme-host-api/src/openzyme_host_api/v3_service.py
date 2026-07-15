@@ -8,6 +8,8 @@ from datetime import timedelta
 import json
 import threading
 from typing import Any
+from typing import Callable
+from typing import ContextManager
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
@@ -159,6 +161,10 @@ class V3HostApiService:
     research_adapter: Any | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
+    runtime_repository_scope_factory: Callable[
+        [], ContextManager[CoreRepositories]
+    ] | None = None
+    engine_registry_factory: Callable[[CoreRepositories], EngineRegistry] | None = None
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def _event_sink(self) -> V3EventStoreSink:
@@ -535,6 +541,8 @@ class V3HostApiService:
             max_global_concurrency=int(self.scheduler_limits.get("global", 1)),
             max_session_concurrency=int(self.scheduler_limits.get("session", 1)),
             max_agent_concurrency=int(self.scheduler_limits.get("agent", 1)),
+            repository_scope_factory=self.runtime_repository_scope_factory,
+            engine_registry_factory=self.engine_registry_factory,
         )
 
     def _runtime_locked_event(

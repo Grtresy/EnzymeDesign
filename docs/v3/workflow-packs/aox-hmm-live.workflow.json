@@ -1,0 +1,23 @@
+{
+  "workflow_id": "aox-hmm-live",
+  "version": "1.0.0",
+  "content_sha256": "sha256:f4b1659a6c4bf6db56a8bf4e1f97491579904d370699c68206dec3a0e0200309",
+  "title": "AOX/HMM live cutover",
+  "summary": "Versioned, fail-closed scientific cutover workflow using Host-supervised provider and HPC operations.",
+  "capability_requirements": [
+    "role:executor",
+    "engine:execution"
+  ],
+  "tool_requirements": [
+    "docs.read",
+    "sandbox.workspace.status",
+    "sandbox.exec"
+  ],
+  "knowledge_refs": [
+    {
+      "doc_id": "aox-hmm-live",
+      "version": "v3",
+      "content_sha256": "sha256:9130dc874940fb91f0febe08651754a50818a8cbf4fcff47043c79450119d7e5"
+    }
+  ]
+}

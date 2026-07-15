@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from dataclasses import replace
 from http import client as http_client
 import hashlib
 import json
@@ -2926,6 +2927,7 @@ class ExecutionEngine:
     sandbox_runner: Any | None = None
     allow_bio_fixture_adapter: bool = False
     sandbox_workspace_root: Path | None = None
+    repository_scope_factory: Any | None = None
 
     @property
     def descriptor(self) -> EngineDescriptor:
@@ -2955,6 +2957,13 @@ class ExecutionEngine:
         operation: ControlledOperation,
         envelope: dict[str, Any],
     ) -> dict[str, Any]:
+        if self.repository_scope_factory is not None:
+            with self.repository_scope_factory() as repositories:
+                return replace(
+                    self,
+                    repositories=repositories,
+                    repository_scope_factory=None,
+                ).execute_sandbox_adapter_operation(operation, envelope)
         method = f"{operation.sdk_module}.{operation.function_name}"
         params = envelope.get("adapter_params")
         if not isinstance(params, dict):
@@ -3000,6 +3009,13 @@ class ExecutionEngine:
         )
 
     def fetch_sandbox_hpc_outputs(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self.repository_scope_factory is not None:
+            with self.repository_scope_factory() as repositories:
+                return replace(
+                    self,
+                    repositories=repositories,
+                    repository_scope_factory=None,
+                ).fetch_sandbox_hpc_outputs(params)
         session_id = str(params.get("session_id") or "")
         sandbox_workspace_id = str(params.get("sandbox_workspace_id") or "")
         run_id = str(params.get("run_id") or "")
@@ -4135,7 +4151,7 @@ class ExecutionEngine:
                 invocation_id=invocation.invocation_id,
                 code=code,
                 inputs=sandbox_inputs,
-                control_handler=lambda method, params: self._handle_pipeline_sdk_call(
+                control_handler=lambda method, params: self._handle_pipeline_sdk_call_in_owned_scope(
                     session=session,
                     task=task,
                     invocation_id=invocation.invocation_id,
@@ -4156,6 +4172,47 @@ class ExecutionEngine:
         if waiting is not None and waiting.status is EngineInvocationStatus.WAITING_APPROVAL:
             return ExecutionStartResult(invocation=waiting, run=None, approval=self._load_approval(waiting))
         return self._finalize_pipeline_terminal(invocation=invocation, outcome=outcome)
+
+    def _handle_pipeline_sdk_call_in_owned_scope(
+        self,
+        *,
+        session: Any,
+        task: Any,
+        invocation_id: str,
+        method: str,
+        params: dict[str, Any],
+    ) -> Any:
+        if self.repository_scope_factory is None:
+            return self._handle_pipeline_sdk_call(
+                session=session,
+                task=task,
+                invocation_id=invocation_id,
+                method=method,
+                params=params,
+            )
+        # Podman serves SDK control requests from its control-server thread. A
+        # sqlite3 connection created by the outer engine thread is deliberately
+        # thread-affine, so every callback gets a fresh connection-owned engine.
+        # This is not a UoW: provider/runner calls below must never sit inside a
+        # long SQLite transaction.
+        with self.repository_scope_factory() as repositories:
+            scoped_engine = replace(
+                self,
+                repositories=repositories,
+                repository_scope_factory=None,
+            )
+            scoped_session = scoped_engine._require_session(session.session_id)
+            scoped_task = scoped_engine._require_task(
+                scoped_session.session_id,
+                task.task_id,
+            )
+            return scoped_engine._handle_pipeline_sdk_call(
+                session=scoped_session,
+                task=scoped_task,
+                invocation_id=invocation_id,
+                method=method,
+                params=params,
+            )
 
     def _handle_pipeline_sdk_call(
         self,

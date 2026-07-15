@@ -100,10 +100,16 @@ class SkillDocument:
 
 
 class SkillRegistry:
-    def __init__(self, *, catalog_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        catalog_root: Path | None = None,
+        workflow_registry: Any | None = None,
+    ) -> None:
         self._catalog_root = catalog_root or _default_catalog_root()
         self._descriptors = self._load_descriptors()
         self._cache: dict[str, SkillDocument] = {}
+        self._workflow_registry = workflow_registry
 
     def _read_index_payload(self) -> dict[str, Any]:
         index_path = self._catalog_root / "index.json"
@@ -149,6 +155,29 @@ class SkillRegistry:
         cached = self._cache.get(skill_key)
         if cached is not None:
             return cached
+        from .workflow_knowledge import is_workflow_ref
+
+        if is_workflow_ref(skill_key):
+            pack = self.load_workflow_pack(skill_key)
+            manifest = pack.manifest
+            document = SkillDocument(
+                descriptor=SkillDescriptor(
+                    skill_key=manifest.selection_ref,
+                    title=manifest.title,
+                    summary=manifest.summary,
+                    stage_tags=("workflow",),
+                    capability_tags=manifest.capability_requirements,
+                    execution_support="workflow",
+                    skill_ref=manifest.selection_ref,
+                ),
+                required_inputs=manifest.capability_requirements,
+                outputs=tuple(
+                    reference.doc_id for reference in manifest.knowledge_refs
+                ),
+                raw_markdown=pack.render_prompt_document(),
+            )
+            self._cache[skill_key] = document
+            return document
         descriptor = self.get_descriptor(skill_key)
         if descriptor is None:
             raise KeyError(f"unknown skill: {skill_key}")
@@ -164,6 +193,15 @@ class SkillRegistry:
         )
         self._cache[skill_key] = document
         return document
+
+    def load_workflow_pack(self, workflow_ref: str) -> Any:
+        from .workflow_knowledge import default_workflow_registry
+        from .workflow_knowledge import is_workflow_ref
+
+        if not is_workflow_ref(workflow_ref):
+            raise ValueError(f"{workflow_ref!r} is not a workflow reference")
+        workflow_registry = self._workflow_registry or default_workflow_registry()
+        return workflow_registry.resolve(workflow_ref)
 
     def load_skills(self, skill_keys: tuple[str, ...] | list[str]) -> tuple[SkillDocument, ...]:
         return tuple(self.load_skill(skill_key) for skill_key in skill_keys)
@@ -187,6 +225,13 @@ def register_skill_tools(registry: Any) -> None:
 
     def load_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         skill_key = str(invocation.arguments["skill_key"])
+        from .workflow_knowledge import is_workflow_ref
+
+        if is_workflow_ref(skill_key):
+            raise ValueError(
+                "workflow knowledge cannot be activated by model inference; "
+                "select it through the structured restore focus skill_keys field"
+            )
         document = context.skill_registry.load_skill(skill_key)
         context.add_skill_keys((skill_key,))
         context.refresh_restore_context()
@@ -203,4 +248,23 @@ def register_skill_tools(registry: Any) -> None:
     registry.register("skill.load", load_handler)
 
 
-__all__ = ["SkillDescriptor", "SkillDocument", "SkillRegistry", "register_skill_tools"]
+def render_selected_workflow_context(
+    skill_documents: tuple[SkillDocument, ...] | list[SkillDocument],
+) -> str | None:
+    selected = tuple(
+        document
+        for document in skill_documents
+        if document.descriptor.execution_support == "workflow"
+    )
+    if not selected:
+        return None
+    return "\n\n".join(document.raw_markdown for document in selected)
+
+
+__all__ = [
+    "SkillDescriptor",
+    "SkillDocument",
+    "SkillRegistry",
+    "register_skill_tools",
+    "render_selected_workflow_context",
+]

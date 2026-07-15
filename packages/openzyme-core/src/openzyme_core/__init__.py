@@ -94,6 +94,8 @@ from .repositories import CommandLogArtifactRepository
 from .repositories import ControlledOperationRepository
 from .repositories import ContinuationStateRepository
 from .repositories import CoreRepositories
+from .repositories import CoreRepositoryConnectionScope
+from .repositories import CoreUnitOfWork
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
 from .repositories import EngineInvocationRepository
@@ -120,6 +122,7 @@ from .repositories import SessionArtifactRepository
 from .repositories import SessionRuntimeLeaseAcquireResult
 from .repositories import SessionRuntimeLeaseRepository
 from .repositories import SessionRepository
+from .repositories import SQLiteRepositoryProvider
 from .repositories import LaneRepository
 from .repositories import TaskRepository
 from .repositories import ApprovalRequestRepository
@@ -182,6 +185,8 @@ __all__ = [
     "CorrelationThread",
     "ConversationEntry",
     "CoreRepositories",
+    "CoreRepositoryConnectionScope",
+    "CoreUnitOfWork",
     "DeepResearchTaskPlanner",
     "DocumentRecord",
     "DocumentRegistry",
@@ -258,6 +263,7 @@ __all__ = [
     "SessionRuntimeContext",
     "SessionRuntimeSnapshot",
     "SessionWorkspaceProjection",
+    "SQLiteRepositoryProvider",
     "SkillDescriptor",
     "SkillDocument",
     "SkillRegistry",

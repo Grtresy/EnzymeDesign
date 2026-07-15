@@ -75,7 +75,7 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "Safe basename ending in .py, for example aox_hmm_pipeline.py.",
+                        "description": "Safe basename ending in .py, for example pipeline.py.",
                     },
                     "content": {
                         "type": "string",
@@ -684,12 +684,18 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="docs.read",
-            description="Read one document from the controlled V3 documentation registry by doc_id or registered path.",
+            description=(
+                "Read one document from the controlled V3 documentation registry "
+                "by doc_id or registered path, optionally requiring an exact "
+                "version and digest."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "doc_id": {"type": "string"},
                     "path": {"type": "string"},
+                    "version": {"type": "string"},
+                    "content_sha256": {"type": "string"},
                 },
                 "additionalProperties": False,
             },

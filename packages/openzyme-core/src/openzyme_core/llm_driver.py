@@ -21,6 +21,7 @@ from .harness import budget_tool_results_for_prompt
 from .harness import ensure_prompt_budget_before_model_call
 from .tool_catalog import ToolDescriptor
 from .tool_catalog import top_level_tool_descriptors
+from .skills import render_selected_workflow_context
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 from .teammate_roster import teammate_role_for_task_kind
 from .teammate_roster import teammate_roster_prompt_line
@@ -110,7 +111,8 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         "For research, execution, and reporting tasks, prefer task.delegate after task.create or task.update.",
         "If task.delegate returns wakeup_queued, delegation has been queued but not completed; teammate execution requires an explicit scheduler/runtime drain.",
         "After delegated work changes state, inspect the world facts and decide whether to follow up, create more work, report to the user, or finish a task; do not assume research completion implies execution or reporting.",
-        "For AOX/HMM, HMM, refprot, or sequence-mining execution tasks, instruct executor to first read docs.read doc_id=\"aox-hmm-live\" and follow that controlled SDK recipe exactly; do not tell executor to use ClustalW, MUSCLE, direct MAFFT/CD-HIT/HMMER binaries, direct provider files, local pseudo computations, synthetic hits, or dependency installs.",
+        "Do not rewrite a task or delegation because its free text resembles a known domain or workflow. Only an explicit structured workflow reference selects a versioned knowledge pack.",
+        "When an explicit workflow pack is present below, preserve its workflow id, version, manifest digest, and knowledge digests in delegation context. Missing or drifted references are hard failures, not permission to infer a replacement workflow.",
         "When execution later completes and a final report is requested, create or delegate a reporting task to reporter unless one already exists.",
         "If delegated work fails or returns an unclear result, inspect the task state and protocol.thread(correlation_id) before deciding whether to ask the teammate a follow-up via protocol.send, update the task, ask the user for clarification, or report the result.",
         "When a delegated task is completed or failed, inspect protocol.thread(correlation_id) for the relevant protocol thread if the restore summary is not enough, then report the task result to the user in your own words.",
@@ -150,6 +152,18 @@ def _build_system_prompt(context: SessionRuntimeContext) -> str:
         sections.append(f"Lane continuity: {restore.lane_memory.continuity.summary}")
     if restore.task_memory and restore.task_memory.compaction is not None:
         sections.append(f"Task compaction: {restore.task_memory.compaction.summary}")
+    selected_workflow_context = render_selected_workflow_context(
+        restore.skill_documents
+    )
+    if selected_workflow_context is not None:
+        sections.extend(
+            (
+                "Explicit structured workflow selection follows. Treat its "
+                "versioned constraints and knowledge digests as binding context; "
+                "the workflow still does not choose the agent's strategy.",
+                selected_workflow_context,
+            )
+        )
     return "\n".join(sections)
 
 

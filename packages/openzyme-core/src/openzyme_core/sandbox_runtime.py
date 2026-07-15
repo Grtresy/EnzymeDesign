@@ -347,6 +347,7 @@ class _ControlSocketServer:
     workspace_root: Path | None = None
     adapter_executor: SandboxAdapterExecutor | None = None
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
+    repository_scope_factory: Callable[[], Any] | None = None
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
 
@@ -376,6 +377,17 @@ class _ControlSocketServer:
             pass
 
     def _serve(self) -> None:
+        if self.repository_scope_factory is None:
+            self._serve_with_owned_repositories()
+            return
+        # The control socket has its own server thread.  Open the repository
+        # connection in that thread instead of capturing the sandbox.exec
+        # worker's thread-affine connection.
+        with self.repository_scope_factory() as repositories:
+            self.repositories = repositories
+            self._serve_with_owned_repositories()
+
+    def _serve_with_owned_repositories(self) -> None:
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
@@ -1622,6 +1634,7 @@ class SandboxRuntimeService:
     podman_binary: str = "podman"
     adapter_executor: SandboxAdapterExecutor | None = None
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
+    repository_scope_factory: Callable[[], Any] | None = None
 
     def _local_pipeline_sdk_src(self) -> Path | None:
         candidate = Path(__file__).resolve().parents[3] / "openzyme-pipeline" / "src"
@@ -1932,6 +1945,7 @@ class SandboxRuntimeService:
             workspace_root=self.workspace_root,
             adapter_executor=self.adapter_executor,
             hpc_fetch_executor=self.hpc_fetch_executor,
+            repository_scope_factory=self.repository_scope_factory,
         )
         completed: subprocess.CompletedProcess[str] | None = None
         started = time.monotonic()
@@ -2596,12 +2610,14 @@ def register_sandbox_runtime_tools(
     agent_id: str | None = None,
     adapter_executor: SandboxAdapterExecutor | None = None,
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None,
+    repository_scope_factory: Callable[[], Any] | None = None,
 ) -> None:
     def _service(context: SessionRuntimeContext) -> SandboxRuntimeService:
         return SandboxRuntimeService(
             context.repositories,
             adapter_executor=adapter_executor,
             hpc_fetch_executor=hpc_fetch_executor,
+            repository_scope_factory=repository_scope_factory,
         )
 
     def _workspace_id(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:

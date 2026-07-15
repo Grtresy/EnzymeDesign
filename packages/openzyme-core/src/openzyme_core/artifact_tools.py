@@ -710,7 +710,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
                     "filename": str(filename_raw),
                 },
                 error_code="invalid_pipeline_source_filename",
-                hint="Use a basename such as aox_hmm_pipeline.py; do not pass directories or Host paths.",
+                hint="Use a basename such as pipeline.py; do not pass directories or Host paths.",
             )
         content, content_error = _validate_text_content(content_raw)
         if content_error is not None:
@@ -828,7 +828,7 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
                     "filename": str(filename_arg or default_filename),
                 },
                 error_code="invalid_pipeline_source_filename",
-                hint="Use a basename such as aox_hmm_pipeline.py; do not pass directories or Host paths.",
+                hint="Use a basename such as pipeline.py; do not pass directories or Host paths.",
             )
         version = int(metadata.get("version") or 1) + 1
         lineage_root = str(metadata.get("lineage_root_artifact_id") or artifact.artifact_id)

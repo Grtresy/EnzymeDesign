@@ -194,7 +194,7 @@ class SessionProjectionBuilder:
                 run = self.repositories.sandbox_runs.get(operation.sandbox_run_id)
                 if run is not None:
                     projected["sandbox_run"] = self._project_sandbox_run(run)
-        return projected
+        return self._sanitize_execution_projection(projected)
 
     def _project_operation_summary(self, operation: Any) -> dict[str, Any]:
         return self._sanitize_execution_projection(

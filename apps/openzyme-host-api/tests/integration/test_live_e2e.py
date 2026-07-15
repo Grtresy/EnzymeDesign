@@ -8,9 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from openzyme_core import CoreRepositories
-from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
-from openzyme_core import connect_sqlite as connect_v3_sqlite
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_host_api.app import HostApiDependencies
 from openzyme_host_api.app import create_app
 from openzyme_host_api.foundation import apply_live_llm_test_budget
@@ -35,12 +33,6 @@ def _raise_for_status_with_body(response, *, step: str) -> None:
         f"{step} failed with HTTP {response.status_code}: {response.text}",
         pytrace=False,
     )
-
-
-def _build_v3_repositories() -> CoreRepositories:
-    connection = connect_v3_sqlite(":memory:")
-    apply_v3_sqlite_migrations(connection)
-    return CoreRepositories.from_connection(connection)
 
 
 def _poll_until_product_path_quiescent(
@@ -127,7 +119,7 @@ def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[st
     raise AssertionError(_workspace_failure_summary(workspace))
 
 
-def test_live_v3_master_message_e2e_reaches_report() -> None:
+def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
     log_live_phase("loading live E2E settings")
     settings = apply_live_llm_test_budget(get_settings())
     tuned_settings = replace(
@@ -159,13 +151,15 @@ def test_live_v3_master_message_e2e_reaches_report() -> None:
     foundation = build_configured_foundation(
         settings=tuned_settings,
     )
-    v3_repositories = _build_v3_repositories()
+    v3_repository_provider = SQLiteRepositoryProvider(
+        str(tmp_path / "live-v3-e2e.sqlite3")
+    )
     session_id = "sess_live_v3_e2e"
     with TestClient(
         create_app(
             HostApiDependencies(
                 foundation=foundation,
-                v3_repositories=v3_repositories,
+                v3_repository_provider=v3_repository_provider,
                 v3_background_runtime_enabled=True,
             )
         )

@@ -83,6 +83,8 @@ signal claim 语义：
 
 第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：session lease 与 signal claim API 是 repository 层能力，scheduler 通过 worker id、session lease 和 signal lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
 
+当前单进程 scheduler 的 coordinator 在自己的 connection 上获取 session lease 与 claim signal；blocking agent turn 进入 worker thread 后，必须在该 worker 内重新打开 repository scope、重建绑定同一 scope 的 engine registry，并从 canonical state 重载 snapshot。worker 不得复用 coordinator/request connection。该 worker scope 可以跨 provider 等待，但不持 `BEGIN IMMEDIATE`；每个本地 mutation 仍需是短提交。sandbox SDK control server 线程遵循相同 ownership 规则，每次 callback 打开并关闭自己的 scope。
+
 runtime state consistency guard 是只读诊断层。它可以在 workspace projection 与 events 中报告：
 
 - active/running engine invocation 关联的 task 或 agent 已 terminal / 缺失

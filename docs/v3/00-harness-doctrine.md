@@ -135,6 +135,6 @@ V3 顶层真状态必须属于 harness control plane，而不是属于某个 cap
 
 后续 AI 在每次 V3 实施时必须默认遵守以下 guardrail：
 
-`Agent != workflow graph. Prefer tool dispatch, task persistence, lane isolation, docs retrieval, context compaction, approval protocols, and canonical control-plane projections. Skill loading is frozen in V3 until explicitly reapproved. LangGraph is allowed inside capability engines, not as product truth.`
+`Agent != workflow graph. Prefer tool dispatch, task persistence, lane isolation, docs retrieval, context compaction, approval protocols, and canonical control-plane projections. Free-text or model-inferred workflow activation is forbidden. A caller may explicitly bind a versioned workflow knowledge pack by id, version, manifest digest, and pinned document digests; requirement or digest drift fails before the provider call, while the agent retains strategy choice inside the declared constraints. LangGraph is allowed inside capability engines, not as product truth.`
 
 除非用户明确要求，否则不得弱化这条 guardrail。
