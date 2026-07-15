@@ -14,6 +14,7 @@ from .slurm import SlurmRunner
 from .ssh_runner import SSHRunner
 from .staging import StagingManager
 from .store import ArtifactStore
+from .validation import ensure_valid_runspec
 
 
 class MCPHpcServer:
@@ -86,7 +87,12 @@ class MCPHpcServer:
                         "run_id": {"type": "string"},
                         "job_id": {"type": "string"},
                         "remote_run_dir": {"type": "string"},
-                        "tail_lines": {"type": "integer", "default": 200},
+                        "tail_lines": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": self.config.limits.max_tail_lines,
+                            "default": 200,
+                        },
                     },
                     "anyOf": [
                         {"required": ["run_id"]},
@@ -157,6 +163,11 @@ class MCPHpcServer:
         args = arguments or {}
         if name == "exec.run":
             spec = RunSpec.from_dict(args["runspec"])
+            ensure_valid_runspec(
+                spec,
+                limits=self.config.limits,
+                allowed_partitions=self.config.slurm.allowed_partitions,
+            )
             selected = select_execution_mode(
                 spec, self.config, args.get("mode_override")
             )
@@ -167,6 +178,11 @@ class MCPHpcServer:
         if name == "job.submit":
             spec = RunSpec.from_dict(args["runspec"])
             spec.execution_mode = "sbatch"
+            ensure_valid_runspec(
+                spec,
+                limits=self.config.limits,
+                allowed_partitions=self.config.slurm.allowed_partitions,
+            )
             return self.slurm_runner.submit(spec).to_dict()
 
         if name == "job.status":

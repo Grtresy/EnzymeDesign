@@ -60,7 +60,11 @@ class SSHRunner:
         )
 
     def exec_run(self, spec: RunSpec) -> RunResult:
-        ensure_valid_runspec(spec)
+        ensure_valid_runspec(
+            spec,
+            limits=self.config.limits,
+            allowed_partitions=self.config.slurm.allowed_partitions,
+        )
         started_at = datetime.now(tz=UTC).isoformat()
         run_id = spec.run_id or self._make_run_id()
         remote_run_dir = self._remote_run_dir(run_id)

@@ -14,8 +14,10 @@ from .remote import CommandRunner, wrap_ssh
 from .staging import StagingManager
 from .store import ArtifactStore
 from .validation import (
+    ensure_safe_slurm_token,
     ensure_valid_runspec,
     run_success_checks,
+    safe_remote_run_dir,
     validate_expected_outputs,
 )
 
@@ -82,12 +84,26 @@ class SlurmRunner:
         return self.config.slurm.default_partition
 
     def build_sbatch_script(self, spec: RunSpec, remote_run_dir: str) -> str:
+        ensure_valid_runspec(
+            spec,
+            limits=self.config.limits,
+            allowed_partitions=self.config.slurm.allowed_partitions,
+        )
+        validated_run_dir = safe_remote_run_dir(remote_run_dir)
         partition = self._partition_for(spec)
-        run_dir = str(PurePosixPath(remote_run_dir))
-        work_dir = str(PurePosixPath(remote_run_dir) / "work")
-        out_dir = str(PurePosixPath(remote_run_dir) / "out")
-        tmp_dir = str(PurePosixPath(remote_run_dir) / "tmp")
-        log_dir = str(PurePosixPath(remote_run_dir) / "logs")
+        if partition:
+            if spec.resources.partition:
+                partition_field = "resources.partition"
+            elif spec.resources.gpus > 0 and self.config.slurm.gpu_partition:
+                partition_field = "slurm.gpu_partition"
+            else:
+                partition_field = "slurm.default_partition"
+            partition = ensure_safe_slurm_token(partition, field=partition_field)
+        run_dir = str(validated_run_dir)
+        work_dir = str(validated_run_dir / "work")
+        out_dir = str(validated_run_dir / "out")
+        tmp_dir = str(validated_run_dir / "tmp")
+        log_dir = str(validated_run_dir / "logs")
         # IMPORTANT: Slurm only honors #SBATCH directives that appear before the
         # first non-comment executable line. Keep all directives at the top.
         lines = [
@@ -96,8 +112,8 @@ class SlurmRunner:
             f"#SBATCH --cpus-per-task={spec.resources.cpus}",
             f"#SBATCH --mem={spec.resources.mem_mb}",
             f"#SBATCH --time={spec.resources.time_minutes}",
-            f"#SBATCH --output={PurePosixPath(remote_run_dir) / 'logs' / 'slurm-%j.out'}",
-            f"#SBATCH --error={PurePosixPath(remote_run_dir) / 'logs' / 'slurm-%j.err'}",
+            f"#SBATCH --output={validated_run_dir / 'logs' / 'slurm-%j.out'}",
+            f"#SBATCH --error={validated_run_dir / 'logs' / 'slurm-%j.err'}",
         ]
         if partition:
             lines.append(f"#SBATCH --partition={partition}")
@@ -168,7 +184,11 @@ class SlurmRunner:
         return "\n".join(lines) + "\n"
 
     def submit(self, spec: RunSpec) -> RunResult:
-        ensure_valid_runspec(spec)
+        ensure_valid_runspec(
+            spec,
+            limits=self.config.limits,
+            allowed_partitions=self.config.slurm.allowed_partitions,
+        )
         run_id = spec.run_id or self._make_run_id()
         remote_run_dir = self._remote_run_dir(run_id)
         self.store.ensure_run_layout(run_id)
@@ -254,7 +274,25 @@ class SlurmRunner:
     def load_handle(self, run_id: str) -> JobHandle:
         return JobHandle.from_dict(self.store.read_json(run_id, "job_handle.json"))
 
+    def _validate_handle(self, handle: JobHandle) -> None:
+        self.store.run_root(handle.run_id)
+        ensure_safe_slurm_token(handle.job_id, field="job_handle.job_id")
+        actual_run_dir = safe_remote_run_dir(
+            handle.remote_run_dir,
+            field="job_handle.remote_run_dir",
+        )
+        expected_run_dir = safe_remote_run_dir(
+            self._remote_run_dir(handle.run_id),
+            field="configured run directory",
+        )
+        if actual_run_dir != expected_run_dir:
+            raise ValueError(
+                "job_handle.remote_run_dir must equal the configured run directory "
+                f"for run_id {handle.run_id!r}"
+            )
+
     def status(self, handle: JobHandle) -> JobStatus:
+        self._validate_handle(handle)
         squeue_cmd = wrap_ssh(
             self.config.cluster.ssh_target,
             ["squeue", "-h", "-j", handle.job_id, "-o", "%T"],
@@ -301,6 +339,11 @@ class SlurmRunner:
         )
 
     def logs(self, handle: JobHandle, tail_lines: int = 200) -> dict[str, object]:
+        if tail_lines < 1 or tail_lines > self.config.limits.max_tail_lines:
+            raise ValueError(
+                f"tail_lines must be between 1 and {self.config.limits.max_tail_lines}"
+            )
+        self._validate_handle(handle)
         out_path = str(
             PurePosixPath(handle.remote_run_dir) / "logs" / f"slurm-{handle.job_id}.out"
         )
@@ -335,6 +378,7 @@ class SlurmRunner:
         }
 
     def cancel(self, handle: JobHandle) -> RunResult:
+        self._validate_handle(handle)
         cancel_cmd = wrap_ssh(
             self.config.cluster.ssh_target, ["scancel", handle.job_id]
         )
@@ -360,6 +404,7 @@ class SlurmRunner:
         )
 
     def fetch_artifacts(self, spec: RunSpec, handle: JobHandle) -> RunResult:
+        self._validate_handle(handle)
         entries = self.staging.download_outputs(
             handle.run_id,
             spec.expected_outputs,

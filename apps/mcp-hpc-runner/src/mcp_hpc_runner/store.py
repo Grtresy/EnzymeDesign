@@ -2,27 +2,101 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 from typing import Any
+
+
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SAFE_LEAF_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ArtifactStore:
     def __init__(self, root: Path) -> None:
-        self.root = root
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.cache_dir = self.root / "cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir = self._ensure_contained_directory(
+            self.root / "cache",
+            root=self.root,
+            field="artifact cache directory",
+        )
+
+    @staticmethod
+    def _ensure_contained_directory(
+        path: Path,
+        *,
+        root: Path,
+        field: str,
+    ) -> Path:
+        if path.is_symlink():
+            raise ValueError(f"{field} must not be a symbolic link")
+        path.mkdir(parents=True, exist_ok=True)
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValueError(f"{field} escapes the artifact store root")
+        if not resolved.is_dir():
+            raise ValueError(f"{field} must be a directory")
+        return resolved
 
     def run_root(self, run_id: str) -> Path:
-        return self.root / run_id
+        normalized = str(run_id)
+        if not _SAFE_RUN_ID.fullmatch(normalized):
+            raise ValueError(
+                "run_id must contain only letters, digits, '.', '_', or '-' "
+                "and must not contain path separators"
+            )
+        candidate = (self.root / normalized).resolve()
+        if candidate == self.root or self.root not in candidate.parents:
+            raise ValueError("run_id escapes the artifact store root")
+        return candidate
+
+    def _metadata_path(self, run_id: str, name: str) -> Path:
+        normalized = str(name)
+        if not _SAFE_LEAF_NAME.fullmatch(normalized):
+            raise ValueError("artifact metadata name must be a safe leaf filename")
+        layout = self.ensure_run_layout(run_id)
+        return self._safe_leaf_path(
+            layout["metadata"],
+            normalized,
+            field="artifact metadata path",
+        )
+
+    @staticmethod
+    def _safe_leaf_path(directory: Path, name: str, *, field: str) -> Path:
+        candidate = directory / name
+        if candidate.is_symlink():
+            raise ValueError(f"{field} must not be a symbolic link")
+        resolved = candidate.resolve()
+        if resolved.parent != directory.resolve():
+            raise ValueError(f"{field} escapes its managed directory")
+        return candidate
 
     def ensure_run_layout(self, run_id: str) -> dict[str, Path]:
         run_root = self.run_root(run_id)
-        inputs = run_root / "inputs"
-        outputs = run_root / "outputs"
-        logs = run_root / "logs"
-        metadata = run_root / "metadata"
-        for path in (inputs, outputs, logs, metadata):
-            path.mkdir(parents=True, exist_ok=True)
+        run_root = self._ensure_contained_directory(
+            run_root,
+            root=self.root,
+            field="artifact run directory",
+        )
+        inputs = self._ensure_contained_directory(
+            run_root / "inputs",
+            root=run_root,
+            field="artifact inputs directory",
+        )
+        outputs = self._ensure_contained_directory(
+            run_root / "outputs",
+            root=run_root,
+            field="artifact outputs directory",
+        )
+        logs = self._ensure_contained_directory(
+            run_root / "logs",
+            root=run_root,
+            field="artifact logs directory",
+        )
+        metadata = self._ensure_contained_directory(
+            run_root / "metadata",
+            root=run_root,
+            field="artifact metadata directory",
+        )
         return {
             "run_root": run_root,
             "inputs": inputs,
@@ -32,20 +106,26 @@ class ArtifactStore:
         }
 
     def write_json(self, run_id: str, name: str, data: dict[str, Any]) -> Path:
-        layout = self.ensure_run_layout(run_id)
-        output_path = layout["metadata"] / name
+        output_path = self._metadata_path(run_id, name)
         output_path.write_text(
             json.dumps(data, indent=2, sort_keys=True), encoding="utf-8"
         )
         return output_path
 
     def read_json(self, run_id: str, name: str) -> dict[str, Any]:
-        path = self.run_root(run_id) / "metadata" / name
+        path = self._metadata_path(run_id, name)
         return json.loads(path.read_text(encoding="utf-8"))
 
     def write_log(self, run_id: str, name: str, content: str) -> Path:
         layout = self.ensure_run_layout(run_id)
-        output_path = layout["logs"] / name
+        normalized = str(name)
+        if not _SAFE_LEAF_NAME.fullmatch(normalized):
+            raise ValueError("artifact log name must be a safe leaf filename")
+        output_path = self._safe_leaf_path(
+            layout["logs"],
+            normalized,
+            field="artifact log path",
+        )
         output_path.write_text(content, encoding="utf-8")
         return output_path
 
@@ -59,7 +139,11 @@ class ArtifactStore:
         return self.write_json(run_id, "preflight_manifest.json", data)
 
     def dedup_cache_path(self) -> Path:
-        return self.cache_dir / "input_dedup.json"
+        return self._safe_leaf_path(
+            self.cache_dir,
+            "input_dedup.json",
+            field="artifact dedup cache path",
+        )
 
     def load_dedup_cache(self) -> dict[str, str]:
         path = self.dedup_cache_path()

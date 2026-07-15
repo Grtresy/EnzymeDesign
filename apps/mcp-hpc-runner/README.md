@@ -80,9 +80,33 @@ Operational features:
 - per-run `run_id` and isolated remote directories
 - staging via `rsync` over SSH (with `scp` fallback)
 - local artifact store per `run_id` (logs, manifests, fetched outputs)
+- normalized relative staging/output paths and artifact-store symlink containment
+- operator-configured CPU, memory, GPU, wall-time, partition, and log-tail limits
 - output validation (missing/empty outputs + declared success checks)
 - redaction and bounded log payloads
 - failure-signature mapping to stable error codes
+
+## Trust And Validation Boundary
+
+The runner is an internal execution service for a trusted OpenZyme Host. Do not
+expose its stdio transport, SSH credentials, or runner configuration directly
+to browsers, agents, or untrusted tenants. The Host is responsible for
+compiling approved tool contracts into `RunSpec.command`; command argv and
+metadata are not a public arbitrary-code API.
+
+The runner still validates every request at its own boundary. Input, expected
+output, and success-check paths must be normalized relative paths; traversal,
+control characters, shell/remote-copy metacharacters, unsafe run IDs, and
+artifact-store symlink escapes fail before transfer or local writes. Stored job
+handles must point to exactly `<cluster.remote_base_dir>/<run_id>`.
+
+Resource ceilings are configured under `[limits]` in
+`config/hpc_runner.toml`. A caller-selected Slurm partition is allowed only when
+it appears in `slurm.allowed_partitions`; an empty list denies caller overrides.
+Operator-selected `default_partition`, `gpu_partition`, and adapter partitions
+are validated and automatically included in the effective allowlist. See
+`config/hpc_runner.example.toml` for the supported keys and conservative local
+defaults.
 
 ## CLI Usage Examples
 

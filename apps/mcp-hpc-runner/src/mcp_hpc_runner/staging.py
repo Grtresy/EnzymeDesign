@@ -8,6 +8,7 @@ from .config import RunnerConfig
 from .models import ExpectedOutput, StagedInput
 from .remote import CommandRunner, wrap_ssh
 from .store import ArtifactStore
+from .validation import safe_relative_path, safe_remote_run_dir
 
 
 def _sha256(path: Path) -> str:
@@ -105,6 +106,7 @@ class StagingManager:
     def upload_inputs(
         self, run_id: str, inputs: list[StagedInput], remote_run_dir: str
     ) -> list[dict[str, Any]]:
+        run_dir = safe_remote_run_dir(remote_run_dir)
         if not inputs:
             self.store.write_inputs_manifest(run_id, {"run_id": run_id, "entries": []})
             return []
@@ -112,8 +114,17 @@ class StagingManager:
         cache = self.store.load_dedup_cache()
         entries: list[dict[str, Any]] = []
         for item in inputs:
+            stage_to = str(item.stage_to)
+            if stage_to not in {"work", "out"}:
+                raise ValueError("inputs.stage_to must be one of ['out', 'work']")
+            relative_path = safe_relative_path(
+                item.remote_path,
+                field="inputs.remote_path",
+            )
             local_path = Path(item.local_path).expanduser().resolve()
-            remote_path = str(PurePosixPath(remote_run_dir) / item.stage_to / item.remote_path)
+            remote_path = str(
+                run_dir / stage_to / relative_path
+            )
             remote_parent = str(PurePosixPath(remote_path).parent)
             checksum = _sha256(local_path)
             # Key is content + absolute remote destination (run-specific).
@@ -171,13 +182,26 @@ class StagingManager:
         expected_outputs: list[ExpectedOutput],
         remote_run_dir: str,
     ) -> list[dict[str, Any]]:
+        run_dir = safe_remote_run_dir(remote_run_dir)
         layout = self.store.ensure_run_layout(run_id)
         output_root = layout["outputs"]
         entries: list[dict[str, Any]] = []
 
         for expected in expected_outputs:
-            remote_path = str(PurePosixPath(remote_run_dir) / "out" / expected.path)
-            local_target = output_root / expected.path
+            relative_path = safe_relative_path(
+                expected.path,
+                field="expected_outputs.path",
+            )
+            remote_path = str(
+                run_dir / "out" / relative_path
+            )
+            local_target = (output_root / Path(*relative_path.parts)).resolve()
+            resolved_output_root = output_root.resolve()
+            if (
+                local_target != resolved_output_root
+                and resolved_output_root not in local_target.parents
+            ):
+                raise ValueError("expected_outputs.path escapes the local output root")
             local_target.parent.mkdir(parents=True, exist_ok=True)
 
             transfer_cmd = self.build_download_command(
