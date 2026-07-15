@@ -388,7 +388,7 @@ def test_terminal_task_stale_signal_is_consumed_without_runtime_failure() -> Non
     repositories, context = _build_context(model_factory=model_factory)
     task = repositories.tasks.get("task_0")
     assert task is not None
-    repositories.tasks.save(replace(task, status=TaskStatus.COMPLETED))
+    repositories.tasks.seed_fixture(replace(task, status=TaskStatus.COMPLETED))
 
     outcomes = AgentRuntimeScheduler(
         context,

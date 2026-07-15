@@ -20,6 +20,7 @@ from .agent_identity import is_teammate_role_alias
 from .agent_identity import resolve_agent_reference
 from .repositories import CoreRepositories
 from .repositories import EngineDocumentRecord
+from .repositories import TaskWriteIntent
 
 _UNSET = object()
 _PRIORITY_ORDER = {
@@ -49,6 +50,18 @@ _EVIDENCE_REF_KINDS = {
     "run",
     "sandbox_run",
 }
+
+
+class TaskExitStatusRequiresFinish(ValueError):
+    """Raised when a generic task mutation attempts a business exit."""
+
+    def __init__(self, *, operation: str, status: TaskStatus) -> None:
+        self.operation = operation
+        self.status = status
+        super().__init__(
+            f"{operation} cannot set business exit status {status.value!r}; "
+            "use task.finish"
+        )
 
 
 def _normalize_assigned_ref(
@@ -227,6 +240,28 @@ class TaskMutation:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskFinishCommand:
+    status: TaskStatus
+    finished_by: str
+    summary: str = ""
+    evidence_refs: tuple[str, ...] = ()
+    failure_summary: str | None = None
+    failure_ref: str | None = None
+    blocked_reason: str | None = None
+    recovery_hint: str | None = None
+    next_owner: str | None = None
+    correlation_id: str | None = None
+    signal_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFinishOutcome:
+    task: Task
+    finish_ref: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class TaskBoardItem:
     task: Task
     bucket: TaskBoardBucket
@@ -283,6 +318,8 @@ class TaskBoardService:
         failure_summary: str | None = None,
         failure_ref: str | None = None,
     ) -> Task:
+        if status in _TASK_FINISH_STATUSES:
+            raise TaskExitStatusRequiresFinish(operation="task.create", status=status)
         task = Task.create(
             task_id=task_id,
             session_id=session_id,
@@ -301,7 +338,8 @@ class TaskBoardService:
             failure_summary=failure_summary,
             failure_ref=failure_ref,
         )
-        self.repositories.tasks.save(task)
+        self.repositories.tasks.validate_dependencies(task)
+        self.repositories.tasks.save(task, intent=TaskWriteIntent.EDIT)
         self._emit("task.created", {"task_id": task.task_id, "session_id": task.session_id})
         self._emit_task_state(task)
         if task.assigned_ref is not None:
@@ -311,7 +349,60 @@ class TaskBoardService:
             )
         return task
 
+    def edit_task(self, task_id: str, mutation: TaskMutation) -> Task:
+        if (
+            mutation.status is not _UNSET
+            and mutation.status in _TASK_FINISH_STATUSES
+        ):
+            raise TaskExitStatusRequiresFinish(
+                operation="task.edit",
+                status=mutation.status,
+            )
+        return self._apply_mutation(task_id, mutation)
+
     def update_task(self, task_id: str, mutation: TaskMutation) -> Task:
+        """Compatibility alias for the guarded non-terminal edit command."""
+
+        return self.edit_task(task_id, mutation)
+
+    def block_for_approval(self, task_id: str) -> Task:
+        """Apply the documented mechanical waiting-approval transition."""
+
+        return self._apply_mutation(
+            task_id,
+            TaskMutation(status=TaskStatus.BLOCKED),
+            write_intent=TaskWriteIntent.MECHANICAL,
+        )
+
+    def claim_task(self, task_id: str, *, assigned_ref: str) -> Task:
+        """Apply the documented mechanical task-claim transition."""
+
+        return self._apply_mutation(
+            task_id,
+            TaskMutation(
+                assigned_ref=assigned_ref,
+                status=TaskStatus.IN_PROGRESS,
+            ),
+            write_intent=TaskWriteIntent.MECHANICAL,
+        )
+
+    def resume_after_approval(self, task_id: str) -> Task:
+        """Apply the documented mechanical approval-resume transition."""
+
+        return self._apply_mutation(
+            task_id,
+            TaskMutation(status=TaskStatus.IN_PROGRESS),
+            write_intent=TaskWriteIntent.MECHANICAL,
+        )
+
+    def _apply_mutation(
+        self,
+        task_id: str,
+        mutation: TaskMutation,
+        *,
+        write_intent: TaskWriteIntent = TaskWriteIntent.EDIT,
+        emit: bool = True,
+    ) -> Task:
         task = self.repositories.tasks.get(task_id)
         if task is None:
             raise ValueError(f"task {task_id!r} does not exist")
@@ -339,7 +430,13 @@ class TaskBoardService:
             else mutation.failure_summary,
             failure_ref=task.failure_ref if mutation.failure_ref is _UNSET else mutation.failure_ref,
         )
-        self.repositories.tasks.save(updated)
+        self.repositories.tasks.validate_dependencies(updated)
+        self.repositories.tasks.save(updated, intent=write_intent)
+        if emit:
+            self._emit_task_mutation(task, updated)
+        return updated
+
+    def _emit_task_mutation(self, task: Task, updated: Task) -> None:
         self._emit(
             "task.updated",
             {
@@ -355,7 +452,143 @@ class TaskBoardService:
                 {"task_id": updated.task_id, "assigned_ref": updated.assigned_ref},
             )
         self._emit_task_state(updated)
-        return updated
+
+    def finish_task(
+        self,
+        task_id: str,
+        command: TaskFinishCommand,
+    ) -> TaskFinishOutcome:
+        task = self.repositories.tasks.get(task_id)
+        if task is None:
+            raise ValueError(f"task {task_id!r} does not exist")
+        if task.status in _TASK_FINISH_STATUSES:
+            raise ValueError(
+                f"task {task_id!r} already reached business exit "
+                f"{task.status.value}; explicitly resume or reopen it first"
+            )
+        if command.status not in _TASK_FINISH_STATUSES:
+            raise ValueError(
+                "task.finish status must be one of: "
+                + ", ".join(sorted(item.value for item in _TASK_FINISH_STATUSES))
+            )
+        summary = command.summary.strip()
+        failure_summary = (
+            None
+            if command.failure_summary is None
+            else command.failure_summary.strip()
+        )
+        failure_ref = (
+            None if command.failure_ref is None else command.failure_ref.strip()
+        )
+        blocked_reason = (
+            None
+            if command.blocked_reason is None
+            else command.blocked_reason.strip()
+        )
+        recovery_hint = (
+            None
+            if command.recovery_hint is None
+            else command.recovery_hint.strip()
+        )
+        next_owner = (
+            None if command.next_owner is None else command.next_owner.strip()
+        )
+        if command.status is TaskStatus.COMPLETED and not summary:
+            raise ValueError("task.finish(completed) requires a non-empty summary")
+        if command.status is TaskStatus.FAILED and not (
+            failure_summary or failure_ref
+        ):
+            raise ValueError(
+                "task.finish(failed) requires failure_summary or failure_ref"
+            )
+        if command.status is TaskStatus.BLOCKED and not (
+            blocked_reason or recovery_hint
+        ):
+            raise ValueError(
+                "task.finish(blocked) requires blocked_reason or recovery_hint"
+            )
+        if next_owner is not None and next_owner not in {
+            "master",
+            "user",
+            "teammate",
+        }:
+            raise ValueError(
+                "task.finish next_owner must be master, user, or teammate"
+            )
+        evidence_error = _validate_evidence_refs(
+            self.repositories,
+            session_id=task.session_id,
+            evidence_refs=command.evidence_refs,
+        )
+        if evidence_error is not None:
+            raise ValueError(evidence_error)
+        finished_by = command.finished_by.strip()
+        if not finished_by:
+            raise ValueError("task.finish requires a non-empty finished_by actor")
+
+        now = utc_now_iso()
+        finish_ref = f"task_finish_{uuid4().hex[:12]}"
+        finish_payload = {
+            "task_id": task.task_id,
+            "status": command.status.value,
+            "summary": summary,
+            "evidence_refs": list(command.evidence_refs),
+            "failure_summary": failure_summary,
+            "failure_ref": failure_ref,
+            "blocked_reason": blocked_reason,
+            "recovery_hint": recovery_hint,
+            "next_owner": next_owner,
+            "finished_by": finished_by,
+            "correlation_id": command.correlation_id,
+            "signal_id": command.signal_id,
+        }
+        previous_task = task
+        with self.repositories.atomic(prefix="task_finish"):
+            self.repositories.engine_documents.save(
+                EngineDocumentRecord(
+                    document_id=finish_ref,
+                    session_id=task.session_id,
+                    document_kind="task_finish",
+                    payload=finish_payload,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            task = self._apply_mutation(
+                task.task_id,
+                TaskMutation(
+                    status=command.status,
+                    failure_summary=(
+                        failure_summary
+                        if command.status is TaskStatus.FAILED
+                        else _UNSET
+                    ),
+                    failure_ref=(
+                        failure_ref
+                        if command.status is TaskStatus.FAILED
+                        else _UNSET
+                    ),
+                ),
+                write_intent=TaskWriteIntent.FINISH,
+                emit=False,
+            )
+        self._emit_task_mutation(previous_task, task)
+        self._emit(
+            "task.finished",
+            {
+                "task_id": task.task_id,
+                "status": task.status.value,
+                "summary": summary,
+                "finish_ref": finish_ref,
+                "evidence_refs": list(command.evidence_refs),
+                "next_owner": next_owner,
+            },
+        )
+        return TaskFinishOutcome(
+            task=task,
+            finish_ref=finish_ref,
+            payload=finish_payload,
+        )
 
     def get_task(self, task_id: str) -> Task | None:
         return self.repositories.tasks.get(task_id)
@@ -557,7 +790,7 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
             failure_ref=arguments["failure_ref"] if "failure_ref" in arguments else _UNSET,
             updated_at=str(arguments["updated_at"]) if "updated_at" in arguments else _UNSET,
         )
-        task = service.update_task(task_id, mutation)
+        task = service.edit_task(task_id, mutation)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
@@ -590,15 +823,15 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                     "session_id": context.snapshot.session.session_id,
                 },
             )
-        if task.status.is_terminal:
+        if task.status in _TASK_FINISH_STATUSES:
             return _finish_error_result(
                 invocation,
                 status="task_already_terminal",
                 summary=(
-                    f"task.finish refused: task {task_id!r} is already "
-                    f"{task.status.value} and no reopen/retry mechanism was requested."
+                    f"task.finish refused: task {task_id!r} already reached business "
+                    f"exit {task.status.value} and no resume/reopen mechanism was requested."
                 ),
-                hint="Use an explicit reopen/retry workflow before finishing a terminal task again.",
+                hint="Use an explicit resume/reopen workflow before finishing the task again.",
                 details={"task_id": task_id, "current_status": task.status.value},
             )
         if not _can_finish_task(context, task):
@@ -701,53 +934,25 @@ def register_task_board_tools(registry: ToolRegistry) -> None:
                 summary=evidence_validation_error,
                 details={"task_id": task_id, "evidence_refs": list(evidence_refs)},
             )
-        now = utc_now_iso()
-        finish_ref = f"task_finish_{uuid4().hex[:12]}"
-        finish_payload = {
-            "task_id": task.task_id,
-            "status": status.value,
-            "summary": summary,
-            "evidence_refs": list(evidence_refs),
-            "failure_summary": failure_summary,
-            "failure_ref": failure_ref,
-            "blocked_reason": blocked_reason,
-            "recovery_hint": recovery_hint,
-            "next_owner": next_owner,
-            "finished_by": context.agent_id or context.actor_kind or "harness",
-            "correlation_id": context.correlation_id,
-            "signal_id": context.signal_id,
-        }
-        context.repositories.engine_documents.save(
-            EngineDocumentRecord(
-                document_id=finish_ref,
-                session_id=context.snapshot.session.session_id,
-                document_kind="task_finish",
-                payload=finish_payload,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-        task = service.update_task(
+        finish_outcome = service.finish_task(
             task.task_id,
-            TaskMutation(
+            TaskFinishCommand(
                 status=status,
-                failure_summary=failure_summary
-                if status is TaskStatus.FAILED
-                else _UNSET,
-                failure_ref=failure_ref if status is TaskStatus.FAILED else _UNSET,
+                summary=summary,
+                evidence_refs=evidence_refs,
+                failure_summary=failure_summary,
+                failure_ref=failure_ref,
+                blocked_reason=blocked_reason,
+                recovery_hint=recovery_hint,
+                next_owner=next_owner,
+                finished_by=context.agent_id or context.actor_kind or "harness",
+                correlation_id=context.correlation_id,
+                signal_id=context.signal_id,
             ),
         )
-        context.emit(
-            "task.finished",
-            {
-                "task_id": task.task_id,
-                "status": task.status.value,
-                "summary": summary,
-                "finish_ref": finish_ref,
-                "evidence_refs": list(evidence_refs),
-                "next_owner": next_owner,
-            },
-        )
+        task = finish_outcome.task
+        finish_ref = finish_outcome.finish_ref
+        finish_payload = finish_outcome.payload
         payload = {
             "task": task.to_dict(),
             "finish_ref": finish_ref,

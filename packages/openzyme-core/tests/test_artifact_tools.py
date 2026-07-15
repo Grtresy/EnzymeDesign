@@ -53,7 +53,7 @@ def _build_context() -> tuple[CoreRepositories, SessionRuntimeContext]:
         updated_at="2026-04-20T12:00:02+00:00",
     )
     repositories.sessions.save(session)
-    repositories.tasks.save(task)
+    repositories.tasks.seed_fixture(task)
     repositories.invocations.save(
         EngineInvocation(
             invocation_id="inv_large",

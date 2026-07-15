@@ -103,6 +103,9 @@ from .repositories import LaneLifecycleEventRecord
 from .repositories import LaneLifecycleEventRepository
 from .repositories import MemoryEntryRepository
 from .repositories import OwnershipError
+from .repositories import TaskDependencyCycleError
+from .repositories import TaskWriteIntent
+from .repositories import TaskWriteIntentError
 from .repositories import ResearchEvidenceRepository
 from .repositories import ResearchGapRepository
 from .repositories import ResearchSourceRefRepository
@@ -146,6 +149,9 @@ from .task_board import TaskBoardBucket
 from .task_board import TaskBoardItem
 from .task_board import TaskBoardProjection
 from .task_board import TaskBoardService
+from .task_board import TaskExitStatusRequiresFinish
+from .task_board import TaskFinishCommand
+from .task_board import TaskFinishOutcome
 from .task_board import TaskMutation
 from .task_board import register_task_board_tools
 from .llm_driver import LlmConversationDriver
@@ -262,6 +268,12 @@ __all__ = [
     "TaskBoardItem",
     "TaskBoardProjection",
     "TaskBoardService",
+    "TaskDependencyCycleError",
+    "TaskWriteIntent",
+    "TaskWriteIntentError",
+    "TaskExitStatusRequiresFinish",
+    "TaskFinishCommand",
+    "TaskFinishOutcome",
     "TaskMutation",
     "TEAMMATE_ROLE_NAMES",
     "TEAMMATE_ROSTER",

@@ -24,7 +24,6 @@ from .harness import SessionRuntimeContext
 from .harness import run_agent_harness_loop
 from .llm_driver import LlmConversationDriver
 from .task_board import TaskBoardService
-from .task_board import TaskMutation
 from .teammate_roster import teammate_role_for_task_kind
 from .teammates import finalize_teammate_result
 from .teammates import run_teammate_loop
@@ -248,8 +247,13 @@ class AgentRuntimeService:
             self.context.repositories.inbox.set_status(message.message_id, InboxStatus.DELIVERED)
 
         service = TaskBoardService(self.context.repositories, event_emitter=self.context.emit)
-        if task.status in {TaskStatus.TODO, TaskStatus.BLOCKED}:
-            task = service.update_task(task.task_id, TaskMutation(assigned_ref=agent.agent_id, status=TaskStatus.IN_PROGRESS))
+        if task.status is TaskStatus.TODO:
+            task = service.claim_task(
+                task.task_id,
+                assigned_ref=agent.agent_id,
+            )
+        elif task.status is TaskStatus.BLOCKED:
+            task = service.resume_after_approval(task.task_id)
             if signal.reason is AgentRuntimeSignalReason.TASK_AVAILABLE:
                 self.context.emit(
                     "agent.task_claimed",
@@ -279,7 +283,7 @@ class AgentRuntimeService:
             result=result,
         )
         if result.pending_approval_id is not None:
-            task = service.update_task(task.task_id, TaskMutation(status=TaskStatus.BLOCKED))
+            task = service.block_for_approval(task.task_id)
             ok = True
         elif final_status in {AgentMemberStatus.IDLE, AgentMemberStatus.BLOCKED}:
             ok = True

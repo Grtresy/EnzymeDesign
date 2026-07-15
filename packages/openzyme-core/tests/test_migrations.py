@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from openzyme_core import CURRENT_SQLITE_SCHEMA_VERSION
@@ -28,6 +30,7 @@ def test_migration_asset_is_available() -> None:
     adapter_envelope_sql = get_migration_sql("017_v3_s12_adapter_envelope")
     session_runtime_lease_sql = get_migration_sql("018_v3_session_runtime_leases")
     agent_identity_sql = get_migration_sql("019_v3_agent_identity_fields")
+    task_integrity_sql = get_migration_sql("020_v3_task_integrity")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -58,6 +61,10 @@ def test_migration_asset_is_available() -> None:
     assert "ADD COLUMN session_lease_token" in session_runtime_lease_sql
     assert "ADD COLUMN nickname" in agent_identity_sql
     assert "ADD COLUMN handle" in agent_identity_sql
+    assert "CREATE TRIGGER task_dependencies_validate_insert" in task_integrity_sql
+    assert "CREATE TRIGGER task_dependencies_validate_update" in task_integrity_sql
+    assert "task_dependency_cycle" in task_integrity_sql
+    assert "task_dependency_cross_session" in task_integrity_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -78,6 +85,7 @@ def test_migration_asset_is_available() -> None:
         "017_v3_s12_adapter_envelope",
         "018_v3_session_runtime_leases",
         "019_v3_agent_identity_fields",
+        "020_v3_task_integrity",
     )
 
 
@@ -188,6 +196,191 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "adapter_approval_envelope_json",
         "adapter_result_envelope_json",
     }.issubset(operation_columns)
+    trigger_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+    }
+    assert {
+        "task_dependencies_validate_insert",
+        "task_dependencies_validate_update",
+    }.issubset(trigger_names)
+
+
+def test_task_dependency_trigger_rejects_multi_hop_cycle() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES ('sess_cycle', 'proj_cycle', 'Cycle', 'Cycle', 'active', 'now', 'now')
+        """
+    )
+    for task_id in ("task_a", "task_b", "task_c"):
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, session_id, subject, description, status, priority, kind,
+                assigned_ref, created_at, updated_at, lane_id, failure_summary, failure_ref
+            ) VALUES (?, 'sess_cycle', ?, '', 'todo', 'normal', 'general', NULL, 'now', 'now', NULL, NULL, NULL)
+            """,
+            (task_id, task_id),
+        )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_b', 'task_a')"
+    )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_c', 'task_b')"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="task_dependency_cycle"):
+        connection.execute(
+            "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_a', 'task_c')"
+        )
+
+
+def test_task_dependency_update_trigger_rejects_multi_hop_cycle() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES ('sess_cycle_update', 'proj_cycle', 'Cycle', 'Cycle', 'active', 'now', 'now')
+        """
+    )
+    for task_id in ("task_a", "task_b", "task_c", "task_d"):
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, session_id, subject, description, status, priority, kind,
+                assigned_ref, created_at, updated_at, lane_id, failure_summary, failure_ref
+            ) VALUES (?, 'sess_cycle_update', ?, '', 'todo', 'normal', 'general', NULL, 'now', 'now', NULL, NULL, NULL)
+            """,
+            (task_id, task_id),
+        )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_b', 'task_a')"
+    )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_c', 'task_b')"
+    )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_a', 'task_d')"
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="task_dependency_cycle"):
+        connection.execute(
+            """
+            UPDATE task_dependencies
+            SET blocked_by_task_id = 'task_c'
+            WHERE task_id = 'task_a' AND blocked_by_task_id = 'task_d'
+            """
+        )
+
+
+def test_task_dependency_update_trigger_ignores_the_replaced_edge() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    connection.execute(
+        """
+        INSERT INTO sessions (
+            session_id, project_id, title, objective, status, created_at, updated_at
+        ) VALUES ('sess_cycle_replace', 'proj_cycle', 'Cycle', 'Cycle', 'active', 'now', 'now')
+        """
+    )
+    for task_id in ("task_a", "task_b", "task_x"):
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, session_id, subject, description, status, priority, kind,
+                assigned_ref, created_at, updated_at, lane_id, failure_summary, failure_ref
+            ) VALUES (?, 'sess_cycle_replace', ?, '', 'todo', 'normal', 'general', NULL, 'now', 'now', NULL, NULL, NULL)
+            """,
+            (task_id, task_id),
+        )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_a', 'task_x')"
+    )
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_x', 'task_b')"
+    )
+
+    connection.execute(
+        """
+        UPDATE task_dependencies
+        SET task_id = 'task_b', blocked_by_task_id = 'task_a'
+        WHERE task_id = 'task_a' AND blocked_by_task_id = 'task_x'
+        """
+    )
+
+    rows = connection.execute(
+        """
+        SELECT task_id, blocked_by_task_id
+        FROM task_dependencies
+        ORDER BY task_id, blocked_by_task_id
+        """
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("task_b", "task_a"),
+        ("task_x", "task_b"),
+    ]
+
+
+def test_task_dependency_triggers_reject_cross_session_links() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    for session_id in ("sess_dependency_a", "sess_dependency_b"):
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                session_id, project_id, title, objective, status, created_at, updated_at
+            ) VALUES (?, 'proj_cycle', ?, ?, 'active', 'now', 'now')
+            """,
+            (session_id, session_id, session_id),
+        )
+    for task_id, session_id in (
+        ("task_a", "sess_dependency_a"),
+        ("task_b", "sess_dependency_a"),
+        ("task_foreign", "sess_dependency_b"),
+    ):
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, session_id, subject, description, status, priority, kind,
+                assigned_ref, created_at, updated_at, lane_id, failure_summary, failure_ref
+            ) VALUES (?, ?, ?, '', 'todo', 'normal', 'general', NULL, 'now', 'now', NULL, NULL, NULL)
+            """,
+            (task_id, session_id, task_id),
+        )
+
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="task_dependency_cross_session",
+    ):
+        connection.execute(
+            """
+            INSERT INTO task_dependencies (task_id, blocked_by_task_id)
+            VALUES ('task_b', 'task_foreign')
+            """
+        )
+
+    connection.execute(
+        "INSERT INTO task_dependencies (task_id, blocked_by_task_id) VALUES ('task_b', 'task_a')"
+    )
+    with pytest.raises(
+        sqlite3.IntegrityError,
+        match="task_dependency_cross_session",
+    ):
+        connection.execute(
+            """
+            UPDATE task_dependencies
+            SET blocked_by_task_id = 'task_foreign'
+            WHERE task_id = 'task_b' AND blocked_by_task_id = 'task_a'
+            """
+        )
 
 
 def test_sqlite_migrations_are_idempotent_for_current_connection() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -21,6 +22,9 @@ from openzyme_core import RestoreFocus
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import TaskBoardBucket
+from openzyme_core import TaskDependencyCycleError
+from openzyme_core import TaskExitStatusRequiresFinish
+from openzyme_core import TaskFinishCommand
 from openzyme_core import TaskMutation
 from openzyme_core import TaskBoardService
 from openzyme_core import ToolInvocation
@@ -87,6 +91,238 @@ def _seed_agent(
     return agent
 
 
+@pytest.mark.parametrize(
+    "status",
+    (
+        TaskStatus.BLOCKED,
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    ),
+)
+def test_task_board_create_rejects_business_exit_statuses(status: TaskStatus) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    with pytest.raises(
+        TaskExitStatusRequiresFinish,
+        match="task.create cannot set business exit status",
+    ):
+        TaskBoardService(repositories).create_task(
+            session_id=session.session_id,
+            task_id=f"task_{status.value}",
+            subject=status.value,
+            description=status.value,
+            status=status,
+        )
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        TaskStatus.BLOCKED,
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    ),
+)
+def test_task_board_edit_rejects_business_exit_statuses(status: TaskStatus) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_edit",
+        subject="Edit",
+        description="Edit",
+    )
+
+    with pytest.raises(
+        TaskExitStatusRequiresFinish,
+        match="task.edit cannot set business exit status",
+    ):
+        service.edit_task(task.task_id, TaskMutation(status=status))
+
+
+def test_task_board_finish_command_is_the_explicit_business_exit() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_finish_command",
+        subject="Finish",
+        description="Finish explicitly",
+        status=TaskStatus.IN_PROGRESS,
+    )
+
+    outcome = service.finish_task(
+        task.task_id,
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            summary="Finished explicitly.",
+            finished_by="agent:master",
+        ),
+    )
+
+    assert outcome.task.status is TaskStatus.COMPLETED
+    document = repositories.engine_documents.get(outcome.finish_ref)
+    assert document is not None
+    assert document.document_kind == "task_finish"
+    assert document.payload["summary"] == "Finished explicitly."
+    assert document.payload["finished_by"] == "agent:master"
+
+
+def test_task_board_finish_rejects_a_second_exit_until_explicit_resume() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_blocked_exit",
+        subject="Blocked",
+        description="Blocked explicitly",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    first = service.finish_task(
+        task.task_id,
+        TaskFinishCommand(
+            status=TaskStatus.BLOCKED,
+            blocked_reason="Needs user input.",
+            finished_by="agent:master",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="already reached business exit blocked"):
+        service.finish_task(
+            task.task_id,
+            TaskFinishCommand(
+                status=TaskStatus.COMPLETED,
+                summary="Must resume first.",
+                finished_by="agent:master",
+            ),
+        )
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.BLOCKED
+    assert len(
+        [
+            document
+            for document in repositories.engine_documents.list_by_session(
+                session.session_id
+            )
+            if document.document_kind == "task_finish"
+        ]
+    ) == 1
+    assert first.task.status is TaskStatus.BLOCKED
+
+
+def test_task_board_finish_rollback_does_not_emit_events() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    events: list[tuple[str, dict[str, object]]] = []
+    service = TaskBoardService(
+        repositories,
+        event_emitter=lambda event_type, payload: events.append(
+            (event_type, payload)
+        ),
+    )
+    task = service.create_task(
+        session_id=session.session_id,
+        task_id="task_finish_rollback",
+        subject="Rollback",
+        description="Rollback",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    events.clear()
+    repositories.tasks.connection.execute(
+        """
+        CREATE TRIGGER reject_test_task_finish
+        BEFORE UPDATE OF status ON tasks
+        WHEN NEW.status = 'completed'
+        BEGIN
+            SELECT RAISE(ABORT, 'reject_test_task_finish');
+        END
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="reject_test_task_finish"):
+        service.finish_task(
+            task.task_id,
+            TaskFinishCommand(
+                status=TaskStatus.COMPLETED,
+                summary="Must roll back.",
+                finished_by="agent:master",
+            ),
+        )
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.IN_PROGRESS
+    assert not any(
+        document.document_kind == "task_finish"
+        for document in repositories.engine_documents.list_by_session(
+            session.session_id
+        )
+    )
+    assert events == []
+
+
+def test_task_board_rejects_two_node_dependency_cycle() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_a",
+        subject="A",
+        description="A",
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_b",
+        subject="B",
+        description="B",
+        blocked_by=("task_a",),
+    )
+
+    with pytest.raises(TaskDependencyCycleError, match="task_a -> task_b -> task_a"):
+        service.edit_task("task_a", TaskMutation(blocked_by=("task_b",)))
+
+
+def test_task_board_rejects_three_node_dependency_cycle() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    service = TaskBoardService(repositories)
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_a",
+        subject="A",
+        description="A",
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_b",
+        subject="B",
+        description="B",
+        blocked_by=("task_a",),
+    )
+    service.create_task(
+        session_id=session.session_id,
+        task_id="task_c",
+        subject="C",
+        description="C",
+        blocked_by=("task_b",),
+    )
+
+    with pytest.raises(
+        TaskDependencyCycleError,
+        match="task_a -> task_c -> task_b -> task_a",
+    ):
+        service.edit_task("task_a", TaskMutation(blocked_by=("task_c",)))
+
+
 def test_task_board_projection_separates_ready_and_blocked_tasks() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
@@ -144,8 +380,14 @@ def test_task_board_update_promotes_newly_unblocked_task() -> None:
         blocked_by=("task_a",),
     )
 
-    updated = service.update_task("task_a", mutation=TaskMutation(status=TaskStatus.COMPLETED))
-    del updated
+    service.finish_task(
+        "task_a",
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            summary="Root task completed.",
+            finished_by="agent:master",
+        ),
+    )
     projection = service.build_projection(session.session_id)
 
     assert projection.next_task_id == "task_b"
@@ -172,7 +414,14 @@ def test_failed_or_cancelled_blocker_does_not_make_downstream_ready() -> None:
         blocked_by=("task_a",),
     )
 
-    service.update_task("task_a", mutation=TaskMutation(status=TaskStatus.FAILED))
+    service.finish_task(
+        "task_a",
+        TaskFinishCommand(
+            status=TaskStatus.FAILED,
+            finished_by="agent:master",
+            failure_summary="Root task failed.",
+        ),
+    )
     projection = service.build_projection(session.session_id)
 
     assert projection.ready_tasks == ()
@@ -242,15 +491,22 @@ def test_task_board_buckets_failed_task_as_terminal_failure() -> None:
     session = _seed_session(repositories)
     service = TaskBoardService(repositories)
 
-    failed = service.create_task(
+    task = service.create_task(
         session_id=session.session_id,
         task_id="task_failed",
         subject="Failed",
         description="Execution attempt failed",
-        status=TaskStatus.FAILED,
-        failure_summary="Runner timed out",
-        failure_ref="engine:inv_failed",
+        status=TaskStatus.IN_PROGRESS,
     )
+    failed = service.finish_task(
+        task.task_id,
+        TaskFinishCommand(
+            status=TaskStatus.FAILED,
+            finished_by="agent:master",
+            failure_summary="Runner timed out",
+            failure_ref="engine:inv_failed",
+        ),
+    ).task
 
     projection = service.build_projection(session.session_id)
     item = next(item for item in projection.items if item.task.task_id == failed.task_id)

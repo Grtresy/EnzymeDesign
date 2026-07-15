@@ -1386,6 +1386,49 @@ def test_v3_task_crud_does_not_implicitly_drain_agent_runtime() -> None:
     assert repositories.runtime_signals.list_by_session("sess_task_crud_no_drain") == []
 
 
+def test_v3_task_crud_rejects_business_exit_statuses(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch, with_model_factory=False)
+    created_session = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_task_exit_guard",
+            "project_id": "proj_001",
+            "objective": "Guard task business exits",
+        },
+    )
+    assert created_session.status_code == 200
+
+    for status in ("blocked", "completed", "failed", "cancelled"):
+        rejected_create = client.post(
+            "/v3/tasks",
+            json={
+                "session_id": "sess_task_exit_guard",
+                "task_id": f"task_create_{status}",
+                "subject": status,
+                "status": status,
+            },
+        )
+        assert rejected_create.status_code == 400
+        assert "task.create cannot set business exit status" in rejected_create.text
+
+    created_task = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_task_exit_guard",
+            "task_id": "task_edit_exit_guard",
+            "subject": "Edit guard",
+        },
+    )
+    assert created_task.status_code == 200
+    for status in ("blocked", "completed", "failed", "cancelled"):
+        rejected_update = client.patch(
+            "/v3/tasks/task_edit_exit_guard",
+            json={"status": status},
+        )
+        assert rejected_update.status_code == 400
+        assert "task.edit cannot set business exit status" in rejected_update.text
+
+
 def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
     repositories = _build_v3_engine_repositories()
     repositories.sessions.save(
@@ -2643,7 +2686,7 @@ def test_hpc_operation_failed_after_approval_returns_to_executor_for_diagnostic(
             "Diagnose approved execution failure.",
         )
     )
-    repositories.tasks.save(
+    repositories.tasks.seed_fixture(
         Task.create(
             "task_hpc_diag",
             "sess_hpc_diag",

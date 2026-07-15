@@ -40,6 +40,7 @@ from openzyme_runtime import ToolSpec
 from .engines import EngineRegistry
 from .repositories import EngineDocumentRecord
 from .repositories import CoreRepositories
+from .repositories import TaskWriteIntent
 from .conversation import persist_conversation_message
 from .prompt_budget import PromptBudgetAction
 from .prompt_budget import PromptBudgetDecision
@@ -1393,7 +1394,7 @@ def run_agent_harness_loop(
             activity_happened = True
 
         for task in step.task_updates:
-            repositories.tasks.save(task)
+            repositories.tasks.save(task, intent=TaskWriteIntent.EDIT)
             context.emit(
                 "task.updated",
                 {

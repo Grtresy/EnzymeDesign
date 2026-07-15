@@ -36,7 +36,7 @@ from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SkillRegistry
 from openzyme_core import TaskBoardService
-from openzyme_core import TaskMutation
+from openzyme_core import TaskFinishCommand
 from openzyme_core import ToolDescriptor
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
@@ -468,20 +468,6 @@ class ToolLoopDriver:
         result = tool_results[0]
         return HarnessStep(
             assistant_message=f"tool:{result.content}",
-            task_updates=(
-                Task(
-                    task_id=task.task_id,
-                    session_id=task.session_id,
-                    subject=task.subject,
-                    description=task.description,
-                    status=TaskStatus.COMPLETED,
-                    priority=task.priority,
-                    kind=task.kind,
-                    assigned_ref=task.assigned_ref,
-                    created_at=task.created_at,
-                    updated_at="2026-04-17T09:04:00+00:00",
-                ),
-            ),
             memory_entries=(
                 MemoryEntry(
                     memory_id="mem_tool_result",
@@ -518,7 +504,7 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
     assert result.status is HarnessStatus.COMPLETED
     assert result.outputs == ("tool:READY",)
     assert [tool_result.content for tool_result in result.tool_results] == ["READY"]
-    assert repositories.tasks.get("task_001").status is TaskStatus.COMPLETED
+    assert repositories.tasks.get("task_001").status is TaskStatus.IN_PROGRESS
     assert len(repositories.memory.list_by_session(session.session_id)) >= 3
     assert {event.event_type for event in result.events} >= {
         "message.received",
@@ -2018,7 +2004,14 @@ def test_delegate_tool_rejects_blocked_task_without_side_effects_then_succeeds_w
     assert repositories.inbox.list_by_session(session.session_id) == []
     assert repositories.runtime_signals.list_by_session(session.session_id) == []
 
-    task_service.update_task("task_upstream", TaskMutation(status=TaskStatus.COMPLETED))
+    task_service.finish_task(
+        "task_upstream",
+        TaskFinishCommand(
+            status=TaskStatus.COMPLETED,
+            finished_by="agent:master",
+            summary="Upstream output is ready.",
+        ),
+    )
     ready = registry.dispatch(
         context,
         ToolInvocation(
@@ -3262,7 +3255,7 @@ def test_approval_resume_does_not_expose_execution_resume_tool() -> None:
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="executor")
     task = repositories.tasks.get("task_001")
-    repositories.tasks.save(
+    repositories.tasks.seed_fixture(
         Task(
             task_id=task.task_id,
             session_id=task.session_id,

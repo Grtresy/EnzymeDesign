@@ -111,7 +111,22 @@ def test_lane_remove_unbinds_non_terminal_tasks_and_keeps_terminal_history() -> 
             lane_id=lane.lane_id,
         )
     )
-    repositories.tasks.save(
+    repositories.tasks.seed_fixture(
+        Task(
+            task_id="task_blocked",
+            session_id=session.session_id,
+            subject="Blocked task",
+            description="Should be unbound without changing blocked status",
+            status=TaskStatus.BLOCKED,
+            priority=TaskPriority.NORMAL,
+            kind="general",
+            assigned_ref=None,
+            created_at="2026-04-17T10:03:30+00:00",
+            updated_at="2026-04-17T10:03:30+00:00",
+            lane_id=lane.lane_id,
+        )
+    )
+    repositories.tasks.seed_fixture(
         Task(
             task_id="task_done",
             session_id=session.session_id,
@@ -131,6 +146,10 @@ def test_lane_remove_unbinds_non_terminal_tasks_and_keeps_terminal_history() -> 
 
     assert removed.status is LaneStatus.REMOVED
     assert repositories.tasks.get("task_live").lane_id is None
+    blocked = repositories.tasks.get("task_blocked")
+    assert blocked is not None
+    assert blocked.status is TaskStatus.BLOCKED
+    assert blocked.lane_id is None
     assert repositories.tasks.get("task_done").lane_id == lane.lane_id
     event_types = [event.event_type for event in repositories.lane_events.list_by_lane(session.session_id, lane.lane_id)]
     assert "task.unbound_from_lane" in event_types

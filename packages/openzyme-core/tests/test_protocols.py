@@ -842,7 +842,7 @@ def test_runtime_approval_resolved_can_resume_assigned_approval_blocked_task() -
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = _seed_agent(repositories, session, role="executor")
-    repositories.tasks.save(
+    repositories.tasks.seed_fixture(
         Task.create(
             "task_approval",
             session.session_id,

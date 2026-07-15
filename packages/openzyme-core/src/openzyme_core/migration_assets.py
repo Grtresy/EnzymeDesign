@@ -24,6 +24,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "017_v3_s12_adapter_envelope",
     "018_v3_session_runtime_leases",
     "019_v3_agent_identity_fields",
+    "020_v3_task_integrity",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 
@@ -38,6 +39,13 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "sandbox_workspace_records",
         "controlled_operation_records",
         "continuation_state_records",
+    }
+)
+
+_REQUIRED_CURRENT_SCHEMA_TRIGGERS: frozenset[str] = frozenset(
+    {
+        "task_dependencies_validate_insert",
+        "task_dependencies_validate_update",
     }
 )
 
@@ -114,5 +122,19 @@ def _verify_current_sqlite_schema(connection: sqlite3.Connection) -> None:
             "SQLite database declares current schema version "
             f"{CURRENT_SQLITE_SCHEMA_VERSION} but is missing required tables: "
             f"{', '.join(missing_tables)}"
+        )
+        raise SQLiteSchemaMismatchError(msg)
+    trigger_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+    }
+    missing_triggers = sorted(_REQUIRED_CURRENT_SCHEMA_TRIGGERS - trigger_names)
+    if missing_triggers:
+        msg = (
+            "SQLite database declares current schema version "
+            f"{CURRENT_SQLITE_SCHEMA_VERSION} but is missing required triggers: "
+            f"{', '.join(missing_triggers)}"
         )
         raise SQLiteSchemaMismatchError(msg)

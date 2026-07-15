@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from enum import Enum
+from enum import StrEnum
 import json
 import sqlite3
 from typing import Any
+from typing import Iterator
 from uuid import uuid4
 
 from openzyme_domain import AgentMember
@@ -64,6 +67,25 @@ class OwnershipError(ValueError):
     """Raised when linked canonical records do not belong to the same session."""
 
 
+class TaskDependencyCycleError(ValueError):
+    """Raised when a task dependency mutation would create a directed cycle."""
+
+    def __init__(self, cycle_path: tuple[str, ...]) -> None:
+        self.cycle_path = cycle_path
+        super().__init__(f"task dependency cycle: {' -> '.join(cycle_path)}")
+
+
+class TaskWriteIntent(StrEnum):
+    EDIT = "edit"
+    FINISH = "finish"
+    MECHANICAL = "mechanical"
+    FIXTURE = "fixture"
+
+
+class TaskWriteIntentError(ValueError):
+    """Raised when a task repository write bypasses a command boundary."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionRuntimeLeaseAcquireResult:
     acquired: bool
@@ -78,6 +100,98 @@ def connect_sqlite(database_path: str) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+@contextmanager
+def _sqlite_savepoint(
+    connection: sqlite3.Connection,
+    *,
+    prefix: str,
+) -> Iterator[None]:
+    savepoint = f"{prefix}_{uuid4().hex}"
+    connection.execute(f"SAVEPOINT {savepoint}")
+    try:
+        yield
+    except BaseException:
+        connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    else:
+        connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+
+def _find_task_dependency_cycle(
+    connection: sqlite3.Connection,
+    *,
+    task_id: str,
+    session_id: str,
+    blocked_by: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    rows = connection.execute(
+        """
+        SELECT dependency.task_id, dependency.blocked_by_task_id
+        FROM task_dependencies AS dependency
+        JOIN tasks AS task ON task.task_id = dependency.task_id
+        WHERE task.session_id = ?
+        ORDER BY dependency.task_id, dependency.blocked_by_task_id
+        """,
+        (session_id,),
+    ).fetchall()
+    graph: dict[str, tuple[str, ...]] = {}
+    pending: dict[str, list[str]] = {}
+    for row in rows:
+        pending.setdefault(str(row["task_id"]), []).append(
+            str(row["blocked_by_task_id"])
+        )
+    graph.update({key: tuple(value) for key, value in pending.items()})
+    graph[task_id] = blocked_by
+
+    def visit(
+        node: str,
+        *,
+        path: tuple[str, ...],
+        active: frozenset[str],
+    ) -> tuple[str, ...] | None:
+        for blocker_id in graph.get(node, ()):
+            if blocker_id in active:
+                cycle_start = path.index(blocker_id)
+                return (*path[cycle_start:], blocker_id)
+            cycle = visit(
+                blocker_id,
+                path=(*path, blocker_id),
+                active=active | {blocker_id},
+            )
+            if cycle is not None:
+                return cycle
+        return None
+
+    return visit(task_id, path=(task_id,), active=frozenset({task_id}))
+
+
+_TASK_FIELD_NAMES = (
+    "task_id",
+    "session_id",
+    "subject",
+    "description",
+    "status",
+    "priority",
+    "kind",
+    "assigned_ref",
+    "created_at",
+    "updated_at",
+    "lane_id",
+    "blocked_by",
+    "failure_summary",
+    "failure_ref",
+)
+
+
+def _changed_task_fields(existing: Task, updated: Task) -> frozenset[str]:
+    return frozenset(
+        field_name
+        for field_name in _TASK_FIELD_NAMES
+        if getattr(existing, field_name) != getattr(updated, field_name)
+    )
 
 
 def _require_session_exists(connection: sqlite3.Connection, session_id: str) -> None:
@@ -286,10 +400,36 @@ class SessionRepository:
 class TaskRepository:
     connection: sqlite3.Connection
 
-    def save(self, task: Task) -> None:
+    _EXIT_STATUSES = frozenset(
+        {
+            TaskStatus.BLOCKED,
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }
+    )
+
+    def validate_dependencies(self, task: Task) -> None:
+        cycle = _find_task_dependency_cycle(
+            self.connection,
+            task_id=task.task_id,
+            session_id=task.session_id,
+            blocked_by=task.blocked_by,
+        )
+        if cycle is not None:
+            raise TaskDependencyCycleError(cycle)
+
+    def save(
+        self,
+        task: Task,
+        *,
+        intent: TaskWriteIntent = TaskWriteIntent.EDIT,
+    ) -> None:
         _require_enum_member(task.status, TaskStatus, "Task.status")
         _require_enum_member(task.priority, TaskPriority, "Task.priority")
+        _require_enum_member(intent, TaskWriteIntent, "TaskWriteIntent")
         _require_session_exists(self.connection, task.session_id)
+        self._validate_write_intent(task, intent=intent)
         if task.lane_id is not None:
             _require_linked_session_id(
                 self.connection,
@@ -306,6 +446,102 @@ class TaskRepository:
                 record_id=blocker_id,
                 expected_session_id=task.session_id,
             )
+        self.validate_dependencies(task)
+        with _sqlite_savepoint(self.connection, prefix="task_save"):
+            self._save_uncommitted(task)
+
+    def finish(self, task: Task) -> None:
+        self.save(task, intent=TaskWriteIntent.FINISH)
+
+    def save_mechanical(self, task: Task) -> None:
+        self.save(task, intent=TaskWriteIntent.MECHANICAL)
+
+    def seed_fixture(self, task: Task) -> None:
+        self.save(task, intent=TaskWriteIntent.FIXTURE)
+
+    def _validate_write_intent(
+        self,
+        task: Task,
+        *,
+        intent: TaskWriteIntent,
+    ) -> None:
+        if intent is TaskWriteIntent.FIXTURE:
+            return
+        existing = self.get(task.task_id)
+        previous_status = None if existing is None else existing.status
+        if intent is TaskWriteIntent.EDIT:
+            status_changed = previous_status is None or previous_status is not task.status
+            crosses_exit_boundary = status_changed and (
+                task.status in self._EXIT_STATUSES
+                or previous_status in self._EXIT_STATUSES
+            )
+            edits_terminal_task = (
+                not status_changed
+                and task.status
+                in {
+                    TaskStatus.COMPLETED,
+                    TaskStatus.FAILED,
+                    TaskStatus.CANCELLED,
+                }
+            )
+            if crosses_exit_boundary or edits_terminal_task:
+                raise TaskWriteIntentError(
+                    "generic task save cannot cross a business exit boundary or "
+                    "edit a terminal task; "
+                    "use TaskRepository.finish() or an explicit mechanical transition"
+                )
+            return
+        if existing is None:
+            raise TaskWriteIntentError(
+                f"task {task.task_id!r} must exist before a {intent.value} transition"
+            )
+        if intent is TaskWriteIntent.FINISH:
+            if existing.status in self._EXIT_STATUSES:
+                raise TaskWriteIntentError(
+                    f"task {task.task_id!r} already reached business exit "
+                    f"{existing.status.value}; explicitly resume or reopen it first"
+                )
+            if task.status not in self._EXIT_STATUSES:
+                raise TaskWriteIntentError(
+                    "finish intent requires blocked, completed, failed, or cancelled"
+                )
+            unexpected_fields = _changed_task_fields(existing, task) - {
+                "status",
+                "updated_at",
+                "failure_summary",
+                "failure_ref",
+            }
+            if unexpected_fields:
+                raise TaskWriteIntentError(
+                    "finish intent may only change status, updated_at, failure_summary, "
+                    "and failure_ref; unexpected fields: "
+                    + ", ".join(sorted(unexpected_fields))
+                )
+            return
+        allowed_mechanical_transitions = {
+            (TaskStatus.TODO, TaskStatus.IN_PROGRESS),
+            (TaskStatus.BLOCKED, TaskStatus.IN_PROGRESS),
+            (TaskStatus.TODO, TaskStatus.BLOCKED),
+            (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED),
+        }
+        transition = (existing.status, task.status)
+        if transition not in allowed_mechanical_transitions:
+            raise TaskWriteIntentError(
+                "mechanical task transition is not a documented claim/approval transition: "
+                f"{existing.status.value} -> {task.status.value}"
+            )
+        allowed_fields = {"status", "updated_at"}
+        if transition == (TaskStatus.TODO, TaskStatus.IN_PROGRESS):
+            allowed_fields.add("assigned_ref")
+        unexpected_fields = _changed_task_fields(existing, task) - allowed_fields
+        if unexpected_fields:
+            raise TaskWriteIntentError(
+                "mechanical intent may only change documented transition fields "
+                f"{', '.join(sorted(allowed_fields))}; unexpected fields: "
+                + ", ".join(sorted(unexpected_fields))
+            )
+
+    def _save_uncommitted(self, task: Task) -> None:
         self.connection.execute(
             """
             INSERT INTO tasks (
@@ -353,7 +589,6 @@ class TaskRepository:
             """,
             [(task.task_id, blocker_id) for blocker_id in task.blocked_by],
         )
-        self.connection.commit()
 
     def get(self, task_id: str) -> Task | None:
         row = self.connection.execute(
@@ -3184,30 +3419,30 @@ class EngineDocumentRepository:
                 record_id=document.invocation_id,
                 expected_session_id=document.session_id,
             )
-        self.connection.execute(
-            """
-            INSERT INTO engine_documents (
-                document_id, session_id, invocation_id, document_kind, payload_json, created_at, updated_at
+        with _sqlite_savepoint(self.connection, prefix="engine_document_save"):
+            self.connection.execute(
+                """
+                INSERT INTO engine_documents (
+                    document_id, session_id, invocation_id, document_kind, payload_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    invocation_id = excluded.invocation_id,
+                    document_kind = excluded.document_kind,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    document.document_id,
+                    document.session_id,
+                    document.invocation_id,
+                    document.document_kind,
+                    json.dumps(document.payload, sort_keys=True),
+                    document.created_at,
+                    document.updated_at,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(document_id) DO UPDATE SET
-                session_id = excluded.session_id,
-                invocation_id = excluded.invocation_id,
-                document_kind = excluded.document_kind,
-                payload_json = excluded.payload_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                document.document_id,
-                document.session_id,
-                document.invocation_id,
-                document.document_kind,
-                json.dumps(document.payload, sort_keys=True),
-                document.created_at,
-                document.updated_at,
-            ),
-        )
-        self.connection.commit()
 
     def get(self, document_id: str) -> EngineDocumentRecord | None:
         row = self.connection.execute(
@@ -4491,6 +4726,11 @@ class CoreRepositories:
     research_evidence: ResearchEvidenceRepository
     research_source_refs: ResearchSourceRefRepository
     research_gaps: ResearchGapRepository
+
+    @contextmanager
+    def atomic(self, *, prefix: str) -> Iterator[None]:
+        with _sqlite_savepoint(self.tasks.connection, prefix=prefix):
+            yield
 
     @classmethod
     def from_connection(cls, connection: sqlite3.Connection) -> "CoreRepositories":

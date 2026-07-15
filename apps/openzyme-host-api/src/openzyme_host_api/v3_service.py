@@ -1081,7 +1081,7 @@ class V3HostApiService:
         if "failure_ref" in payload:
             mutation_kwargs["failure_ref"] = payload["failure_ref"]
         mutation = TaskMutation(**mutation_kwargs)
-        task = TaskBoardService(self.repositories).update_task(task_id, mutation)
+        task = TaskBoardService(self.repositories).edit_task(task_id, mutation)
         events = [_event("task.updated", task.session_id, {"task": task.to_dict()})]
         self._extend_with_activity_events(task.session_id, events)
         self.event_store.append(task.session_id, events)

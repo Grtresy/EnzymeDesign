@@ -1,4 +1,7 @@
 from dataclasses import replace
+import sqlite3
+
+import pytest
 
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -49,6 +52,7 @@ from openzyme_core import CoreRepositories
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import LaneLifecycleEventRecord
 from openzyme_core import OwnershipError
+from openzyme_core import TaskWriteIntentError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core.repositories import _coerce_inbox_participant_kind
@@ -351,7 +355,7 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     )
 
     repositories.sessions.save(session)
-    repositories.tasks.save(root_task)
+    repositories.tasks.seed_fixture(root_task)
     repositories.lanes.save(lane)
     repositories.tasks.save(child_task)
     repositories.approvals.save(approval)
@@ -486,7 +490,7 @@ def test_task_ready_query_filters_out_blocked_work() -> None:
         objective="Check ready tasks",
     )
     repositories.sessions.save(session)
-    repositories.tasks.save(
+    repositories.tasks.seed_fixture(
         Task.create(
             task_id="task_a",
             session_id=session.session_id,
@@ -546,6 +550,271 @@ def test_task_ready_query_filters_out_blocked_work() -> None:
 
     ready_ids = [task.task_id for task in repositories.tasks.list_ready_by_session(session.session_id)]
     assert ready_ids == ["task_b", "task_c", "task_d"]
+
+
+def test_task_repository_save_rolls_back_task_and_dependencies_together() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_atomic_task", "proj_001", "Atomic", "Atomic")
+    repositories.sessions.save(session)
+    for task_id in ("task_root", "task_allowed", "task_rejected"):
+        repositories.tasks.save(
+            Task.create(task_id, session.session_id, task_id, task_id)
+        )
+    original = repositories.tasks.get("task_root")
+    assert original is not None
+    connection.execute(
+        """
+        CREATE TRIGGER reject_test_dependency
+        BEFORE INSERT ON task_dependencies
+        WHEN NEW.blocked_by_task_id = 'task_rejected'
+        BEGIN
+            SELECT RAISE(ABORT, 'reject_test_dependency');
+        END
+        """
+    )
+
+    with pytest.raises(sqlite3.IntegrityError, match="reject_test_dependency"):
+        repositories.tasks.save(
+            replace(
+                original,
+                subject="partially updated",
+                blocked_by=("task_allowed", "task_rejected"),
+            )
+        )
+
+    saved = repositories.tasks.get("task_root")
+    assert saved is not None
+    assert saved.subject == original.subject
+    assert saved.blocked_by == original.blocked_by
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        TaskStatus.BLOCKED,
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    ),
+)
+def test_task_repository_generic_save_rejects_business_exit_transition(
+    status: TaskStatus,
+) -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_raw_exit", "proj_001", "Exit", "Exit")
+    repositories.sessions.save(session)
+    task = Task.create("task_raw_exit", session.session_id, "Exit", "Exit")
+    repositories.tasks.save(task)
+
+    with pytest.raises(
+        TaskWriteIntentError,
+        match="generic task save cannot cross a business exit boundary",
+    ):
+        repositories.tasks.save(replace(task, status=status))
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.TODO
+
+
+def test_task_repository_generic_save_allows_blocked_metadata_edit() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_blocked_edit", "proj_001", "Blocked", "Blocked")
+    repositories.sessions.save(session)
+    task = Task.create(
+        "task_blocked_edit",
+        session.session_id,
+        "Blocked",
+        "Blocked",
+        status=TaskStatus.BLOCKED,
+    )
+    repositories.tasks.seed_fixture(task)
+
+    repositories.tasks.save(replace(task, description="Clarified while blocked"))
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.BLOCKED
+    assert saved.description == "Clarified while blocked"
+
+
+@pytest.mark.parametrize(
+    "status",
+    (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED),
+)
+def test_task_repository_generic_save_rejects_terminal_metadata_edit(
+    status: TaskStatus,
+) -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_terminal_edit", "proj_001", "Terminal", "Terminal")
+    repositories.sessions.save(session)
+    task = Task.create(
+        "task_terminal_edit",
+        session.session_id,
+        "Terminal",
+        "Terminal",
+        status=status,
+    )
+    repositories.tasks.seed_fixture(task)
+
+    with pytest.raises(TaskWriteIntentError, match="edit a terminal task"):
+        repositories.tasks.save(replace(task, description="Hidden terminal edit"))
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        TaskStatus.BLOCKED,
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    ),
+)
+def test_task_repository_generic_save_rejects_business_exit_creation(
+    status: TaskStatus,
+) -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_raw_create", "proj_001", "Create", "Create")
+    repositories.sessions.save(session)
+
+    with pytest.raises(
+        TaskWriteIntentError,
+        match="generic task save cannot cross a business exit boundary",
+    ):
+        repositories.tasks.save(
+            Task.create(
+                "task_raw_create",
+                session.session_id,
+                "Create",
+                "Create",
+                status=status,
+            )
+        )
+
+    assert repositories.tasks.get("task_raw_create") is None
+
+
+def test_task_repository_finish_intent_is_explicit() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_raw_finish", "proj_001", "Finish", "Finish")
+    repositories.sessions.save(session)
+    task = Task.create("task_raw_finish", session.session_id, "Finish", "Finish")
+    repositories.tasks.save(task)
+
+    repositories.tasks.finish(replace(task, status=TaskStatus.COMPLETED))
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.COMPLETED
+
+
+def test_task_repository_finish_rejects_an_existing_business_exit() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_refinish", "proj_001", "Refinish", "Refinish")
+    repositories.sessions.save(session)
+    task = Task.create("task_refinish", session.session_id, "Refinish", "Refinish")
+    repositories.tasks.save(task)
+    blocked = replace(task, status=TaskStatus.BLOCKED)
+    repositories.tasks.finish(blocked)
+
+    with pytest.raises(TaskWriteIntentError, match="already reached business exit blocked"):
+        repositories.tasks.finish(replace(blocked, status=TaskStatus.COMPLETED))
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.BLOCKED
+
+
+def test_task_repository_mechanical_intent_cannot_edit_an_exited_task_in_place() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_mechanical", "proj_001", "Mechanical", "Mechanical")
+    repositories.sessions.save(session)
+    task = Task.create(
+        "task_mechanical",
+        session.session_id,
+        "Mechanical",
+        "Mechanical",
+        status=TaskStatus.BLOCKED,
+    )
+    repositories.tasks.seed_fixture(task)
+
+    with pytest.raises(TaskWriteIntentError, match="documented claim/approval transition"):
+        repositories.tasks.save_mechanical(replace(task, subject="Hidden edit"))
+
+
+def test_task_repository_mechanical_intent_rejects_unrelated_field_changes() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_mechanical_fields", "proj_001", "Mechanical", "Mechanical")
+    repositories.sessions.save(session)
+    task = Task.create(
+        "task_mechanical_fields",
+        session.session_id,
+        "Mechanical",
+        "Mechanical",
+    )
+    repositories.tasks.save(task)
+
+    with pytest.raises(TaskWriteIntentError, match="may only change"):
+        repositories.tasks.save_mechanical(
+            replace(
+                task,
+                status=TaskStatus.IN_PROGRESS,
+                subject="Hidden edit",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"subject": "Hidden finish edit"},
+        {"assigned_ref": "agent:other"},
+        {"blocked_by": ("task_blocker",)},
+    ),
+)
+def test_task_repository_finish_intent_rejects_unrelated_field_changes(
+    changes: dict[str, object],
+) -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create("sess_finish_fields", "proj_001", "Finish", "Finish")
+    repositories.sessions.save(session)
+    task = Task.create("task_finish_fields", session.session_id, "Finish", "Finish")
+    repositories.tasks.save(task)
+    repositories.tasks.save(
+        Task.create("task_blocker", session.session_id, "Blocker", "Blocker")
+    )
+
+    with pytest.raises(TaskWriteIntentError, match="may only change"):
+        repositories.tasks.finish(
+            replace(task, status=TaskStatus.COMPLETED, **changes)
+        )
+
+    saved = repositories.tasks.get(task.task_id)
+    assert saved is not None
+    assert saved.status is TaskStatus.TODO
+    assert saved.subject == "Finish"
+    assert saved.assigned_ref is None
+    assert saved.blocked_by == ()
 
 
 def test_task_repository_rejects_cross_session_lane_binding() -> None:

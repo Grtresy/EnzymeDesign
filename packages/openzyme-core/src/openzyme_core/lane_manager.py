@@ -15,6 +15,7 @@ from .harness import ToolInvocation
 from .harness import ToolRegistry
 from .harness import ToolResult
 from .repositories import CoreRepositories
+from .repositories import TaskWriteIntent
 from .repositories import LaneLifecycleEventRecord
 
 
@@ -125,7 +126,10 @@ class LaneManager:
             if task.status.is_terminal:
                 continue
             updated_task = self._copy_task(task, lane_id=None)
-            self.repositories.tasks.save(updated_task)
+            self.repositories.tasks.save(
+                updated_task,
+                intent=TaskWriteIntent.EDIT,
+            )
             self._record(
                 "task.unbound_from_lane",
                 lane=lane,
@@ -154,7 +158,7 @@ class LaneManager:
         if lane.status is LaneStatus.REMOVED:
             raise ValueError(f"lane {lane_id!r} has been removed")
         updated = self._copy_task(task, lane_id=lane.lane_id)
-        self.repositories.tasks.save(updated)
+        self.repositories.tasks.save(updated, intent=TaskWriteIntent.EDIT)
         self._record(
             "task.bound_to_lane",
             lane=lane,
@@ -170,7 +174,7 @@ class LaneManager:
             return task
         lane = self._require_lane(task.lane_id)
         updated = self._copy_task(task, lane_id=None)
-        self.repositories.tasks.save(updated)
+        self.repositories.tasks.save(updated, intent=TaskWriteIntent.EDIT)
         self._record(
             "task.unbound_from_lane",
             lane=lane,

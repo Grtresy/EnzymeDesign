@@ -18,7 +18,6 @@ from .agent_identity import require_canonical_agent_id
 from .agent_identity import resolve_agent_reference
 from .protocols import ProtocolService
 from .task_board import TaskBoardService
-from .task_board import TaskMutation
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 from .teammate_roster import is_valid_teammate_role
 from .teammate_roster import teammate_role_for_task_kind
@@ -340,9 +339,9 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 "handle": handle_for_agent(agent),
             },
         )
-        task = service.update_task(
+        task = service.claim_task(
             task.task_id,
-            TaskMutation(assigned_ref=agent_id, status=TaskStatus.IN_PROGRESS),
+            assigned_ref=agent_id,
         )
         delegation = protocol.delegate(
             session_id=task.session_id,
