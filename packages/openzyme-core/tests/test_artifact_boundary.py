@@ -221,6 +221,45 @@ def test_materialize_rejects_cross_session_artifact_and_escape_target(tmp_path: 
     assert exc_info.value.error_code == "artifact_materialize_target_forbidden"
 
 
+def test_materialize_rejects_artifact_storage_that_no_longer_matches_declared_digest(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    artifact = _save_input_artifact(
+        repositories,
+        tmp_path,
+        session_id=session.session_id,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    Path(artifact.storage_uri).write_text(">seq\nTAMPERED\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.materialize(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            artifact_id=artifact.artifact_id,
+        )
+
+    assert exc_info.value.error_code == "artifact_blob_digest_mismatch"
+    assert exc_info.value.details["expected_digest"] == _digest(">seq\nMSEQ\n")
+    assert not (
+        workspace_root
+        / workspace.sandbox_workspace_id
+        / "input"
+        / artifact.artifact_id
+    ).exists()
+    refreshed = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    assert refreshed is not None
+    assert refreshed.materialized_input_artifact_ids == ()
+    assert repositories.artifact_blob_gc.list_pending()[0]["reason"] == "artifact_blob_digest_mismatch"
+
+
 def test_register_requires_source_snapshot(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
@@ -303,6 +342,88 @@ def test_snapshot_code_then_register_seals_output_and_keeps_duplicate_paths(tmp_
     assert len(records) == 2
     assert dict(first.artifact.metadata or {})["source_snapshot_artifact_id"] == snapshot.artifact.artifact_id
     assert "storage_uri" not in json.dumps(first.to_payload())
+
+
+def test_register_rejects_tampered_existing_content_addressed_blob(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    workspace_path = workspace_root / workspace.sandbox_workspace_id
+    (workspace_path / "src" / "main.py").write_text("print('v1')\n", encoding="utf-8")
+    output = workspace_path / "output" / "result.csv"
+    output.write_text("id,score\nA,1\n", encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+    service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+    )
+    registered = service.register(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        path="/workspace/output/result.csv",
+        kind="result",
+        format="csv",
+        metadata={"required_columns": ["id", "score"]},
+    )
+    sealed_path = Path(registered.artifact.storage_uri)
+    sealed_path.chmod(0o644)
+    sealed_path.write_text("id,score\nTAMPERED,999\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/result.csv",
+            kind="result",
+            format="csv",
+            metadata={"required_columns": ["id", "score"]},
+        )
+
+    assert exc_info.value.error_code == "artifact_blob_digest_mismatch"
+    result_artifacts = [
+        artifact
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+        if artifact.relative_path == "result.csv"
+    ]
+    assert [artifact.artifact_id for artifact in result_artifacts] == [
+        registered.artifact.artifact_id
+    ]
+
+
+def test_snapshot_code_rejects_tampered_existing_snapshot_blob(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    source = workspace_root / workspace.sandbox_workspace_id / "src" / "main.py"
+    source.write_text("print('v1')\n", encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+    first = service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+    )
+    sealed_source = Path(first.artifact.storage_uri) / "main.py"
+    sealed_source.chmod(0o644)
+    sealed_source.write_text("print('tampered')\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.snapshot_code(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            paths="/workspace/src",
+            entrypoint="/workspace/src/main.py",
+        )
+
+    assert exc_info.value.error_code == "artifact_blob_digest_mismatch"
 
 
 def test_register_directory_records_tree_digest_and_file_manifest(tmp_path: Path) -> None:

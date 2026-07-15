@@ -496,10 +496,7 @@ class ArtifactBoundaryService:
         artifact = self.repositories.artifacts.get(artifact_id)
         if artifact is None or artifact.session_id != session_id:
             raise ArtifactBoundaryError("artifact_scope_forbidden", "artifact is not available in this session")
-        source = _storage_path(artifact)
-        if source is None or not source.exists():
-            raise ArtifactBoundaryError("artifact_blob_store_unavailable", "artifact sealed storage is unavailable")
-        artifact_digest = _artifact_digest(artifact)
+        source, artifact_digest, source_summary = self._verify_artifact_blob(artifact)
         public_target = self._materialize_target(artifact, target)
         workspace_path = self._workspace_path(sandbox_workspace_id)
         target_path = _resolve_workspace_host_path(
@@ -510,13 +507,12 @@ class ArtifactBoundaryService:
         )
         if target_path.exists():
             existing_digest, existing_summary = _digest_path(target_path)
-            source_digest, source_summary = _digest_path(source)
             if existing_summary["type"] != source_summary["type"]:
                 raise ArtifactBoundaryError(
                     "artifact_materialize_type_conflict",
                     "materialization target already exists with a different artifact type",
                 )
-            if existing_digest != source_digest:
+            if existing_digest != artifact_digest:
                 raise ArtifactBoundaryError(
                     "artifact_materialization_conflict",
                     "materialization target already exists with different content",
@@ -526,6 +522,23 @@ class ArtifactBoundaryService:
             reused = True
         else:
             _copy_path(source, target_path)
+            copied_digest, copied_summary = _digest_path(target_path)
+            source_digest_after, source_summary_after = _digest_path(source)
+            if (
+                copied_digest != artifact_digest
+                or copied_summary["type"] != source_summary["type"]
+                or source_digest_after != artifact_digest
+                or source_summary_after["type"] != source_summary["type"]
+            ):
+                if target_path.is_dir():
+                    shutil.rmtree(target_path)
+                else:
+                    target_path.unlink(missing_ok=True)
+                raise ArtifactBoundaryError(
+                    "artifact_blob_digest_mismatch",
+                    "artifact content changed while it was being materialized",
+                    details={"artifact_id": artifact.artifact_id},
+                )
             if mode == "readonly":
                 _chmod_readonly(target_path)
             reused = False
@@ -624,6 +637,7 @@ class ArtifactBoundaryService:
             value=register_key,
         )
         if existing is not None:
+            self._verify_artifact_blob(existing)
             self._update_workspace(
                 workspace,
                 registered_artifact_ids=self._append_id(
@@ -760,6 +774,7 @@ class ArtifactBoundaryService:
             metadata_filter={"sandbox_workspace_id": sandbox_workspace_id, "entrypoint": entrypoint},
         )
         if existing is not None:
+            self._verify_artifact_blob(existing)
             self._update_workspace(
                 workspace,
                 source_code_artifact_ids=self._append_id(workspace.source_code_artifact_ids, existing.artifact_id),
@@ -770,13 +785,51 @@ class ArtifactBoundaryService:
                 file_digests={item["relative_path"]: item["content_digest"] for item in file_entries},
                 reused=True,
             )
-        sealed_root = _blob_store_root(self.blob_store_root) / "sealed" / "source" / source_tree_digest.removeprefix("sha256:")
-        if not sealed_root.exists():
+        blob_root = _blob_store_root(self.blob_store_root)
+        sealed_root = blob_root / "sealed" / "source" / source_tree_digest.removeprefix("sha256:")
+        temp_root = blob_root / "tmp" / _new_id("source")
+        try:
             for item in file_entries:
                 source = source_root / str(item["relative_path"])
-                target = sealed_root / str(item["relative_path"])
+                target = temp_root / str(item["relative_path"])
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
+            copied_digest, _copied_summary = _digest_path(temp_root)
+            if copied_digest != source_tree_digest:
+                raise ArtifactBoundaryError(
+                    "source_snapshot_changed",
+                    "source files changed while the snapshot was being sealed",
+                )
+            if sealed_root.exists():
+                existing_digest, _existing_summary = _digest_path(sealed_root)
+                if existing_digest != source_tree_digest:
+                    raise ArtifactBoundaryError(
+                        "artifact_blob_digest_mismatch",
+                        "an existing source snapshot blob does not match its digest",
+                    )
+            else:
+                sealed_root.parent.mkdir(parents=True, exist_ok=True)
+                temp_root.replace(sealed_root)
+                _chmod_readonly(sealed_root)
+            source_entries_after: list[dict[str, Any]] = []
+            for item in file_entries:
+                source = source_root / str(item["relative_path"])
+                digest = _file_digest(source)
+                source_entries_after.append(
+                    {
+                        "relative_path": item["relative_path"],
+                        "content_digest": digest.content_digest,
+                        "size_bytes": digest.size_bytes,
+                    }
+                )
+            if _json_digest(source_entries_after) != source_tree_digest:
+                raise ArtifactBoundaryError(
+                    "source_snapshot_changed",
+                    "source files changed while the snapshot was being sealed",
+                )
+        finally:
+            if temp_root.exists():
+                shutil.rmtree(temp_root)
         parent_id = None if not workspace.source_code_artifact_ids else workspace.source_code_artifact_ids[-1]
         snapshot_metadata = {
             **dict(metadata or {}),
@@ -827,6 +880,40 @@ class ArtifactBoundaryService:
     def _workspace_path(self, sandbox_workspace_id: str) -> Path:
         return _workspace_root(self.workspace_root) / sandbox_workspace_id
 
+    def _verify_artifact_blob(
+        self,
+        artifact: SessionArtifactRecord,
+    ) -> tuple[Path, str, dict[str, Any]]:
+        source = _storage_path(artifact)
+        if source is None or not source.exists():
+            raise ArtifactBoundaryError(
+                "artifact_blob_store_unavailable",
+                "artifact sealed storage is unavailable",
+            )
+        expected_digest = _artifact_digest(artifact)
+        actual_digest, summary = _digest_path(source)
+        if actual_digest != expected_digest:
+            try:
+                self.repositories.artifact_blob_gc.enqueue(
+                    blob_ref=str(source),
+                    reason="artifact_blob_digest_mismatch",
+                    created_at=utc_now_iso(),
+                )
+            except Exception:
+                # Integrity failure must remain fail-closed even when quarantine
+                # bookkeeping is itself unavailable.
+                pass
+            raise ArtifactBoundaryError(
+                "artifact_blob_digest_mismatch",
+                "artifact sealed storage does not match its declared digest",
+                details={
+                    "artifact_id": artifact.artifact_id,
+                    "expected_digest": expected_digest,
+                    "actual_digest": actual_digest,
+                },
+            )
+        return source, expected_digest, summary
+
     def _materialize_target(self, artifact: SessionArtifactRecord, target: str | None) -> PurePosixPath:
         if target not in {None, ""}:
             return _public_path(target, default=WORKSPACE_INPUT / artifact.artifact_id)
@@ -847,16 +934,35 @@ class ArtifactBoundaryService:
         try:
             _copy_path(source_path, temp_path)
             sealed_digest, sealed_summary = _digest_path(temp_path)
+            if sealed_digest != source_digest:
+                raise ArtifactBoundaryError(
+                    "artifact_sealed_digest_mismatch",
+                    "sealed artifact digest does not match source",
+                )
             digest_part = source_digest.removeprefix("sha256:")
             if source_summary_before["type"] == "file":
                 sealed_path = root / "sealed" / "files" / digest_part
             else:
                 sealed_path = root / "sealed" / "trees" / digest_part
-            if not sealed_path.exists():
-                _copy_path(temp_path, sealed_path)
-            shutil.rmtree(temp_path) if temp_path.is_dir() else temp_path.unlink(missing_ok=True)
+            if sealed_path.exists():
+                existing_digest, existing_summary = _digest_path(sealed_path)
+                if (
+                    existing_digest != source_digest
+                    or existing_summary["type"] != source_summary_before["type"]
+                ):
+                    raise ArtifactBoundaryError(
+                        "artifact_blob_digest_mismatch",
+                        "an existing sealed artifact blob does not match its digest",
+                    )
+            else:
+                sealed_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.replace(sealed_path)
+                _chmod_readonly(sealed_path)
         except OSError as exc:
             raise ArtifactBoundaryError("artifact_seal_failed", "failed to seal artifact blob") from exc
+        finally:
+            if temp_path.exists():
+                shutil.rmtree(temp_path) if temp_path.is_dir() else temp_path.unlink(missing_ok=True)
         return sealed_path, sealed_digest, sealed_summary
 
     def _require_register_provenance(self, metadata: dict[str, Any]) -> None:
