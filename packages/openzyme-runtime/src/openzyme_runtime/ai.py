@@ -13,6 +13,8 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from .limits import LimiterRegistry
+from .live_token_ledger import is_micu_provider_url
+from .live_token_ledger import LiveMicuTokenLedger
 from .llm_invocation import is_retryable_llm_provider_error
 from .llm_invocation import LlmInvocationRuntime
 from .llm_invocation import max_attempts_from_retries
@@ -117,6 +119,9 @@ class LangChainStructuredInvoker:
     retry_backoff_seconds: float = 1.0
     invocation_timeout_seconds: float | None = None
     limiter_registry: LimiterRegistry | None = None
+    live_token_ledger: LiveMicuTokenLedger | None = None
+    live_token_scenario: str | None = None
+    reserved_output_tokens: int | None = None
 
     def invoke_structured(
         self,
@@ -179,6 +184,7 @@ class LangChainStructuredInvoker:
                 if isinstance(response, BaseModel)
                 else serialize_llm_payload(response),
             },
+            usage_response=lambda _response: raw_response,
         )
         self._log_stage(
             f"LLM structured finished elapsed={time.monotonic() - started:.2f}s"
@@ -201,6 +207,9 @@ class LangChainStructuredInvoker:
             invocation_timeout_seconds=self.invocation_timeout_seconds,
             diagnostic_label=self.diagnostic_label,
             limiter_registry=self.limiter_registry,
+            live_token_ledger=self.live_token_ledger,
+            live_token_scenario=self.live_token_scenario,
+            reserved_output_tokens=self.reserved_output_tokens,
         )
 
 
@@ -216,6 +225,9 @@ class LangChainToolCallingInvoker:
     retry_backoff_seconds: float = 1.0
     limiter_registry: LimiterRegistry | None = None
     dotted_tool_name_aliasing: bool = False
+    live_token_ledger: LiveMicuTokenLedger | None = None
+    live_token_scenario: str | None = None
+    reserved_output_tokens: int | None = None
 
     def invoke_with_tools(
         self,
@@ -278,6 +290,9 @@ class LangChainToolCallingInvoker:
             invocation_timeout_seconds=self.invocation_timeout_seconds,
             diagnostic_label=self.diagnostic_label,
             limiter_registry=self.limiter_registry,
+            live_token_ledger=self.live_token_ledger,
+            live_token_scenario=self.live_token_scenario,
+            reserved_output_tokens=self.reserved_output_tokens,
         )
 
 
@@ -374,6 +389,8 @@ class OpenAICompatibleChatModelFactory:
     context_window_tokens: int | None = None
     default_output_tokens: int | None = None
     tokenizer_enabled: bool = False
+    live_token_ledger: LiveMicuTokenLedger | None = None
+    live_token_scenario: str | None = None
 
     def create_structured_invoker(self, *, purpose: str) -> StructuredOutputInvoker:
         try:
@@ -410,6 +427,12 @@ class OpenAICompatibleChatModelFactory:
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
             invocation_timeout_seconds=policy["timeout"],
             limiter_registry=self.limiter_registry,
+            live_token_ledger=self.live_token_ledger,
+            live_token_scenario=self.live_token_scenario,
+            reserved_output_tokens=_reserved_output_tokens(
+                policy["max_tokens"],
+                self.default_output_tokens,
+            ),
         )
         return invoker
 
@@ -448,6 +471,12 @@ class OpenAICompatibleChatModelFactory:
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
             limiter_registry=self.limiter_registry,
             dotted_tool_name_aliasing=_is_micu_base_url(self.base_url),
+            live_token_ledger=self.live_token_ledger,
+            live_token_scenario=self.live_token_scenario,
+            reserved_output_tokens=_reserved_output_tokens(
+                policy["max_tokens"],
+                self.default_output_tokens,
+            ),
         )
         return invoker
 
@@ -568,7 +597,15 @@ def _extract_tokenizer_count(response: dict[str, Any]) -> int | None:
 
 
 def _is_micu_base_url(base_url: str | None) -> bool:
-    return "micuapi.ai" in (base_url or "").lower()
+    return is_micu_provider_url(base_url)
+
+
+def _reserved_output_tokens(
+    max_tokens: int | None,
+    default_output_tokens: int | None,
+) -> int | None:
+    configured = max_tokens if max_tokens is not None else default_output_tokens
+    return None if configured is None else int(configured)
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:

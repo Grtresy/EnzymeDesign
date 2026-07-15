@@ -13,6 +13,8 @@ from openzyme_execution import ExecutionOutcome
 from openzyme_execution import HpcRunnerExecutionAdapter
 from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import LimiterRegistry
+from openzyme_runtime import is_micu_provider_url
+from openzyme_runtime import LiveMicuTokenLedger
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import RuntimeFoundation
 from openzyme_tools import DefaultHpcExecutionRegistry
@@ -202,6 +204,13 @@ def build_model_factory_from_settings(
 ) -> OpenAICompatibleChatModelFactory | None:
     if not settings.llm.enabled or settings.llm.api_key is None:
         return None
+    live_token_scenario = _live_llm_token_scenario(settings)
+    live_token_ledger = (
+        LiveMicuTokenLedger(settings.test.live_llm.token_ledger_path)
+        if live_token_scenario is not None
+        and is_micu_provider_url(settings.llm.base_url)
+        else None
+    )
     return OpenAICompatibleChatModelFactory(
         model=settings.llm.model,
         api_key=settings.llm.api_key,
@@ -233,10 +242,25 @@ def build_model_factory_from_settings(
         limiter_registry=limiter_registry,
         diagnostic_label=(
             "live-provider"
-            if settings.test.enable_live_llm or settings.test.enable_live_e2e
+            if live_token_scenario is not None
             else None
         ),
+        live_token_ledger=live_token_ledger,
+        live_token_scenario=live_token_scenario,
     )
+
+
+def _live_llm_token_scenario(settings: OpenZymeSettings) -> str | None:
+    scenarios = [
+        name
+        for name, enabled in (
+            ("live_llm", settings.test.enable_live_llm),
+            ("live_e2e", settings.test.enable_live_e2e),
+            ("quality_eval", settings.test.enable_quality_eval),
+        )
+        if enabled
+    ]
+    return "+".join(scenarios) or None
 
 
 def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:

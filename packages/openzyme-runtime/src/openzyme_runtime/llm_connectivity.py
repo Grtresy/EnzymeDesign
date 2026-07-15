@@ -5,6 +5,8 @@ from typing import Any
 
 from .llm_invocation import LlmInvocationRuntime
 from .llm_invocation import max_attempts_from_retries
+from .live_token_ledger import is_micu_provider_url
+from .live_token_ledger import LiveMicuTokenLedger
 from .settings import get_settings
 
 
@@ -42,6 +44,13 @@ def run_connectivity_check() -> dict[str, Any]:
         timeout=llm.timeout or 60.0,
         max_retries=0,
     )
+    output_token_reservation = _smoke_max_output_tokens(llm.max_tokens)
+    live_token_ledger = (
+        LiveMicuTokenLedger(settings.test.live_llm.token_ledger_path)
+        if is_micu_provider_url(llm.base_url)
+        else None
+    )
+    input_text = "OpenZyme LLM connectivity check. Reply with exactly: ok"
     response = LlmInvocationRuntime(
         purpose="llm_connectivity",
         kind="connectivity",
@@ -50,16 +59,21 @@ def run_connectivity_check() -> dict[str, Any]:
         max_attempts=max_attempts_from_retries(llm.max_retries),
         retry_backoff_seconds=llm.structured_output_retry_backoff_seconds,
         invocation_timeout_seconds=llm.timeout or 60.0,
+        diagnostic_label="llm-connectivity",
+        live_token_ledger=live_token_ledger,
+        live_token_scenario="llm_connectivity" if live_token_ledger is not None else None,
+        reserved_output_tokens=output_token_reservation,
     ).invoke(
         request={
             "model": llm.model,
             "use_responses_api": llm.use_responses_api,
-            "max_output_tokens": _smoke_max_output_tokens(llm.max_tokens),
+            "input": input_text,
+            "max_output_tokens": output_token_reservation,
         },
         call=lambda: client.responses.create(
             model=llm.model,
-            input="OpenZyme LLM connectivity check. Reply with exactly: ok",
-            max_output_tokens=_smoke_max_output_tokens(llm.max_tokens),
+            input=input_text,
+            max_output_tokens=output_token_reservation,
         ),
         phase="invoking LLM connectivity check",
     )

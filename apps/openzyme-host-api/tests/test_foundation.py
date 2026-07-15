@@ -15,6 +15,7 @@ from openzyme_host_api.foundation import apply_live_llm_test_budget
 from openzyme_host_api.foundation import build_configured_foundation
 from openzyme_host_api.foundation import build_local_eval_foundation
 from openzyme_host_api.foundation import build_model_factory_from_env
+from openzyme_host_api.foundation import build_model_factory_from_settings
 from openzyme_host_api.foundation import DeterministicExecutionAdapter
 from openzyme_host_api.foundation import DeterministicResearchAdapter
 from openzyme_host_api.eval_support import DeterministicLocalModelFactory
@@ -217,6 +218,55 @@ def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
     assert constrained.llm.timeout == 240.0
     assert constrained.llm.max_retries == 0
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.5
+
+
+def test_model_factory_enables_ledger_only_for_explicit_live_micu(tmp_path) -> None:
+    base = _settings()
+    ledger_path = tmp_path / "live-ledger.sqlite3"
+    live_micu = replace(
+        base,
+        llm=replace(
+            base.llm,
+            base_url="https://www.micuapi.ai/v1",
+            max_tokens=300,
+        ),
+        test=replace(
+            base.test,
+            enable_live_llm=True,
+            live_llm=replace(
+                base.test.live_llm,
+                token_ledger_path=str(ledger_path),
+            ),
+        ),
+    )
+
+    metered = build_model_factory_from_settings(live_micu)
+    non_live = build_model_factory_from_settings(
+        replace(live_micu, test=replace(live_micu.test, enable_live_llm=False))
+    )
+    non_micu = build_model_factory_from_settings(
+        replace(live_micu, llm=replace(live_micu.llm, base_url="https://example.test/v1"))
+    )
+
+    assert metered is not None
+    assert metered.live_token_ledger is not None
+    assert metered.live_token_ledger.path == ledger_path
+    assert metered.live_token_scenario == "live_llm"
+    assert metered.diagnostic_label == "live-provider"
+    assert non_live is not None
+    assert non_live.live_token_ledger is None
+    assert non_live.live_token_scenario is None
+    assert non_micu is not None
+    assert non_micu.live_token_ledger is None
+
+    quality_eval = build_model_factory_from_settings(
+        replace(
+            live_micu,
+            test=replace(live_micu.test, enable_quality_eval=True),
+        )
+    )
+    assert quality_eval is not None
+    assert quality_eval.live_token_scenario == "live_llm+quality_eval"
 
 
 def test_local_eval_foundation_wires_deterministic_components() -> None:

@@ -3,6 +3,7 @@ from openzyme_runtime import DEFAULT_HOST_API_BIND_HOST
 from openzyme_runtime import DEFAULT_HOST_API_BIND_PORT
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
+from openzyme_runtime import DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
@@ -61,6 +62,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+        "OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH",
         "OPENZYME_LIMIT_GLOBAL_CONCURRENCY",
         "OPENZYME_LIMIT_SESSION_CONCURRENCY",
         "OPENZYME_LIMIT_AGENT_CONCURRENCY",
@@ -89,6 +91,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
+        "OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH",
     ):
         monkeypatch.setenv(key, "")
 
@@ -135,6 +138,10 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.test.live_llm.max_tokens is None
     assert settings.test.live_llm.timeout is None
     assert settings.test.live_llm.max_retries is None
+    assert (
+        settings.test.live_llm.token_ledger_path
+        == str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH)
+    )
 
 
 def test_settings_honor_env_overrides(monkeypatch) -> None:
@@ -198,6 +205,10 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES", "0")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD", "function_calling")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "0.5")
+    monkeypatch.setenv(
+        "OPENZYME_TEST_LIVE_LLM_TOKEN_LEDGER_PATH",
+        "/tmp/openzyme-live-token-ledger.sqlite3",
+    )
 
     reset_settings_cache()
     settings = get_settings()
@@ -263,6 +274,10 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.test.live_llm.max_retries == 0
     assert settings.test.live_llm.structured_output_method == "function_calling"
     assert settings.test.live_llm.structured_output_retry_backoff_seconds == 0.5
+    assert (
+        settings.test.live_llm.token_ledger_path
+        == "/tmp/openzyme-live-token-ledger.sqlite3"
+    )
 
 
 def test_settings_default_bigmodel_extra_body_can_be_overridden(monkeypatch) -> None:

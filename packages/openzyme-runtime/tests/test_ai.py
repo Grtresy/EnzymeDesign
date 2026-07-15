@@ -521,6 +521,7 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     assert isinstance(invoker, LangChainStructuredInvoker)
     assert invoker.invocation_timeout_seconds == 90.0
     assert invoker.max_attempts == 1
+    assert invoker.reserved_output_tokens == 300
     result = invoker.invoke_structured(
         schema=ExampleSchema,
         system_prompt="Return the schema.",

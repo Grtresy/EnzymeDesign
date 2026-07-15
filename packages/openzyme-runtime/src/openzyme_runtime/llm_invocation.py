@@ -12,6 +12,10 @@ from typing import Any
 from typing import Callable
 
 from .limits import LimiterRegistry
+from .live_token_ledger import estimate_llm_request_tokens
+from .live_token_ledger import is_micu_provider_url
+from .live_token_ledger import LiveMicuTokenLedger
+from .live_token_ledger import LiveMicuTokenReservation
 from .llm_debug import current_llm_debug_context
 from .llm_debug import get_llm_debug_recorder
 from .llm_debug import serialize_llm_payload
@@ -99,6 +103,9 @@ class LlmInvocationRuntime:
     diagnostic_label: str | None = None
     limiter_registry: LimiterRegistry | None = None
     limiter_name: str = "llm_provider"
+    live_token_ledger: LiveMicuTokenLedger | None = None
+    live_token_scenario: str | None = None
+    reserved_output_tokens: int | None = None
     sleep: SleepFn = time.sleep
 
     def invoke(
@@ -108,6 +115,7 @@ class LlmInvocationRuntime:
         call: ProviderCall,
         phase: str,
         debug_response: Callable[[Any], Any] | None = None,
+        usage_response: Callable[[Any], Any] | None = None,
     ) -> Any:
         if self.limiter_registry is None:
             return self._invoke_with_attempts(
@@ -115,6 +123,7 @@ class LlmInvocationRuntime:
                 call=call,
                 phase=phase,
                 debug_response=debug_response,
+                usage_response=usage_response,
             )
         return self.limiter_registry.sync_limiter(self.limiter_name).run(
             lambda: self._invoke_with_attempts(
@@ -122,6 +131,7 @@ class LlmInvocationRuntime:
                 call=call,
                 phase=phase,
                 debug_response=debug_response,
+                usage_response=usage_response,
             )
         )
 
@@ -132,6 +142,7 @@ class LlmInvocationRuntime:
         call: ProviderCall,
         phase: str,
         debug_response: Callable[[Any], Any] | None,
+        usage_response: Callable[[Any], Any] | None,
     ) -> Any:
         max_attempts = max(1, int(self.max_attempts))
         last_error: BaseException | None = None
@@ -150,12 +161,23 @@ class LlmInvocationRuntime:
                 request_context=current_llm_debug_context(),
                 request=attempt_request,
             )
+            reservation = self._reserve_live_tokens(
+                request=attempt_request,
+                attempt=attempt,
+                span=span,
+            )
             try:
                 response = self._call_provider(
                     f"{phase} attempt={attempt}",
                     call,
                 )
             except Exception as exc:
+                if reservation is not None:
+                    assert self.live_token_ledger is not None
+                    self.live_token_ledger.finalize_estimated(
+                        reservation,
+                        status="failed_estimated",
+                    )
                 classification = classify_llm_provider_error(exc)
                 retryable = classification.retryable and attempt < max_attempts
                 backoff_seconds = (
@@ -193,7 +215,11 @@ class LlmInvocationRuntime:
                     self.sleep(backoff_seconds)
                 continue
 
-            usage = extract_llm_usage(response)
+            usage_source = response if usage_response is None else usage_response(response)
+            usage = extract_llm_usage(usage_source)
+            if reservation is not None:
+                assert self.live_token_ledger is not None
+                self.live_token_ledger.reconcile_success(reservation, usage)
             span.finish(
                 response=response if debug_response is None else debug_response(response),
                 metadata={
@@ -216,6 +242,46 @@ class LlmInvocationRuntime:
             classification=classification,
             original=last_error,
         ) from last_error
+
+    def _reserve_live_tokens(
+        self,
+        *,
+        request: dict[str, Any],
+        attempt: int,
+        span: Any,
+    ) -> LiveMicuTokenReservation | None:
+        if (
+            self.live_token_ledger is None
+            or not self.live_token_scenario
+            or self.diagnostic_label is None
+            or not is_micu_provider_url(self.base_url)
+        ):
+            return None
+        try:
+            return self.live_token_ledger.reserve_attempt(
+                scenario=self.live_token_scenario,
+                purpose=self.purpose,
+                kind=self.kind,
+                model=self.model,
+                attempt=attempt,
+                estimated_input_tokens=estimate_llm_request_tokens(request),
+                reserved_output_tokens=self.reserved_output_tokens,
+            )
+        except Exception as exc:
+            span.finish(
+                error=exc,
+                metadata={
+                    "attempt": attempt,
+                    "max_attempts": max(1, int(self.max_attempts)),
+                    "retry_reason": None,
+                    "backoff_seconds": None,
+                    "provider_status": None,
+                    "error_taxonomy": None,
+                    "final_status": "token_budget_rejected",
+                    "usage": None,
+                },
+            )
+            raise
 
     def _call_provider(self, phase: str, call: ProviderCall) -> Any:
         if self.diagnostic_label is None or self.invocation_timeout_seconds is None:

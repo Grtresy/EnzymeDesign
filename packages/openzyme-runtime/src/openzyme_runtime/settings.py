@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .limits import DEFAULT_PROVIDER_LIMITS
+from .live_token_ledger import DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH
+from .live_token_ledger import configured_live_micu_token_ledger_path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -484,6 +486,7 @@ class LiveLlmTestSettings:
     max_retries: int | None
     structured_output_method: str | None
     structured_output_retry_backoff_seconds: float | None
+    token_ledger_path: str = str(DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH)
 
     @classmethod
     def from_env(cls) -> "LiveLlmTestSettings":
@@ -510,6 +513,9 @@ class LiveLlmTestSettings:
                     os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
                     0.0,
                 )
+            ),
+            token_ledger_path=(
+                str(configured_live_micu_token_ledger_path())
             ),
         )
 
