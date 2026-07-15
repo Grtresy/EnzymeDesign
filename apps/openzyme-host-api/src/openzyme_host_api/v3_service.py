@@ -13,6 +13,7 @@ from typing import ContextManager
 from uuid import uuid4
 
 from openzyme_core import CoreRepositories
+from openzyme_core import DurableEventRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import HarnessEvent
 from openzyme_core import HarnessStatus
@@ -70,53 +71,80 @@ def _event_fingerprint(event: dict[str, Any]) -> tuple[str, str, str]:
 
 @dataclass(slots=True)
 class V3EventStore:
-    _events: dict[str, list[dict[str, Any]]]
+    repositories: CoreRepositories | None
     _lock: threading.RLock
 
-    def __init__(self) -> None:
-        self._events = {}
+    def __init__(self, repositories: CoreRepositories | None = None) -> None:
+        self.repositories = repositories
         self._lock = threading.RLock()
 
-    def append(self, session_id: str, events: list[dict[str, Any]]) -> None:
-        with self._lock:
-            session_events = self._events.setdefault(session_id, [])
-            seen_event_ids = {
-                event.get("event_id")
-                for event in session_events
-                if event.get("event_id")
-            }
-            seen_trace_ids = {
-                event.get("payload", {}).get("trace_id")
-                for event in session_events
-                if event.get("event_type") == "llm.response.created"
-                and isinstance(event.get("payload"), dict)
-                and event.get("payload", {}).get("trace_id")
-            }
-            seen_fingerprints = {_event_fingerprint(event) for event in session_events}
-            for event in events:
-                event_id = event.get("event_id")
-                if event_id and event_id in seen_event_ids:
-                    continue
-                trace_id = None
-                if event.get("event_type") == "llm.response.created" and isinstance(
-                    event.get("payload"), dict
-                ):
-                    trace_id = event["payload"].get("trace_id")
-                    if trace_id and trace_id in seen_trace_ids:
-                        continue
-                fingerprint = _event_fingerprint(event)
-                if fingerprint in seen_fingerprints:
-                    continue
-                session_events.append(event)
-                if event_id:
-                    seen_event_ids.add(event_id)
-                if trace_id:
-                    seen_trace_ids.add(trace_id)
-                seen_fingerprints.add(fingerprint)
+    def bind(self, repositories: CoreRepositories) -> None:
+        if self.repositories is not None and self.repositories is not repositories:
+            raise RuntimeError("V3EventStore is already bound to another repository scope")
+        self.repositories = repositories
 
-    def list(self, session_id: str) -> list[dict[str, Any]]:
+    def _repository(self):  # type: ignore[no-untyped-def]
+        repositories = self.repositories
+        if repositories is None:
+            raise RuntimeError("V3EventStore must be bound to CoreRepositories")
+        return repositories.durable_events
+
+    def append(
+        self,
+        session_id: str,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        stored_events: list[dict[str, Any]] = []
         with self._lock:
-            return list(self._events.get(session_id, ()))
+            for event in events:
+                if str(event.get("session_id")) != session_id:
+                    raise ValueError("durable event session_id does not match append scope")
+                payload = event.get("payload", {})
+                if not isinstance(payload, dict):
+                    raise ValueError("durable event payload must be an object")
+                stored = self._repository().append(
+                    DurableEventRecord(
+                        event_id=str(event["event_id"]),
+                        session_id=session_id,
+                        event_type=str(event["event_type"]),
+                        schema_version=str(
+                            event.get("schema_version") or "openzyme.v3.event.v1"
+                        ),
+                        visibility=str(event.get("visibility") or "public"),
+                        payload=payload,
+                        command_id=event.get("command_id"),
+                        correlation_id=event.get("correlation_id"),
+                        causation_id=event.get("causation_id"),
+                        actor_ref=event.get("actor_ref"),
+                        created_at=str(event["created_at"]),
+                    )
+                ).to_dict()
+                event.clear()
+                event.update(stored)
+                stored_events.append(event)
+            events.sort(key=lambda item: int(item["cursor"]))
+        return stored_events
+
+    def list(
+        self,
+        session_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 1_000,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                event.to_dict()
+                for event in self._repository().list_by_session(
+                    session_id,
+                    after_cursor=after_cursor,
+                    limit=limit,
+                )
+            ]
+
+    def latest_cursor(self, session_id: str) -> int:
+        with self._lock:
+            return self._repository().latest_cursor(session_id)
 
 
 @dataclass(slots=True)
@@ -124,9 +152,20 @@ class V3EventStoreSink:
     event_store: V3EventStore
     events: list[HarnessEvent]
 
-    def __init__(self, event_store: V3EventStore) -> None:
+    def __init__(
+        self,
+        event_store: V3EventStore,
+        *,
+        events: list[HarnessEvent] | None = None,
+    ) -> None:
         self.event_store = event_store
-        self.events = []
+        self.events = [] if events is None else events
+
+    def for_repositories(self, repositories: CoreRepositories) -> "V3EventStoreSink":
+        return V3EventStoreSink(
+            V3EventStore(repositories),
+            events=self.events,
+        )
 
     def emit(self, event: HarnessEvent) -> None:
         self.events.append(event)
@@ -166,6 +205,9 @@ class V3HostApiService:
     ] | None = None
     engine_registry_factory: Callable[[CoreRepositories], EngineRegistry] | None = None
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def __post_init__(self) -> None:
+        self.event_store.bind(self.repositories)
 
     def _event_sink(self) -> V3EventStoreSink:
         return V3EventStoreSink(self.event_store)
@@ -373,8 +415,18 @@ class V3HostApiService:
         )
         return summaries
 
-    def events(self, session_id: str) -> list[dict[str, Any]]:
-        return self.event_store.list(session_id)
+    def events(
+        self,
+        session_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 1_000,
+    ) -> list[dict[str, Any]]:
+        return self.event_store.list(
+            session_id,
+            after_cursor=after_cursor,
+            limit=limit,
+        )
 
     def _touch_session(self, session_id: str) -> None:
         session = self.repositories.sessions.get(session_id)
@@ -400,7 +452,8 @@ class V3HostApiService:
         self, session_id: str, events: list[dict[str, Any]]
     ) -> None:
         existing = {
-            _event_fingerprint(event) for event in self.event_store.list(session_id)
+            _event_fingerprint(event)
+            for event in self.events(session_id, limit=10_000)
         }
         current = {_event_fingerprint(event) for event in events}
         for item in self.workspace(session_id).get("activity_feed", []):
@@ -422,7 +475,7 @@ class V3HostApiService:
     ) -> None:
         seen_trace_ids = {
             event.get("payload", {}).get("trace_id")
-            for event in [*self.event_store.list(session_id), *events]
+            for event in [*self.events(session_id, limit=10_000), *events]
             if event.get("event_type") == "llm.response.created"
             and isinstance(event.get("payload"), dict)
             and event.get("payload", {}).get("trace_id")

@@ -8,6 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from openzyme_domain import SourceRefKind
 from openzyme_execution import ExecutionArtifactRef
@@ -59,6 +60,7 @@ from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
+from openzyme_core import DurableEventRepository
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
@@ -75,6 +77,117 @@ from openzyme_engines import ResearchUnitPlan as EngineResearchUnitPlan
 from openzyme_engines.execution import ExecutionStartResult
 from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
+
+
+def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "durable-events.sqlite3"))
+    first_dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+    )
+    with TestClient(create_app(first_dependencies)) as first_client:
+        created = first_client.post(
+            "/v3/sessions",
+            headers={"Idempotency-Key": "create-restart-session"},
+            json={
+                "session_id": "sess_restart_events",
+                "project_id": "proj_restart_events",
+                "objective": "Prove event replay after restart",
+            },
+        )
+        assert created.status_code == 200
+        first_event = created.json()["events"][0]
+        assert first_event["cursor"] > 0
+
+    second_dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+    )
+    with TestClient(create_app(second_dependencies)) as second_client:
+        replay = second_client.get(
+            "/v3/sessions/sess_restart_events/events?replay=1"
+        )
+        assert replay.status_code == 200
+        assert f"id: {first_event['cursor']}" in replay.text
+        assert first_event["event_id"] in replay.text
+
+        after = second_client.get(
+            "/v3/sessions/sess_restart_events/events?replay=1",
+            headers={"Last-Event-ID": str(first_event["cursor"])},
+        )
+        assert after.status_code == 200
+        assert first_event["event_id"] not in after.text
+
+
+def test_v3_task_create_idempotency_replays_response_and_rejects_collision(
+    monkeypatch,
+) -> None:
+    client, _ = _build_client(monkeypatch)
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_idempotency",
+            "project_id": "proj_idempotency",
+            "objective": "Prove command receipts",
+        },
+    )
+    assert created.status_code == 200
+    request = {
+        "session_id": "sess_idempotency",
+        "task_id": "task_idempotency",
+        "subject": "Create exactly once",
+        "description": "Retry-safe task creation",
+    }
+    headers = {"Idempotency-Key": "create-task-once"}
+
+    first = client.post("/v3/tasks", headers=headers, json=request)
+    second = client.post("/v3/tasks", headers=headers, json=request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    events = client.get("/v3/sessions/sess_idempotency/events?replay=1")
+    assert events.text.count("event: task.created") == 1
+
+    conflict = client.post(
+        "/v3/tasks",
+        headers=headers,
+        json={**request, "subject": "Conflicting retry"},
+    )
+    assert conflict.status_code == 409
+    assert "different request" in conflict.json()["detail"]
+
+
+def test_v3_event_insert_failure_rolls_back_local_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    provider = SQLiteRepositoryProvider(str(tmp_path / "event-rollback.sqlite3"))
+    def fail_event_append(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        raise RuntimeError("forced durable event failure")
+
+    monkeypatch.setattr(DurableEventRepository, "append", fail_event_append)
+    with pytest.raises(RuntimeError, match="forced durable event failure"):
+        with provider.write() as owner:
+            service = V3HostApiService(
+                repositories=owner.repositories,
+                event_store=V3EventStore(owner.repositories),
+            )
+            service.create_session(
+                session_id="sess_rolled_back",
+                project_id="proj_rolled_back",
+                objective="This command must roll back",
+            )
+
+    with provider.read() as owner:
+        assert owner.repositories.sessions.get("sess_rolled_back") is None
+        assert owner.repositories.agents.list_by_session("sess_rolled_back") == []
 
 
 class FakeExecutionAdapter:

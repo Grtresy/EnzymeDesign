@@ -214,6 +214,10 @@ class AgentRuntimeScheduler:
             engine_registry = self.context.engine_registry
             if self.engine_registry_factory is not None:
                 engine_registry = self.engine_registry_factory(repositories)
+            event_sink = self.context.event_sink
+            scoped_sink_factory = getattr(event_sink, "for_repositories", None)
+            if callable(scoped_sink_factory):
+                event_sink = scoped_sink_factory(repositories)
             scoped_context = replace(
                 self.context,
                 repositories=repositories,
@@ -222,6 +226,7 @@ class AgentRuntimeScheduler:
                     signal.session_id,
                 ),
                 engine_registry=engine_registry,
+                event_sink=event_sink,
             )
             return AgentRuntimeService(scoped_context).wake_agent(
                 signal,

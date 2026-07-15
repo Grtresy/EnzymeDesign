@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from contextlib import contextmanager
@@ -12,9 +13,12 @@ from typing import Any
 from typing import Callable
 from typing import Iterator
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi import Header
+from fastapi import Request
 from fastapi.responses import FileResponse
 from fastapi.responses import RedirectResponse
 from fastapi.responses import StreamingResponse
@@ -34,6 +38,8 @@ from .v3_service import V3EventStore
 from .v3_service import V3HostApiService
 
 from openzyme_core import CoreRepositories
+from openzyme_core import CommandIdempotencyConflictError
+from openzyme_core import CommandReceiptRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_engines import DeepResearchEngine
@@ -46,6 +52,7 @@ from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
+from openzyme_domain.control_plane import utc_now_iso
 
 
 class CreateV3SessionRequest(BaseModel):
@@ -216,7 +223,6 @@ class HostApiDependencies:
     # Explicit compatibility seam for thread-aware tests that still need one
     # process-local fixture connection. Production composition must use the provider.
     v3_legacy_repositories_for_tests: CoreRepositories | None = None
-    v3_event_store: V3EventStore = field(default_factory=V3EventStore)
     v3_signal_notifier: RuntimeSignalNotifier = field(
         default_factory=RuntimeSignalNotifier
     )
@@ -299,7 +305,7 @@ class HostApiDependencies:
     ) -> V3HostApiService:
         return V3HostApiService(
             repositories=repositories,
-            event_store=self.v3_event_store,
+            event_store=V3EventStore(repositories),
             engine_registry=self.build_v3_engine_registry(repositories),
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
@@ -347,6 +353,8 @@ class HostApiDependencies:
 def _as_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, CommandIdempotencyConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, MissingLlmConfigurationError):
@@ -354,9 +362,73 @@ def _as_http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _execute_idempotent_command(
+    service: V3HostApiService,
+    *,
+    command_type: str,
+    scope_ref: str,
+    session_id: str | None,
+    idempotency_key: str | None,
+    request_payload: object,
+    operation: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    if idempotency_key is None:
+        return operation()
+    normalized_key = idempotency_key.strip()
+    if not normalized_key or len(normalized_key) > 256:
+        raise ValueError("Idempotency-Key must contain 1 to 256 characters")
+    digest_payload = {
+        "command_type": command_type,
+        "scope_ref": scope_ref,
+        "request": request_payload,
+    }
+    request_digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    existing = service.repositories.command_receipts.find(
+        scope_ref=scope_ref,
+        command_type=command_type,
+        idempotency_key=normalized_key,
+    )
+    if existing is not None:
+        if existing.request_digest != request_digest:
+            raise CommandIdempotencyConflictError(
+                "Idempotency-Key was already used for a different request"
+            )
+        return existing.response
+    response = operation()
+    now = utc_now_iso()
+    receipt = service.repositories.command_receipts.save(
+        CommandReceiptRecord(
+            command_receipt_id=f"receipt_{uuid4().hex[:16]}",
+            scope_ref=scope_ref,
+            session_id=session_id,
+            command_type=command_type,
+            idempotency_key=normalized_key,
+            request_digest=request_digest,
+            response=response,
+            created_at=now,
+            completed_at=now,
+        )
+    )
+    if receipt.request_digest != request_digest:
+        raise CommandIdempotencyConflictError(
+            "Idempotency-Key was concurrently used for a different request"
+        )
+    return receipt.response
+
+
 def _sse_encode(event: dict[str, Any]) -> str:
     payload = json.dumps(event, separators=(",", ":"), sort_keys=True)
-    return f"event: {event['event_type']}\ndata: {payload}\n\n"
+    return (
+        f"id: {int(event['cursor'])}\n"
+        f"event: {event['event_type']}\n"
+        f"data: {payload}\n\n"
+    )
 
 
 def create_app(
@@ -386,14 +458,28 @@ def create_app(
             return await call_next(request)
 
     @app.post("/v3/sessions")
-    def create_v3_session(request: CreateV3SessionRequest) -> dict[str, Any]:
+    def create_v3_session(
+        request: CreateV3SessionRequest,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.create_session(
-                    project_id=request.project_id,
-                    objective=request.objective,
-                    title=request.title,
+                return _execute_idempotent_command(
+                    service,
+                    command_type="session.create",
+                    scope_ref=f"project:{request.project_id}",
                     session_id=request.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload=request.model_dump(mode="json"),
+                    operation=lambda: service.create_session(
+                        project_id=request.project_id,
+                        objective=request.objective,
+                        title=request.title,
+                        session_id=request.session_id,
+                    ),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
@@ -417,13 +503,17 @@ def create_app(
 
     @app.post("/v3/sessions/{session_id}/messages")
     def post_v3_message(
-        session_id: str, request: PostV3MessageRequest
+        session_id: str,
+        request: PostV3MessageRequest,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
     ) -> dict[str, Any]:
         try:
-            # Message admission remains connection-owned because future harness
-            # hooks may cross provider boundaries. Local repository writes commit
-            # independently; no BEGIN IMMEDIATE spans the request.
-            with dependencies.v3_service_scope(mode="connection") as service:
+            # Message admission only persists conversation state and queues a
+            # runtime signal; provider work belongs to the explicit drain command.
+            with dependencies.v3_service_scope(mode="write") as service:
                 with llm_debug_context(
                     request_path=f"/v3/sessions/{session_id}/messages",
                     session_id=session_id,
@@ -431,19 +521,32 @@ def create_app(
                     lane_id=request.lane_id,
                     actor="user",
                 ):
-                    return service.post_message(
+                    return _execute_idempotent_command(
+                        service,
+                        command_type="conversation.message.post",
+                        scope_ref=f"session:{session_id}",
                         session_id=session_id,
-                        message=request.message,
-                        task_id=request.task_id,
-                        lane_id=request.lane_id,
-                        skill_keys=tuple(request.skill_keys),
-                    ).to_dict()
+                        idempotency_key=idempotency_key,
+                        request_payload=request.model_dump(mode="json"),
+                        operation=lambda: service.post_message(
+                            session_id=session_id,
+                            message=request.message,
+                            task_id=request.task_id,
+                            lane_id=request.lane_id,
+                            skill_keys=tuple(request.skill_keys),
+                        ).to_dict(),
+                    )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/sessions/{session_id}/runtime/drain")
     def drain_v3_runtime(
-        session_id: str, request: DrainV3RuntimeRequest
+        session_id: str,
+        request: DrainV3RuntimeRequest,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
     ) -> dict[str, Any]:
         try:
             # Runtime drain may call LLM/provider/runner boundaries. It owns a
@@ -454,12 +557,20 @@ def create_app(
                     session_id=session_id,
                     actor="scheduler",
                 ):
-                    return service.drain_runtime(
+                    return _execute_idempotent_command(
+                        service,
+                        command_type="runtime.drain",
+                        scope_ref=f"session:{session_id}",
                         session_id=session_id,
-                        max_signals=request.max_signals,
-                        max_steps_per_agent=request.max_steps_per_agent,
-                        auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
-                    ).to_dict()
+                        idempotency_key=idempotency_key,
+                        request_payload=request.model_dump(mode="json"),
+                        operation=lambda: service.drain_runtime(
+                            session_id=session_id,
+                            max_signals=request.max_signals,
+                            max_steps_per_agent=request.max_steps_per_agent,
+                            auto_enqueue_ready_tasks=request.auto_enqueue_ready_tasks,
+                        ).to_dict(),
+                    )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
@@ -473,93 +584,228 @@ def create_app(
 
     @app.get("/v3/sessions/{session_id}/events")
     def stream_v3_events(
-        session_id: str, replay: bool = True, follow: bool = False
+        session_id: str,
+        request: Request,
+        replay: bool = True,
+        follow: bool = False,
+        after_cursor: int | None = None,
     ) -> StreamingResponse:
         with dependencies.v3_service_scope(mode="read") as service:
             if service.repositories.sessions.get(session_id) is None:
                 raise _as_http_error(KeyError(f"session {session_id!r} does not exist"))
 
-        def read_events() -> list[dict[str, Any]]:
+        last_event_id = request.headers.get("last-event-id")
+        if after_cursor is not None and last_event_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="after_cursor and Last-Event-ID cannot both be supplied",
+            )
+        try:
+            requested_cursor = (
+                after_cursor
+                if after_cursor is not None
+                else (int(last_event_id) if last_event_id is not None else 0)
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Last-Event-ID must be an integer",
+            ) from exc
+        if requested_cursor < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="after_cursor must be non-negative",
+            )
+
+        def read_events(cursor: int) -> list[dict[str, Any]]:
             # StreamingResponse starts consuming after the route returns. Never
             # capture a request-scoped service/connection in the generator.
             with dependencies.v3_service_scope(mode="read") as scoped_service:
-                return scoped_service.events(session_id)
+                return scoped_service.events(session_id, after_cursor=cursor)
 
         async def event_stream() -> Any:
-            next_index = 0
+            cursor = requested_cursor
             if replay:
-                existing = read_events()
+                existing = read_events(cursor)
                 for event in existing:
                     yield _sse_encode(event)
-                next_index = len(existing)
+                    cursor = int(event["cursor"])
             else:
-                next_index = len(read_events())
+                existing = read_events(cursor)
+                if existing:
+                    cursor = int(existing[-1]["cursor"])
 
             if not follow:
                 return
 
             while True:
-                current = read_events()
-                while next_index < len(current):
-                    yield _sse_encode(current[next_index])
-                    next_index += 1
+                current = read_events(cursor)
+                for event in current:
+                    yield _sse_encode(event)
+                    cursor = int(event["cursor"])
                 await asyncio.sleep(0.5)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/v3/tasks")
-    def create_v3_task(payload: dict[str, Any]) -> dict[str, Any]:
+    def create_v3_task(
+        payload: dict[str, Any],
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.create_task(payload)
+                session_id = str(payload.get("session_id") or "")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="task.create",
+                    scope_ref=f"session:{session_id}",
+                    session_id=session_id or None,
+                    idempotency_key=idempotency_key,
+                    request_payload=payload,
+                    operation=lambda: service.create_task(payload),
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.patch("/v3/tasks/{task_id}")
-    def update_v3_task(task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_v3_task(
+        task_id: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.update_task(task_id, payload)
+                task = service.repositories.tasks.get(task_id)
+                if task is None:
+                    raise KeyError(f"task {task_id!r} does not exist")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="task.update",
+                    scope_ref=f"task:{task_id}",
+                    session_id=task.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload=payload,
+                    operation=lambda: service.update_task(task_id, payload),
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes")
-    def create_v3_lane(payload: dict[str, Any]) -> dict[str, Any]:
+    def create_v3_lane(
+        payload: dict[str, Any],
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.create_lane(payload)
+                session_id = str(payload.get("session_id") or "")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="lane.create",
+                    scope_ref=f"session:{session_id}",
+                    session_id=session_id or None,
+                    idempotency_key=idempotency_key,
+                    request_payload=payload,
+                    operation=lambda: service.create_lane(payload),
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/claim")
-    def claim_v3_lane(lane_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def claim_v3_lane(
+        lane_id: str,
+        payload: dict[str, Any],
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.claim_lane(
-                    lane_id, claimed_ref=str(payload.get("claimed_ref") or "user")
+                lane = service.repositories.lanes.get(lane_id)
+                if lane is None:
+                    raise KeyError(f"lane {lane_id!r} does not exist")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="lane.claim",
+                    scope_ref=f"lane:{lane_id}",
+                    session_id=lane.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload=payload,
+                    operation=lambda: service.claim_lane(
+                        lane_id,
+                        claimed_ref=str(payload.get("claimed_ref") or "user"),
+                    ),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/keep")
-    def keep_v3_lane(lane_id: str) -> dict[str, Any]:
+    def keep_v3_lane(
+        lane_id: str,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.keep_lane(lane_id)
+                lane = service.repositories.lanes.get(lane_id)
+                if lane is None:
+                    raise KeyError(f"lane {lane_id!r} does not exist")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="lane.keep",
+                    scope_ref=f"lane:{lane_id}",
+                    session_id=lane.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload={},
+                    operation=lambda: service.keep_lane(lane_id),
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/lanes/{lane_id}/remove")
-    def remove_v3_lane(lane_id: str) -> dict[str, Any]:
+    def remove_v3_lane(
+        lane_id: str,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
-                return service.remove_lane(lane_id)
+                lane = service.repositories.lanes.get(lane_id)
+                if lane is None:
+                    raise KeyError(f"lane {lane_id!r} does not exist")
+                return _execute_idempotent_command(
+                    service,
+                    command_type="lane.remove",
+                    scope_ref=f"lane:{lane_id}",
+                    session_id=lane.session_id,
+                    idempotency_key=idempotency_key,
+                    request_payload={},
+                    operation=lambda: service.remove_lane(lane_id),
+                )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
     @app.post("/v3/approvals/{approval_id}/resolve")
     def resolve_v3_approval(
-        approval_id: str, request: ResolveV3ApprovalRequest
+        approval_id: str,
+        request: ResolveV3ApprovalRequest,
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
     ) -> dict[str, Any]:
         try:
             with dependencies.v3_service_scope(mode="write") as service:
@@ -568,11 +814,22 @@ def create_app(
                     approval_id=approval_id,
                     actor=request.actor_ref,
                 ):
-                    return service.resolve_approval(
-                        approval_id,
-                        decision=request.decision,
-                        actor_ref=request.actor_ref,
-                    ).to_dict()
+                    approval = service.repositories.approvals.get(approval_id)
+                    if approval is None:
+                        raise KeyError(f"approval {approval_id!r} does not exist")
+                    return _execute_idempotent_command(
+                        service,
+                        command_type="approval.resolve",
+                        scope_ref=f"approval:{approval_id}",
+                        session_id=approval.session_id,
+                        idempotency_key=idempotency_key,
+                        request_payload=request.model_dump(mode="json"),
+                        operation=lambda: service.resolve_approval(
+                            approval_id,
+                            decision=request.decision,
+                            actor_ref=request.actor_ref,
+                        ).to_dict(),
+                    )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 

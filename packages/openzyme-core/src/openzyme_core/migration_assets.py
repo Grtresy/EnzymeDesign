@@ -25,6 +25,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "018_v3_session_runtime_leases",
     "019_v3_agent_identity_fields",
     "020_v3_task_integrity",
+    "021_v3_durable_event_outbox",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 
@@ -39,6 +40,8 @@ _REQUIRED_CURRENT_SCHEMA_TABLES: frozenset[str] = frozenset(
         "sandbox_workspace_records",
         "controlled_operation_records",
         "continuation_state_records",
+        "durable_event_records",
+        "command_receipt_records",
     }
 )
 
@@ -46,6 +49,10 @@ _REQUIRED_CURRENT_SCHEMA_TRIGGERS: frozenset[str] = frozenset(
     {
         "task_dependencies_validate_insert",
         "task_dependencies_validate_update",
+        "durable_event_records_append_only_update",
+        "durable_event_records_append_only_delete",
+        "command_receipt_records_immutable_update",
+        "command_receipt_records_immutable_delete",
     }
 )
 

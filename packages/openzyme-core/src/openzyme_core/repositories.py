@@ -89,6 +89,14 @@ class TaskWriteIntentError(ValueError):
     """Raised when a task repository write bypasses a command boundary."""
 
 
+class DurableEventConflictError(ValueError):
+    """Raised when an event id or trace id is reused for different content."""
+
+
+class CommandIdempotencyConflictError(ValueError):
+    """Raised when an idempotency key is reused with a different request."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionRuntimeLeaseAcquireResult:
     acquired: bool
@@ -908,6 +916,307 @@ class LaneLifecycleEventRecord:
             "created_at": self.created_at,
             "payload": {} if self.payload is None else self.payload,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DurableEventRecord:
+    event_id: str
+    session_id: str
+    event_type: str
+    created_at: str
+    payload: dict[str, Any]
+    cursor: int | None = None
+    schema_version: str = "openzyme.v3.event.v1"
+    visibility: str = "public"
+    command_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+    actor_ref: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cursor": self.cursor,
+            "event_id": self.event_id,
+            "session_id": self.session_id,
+            "event_type": self.event_type,
+            "schema_version": self.schema_version,
+            "visibility": self.visibility,
+            "payload": self.payload,
+            "command_id": self.command_id,
+            "correlation_id": self.correlation_id,
+            "causation_id": self.causation_id,
+            "actor_ref": self.actor_ref,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CommandReceiptRecord:
+    command_receipt_id: str
+    scope_ref: str
+    command_type: str
+    idempotency_key: str
+    request_digest: str
+    response: dict[str, Any]
+    created_at: str
+    completed_at: str
+    session_id: str | None = None
+    status: str = "completed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "command_receipt_id": self.command_receipt_id,
+            "scope_ref": self.scope_ref,
+            "session_id": self.session_id,
+            "command_type": self.command_type,
+            "idempotency_key": self.idempotency_key,
+            "request_digest": self.request_digest,
+            "status": self.status,
+            "response": self.response,
+            "created_at": self.created_at,
+            "completed_at": self.completed_at,
+        }
+
+
+@dataclass(slots=True)
+class DurableEventRepository:
+    connection: sqlite3.Connection
+
+    def append(self, event: DurableEventRecord) -> DurableEventRecord:
+        _require_session_exists(self.connection, event.session_id)
+        if event.cursor is not None:
+            raise ValueError("cursor is assigned by durable event storage")
+        if event.visibility not in {"public", "audit", "internal"}:
+            raise ValueError(f"unsupported durable event visibility: {event.visibility}")
+        payload_json = json.dumps(event.payload, sort_keys=True, separators=(",", ":"))
+        try:
+            cursor = self.connection.execute(
+                """
+                INSERT INTO durable_event_records (
+                    event_id, session_id, event_type, schema_version, visibility,
+                    payload_json, command_id, correlation_id, causation_id,
+                    actor_ref, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.session_id,
+                    event.event_type,
+                    event.schema_version,
+                    event.visibility,
+                    payload_json,
+                    event.command_id,
+                    event.correlation_id,
+                    event.causation_id,
+                    event.actor_ref,
+                    event.created_at,
+                ),
+            ).lastrowid
+        except sqlite3.IntegrityError as exc:
+            existing = self.get(event.event_id)
+            if existing is None:
+                trace_id = event.payload.get("trace_id")
+                if event.event_type == "llm.response.created" and isinstance(
+                    trace_id, str
+                ):
+                    existing = self.find_llm_response_by_trace_id(
+                        event.session_id,
+                        trace_id,
+                    )
+            if existing is not None and self._same_content(existing, event):
+                return existing
+            raise DurableEventConflictError(
+                "durable event identity was reused with different content"
+            ) from exc
+        _commit(self.connection)
+        stored = self.get(event.event_id)
+        if stored is None or cursor is None:
+            raise RuntimeError("durable event insert did not produce a stored record")
+        return stored
+
+    def get(self, event_id: str) -> DurableEventRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM durable_event_records WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        return None if row is None else self._row_to_event(row)
+
+    def find_llm_response_by_trace_id(
+        self,
+        session_id: str,
+        trace_id: str,
+    ) -> DurableEventRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM durable_event_records
+            WHERE session_id = ?
+              AND event_type = 'llm.response.created'
+              AND json_extract(payload_json, '$.trace_id') = ?
+            """,
+            (session_id, trace_id),
+        ).fetchone()
+        return None if row is None else self._row_to_event(row)
+
+    def list_by_session(
+        self,
+        session_id: str,
+        *,
+        after_cursor: int = 0,
+        limit: int = 1_000,
+        visibilities: tuple[str, ...] = ("public",),
+    ) -> list[DurableEventRecord]:
+        if after_cursor < 0:
+            raise ValueError("after_cursor must be non-negative")
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if not visibilities:
+            return []
+        invalid = set(visibilities) - {"public", "audit", "internal"}
+        if invalid:
+            raise ValueError(
+                f"unsupported durable event visibility: {sorted(invalid)[0]}"
+            )
+        placeholders = ", ".join("?" for _ in visibilities)
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM durable_event_records
+            WHERE session_id = ?
+              AND cursor > ?
+              AND visibility IN ({placeholders})
+            ORDER BY cursor
+            LIMIT ?
+            """,
+            (session_id, after_cursor, *visibilities, limit),
+        ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def latest_cursor(self, session_id: str) -> int:
+        row = self.connection.execute(
+            "SELECT COALESCE(MAX(cursor), 0) FROM durable_event_records WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row[0])
+
+    @staticmethod
+    def _same_content(
+        stored: DurableEventRecord,
+        candidate: DurableEventRecord,
+    ) -> bool:
+        return (
+            stored.event_id == candidate.event_id
+            and stored.session_id == candidate.session_id
+            and stored.event_type == candidate.event_type
+            and stored.schema_version == candidate.schema_version
+            and stored.visibility == candidate.visibility
+            and stored.payload == candidate.payload
+            and stored.command_id == candidate.command_id
+            and stored.correlation_id == candidate.correlation_id
+            and stored.causation_id == candidate.causation_id
+            and stored.actor_ref == candidate.actor_ref
+            and stored.created_at == candidate.created_at
+        )
+
+    @staticmethod
+    def _row_to_event(row: sqlite3.Row) -> DurableEventRecord:
+        return DurableEventRecord(
+            cursor=int(row["cursor"]),
+            event_id=str(row["event_id"]),
+            session_id=str(row["session_id"]),
+            event_type=str(row["event_type"]),
+            schema_version=str(row["schema_version"]),
+            visibility=str(row["visibility"]),
+            payload=_json_loads_object(row["payload_json"]) or {},
+            command_id=row["command_id"],
+            correlation_id=row["correlation_id"],
+            causation_id=row["causation_id"],
+            actor_ref=row["actor_ref"],
+            created_at=str(row["created_at"]),
+        )
+
+
+@dataclass(slots=True)
+class CommandReceiptRepository:
+    connection: sqlite3.Connection
+
+    def find(
+        self,
+        *,
+        scope_ref: str,
+        command_type: str,
+        idempotency_key: str,
+    ) -> CommandReceiptRecord | None:
+        row = self.connection.execute(
+            """
+            SELECT *
+            FROM command_receipt_records
+            WHERE scope_ref = ? AND command_type = ? AND idempotency_key = ?
+            """,
+            (scope_ref, command_type, idempotency_key),
+        ).fetchone()
+        return None if row is None else self._row_to_receipt(row)
+
+    def save(self, receipt: CommandReceiptRecord) -> CommandReceiptRecord:
+        if receipt.session_id is not None:
+            _require_session_exists(self.connection, receipt.session_id)
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO command_receipt_records (
+                    command_receipt_id, scope_ref, session_id, command_type,
+                    idempotency_key, request_digest, status, response_json,
+                    created_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt.command_receipt_id,
+                    receipt.scope_ref,
+                    receipt.session_id,
+                    receipt.command_type,
+                    receipt.idempotency_key,
+                    receipt.request_digest,
+                    receipt.status,
+                    json.dumps(receipt.response, sort_keys=True, separators=(",", ":")),
+                    receipt.created_at,
+                    receipt.completed_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            existing = self.find(
+                scope_ref=receipt.scope_ref,
+                command_type=receipt.command_type,
+                idempotency_key=receipt.idempotency_key,
+            )
+            if existing is not None and existing.request_digest == receipt.request_digest:
+                return existing
+            raise CommandIdempotencyConflictError(
+                "idempotency key was reused with a different request"
+            ) from exc
+        _commit(self.connection)
+        stored = self.find(
+            scope_ref=receipt.scope_ref,
+            command_type=receipt.command_type,
+            idempotency_key=receipt.idempotency_key,
+        )
+        if stored is None:
+            raise RuntimeError("command receipt insert did not produce a stored record")
+        return stored
+
+    @staticmethod
+    def _row_to_receipt(row: sqlite3.Row) -> CommandReceiptRecord:
+        return CommandReceiptRecord(
+            command_receipt_id=str(row["command_receipt_id"]),
+            scope_ref=str(row["scope_ref"]),
+            session_id=row["session_id"],
+            command_type=str(row["command_type"]),
+            idempotency_key=str(row["idempotency_key"]),
+            request_digest=str(row["request_digest"]),
+            status=str(row["status"]),
+            response=_json_loads_object(row["response_json"]) or {},
+            created_at=str(row["created_at"]),
+            completed_at=str(row["completed_at"]),
+        )
 
 
 @dataclass(slots=True)
@@ -4772,6 +5081,8 @@ class CoreRepositories:
     tasks: TaskRepository
     lanes: LaneRepository
     lane_events: LaneLifecycleEventRepository
+    durable_events: DurableEventRepository
+    command_receipts: CommandReceiptRepository
     approvals: ApprovalRequestRepository
     inbox: InboxMessageRepository
     memory: MemoryEntryRepository
@@ -4810,6 +5121,8 @@ class CoreRepositories:
             tasks=TaskRepository(connection),
             lanes=LaneRepository(connection),
             lane_events=LaneLifecycleEventRepository(connection),
+            durable_events=DurableEventRepository(connection),
+            command_receipts=CommandReceiptRepository(connection),
             approvals=ApprovalRequestRepository(connection),
             inbox=InboxMessageRepository(connection),
             memory=MemoryEntryRepository(connection),

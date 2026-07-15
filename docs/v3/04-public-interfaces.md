@@ -51,7 +51,9 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `POST /v3/lanes/{lane_id}/keep`
 - `POST /v3/lanes/{lane_id}/remove`
 
-task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，原子写入 finish document 与 task row，commit 后才投影 events。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
+task secondary endpoints 是非出口 CRUD：`POST /v3/tasks` 和 `PATCH /v3/tasks/{task_id}` 必须拒绝把 status 设为 `blocked` / `completed` / `failed` / `cancelled`。已经 blocked 的 task 在请求不携带 status 时仍可修正描述等 metadata；completed / failed / cancelled task edit fail closed。除已文档化 approval block 机械迁移外，业务出口只有 agent-facing `task.finish` command；它只能改变 status / updated_at / failure fields，并在同一 UoW 原子写入 finish document、task row 与 durable event，commit 后 SSE 才可见。已经处于任一 business-exit status 的 task 必须先显式 resume/reopen，不能直接再次 finish。operator 若未来需要 reopen/repair，必须设计独立、可审计的 command，不能把 generic PATCH 或 repository save 当作隐藏后门。task dependency mutation 还必须保持 same-session DAG；service cycle error 与 SQLite INSERT / UPDATE triggers 是同一 contract 的两层防线。
+
+所有 `/v3` mutation endpoint 接受 `Idempotency-Key` header。local-dev profile 当前可省略；提供时，Host 以 command type、resource scope 与 canonical request JSON 计算 digest：相同 key/digest 返回首次完成响应且不重复写入，key 相同但 digest 不同返回 `409`。shared profile 启用后该 header 与认证/actor context 一并强制。`POST /v3/sessions/{session_id}/messages` 只做本地 conversation admission 与 signal enqueue，因此使用短 write UoW；真正 provider work 只在显式 runtime drain 中发生。
 
 默认内部 tool surface 还应包括最小 report draft 操作：
 
@@ -301,6 +303,8 @@ Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_ap
 
 V3 streaming 默认围绕 control-plane events，而不是围绕 graph implementation 细节。
 
+`GET /v3/sessions/{session_id}/events` 从 SQLite durable event log 读取。每个 SSE frame 必须包含整数 `id: <cursor>`；首次 replay 可传 `after_cursor`，自动重连使用标准 `Last-Event-ID`。二者同时提供返回 `400`，负数或非整数 cursor fail closed。`replay=false` 从请求时的 durable tail 开始 follow，不能退回进程内 list index；Host restart 后 replay 必须返回相同 event id/cursor。public endpoint 默认只投影 `visibility=public` events。
+
 推送单位：
 
 - `conversation.user_message`
@@ -333,7 +337,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 
 这些事件默认服务于“用户与 master agent 的单一对话体验”，而不是把 V3 暴露成多线程运维控制台。
 
-`llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 被持久化为 `llm_trace_step` 后尽快推送该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。该事件 payload 必须与 `workspace.agent_traces` 使用同一 public projection helper / allowlist；SSE replay 从 workspace 恢复 trace event 时必须按 `trace_id` / `event_id` 去重。Web UI 用它实时增量更新 `workspace.agent_traces`，同样按 `trace_id` / `event_id` 去重；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
+`llm.response.created` 是 response-step 级 streaming event。Host API 应在每次 master / teammate LLM response 与 `llm_trace_step` 持久化后尽快 append 该事件，而不是等整个 `POST /v3/sessions/{session_id}/messages` command 完成后批量发送。该事件 payload 必须与 `workspace.agent_traces` 使用同一 public projection helper / allowlist；`trace_id` 在 session durable log 内唯一，重复 identity 只有内容完全一致时才可幂等复用，冲突内容 fail closed。Web UI 用 event `cursor` / `event_id` 与 trace `trace_id` 去重；最终面向用户的 `conversation.assistant_message` 仍可在 command 完成或明确产出用户回复时发送。
 
 `tool.invoked` 与 `tool.completed` 是 diagnostic/runtime events，不新增 Codex thread / turn 顶层产品状态。二者 payload 至少包含 `call_id`、canonical dotted `tool_name`、`task_id`、`lane_id`，并附加公开 actor / step / runtime metadata：`agent_id`、`actor_kind`、`role`、`call_index`、`step_id`、`tool_catalog_digest`、`restore_context_digest`、`side_effect`、`supports_parallel`。`tool.completed` 还包含 `ok`、`status` 与 `error_code`。这些 payload 不得包含 provider alias、完整 prompt、完整 tool schema、tool result content、artifact `storage_uri`、Host path、runner path、sandbox host path、SSH/runner config 或 provider secret。Web UI 可以把这些事件记录到 `activity_feed`，但它们不创建新的 workspace 顶层 turn / thread 状态。
 

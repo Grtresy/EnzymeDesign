@@ -27,6 +27,7 @@ SQLite connection / transaction ownership：
 - 会跨 LLM/provider/runner/sandbox 的流程使用非长事务 connection scope；repository 写入仍是短提交，不能用一个 write UoW 包住外部等待
 - WAL、foreign keys 与有限 `busy_timeout` 是固定连接配置；它们不允许跨线程复用，也不构成 command 幂等、outbox 或 lease fencing 的替代品
 - `020_v3_task_integrity` 将 task dependency 的 INSERT / UPDATE integrity triggers 纳入 current schema；缺少这些 triggers 的旧本地库不是 current-version input，必须按 fresh database 流程重建
+- `021_v3_durable_event_outbox` 将 durable event、command receipt 与 append-only/immutable triggers 纳入 current schema；缺少任一项同样 fail fast
 
 ## 2. Canonical Objects
 
@@ -65,7 +66,7 @@ SQLite connection / transaction ownership：
 - `blocked_by` 同时是 canonical same-session DAG：service 写前验证 cycle path，SQLite INSERT / UPDATE triggers 拒绝跨 session edge 与任意长度的 cycle；task row 和该 task 的完整 dependency replacement 原子提交
 - generic create/edit 不能写入或跨越 business-exit status。除 pending approval block 这类已文档化机械迁移外，`blocked`、`completed`、`failed`、`cancelled` 只能由 `task.finish` 写入；blocked task 保持 blocked 时允许描述修正、lane unbind 等非状态 edit，completed / failed / cancelled task 的 edit 则 fail closed。测试构造历史状态必须显式标记 fixture seed intent
 - 已处于任一 business-exit status 的 task 不能再次调用 `task.finish`；blocked task 必须先经显式 resume/reopen 回到 `in_progress`。finish intent 只允许改变 status、updated_at、failure_summary 与 failure_ref
-- `task.finish` 将 `task_finish` document 与 task status 写入同一 transaction，并在 commit 后才发出 canonical events；不能出现 finish document 已存在而 task 未退出，或 rollback 后仍泄漏 `task.finished` event
+- `task.finish` 将 `task_finish` document、task status 与 durable canonical event 写入同一 transaction，commit 后才允许 SSE 读取；不能出现 finish document 已存在而 task 未退出，或 rollback 后仍泄漏 `task.finished` event
 - task claim、pending approval block、approval resume 是窄范围、已文档化的 mechanical commands；它们必须发生允许的 status transition，且除 status / updated_at 与 claim 必需的 assigned_ref 外不能夹带字段修改
 
 建议字段：
@@ -413,9 +414,11 @@ Agent / public read model 只能通过 `artifact_id` 与安全 artifact 投影�
 
 ## 4. Event Model
 
-control plane 需要最小事件流，便于 streaming 与审计。
+control plane 事件流由 `durable_event_records` 持久化，不以 Host 进程内 list/cache 为 truth。数据库分配的 `cursor` 单调递增并作为 SSE `id:`；public consumer 用 `after_cursor` 或 `Last-Event-ID` 重放，跨 Host restart 保留原 `event_id` 与 cursor。event row 只能 append；`event_id` 全局唯一，`llm.response.created` 的 `trace_id` 在 session 内唯一，identity/trace 冲突且内容不同时 fail closed。
 
-建议事件类型：
+不跨外部边界的 canonical command 必须在同一个 `BEGIN IMMEDIATE` UoW 中提交领域 mutation、durable event 和可选 `command_receipt_records`，event insert 失败必须回滚领域 mutation。receipt 以 `(scope_ref, command_type, idempotency_key)` 唯一，完成后不可更新或删除；相同 request digest 返回首次响应且不得重复 mutation/event，不同 digest 使用同一 key 必须冲突。会跨 provider/runner/sandbox 的长流程仍不得持有长事务；其每个 bounded durable state transition 必须用后续短 UoW 和 lease/fencing 收口，不能把最终 receipt 当作 crash recovery 的替代品。
+
+稳定事件类型包括：
 
 - `session.created`
 - `task.created`

@@ -31,6 +31,7 @@ def test_migration_asset_is_available() -> None:
     session_runtime_lease_sql = get_migration_sql("018_v3_session_runtime_leases")
     agent_identity_sql = get_migration_sql("019_v3_agent_identity_fields")
     task_integrity_sql = get_migration_sql("020_v3_task_integrity")
+    durable_event_sql = get_migration_sql("021_v3_durable_event_outbox")
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -65,6 +66,9 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TRIGGER task_dependencies_validate_update" in task_integrity_sql
     assert "task_dependency_cycle" in task_integrity_sql
     assert "task_dependency_cross_session" in task_integrity_sql
+    assert "CREATE TABLE IF NOT EXISTS durable_event_records" in durable_event_sql
+    assert "CREATE TABLE IF NOT EXISTS command_receipt_records" in durable_event_sql
+    assert "durable_event_records_append_only_update" in durable_event_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -86,6 +90,7 @@ def test_migration_asset_is_available() -> None:
         "018_v3_session_runtime_leases",
         "019_v3_agent_identity_fields",
         "020_v3_task_integrity",
+        "021_v3_durable_event_outbox",
     )
 
 
@@ -132,6 +137,8 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "sandbox_command_log_artifacts",
         "controlled_operation_records",
         "continuation_state_records",
+        "durable_event_records",
+        "command_receipt_records",
     }.issubset(table_names)
     task_columns = {
         row[1]
@@ -205,6 +212,10 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
     assert {
         "task_dependencies_validate_insert",
         "task_dependencies_validate_update",
+        "durable_event_records_append_only_update",
+        "durable_event_records_append_only_delete",
+        "command_receipt_records_immutable_update",
+        "command_receipt_records_immutable_delete",
     }.issubset(trigger_names)
 
 

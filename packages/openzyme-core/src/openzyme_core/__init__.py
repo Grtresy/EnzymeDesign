@@ -91,6 +91,9 @@ from .repositories import AgentRuntimeSignalRepository
 from .repositories import ArtifactBlobGcRepository
 from .repositories import ArtifactMaterializationRepository
 from .repositories import CommandLogArtifactRepository
+from .repositories import CommandIdempotencyConflictError
+from .repositories import CommandReceiptRecord
+from .repositories import CommandReceiptRepository
 from .repositories import ControlledOperationRepository
 from .repositories import ContinuationStateRepository
 from .repositories import CoreRepositories
@@ -99,6 +102,9 @@ from .repositories import CoreUnitOfWork
 from .repositories import EngineDocumentRecord
 from .repositories import EngineDocumentRepository
 from .repositories import EngineInvocationRepository
+from .repositories import DurableEventConflictError
+from .repositories import DurableEventRecord
+from .repositories import DurableEventRepository
 from .repositories import FileAuditEntryRepository
 from .repositories import InboxMessageRepository
 from .repositories import LaneLifecycleEventRecord
@@ -187,6 +193,9 @@ __all__ = [
     "CoreRepositories",
     "CoreRepositoryConnectionScope",
     "CoreUnitOfWork",
+    "CommandIdempotencyConflictError",
+    "CommandReceiptRecord",
+    "CommandReceiptRepository",
     "DeepResearchTaskPlanner",
     "DocumentRecord",
     "DocumentRegistry",
@@ -198,6 +207,9 @@ __all__ = [
     "EngineDocumentRepository",
     "EngineRegistry",
     "EngineInvocationRepository",
+    "DurableEventConflictError",
+    "DurableEventRecord",
+    "DurableEventRepository",
     "FileAuditEntryRepository",
     "HarnessDriver",
     "HarnessEvent",
