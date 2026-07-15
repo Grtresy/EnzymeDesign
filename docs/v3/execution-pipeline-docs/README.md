@@ -34,12 +34,14 @@ Recommended reading paths:
 - Vina docking: `hpc-vina.md`, then `preprocess.md` (`hpc.workspace + docking.vina`)
 - Pocket detection: `hpc-fpocket.md` (`hpc.workspace + structure_tools.fpocket`)
 - Many ligands or repeated jobs: `batch-patterns.md`
+- Host/runner lifecycle boundary: `runner-opaque-run-id.md`
 
 Stable boundary:
 
 - The stable executor-facing `hpc` namespace is placement / remote workspace / declarative stage-fetch.
 - Domain tool operations use `bio_tools`, `structure_tools`, and `docking`. Public executor docs and examples must not expose runner-backed tool shorthands under `hpc`.
 - Regardless of namespace, executor code must use Host-supervised SDK calls and must not call SSH, Slurm, runner config, external network clients, or Host artifact paths directly.
+- The Host/runner lifecycle credential is a server-issued opaque `run_id`; raw Slurm job IDs, remote directories, and inline recovery RunSpecs never cross the public runner boundary.
 
 Examples:
 

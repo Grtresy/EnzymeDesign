@@ -186,7 +186,6 @@ class ExecutionOutcome:
     remote_run_dir: str
     raw_result: dict[str, Any]
     artifacts: tuple[ExecutionArtifactRef, ...] = ()
-    job_id: str | None = None
     exit_code: int | None = None
 
 
@@ -194,9 +193,7 @@ class ExecutionOutcome:
 class ExecutionStatusSnapshot:
     run_id: str
     status: RunStatus
-    remote_run_dir: str
     raw_result: dict[str, Any]
-    job_id: str | None = None
     exit_code: int | None = None
 
 
@@ -207,25 +204,18 @@ class ExecutionRunner(Protocol):
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> ExecutionStatusSnapshot: ...
 
     def fetch_execution_artifacts(
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        runspec: dict[str, Any],
-        job_id: str | None = None,
     ) -> ExecutionOutcome: ...
 
     def cancel_execution(
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> ExecutionOutcome: ...
 
 
@@ -3819,8 +3809,13 @@ class ExecutionEngine:
         )
         return ExecutionStartResult(invocation=cancelled, run=None, approval=approval)
 
-    def get_pipeline_status(self, invocation_id: str) -> dict[str, Any]:
-        invocation = self._require_invocation(invocation_id)
+    def get_pipeline_status(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+    ) -> dict[str, Any]:
+        invocation = self._require_session_invocation(session_id, invocation_id)
         payload = invocation.to_dict()
         if invocation.status is EngineInvocationStatus.WAITING_APPROVAL:
             approval = None if invocation.approval_id is None else self.repositories.approvals.get(invocation.approval_id)
@@ -3856,19 +3851,25 @@ class ExecutionEngine:
                 ]
                 payload["runs"] = sanitize_private_artifact_fields(runs_payload)
             return payload
-        reconciled = self.reconcile_execution(invocation_id)
+        reconciled = self.reconcile_execution(
+            session_id=session_id,
+            invocation_id=invocation_id,
+        )
         return reconciled.to_dict()
 
-    def reconcile_execution(self, invocation_id: str) -> ExecutionStartResult:
-        invocation = self._require_invocation(invocation_id)
+    def reconcile_execution(
+        self,
+        *,
+        session_id: str,
+        invocation_id: str,
+    ) -> ExecutionStartResult:
+        invocation = self._require_session_invocation(session_id, invocation_id)
         if invocation.status is EngineInvocationStatus.WAITING_APPROVAL:
             approval = None if invocation.approval_id is None else self.repositories.approvals.get(invocation.approval_id)
             return ExecutionStartResult(invocation=invocation, run=None, approval=approval)
         run = self._require_run(invocation)
         status = self.runner.get_execution_status(
             run_id=run.runner_run_id,
-            remote_run_dir=run.remote_run_dir,
-            job_id=run.runner_run_id if run.execution_mode == "sbatch" else None,
         )
         updated_run = RunRecord(
             run_id=run.run_id,
@@ -3881,7 +3882,7 @@ class ExecutionEngine:
             runner_run_id=run.runner_run_id,
             status=status.status,
             execution_mode=run.execution_mode,
-            remote_run_dir=status.remote_run_dir,
+            remote_run_dir=run.remote_run_dir,
             summary=run.summary,
             created_at=run.created_at,
             updated_at=utc_now_iso(),
@@ -3892,14 +3893,9 @@ class ExecutionEngine:
             running = self._replace_invocation(invocation, status=EngineInvocationStatus.RUNNING, finished_at=None)
             self.repositories.invocations.save(running)
             return ExecutionStartResult(invocation=running, run=updated_run, approval=self._load_approval(running))
-        input_payload = self._require_input_payload(invocation)
-        runspec = dict((input_payload.get("request") or {}).get("runspec") or {})
         if status.status is RunStatus.SUCCEEDED:
             fetched = self.runner.fetch_execution_artifacts(
                 run_id=run.runner_run_id,
-                remote_run_dir=run.remote_run_dir,
-                job_id=run.runner_run_id if run.execution_mode == "sbatch" else None,
-                runspec=runspec,
             )
             self._emit(
                 "execution.artifacts.fetched",
@@ -3921,10 +3917,9 @@ class ExecutionEngine:
             run_id=status.run_id,
             status=status.status,
             execution_mode=run.execution_mode,
-            remote_run_dir=status.remote_run_dir,
+            remote_run_dir=run.remote_run_dir,
             raw_result=status.raw_result,
             artifacts=(),
-            job_id=status.job_id,
             exit_code=status.exit_code,
         )
         return self._finalize_terminal(
@@ -6758,7 +6753,7 @@ class ExecutionEngine:
             invocation_id=invocation.invocation_id,
             approval_id=invocation.approval_id,
             engine_name=invocation.engine_name,
-            runner_run_id=outcome.job_id or outcome.run_id,
+            runner_run_id=outcome.run_id,
             status=outcome.status,
             execution_mode=outcome.execution_mode,
             remote_run_dir=outcome.remote_run_dir,
@@ -7457,7 +7452,7 @@ class ExecutionEngine:
             invocation_id=invocation.invocation_id,
             approval_id=invocation.approval_id,
             engine_name=invocation.engine_name,
-            runner_run_id=outcome.job_id or outcome.run_id,
+            runner_run_id=outcome.run_id,
             status=outcome.status,
             execution_mode=outcome.execution_mode,
             remote_run_dir=outcome.remote_run_dir,
@@ -7542,7 +7537,6 @@ class ExecutionEngine:
                         "status": outcome.status.value,
                         "execution_mode": outcome.execution_mode,
                         "remote_run_dir": outcome.remote_run_dir,
-                        "job_id": outcome.job_id,
                         "exit_code": outcome.exit_code,
                         "artifacts": [artifact.to_dict() for artifact in outcome.artifacts],
                         "raw_result": outcome.raw_result,
@@ -8002,6 +7996,19 @@ class ExecutionEngine:
         invocation = self.repositories.invocations.get(invocation_id)
         if invocation is None:
             raise ValueError(f"invocation {invocation_id!r} does not exist")
+        return invocation
+
+    def _require_session_invocation(
+        self,
+        session_id: str,
+        invocation_id: str,
+    ) -> EngineInvocation:
+        invocation = self._require_invocation(invocation_id)
+        if invocation.session_id != session_id:
+            raise ValueError(
+                f"invocation {invocation_id!r} belongs to session "
+                f"{invocation.session_id!r}, not {session_id!r}"
+            )
         return invocation
 
     def _require_input_payload(self, invocation: EngineInvocation) -> dict[str, Any]:
@@ -9088,8 +9095,11 @@ class ExecutionPipelineStatusRuntime:
         invocation: ToolInvocation,
         runtime_context: Any,
     ) -> ToolResult:
-        del step_context, runtime_context
-        status = self.engine.get_pipeline_status(str(invocation.arguments["invocation_id"]))
+        del step_context
+        status = self.engine.get_pipeline_status(
+            session_id=runtime_context.snapshot.session.session_id,
+            invocation_id=str(invocation.arguments["invocation_id"]),
+        )
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,

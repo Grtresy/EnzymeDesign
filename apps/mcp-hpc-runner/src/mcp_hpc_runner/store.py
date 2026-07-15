@@ -113,7 +113,25 @@ class ArtifactStore:
         return output_path
 
     def read_json(self, run_id: str, name: str) -> dict[str, Any]:
-        path = self._metadata_path(run_id, name)
+        normalized = str(name)
+        if not _SAFE_LEAF_NAME.fullmatch(normalized):
+            raise ValueError("artifact metadata name must be a safe leaf filename")
+        run_root = self.run_root(run_id)
+        metadata_root = run_root / "metadata"
+        if not run_root.exists() or not metadata_root.exists():
+            raise FileNotFoundError(
+                f"No persisted metadata exists for run_id {run_id!r}"
+            )
+        if run_root.is_symlink() or metadata_root.is_symlink():
+            raise ValueError("artifact metadata directories must not be symbolic links")
+        resolved_metadata_root = metadata_root.resolve()
+        if resolved_metadata_root.parent != run_root.resolve():
+            raise ValueError("artifact metadata directory escapes the run root")
+        path = self._safe_leaf_path(
+            resolved_metadata_root,
+            normalized,
+            field="artifact metadata path",
+        )
         return json.loads(path.read_text(encoding="utf-8"))
 
     def write_log(self, run_id: str, name: str, content: str) -> Path:

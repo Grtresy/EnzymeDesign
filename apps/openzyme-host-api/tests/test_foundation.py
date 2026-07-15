@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import replace
 import threading
@@ -322,7 +322,7 @@ def test_deterministic_execution_adapter_scopes_run_ids_per_session_and_call_cou
     assert second.run_id == "run_sess_local_2"
     assert third.run_id == "run_sess_other_1"
     assert first.status is RunStatus.SUCCEEDED
-    assert first.remote_run_dir == "/local/sess_local/run_sess_local_1"
+    assert first.remote_run_dir == ""
     assert first.artifacts[0].kind is ArtifactKind.LOG
 
 
@@ -332,10 +332,8 @@ def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
         run_id: str = "run_001"
         status: RunStatus = RunStatus.SUCCEEDED
         execution_mode: str = "demo"
-        remote_run_dir: str = "/remote/run_001"
         raw_result: dict[str, object] = None  # type: ignore[assignment]
         artifacts: tuple[object, ...] = ()
-        job_id: str | None = None
         exit_code: int | None = 0
 
         def __post_init__(self) -> None:
@@ -346,9 +344,7 @@ def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
     class FakeSnapshot:
         run_id: str = "run_001"
         status: RunStatus = RunStatus.SUCCEEDED
-        remote_run_dir: str = "/remote/run_001"
         raw_result: dict[str, object] = None  # type: ignore[assignment]
-        job_id: str | None = None
         exit_code: int | None = 0
 
         def __post_init__(self) -> None:
@@ -376,23 +372,16 @@ def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
             del session_id, payload
             return self._call(FakeOutcome())
 
-        def get_execution_status(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):
-            del run_id, remote_run_dir, job_id
+        def get_execution_status(self, *, run_id: str):
+            del run_id
             return self._call(FakeSnapshot())
 
-        def fetch_execution_artifacts(
-            self,
-            *,
-            run_id: str,
-            remote_run_dir: str,
-            runspec: dict[str, object],
-            job_id: str | None = None,
-        ):
-            del run_id, remote_run_dir, runspec, job_id
+        def fetch_execution_artifacts(self, *, run_id: str):
+            del run_id
             return self._call(FakeOutcome())
 
-        def cancel_execution(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):
-            del run_id, remote_run_dir, job_id
+        def cancel_execution(self, *, run_id: str):
+            del run_id
             return self._call(FakeOutcome(status=RunStatus.CANCELLED))
 
     fake = FakeExecutionAdapter()
@@ -401,31 +390,15 @@ def test_v3_execution_runner_adapter_limits_execution_methods() -> None:
         LimiterRegistry({"execution_provider": 1}),
     )
 
-    async def run_calls() -> None:
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(adapter.submit_execution, "sess_001", {})
-                for _ in range(3)
-            ),
-            asyncio.to_thread(
-                adapter.get_execution_status,
-                run_id="run_001",
-                remote_run_dir="/remote/run_001",
-            ),
-            asyncio.to_thread(
-                adapter.fetch_execution_artifacts,
-                run_id="run_001",
-                remote_run_dir="/remote/run_001",
-                runspec={},
-            ),
-            asyncio.to_thread(
-                adapter.cancel_execution,
-                run_id="run_001",
-                remote_run_dir="/remote/run_001",
-            ),
-        )
-
-    asyncio.run(run_calls())
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            *(executor.submit(adapter.submit_execution, "sess_001", {}) for _ in range(3)),
+            executor.submit(adapter.get_execution_status, run_id="run_001"),
+            executor.submit(adapter.fetch_execution_artifacts, run_id="run_001"),
+            executor.submit(adapter.cancel_execution, run_id="run_001"),
+        ]
+        for future in futures:
+            future.result(timeout=2)
 
     assert fake.observed_max == 1
 
@@ -436,10 +409,8 @@ def test_v3_execution_runner_adapter_fails_cancel_when_boundary_unsupported() ->
         run_id: str = "run_unsupported_cancel"
         status: RunStatus = RunStatus.SUCCEEDED
         execution_mode: str = "demo"
-        remote_run_dir: str = "/remote/run_unsupported_cancel"
         raw_result: dict[str, object] = None  # type: ignore[assignment]
         artifacts: tuple[object, ...] = ()
-        job_id: str | None = None
         exit_code: int | None = 0
 
         def __post_init__(self) -> None:
@@ -453,16 +424,52 @@ def test_v3_execution_runner_adapter_fails_cancel_when_boundary_unsupported() ->
 
     adapter = V3ExecutionRunnerAdapter(FakeExecutionAdapter())
     submitted = adapter.submit_execution("sess_cancel", {})
+    assert submitted.remote_run_dir == "opaque://run_unsupported_cancel"
 
     cancelled = adapter.cancel_execution(
         run_id=submitted.run_id,
-        remote_run_dir=submitted.remote_run_dir,
-        job_id=submitted.job_id,
     )
 
     assert cancelled.status is RunStatus.FAILED
     assert cancelled.raw_result["status"] == "unsupported"
     assert cancelled.raw_result["error_code"] == "cancel_execution_unsupported"
+
+
+def test_v3_execution_runner_adapter_does_not_project_runner_storage_in_raw_result() -> None:
+    @dataclass(frozen=True, slots=True)
+    class FakeOutcome:
+        run_id: str = "run_private_projection"
+        status: RunStatus = RunStatus.SUCCEEDED
+        execution_mode: str = "ssh"
+        raw_result: dict[str, object] = None  # type: ignore[assignment]
+        artifacts: tuple[object, ...] = ()
+        exit_code: int | None = 0
+
+        def __post_init__(self) -> None:
+            if self.raw_result is None:
+                object.__setattr__(
+                    self,
+                    "raw_result",
+                    {
+                        "status": "completed",
+                        "artifacts": {"result.json": "/host/private/result.json"},
+                        "job_id": "12345",
+                        "remote_run_dir": "/cluster/private/run",
+                    },
+                )
+
+    class FakeExecutionAdapter:
+        def submit_execution(self, session_id: str, payload: dict[str, object]):
+            del session_id, payload
+            return FakeOutcome()
+
+    outcome = V3ExecutionRunnerAdapter(FakeExecutionAdapter()).submit_execution(
+        "sess_projection",
+        {},
+    )
+
+    assert outcome.raw_result == {"status": "completed"}
+    assert "/host/private" not in str(outcome)
 
 
 def test_build_model_factory_from_env_returns_none_without_api_key(monkeypatch) -> None:

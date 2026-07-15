@@ -48,7 +48,6 @@ class DeterministicExecutionAdapter:
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
             execution_mode="demo",
-            remote_run_dir=f"/local/{session_id}/{run_id}",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/openzyme-local/stdout.log",

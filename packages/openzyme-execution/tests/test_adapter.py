@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
@@ -21,7 +21,6 @@ class FakeRunnerServer:
         if name == "job.status":
             return {
                 "run_id": str(arguments["run_id"]),
-                "job_id": "123",
                 "state": "completed",
                 "exit_code": 0,
             }
@@ -30,22 +29,18 @@ class FakeRunnerServer:
                 "run_id": str(arguments["run_id"]),
                 "requested_mode": "sbatch",
                 "selected_mode": "sbatch",
-                "remote_run_dir": str(arguments["remote_run_dir"]),
                 "status": "completed",
-                "job_id": "123",
                 "artifacts": {
-                    "/remote/run_001/out/a/result.json": "/tmp/a/result.json",
+                    "a/result.json": "/tmp/a/result.json",
                 },
             }
         return {
             "run_id": "run_001",
             "requested_mode": "auto",
             "selected_mode": "ssh",
-            "remote_run_dir": "/remote/run_001",
             "status": "completed",
             "artifacts": {
-                "/remote/run_001/out/result.json": "/tmp/result.json",
-                "/remote/run_001/logs/stdout.log": "/tmp/stdout.log",
+                "result.json": "/tmp/result.json",
             },
         }
 
@@ -87,8 +82,10 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
     assert outcome.run_id == "run_001"
     assert outcome.status is RunStatus.SUCCEEDED
     assert outcome.execution_mode == "ssh"
-    assert outcome.artifacts[0].storage_uri == "/tmp/stdout.log"
-    assert outcome.artifacts[0].kind.value == "log"
+    assert outcome.remote_run_dir == "opaque://run_001"
+    assert outcome.job_id is None
+    assert outcome.artifacts[0].storage_uri == "/tmp/result.json"
+    assert outcome.artifacts[0].kind.value == "result"
 
 
 def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
@@ -118,26 +115,49 @@ def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
     )
 
 
+def test_hpc_runner_adapter_rejects_caller_supplied_run_id() -> None:
+    server = FakeRunnerServer()
+    adapter = HpcRunnerExecutionAdapter(server=server)
+
+    with pytest.raises(ValueError, match="run_id is server-generated"):
+        adapter.submit_execution(
+            "sess_001",
+            {
+                "tool_name": "exec.run",
+                "runspec": {
+                    "run_id": "caller-run",
+                    "name": "pipeline-run",
+                    "stage": "execution",
+                    "command": ["echo", "ok"],
+                },
+            },
+        )
+
+    assert server.calls == []
+
+
 def test_hpc_runner_adapter_queries_status_and_fetches_artifacts() -> None:
     server = FakeRunnerServer()
     adapter = HpcRunnerExecutionAdapter(server=server)
 
     status = adapter.get_execution_status(
         run_id="run_001",
-        remote_run_dir="/remote/run_001",
-        job_id="123",
     )
     fetched = adapter.fetch_execution_artifacts(
         run_id="run_001",
-        remote_run_dir="/remote/run_001",
-        job_id="123",
-        runspec={"name": "fpocket"},
     )
+    cancelled = adapter.cancel_execution(run_id="run_001")
 
     assert status.status is RunStatus.SUCCEEDED
-    assert fetched.job_id == "123"
     assert fetched.artifacts[0].relative_path == "a/result.json"
-    assert [name for name, _ in server.calls[-2:]] == ["job.status", "job.fetch_artifacts"]
+    assert cancelled.run_id == "run_001"
+    assert [name for name, _ in server.calls[-3:]] == [
+        "job.status",
+        "job.fetch_artifacts",
+        "job.cancel",
+    ]
+    for _, arguments in server.calls[-3:]:
+        assert arguments == {"run_id": "run_001"}
 
 
 def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
@@ -148,10 +168,9 @@ def test_hpc_runner_adapter_treats_pdbqt_as_structure() -> None:
         {
             "run_id": "run_001",
             "selected_mode": "ssh",
-            "remote_run_dir": "/remote/run_001",
             "status": "completed",
             "artifacts": {
-                "/remote/run_001/out/vina_out.pdbqt": "/tmp/vina_out.pdbqt",
+                "vina_out.pdbqt": "/tmp/vina_out.pdbqt",
             },
         }
     )
@@ -184,27 +203,25 @@ def test_hpc_runner_adapter_limits_runner_boundary_calls() -> None:
         limiter_registry=LimiterRegistry({"execution_provider": 1}),
     )
 
-    async def run_calls() -> None:
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    adapter.submit_execution,
-                    "ep_001",
-                    {
-                        "tool_name": "exec.run",
-                        "runspec": {
-                            "name": f"run-{index}",
-                            "stage": "execution",
-                            "command": ["echo", "ok"],
-                            "execution_mode": "auto",
-                            "metadata": {},
-                        },
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            executor.submit(
+                adapter.submit_execution,
+                "ep_001",
+                {
+                    "tool_name": "exec.run",
+                    "runspec": {
+                        "name": f"run-{index}",
+                        "stage": "execution",
+                        "command": ["echo", "ok"],
+                        "execution_mode": "auto",
+                        "metadata": {},
                     },
-                )
-                for index in range(6)
+                },
             )
-        )
-
-    asyncio.run(run_calls())
+            for index in range(6)
+        ]
+        for future in futures:
+            future.result(timeout=2)
 
     assert server.observed_max == 1

@@ -64,20 +64,29 @@ The stdio server exposes these tools:
 
 - `exec.run`: run a `RunSpec` in `ssh`, `sbatch`, or `auto` mode
 - `job.submit`: submit a `RunSpec` via `sbatch --parsable`
-- `job.status`: query with `squeue`, fallback to `sacct` when available
-- `job.logs`: fetch bounded log tails from remote Slurm log files
-- `job.cancel`: cancel a job via `scancel`
-- `job.fetch_artifacts`: download declared outputs and run success checks
+- `job.status`: query an existing job by opaque `run_id`
+- `job.logs`: fetch bounded log tails by opaque `run_id`
+- `job.cancel`: cancel a job by opaque `run_id`
+- `job.fetch_artifacts`: fetch the persisted declaration by opaque `run_id`
 
-Normalized envelopes:
+Public envelopes expose only:
 
-- `RunSpec` input contract
-- `RunResult` for synchronous completion / submission responses
-- `JobHandle` and `JobStatus` for job lifecycle
+- a runner-generated opaque `run_id`
+- normalized status, selected mode, exit/error codes
+- bounded log payloads and declared artifact references
+
+`job_id`, `remote_run_dir`, sbatch paths, commands, and the persisted `JobHandle`
+remain server-internal. Every `job.*` lifecycle call reloads the matching
+`job_handle.json`; `job.fetch_artifacts` also reloads the matching
+`runspec.json`. Raw-handle and inline-RunSpec fallbacks are not supported.
+
+The generated handle is the full 128-bit lowercase UUID hex value. Its textual
+shape is an implementation detail; callers must store and replay it unchanged,
+not parse it or manufacture candidate values.
 
 Operational features:
 
-- per-run `run_id` and isolated remote directories
+- server-generated per-run opaque `run_id` and isolated remote directories
 - staging via `rsync` over SSH (with `scp` fallback)
 - local artifact store per `run_id` (logs, manifests, fetched outputs)
 - normalized relative staging/output paths and artifact-store symlink containment
@@ -94,11 +103,23 @@ to browsers, agents, or untrusted tenants. The Host is responsible for
 compiling approved tool contracts into `RunSpec.command`; command argv and
 metadata are not a public arbitrary-code API.
 
+The MCP result is likewise a Host-internal DTO. The Host catalogs returned
+artifact storage references and removes them from agent/browser-facing
+`raw_result` projections. Session ownership is enforced by the engine before a
+runner lifecycle call; possession of a foreign session invocation id must not
+reach this trusted runner boundary.
+
 The runner still validates every request at its own boundary. Input, expected
 output, and success-check paths must be normalized relative paths; traversal,
 control characters, shell/remote-copy metacharacters, unsafe run IDs, and
 artifact-store symlink escapes fail before transfer or local writes. Stored job
 handles must point to exactly `<cluster.remote_base_dir>/<run_id>`.
+
+`RunSpec.run_id` is not part of the public request contract. Supplying the key,
+including with a null value, is a validation error. Lifecycle tools accept only
+the returned opaque `run_id` (plus bounded `tail_lines` for `job.logs`). This is
+a corrective breaking change for scripts that previously passed `job_id`,
+`remote_run_dir`, or an inline `runspec`.
 
 Resource ceilings are configured under `[limits]` in
 `config/hpc_runner.toml`. A caller-selected Slurm partition is allowed only when
@@ -131,7 +152,15 @@ uv --project apps/mcp-hpc-runner run mcp-hpc-runner \
       "inputs": [],
       "expected_outputs": []
     }
-  }'
+}'
+```
+
+The response `run_id` is the only lifecycle credential. For example:
+
+```bash
+uv --project apps/mcp-hpc-runner run mcp-hpc-runner \
+  --config apps/mcp-hpc-runner/config/hpc_runner.toml \
+  call-tool --name job.status --arguments '{"run_id":"<server-issued-run-id>"}'
 ```
 
 Note: SSH/scp/rsync are invoked with `BatchMode=yes` so commands will fail fast
@@ -187,9 +216,14 @@ and fetched artifacts stay gitignored.
 
 ## Integration Boundary: Tool Contracts
 
-This repository provides a stable run-contract surface (`RunSpec` in,
-`RunResult`/`JobStatus` out). The in-repo `mcp-hpc-tool-contracts` layer
-compiles tool-specific parameters into `RunSpec` and calls this runner without
-embedding SSH/Slurm/staging logic here.
+This repository provides a stable public run-contract surface: a RunSpec
+without `run_id` goes in, and an opaque `run_id` plus normalized bounded
+projection comes out. Internal `RunResult`/`JobStatus` models are not the MCP
+response contract. The in-repo `mcp-hpc-tool-contracts` layer compiles
+tool-specific parameters into `RunSpec` without embedding SSH/Slurm/staging
+logic here.
 
 See `docs/mcp-hpc-tool-contracts-interface.md` for details.
+The in-repository caller audit is recorded in
+`docs/opaque-run-id-caller-audit.md`; it cannot prove that no external scripts
+or separately deployed MCP clients use the retired raw-handle shape.

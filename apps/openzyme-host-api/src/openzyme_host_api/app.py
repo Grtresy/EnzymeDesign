@@ -98,23 +98,17 @@ class V3ExecutionRunnerAdapter:
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> V3ExecutionStatusSnapshot:
         if hasattr(self.execution_adapter, "get_execution_status"):
             snapshot = self._run_limited(
                 lambda: self.execution_adapter.get_execution_status(
                     run_id=run_id,
-                    remote_run_dir=remote_run_dir,
-                    job_id=job_id,
                 )
             )
             return V3ExecutionStatusSnapshot(
                 run_id=str(snapshot.run_id),
                 status=snapshot.status,
-                remote_run_dir=str(snapshot.remote_run_dir),
                 raw_result=dict(snapshot.raw_result),
-                job_id=None if snapshot.job_id is None else str(snapshot.job_id),
                 exit_code=snapshot.exit_code,
             )
         outcome = self._outcomes_by_run_id.get(run_id)
@@ -122,18 +116,14 @@ class V3ExecutionRunnerAdapter:
             return V3ExecutionStatusSnapshot(
                 run_id=run_id,
                 status=RunStatus.FAILED,
-                remote_run_dir=remote_run_dir,
                 raw_result={
                     "error": "execution adapter does not expose status polling"
                 },
-                job_id=job_id,
             )
         return V3ExecutionStatusSnapshot(
             run_id=outcome.run_id,
             status=outcome.status,
-            remote_run_dir=outcome.remote_run_dir,
             raw_result=outcome.raw_result,
-            job_id=outcome.job_id,
             exit_code=outcome.exit_code,
         )
 
@@ -141,18 +131,12 @@ class V3ExecutionRunnerAdapter:
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        runspec: dict[str, Any],
-        job_id: str | None = None,
     ) -> V3ExecutionOutcome:
         if hasattr(self.execution_adapter, "fetch_execution_artifacts"):
             outcome = self._convert_outcome(
                 self._run_limited(
                     lambda: self.execution_adapter.fetch_execution_artifacts(
                         run_id=run_id,
-                        remote_run_dir=remote_run_dir,
-                        runspec=runspec,
-                        job_id=job_id,
                     )
                 )
             )
@@ -164,12 +148,11 @@ class V3ExecutionRunnerAdapter:
                 run_id=run_id,
                 status=RunStatus.FAILED,
                 execution_mode="unknown",
-                remote_run_dir=remote_run_dir,
+                remote_run_dir=f"opaque://{run_id}",
                 raw_result={
                     "error": "execution adapter does not expose artifact fetch"
                 },
                 artifacts=(),
-                job_id=job_id,
             )
         return outcome
 
@@ -177,16 +160,12 @@ class V3ExecutionRunnerAdapter:
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> V3ExecutionOutcome:
         if hasattr(self.execution_adapter, "cancel_execution"):
             return self._convert_outcome(
                 self._run_limited(
                     lambda: self.execution_adapter.cancel_execution(
                         run_id=run_id,
-                        remote_run_dir=remote_run_dir,
-                        job_id=job_id,
                     )
                 )
             )
@@ -194,14 +173,13 @@ class V3ExecutionRunnerAdapter:
             run_id=run_id,
             status=RunStatus.FAILED,
             execution_mode="unknown",
-            remote_run_dir=remote_run_dir,
+            remote_run_dir=f"opaque://{run_id}",
             raw_result={
                 "status": "unsupported",
                 "error_code": "cancel_execution_unsupported",
                 "error": "execution adapter does not expose cancel",
             },
             artifacts=(),
-            job_id=job_id,
         )
 
     def _convert_outcome(self, outcome: Any) -> V3ExecutionOutcome:
@@ -213,16 +191,19 @@ class V3ExecutionRunnerAdapter:
             )
             for artifact in getattr(outcome, "artifacts", ())
         )
+        raw_result = dict(outcome.raw_result)
+        # Runner artifact values are Host-local catalog/storage references.
+        # They travel through the typed artifact channel below and must not be
+        # duplicated into the agent-facing raw_result document.
+        for private_key in ("artifacts", "job_id", "remote_run_dir"):
+            raw_result.pop(private_key, None)
         return V3ExecutionOutcome(
             run_id=str(outcome.run_id),
             status=outcome.status,
             execution_mode=str(outcome.execution_mode),
-            remote_run_dir=str(outcome.remote_run_dir),
-            raw_result=dict(outcome.raw_result),
+            remote_run_dir=f"opaque://{outcome.run_id}",
+            raw_result=raw_result,
             artifacts=artifacts,
-            job_id=None
-            if getattr(outcome, "job_id", None) is None
-            else str(outcome.job_id),
             exit_code=getattr(outcome, "exit_code", None),
         )
 

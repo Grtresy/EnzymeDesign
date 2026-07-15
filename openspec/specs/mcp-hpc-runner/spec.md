@@ -22,11 +22,11 @@ The system MUST allow the caller to request `ssh`, `sbatch`, or `auto` mode.
 
 #### Scenario: Caller forces ssh mode
 - **WHEN** a run request is submitted with execution mode `ssh`
-- **THEN** the system executes the command via `ssh` and returns stdout/stderr and exit status in the response
+- **THEN** the system executes the command via `ssh` and returns bounded stdout/stderr payloads and exit status in the response
 
 #### Scenario: Caller forces sbatch mode
 - **WHEN** a run request is submitted with execution mode `sbatch`
-- **THEN** the system submits a Slurm job with `sbatch` and returns a job identifier that can be polled
+- **THEN** the system submits a Slurm job with `sbatch` and returns an opaque runner `run_id` that can be polled
 
 #### Scenario: Auto mode selects sbatch for heavy jobs
 - **WHEN** a run request is submitted with execution mode `auto` and the resource request includes GPUs
@@ -54,29 +54,36 @@ target directory per input:
 - **THEN** the system downloads the expected outputs from the remote per-run output directory to local storage
 
 ### Requirement: Runner provides per-run working directories
-The system SHALL create a unique `run_id` for each run and use an isolated remote directory for that run.
+The system SHALL create a unique opaque `run_id` for each run and use an isolated remote directory for that run. The public RunSpec MUST NOT accept a caller-supplied `run_id`.
 
 #### Scenario: Remote run directory is isolated
 - **WHEN** two runs are submitted
 - **THEN** their remote working directories are different and do not overwrite each other’s outputs
+
+#### Scenario: Caller cannot choose a run identifier
+- **WHEN** a caller includes `run_id` in `exec.run` or `job.submit` RunSpec
+- **THEN** the runner rejects the request instead of honoring or silently replacing the identifier
 
 ### Requirement: Runner returns a normalized result envelope
 For both `ssh` and `sbatch` modes, the system MUST return a normalized result that includes:
 
 - `run_id`
 - requested execution mode and the selected mode (if `auto`)
-- remote working directory reference
-- exit status (for completed runs) or job id (for submitted jobs)
-- stdout/stderr references (inline or retrievable by id)
+- exit status and normalized error code when available
+- bounded stdout/stderr payloads or references
 - local artifact locations for fetched outputs (when applicable)
+
+The public response MUST NOT expose the Slurm `job_id`, remote working
+directory, commands, or persisted raw handle. Those values remain internal to
+the runner ArtifactStore.
 
 #### Scenario: Completed ssh run returns exit status
 - **WHEN** an `ssh` run finishes
-- **THEN** the response includes the exit code and captured stdout/stderr
+- **THEN** the response includes the exit code and bounded captured stdout/stderr payloads
 
-#### Scenario: Submitted sbatch run returns job id
+#### Scenario: Submitted sbatch run returns opaque run id
 - **WHEN** a `sbatch` run is submitted
-- **THEN** the response includes the job id and a handle for status polling
+- **THEN** the response includes only the server-issued `run_id` needed for status polling
 
 ### Requirement: Runner supports job lifecycle operations for sbatch
 For `sbatch` runs, the system MUST support job lifecycle operations:
@@ -84,6 +91,11 @@ For `sbatch` runs, the system MUST support job lifecycle operations:
 - query status of a submitted job
 - retrieve logs for a job
 - cancel a job
+
+Every public lifecycle operation MUST accept the opaque `run_id` only, except
+that `job.logs` MAY additionally accept a bounded `tail_lines`. The runner MUST
+load the persisted handle for the same run and MUST reject raw `job_id`,
+`remote_run_dir`, inline RunSpec, missing records, and mismatched records.
 
 #### Scenario: Status polling returns queued/running/completed
 - **WHEN** a caller queries status for a submitted job
@@ -93,16 +105,20 @@ For `sbatch` runs, the system MUST support job lifecycle operations:
 - **WHEN** a caller cancels a submitted job
 - **THEN** the system requests job cancellation via Slurm and reports cancellation status
 
+#### Scenario: Lifecycle survives service restart
+- **WHEN** a caller polls with a valid opaque `run_id` after the runner process restarts
+- **THEN** the runner restores the matching persisted handle and RunSpec without requiring raw handle fields from the caller
+
 ### Requirement: Runner exposes stable MCP tool surfaces
 The system SHALL expose distinct MCP tools (or equivalent RPC methods) for synchronous execution and asynchronous job management.
 
 #### Scenario: Synchronous execution is exposed as a distinct tool
 - **WHEN** a caller needs low-latency exploratory execution
-- **THEN** the system provides a synchronous method that returns stdout/stderr and exit status
+- **THEN** the system provides a synchronous method that returns bounded stdout/stderr payloads and exit status
 
 #### Scenario: Asynchronous execution is exposed as a distinct tool
 - **WHEN** a caller needs long-running execution
-- **THEN** the system provides a submit method that returns a job identifier and separate methods to query status and fetch logs/artifacts
+- **THEN** the system provides a submit method that returns an opaque `run_id` and separate methods to query status and fetch logs/artifacts
 
 ### Requirement: Runner validates expected outputs
 The system MUST support declarative expected outputs per run and MUST mark a run as failed if required outputs are missing or empty according to the run’s success checks.

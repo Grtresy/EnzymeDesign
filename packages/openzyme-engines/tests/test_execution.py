@@ -254,13 +254,13 @@ class ImmediateSuccessRunner:
             artifacts=tuple(refs),
         )
 
-    def get_execution_status(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def get_execution_status(self, *, run_id: str):  # type: ignore[no-untyped-def]
         raise AssertionError("status polling should not be used for immediate execution")
 
-    def fetch_execution_artifacts(self, *, run_id: str, remote_run_dir: str, runspec: dict[str, object], job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def fetch_execution_artifacts(self, *, run_id: str):  # type: ignore[no-untyped-def]
         raise AssertionError("fetch should not be used for immediate execution")
 
-    def cancel_execution(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def cancel_execution(self, *, run_id: str):  # type: ignore[no-untyped-def]
         raise AssertionError("cancel should not be used in this test")
 
 
@@ -273,36 +273,30 @@ class BackgroundRunner:
             run_id="runner_job_123",
             status=RunStatus.QUEUED,
             execution_mode="sbatch",
-            remote_run_dir="/remote/run_bg",
+            remote_run_dir="opaque://runner_job_123",
             raw_result={"submitted": True},
-            job_id="runner_job_123",
         )
 
-    def get_execution_status(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def get_execution_status(self, *, run_id: str):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionStatusSnapshot
 
-        del remote_run_dir, job_id
         return ExecutionStatusSnapshot(
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
-            remote_run_dir="/remote/run_bg",
             raw_result={"state": "completed", "pockets_found": 1},
-            job_id="runner_job_123",
             exit_code=0,
         )
 
-    def fetch_execution_artifacts(self, *, run_id: str, remote_run_dir: str, runspec: dict[str, object], job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def fetch_execution_artifacts(self, *, run_id: str):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
-        del remote_run_dir, job_id
-        expected_outputs = list((runspec or {}).get("expected_outputs") or [])
-        relative_path = str((expected_outputs[0] if expected_outputs else {}).get("path") or "result.json")
+        relative_path = "target_out"
         return ExecutionOutcome(
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
             execution_mode="sbatch",
-            remote_run_dir="/remote/run_bg",
+            remote_run_dir=f"opaque://{run_id}",
             raw_result={"pockets_found": 1},
             artifacts=(
                 ExecutionArtifactRef(
@@ -311,11 +305,10 @@ class BackgroundRunner:
                     kind=ArtifactKind.RESULT,
                 ),
             ),
-            job_id="runner_job_123",
             exit_code=0,
         )
 
-    def cancel_execution(self, *, run_id: str, remote_run_dir: str, job_id: str | None = None):  # type: ignore[no-untyped-def]
+    def cancel_execution(self, *, run_id: str):  # type: ignore[no-untyped-def]
         raise AssertionError("cancel should not be used in this test")
 
 
@@ -354,7 +347,6 @@ class AdapterShapeSuccessRunner(ImmediateSuccessRunner):
                 )
                 for artifact in outcome.artifacts
             ),
-            job_id=outcome.job_id,
             exit_code=outcome.exit_code,
         )
 
@@ -397,7 +389,6 @@ class MissingDeclaredOutputRunner(CapturingSuccessRunner):
             remote_run_dir=outcome.remote_run_dir,
             raw_result=outcome.raw_result,
             artifacts=outcome.artifacts[:1],
-            job_id=outcome.job_id,
             exit_code=outcome.exit_code,
         )
 
@@ -1128,11 +1119,66 @@ def test_execution_engine_status_polling_finalizes_background_run() -> None:
         },
         invocation_id="inv_exec_bg",
     )
-    status = engine.get_pipeline_status("inv_exec_bg")
+    status = engine.get_pipeline_status(
+        session_id=session.session_id,
+        invocation_id="inv_exec_bg",
+    )
 
     assert started.invocation.status is EngineInvocationStatus.RUNNING
     assert status["invocation"]["status"] == "succeeded"
     assert status["artifacts"][0]["artifact_id"] == "run_inv_exec_bg:target_out"
+
+
+def test_execution_engine_rejects_cross_session_status_before_runner_poll() -> None:
+    repositories = _build_repositories()
+    owner_session = _seed_session(repositories)
+    foreign_session = Session(
+        session_id="sess_foreign",
+        project_id="proj_foreign",
+        title="Foreign execution",
+        objective="Must not access another session run",
+        status=SessionStatus.ACTIVE,
+        created_at="2026-04-20T12:01:00+00:00",
+        updated_at="2026-04-20T12:01:00+00:00",
+    )
+    repositories.sessions.save(foreign_session)
+
+    class RecordingBackgroundRunner(BackgroundRunner):
+        def __init__(self) -> None:
+            self.status_calls: list[str] = []
+
+        def get_execution_status(self, *, run_id: str):  # type: ignore[no-untyped-def]
+            self.status_calls.append(run_id)
+            return super().get_execution_status(run_id=run_id)
+
+    runner = RecordingBackgroundRunner()
+    engine = ExecutionEngine(repositories, runner)
+    started = engine.start_execution(
+        session_id=owner_session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Run fpocket on the selected structure",
+            "required_artifact_ids": ["art_001"],
+            "catalog_tool_id": "fpocket",
+            "require_approval": False,
+        },
+        invocation_id="inv_cross_session_status",
+    )
+    assert started.run is not None
+
+    with pytest.raises(ValueError, match="belongs to session"):
+        engine.get_pipeline_status(
+            session_id=foreign_session.session_id,
+            invocation_id="inv_cross_session_status",
+        )
+
+    assert runner.status_calls == []
+    persisted = repositories.runs.get_by_invocation(
+        owner_session.session_id,
+        "inv_cross_session_status",
+    )
+    assert persisted is not None
+    assert persisted.runner_run_id == started.run.runner_run_id
 
 
 def test_execution_engine_compiles_staged_inputs_from_session_artifacts() -> None:
@@ -1257,7 +1303,10 @@ def test_execution_engine_reconcile_closes_background_completion_without_protoco
     )
     assert repositories.invocations.get("inv_exec_bg_reconcile").output_ref is None
 
-    reconciled = engine.reconcile_execution("inv_exec_bg_reconcile")
+    reconciled = engine.reconcile_execution(
+        session_id=session.session_id,
+        invocation_id="inv_exec_bg_reconcile",
+    )
 
     assert reconciled.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert reconciled.invocation.output_ref is not None
@@ -1850,7 +1899,10 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     )
     metadata_payload = json.loads(Path(metadata_artifact.storage_uri).read_text(encoding="utf-8"))
     assert "sequence" not in metadata_payload["records"][0]
-    status = engine.get_pipeline_status("inv_pipeline_bio_fetch")
+    status = engine.get_pipeline_status(
+        session_id="sess_001",
+        invocation_id="inv_pipeline_bio_fetch",
+    )
     assert status["details"]["bio_artifact_ids"]
     assert "P12345" not in str(status.get("sandbox_outcome", {}))
 
@@ -3845,7 +3897,10 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
 
     resumed = engine.continue_after_approval(invocation_id="inv_pipeline_approval", resolution="approved")
     repeated = engine.continue_after_approval(invocation_id="inv_pipeline_approval", resolution="approved")
-    status = engine.get_pipeline_status("inv_pipeline_approval")
+    status = engine.get_pipeline_status(
+        session_id="sess_001",
+        invocation_id="inv_pipeline_approval",
+    )
 
     assert resumed.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert repeated.invocation.status is EngineInvocationStatus.SUCCEEDED
@@ -3916,7 +3971,10 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
     )
 
     resumed = engine.continue_after_approval(invocation_id="inv_pipeline_hpc_failed", resolution="approved")
-    status = engine.get_pipeline_status("inv_pipeline_hpc_failed")
+    status = engine.get_pipeline_status(
+        session_id="sess_001",
+        invocation_id="inv_pipeline_hpc_failed",
+    )
     error = status["output_payload"]["pipeline"]["error"]
 
     assert resumed.invocation.status is EngineInvocationStatus.FAILED
@@ -3963,7 +4021,10 @@ def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(tmp_path: 
     )
 
     engine.continue_after_approval(invocation_id="inv_pipeline_hpc_timeout", resolution="approved")
-    status = engine.get_pipeline_status("inv_pipeline_hpc_timeout")
+    status = engine.get_pipeline_status(
+        session_id="sess_001",
+        invocation_id="inv_pipeline_hpc_timeout",
+    )
     error = status["output_payload"]["pipeline"]["error"]
 
     assert error["type"] == "hpc_runner_timeout"

@@ -36,6 +36,8 @@ def _relative_output_path(remote_path: str) -> str:
         remainder = parts[out_index + 1 :]
         if remainder:
             return str(PurePosixPath(*remainder))
+    if not path.is_absolute() and ".." not in parts:
+        return path.as_posix()
     return path.name
 
 
@@ -64,20 +66,20 @@ class ExecutionOutcome:
     run_id: str
     status: RunStatus
     execution_mode: str
-    remote_run_dir: str
     artifacts: tuple[ExecutionArtifactRef, ...]
     raw_result: dict[str, Any]
-    job_id: str | None = None
     exit_code: int | None = None
+    # Compatibility-only DTO fields. The active HPC adapter never populates raw
+    # runner handles; it uses only an opaque URI and leaves job_id unset.
+    remote_run_dir: str = ""
+    job_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionStatusSnapshot:
     run_id: str
     status: RunStatus
-    remote_run_dir: str
     raw_result: dict[str, Any]
-    job_id: str | None = None
     exit_code: int | None = None
 
 
@@ -102,6 +104,8 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             else "exec.run"
         )
         runspec = dict(payload["runspec"])
+        if "run_id" in runspec:
+            raise ValueError("RunSpec.run_id is server-generated and must not be supplied")
         metadata = dict(runspec.get("metadata", {}))
         metadata.setdefault("openzyme", {})
         metadata["openzyme"]["session_id"] = session_id
@@ -115,19 +119,15 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> ExecutionStatusSnapshot:
         result = self._call_tool(
             "job.status",
-            {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
+            {"run_id": run_id},
         )
         return ExecutionStatusSnapshot(
             run_id=str(result["run_id"]),
             status=map_runner_status_to_run_status(str(result.get("state", "failed"))),
-            remote_run_dir=remote_run_dir,
             raw_result=result,
-            job_id=None if result.get("job_id") is None else str(result["job_id"]),
             exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
         )
 
@@ -135,31 +135,21 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        runspec: dict[str, Any],
-        job_id: str | None = None,
     ) -> ExecutionOutcome:
         result = self._call_tool(
             "job.fetch_artifacts",
-            {
-                "run_id": run_id,
-                "job_id": job_id,
-                "remote_run_dir": remote_run_dir,
-                "runspec": runspec,
-            },
+            {"run_id": run_id},
         )
-        return self._normalize_result(result, declared_paths=_declared_output_paths(runspec))
+        return self._normalize_result(result)
 
     def cancel_execution(
         self,
         *,
         run_id: str,
-        remote_run_dir: str,
-        job_id: str | None = None,
     ) -> ExecutionOutcome:
         result = self._call_tool(
             "job.cancel",
-            {"run_id": run_id, "job_id": job_id, "remote_run_dir": remote_run_dir},
+            {"run_id": run_id},
         )
         return self._normalize_result(result)
 
@@ -194,11 +184,10 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             run_id=str(result["run_id"]),
             status=map_runner_status_to_run_status(str(result.get("status", "failed"))),
             execution_mode=selected_mode,
-            remote_run_dir=str(result.get("remote_run_dir", "")),
             artifacts=artifacts,
             raw_result=result,
-            job_id=None if result.get("job_id") is None else str(result["job_id"]),
             exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
+            remote_run_dir=f"opaque://{result['run_id']}",
         )
 
 
