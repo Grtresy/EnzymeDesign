@@ -181,7 +181,7 @@ deep research 对 harness 至少提供：
 - runner/HPC 不得直接使用 Host 本地 artifact path；所有输入必须先经 artifact catalog 授权，再通过 runner staging 映射为远端工作目录路径
 - 本地 sandbox workspace 与 HPC placement workspace 是两个独立工作面；文件流必须通过显式 `stage_artifact` / `fetch_outputs` 或等价 Host-supervised declarations 表达，scheduler 不得把本地执行和 HPC 执行自动重写成不同后端
 - 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
-- 远端结果只有在 `expected_outputs` 中声明后才会被下载并登记为 artifact
+- 远端结果只有在 `expected_outputs` 中声明且 runner 返回可读内容后才会被下载并登记为 artifact；Host 不得为 missing output 或 failed run 合成占位产物。显式 `fixture_non_cutover` / `simulation_non_cutover` 测试 outcome 可生成带 `synthetic_source=true`、`cutover_eligible=false` 的 fixture placeholder，但不能进入产品/cutover 证据
 - output artifact 必须保留相对路径层级，不能只保留 basename
 
 ### 3.1 Execution Pipeline Sandbox
@@ -205,6 +205,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER、本地生信工具、HPC runner 与 artifact catalog 请求都必须通过 `openzyme_pipeline` 走 Host supervisor
 - MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 和领域 toolchain packaging 不进入 executor base image；它们属于 Host supervisor 的 backend/toolchain registry 和 bio_tools route policy
 - 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`；run record、file audit、log artifact 和 changed-file summary 是审计状态，container process id 不是 canonical state
+- disk quota 是 Host hard limit：file write/patch 在落盘前按 prospective workspace bytes 拒绝超额，exec 完成后按整个 workspace 重算；任何子进程或 SDK 写入造成的超额都必须把 run 标为 `resource_exceeded`、workspace 标为 `quota_exceeded`，清理前拒绝后续执行
 - sandbox 对外能力是 file+command+SDK bridge；后台 scheduler 只唤醒 agent 和 engine continuation，不替 executor 判断该用本地、HPC 还是其它 backend
 
 `openzyme_pipeline` SDK 至少提供概念能力：

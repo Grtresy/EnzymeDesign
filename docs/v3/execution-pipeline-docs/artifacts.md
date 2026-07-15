@@ -94,7 +94,7 @@ for item in result.get("artifacts", []):
     print(item["artifact_id"])
 ```
 
-Fetched outputs must be declared, fetched by the Host supervisor, and registered as artifact refs rather than exposed as private runner paths.
+Fetched outputs must be declared, actually returned as readable content by the runner, fetched by the Host supervisor, and registered as artifact refs rather than exposed as private runner paths. A missing declared output, failed run, or unreadable fetch source is a structured failure and never creates a synthetic scientific artifact. Explicit non-cutover fixture/simulation outcomes are the sole exception; their placeholders carry `synthetic_source=true`, `cutover_eligible=false`, and non-product scientific status.
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
 

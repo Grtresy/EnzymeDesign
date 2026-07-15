@@ -395,6 +395,38 @@ class MissingDeclaredOutputRunner(CapturingSuccessRunner):
         )
 
 
+class MissingAllDeclaredOutputsRunner(CapturingSuccessRunner):
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        outcome = super().submit_execution(session_id, payload)
+        return ExecutionOutcome(
+            run_id=outcome.run_id,
+            status=outcome.status,
+            execution_mode=outcome.execution_mode,
+            remote_run_dir=outcome.remote_run_dir,
+            raw_result=outcome.raw_result,
+            artifacts=(),
+            exit_code=outcome.exit_code,
+        )
+
+
+class ExplicitNonCutoverFixtureRunner(CapturingSuccessRunner):
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        outcome = super().submit_execution(session_id, payload)
+        return ExecutionOutcome(
+            run_id=outcome.run_id,
+            status=outcome.status,
+            execution_mode="fixture_non_cutover",
+            remote_run_dir=outcome.remote_run_dir,
+            raw_result={"fixture": True, "pockets_found": 0},
+            artifacts=(),
+            exit_code=outcome.exit_code,
+        )
+
+
 class CapturingTimeoutRunner(CapturingFailedRunner):
     def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
@@ -3815,6 +3847,85 @@ def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boun
         assert artifact.metadata["hpc_workspace_id"] == workspace["hpc_workspace_id"]
         assert artifact.metadata["fetch_ref_id"].startswith("fetch_")
         assert artifact.metadata["content_digest"].startswith("sha256:")
+
+
+def test_pipeline_fpocket_missing_declared_output_fails_closed_without_synthetic_artifact() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    runner = MissingAllDeclaredOutputsRunner()
+    sandbox = HandlerSandboxRunner()
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_fpocket_missing_output",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_fpocket_missing_output",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_fpocket_missing_output",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "declared_output_missing"
+    assert error["stage"] == "hpc_output_validation"
+    assert error["details"]["missing_outputs"] == ["target_out"]
+    assert repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_pipeline_fpocket_missing_output"
+    ) == []
+    assert not any(
+        bool((artifact.metadata or {}).get("synthetic_source"))
+        for artifact in repositories.artifacts.list_by_session("sess_001")
+    )
+
+
+def test_pipeline_explicit_non_cutover_fixture_marks_placeholder_ineligible() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    runner = ExplicitNonCutoverFixtureRunner()
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_fpocket_fixture_placeholder",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_fpocket_fixture_placeholder",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_fpocket_fixture_placeholder",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    synthetic = [
+        artifact
+        for artifact in result.artifacts
+        if bool((artifact.metadata or {}).get("synthetic_source"))
+    ]
+    assert len(synthetic) == 1
+    assert synthetic[0].metadata is not None
+    assert synthetic[0].metadata["cutover_eligible"] is False
+    assert synthetic[0].metadata["scientific_status"] == "fixture_non_cutover"
 
 
 def test_pipeline_rejects_toy_pdb_before_fpocket_approval() -> None:

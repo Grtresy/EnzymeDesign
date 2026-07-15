@@ -31,6 +31,7 @@ from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import SandboxWorkspaceRecord
+from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import ArtifactKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
@@ -252,6 +253,71 @@ def test_sandbox_file_crud_records_audit_and_rejects_bad_patch(tmp_path: Path) -
     assert [entry.operation for entry in audit] == ["write", "patch", "delete"]
 
 
+def test_sandbox_file_mutations_reject_prospective_quota_overflow(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    repositories.sandbox_workspaces.save(
+        replace(
+            workspace,
+            quota_summary={"limit_bytes": 8, "used_bytes": 0, "exceeded": False},
+        )
+    )
+
+    with pytest.raises(SandboxRuntimeError) as write_error:
+        service.write_file(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            actor_ref=agent.agent_id,
+            path="/workspace/src/too-large.txt",
+            content="123456789",
+            create_dirs=True,
+        )
+
+    assert write_error.value.error_code == "sandbox_quota_exceeded"
+    assert write_error.value.details == {
+        "limit_bytes": 8,
+        "used_bytes": 0,
+        "prospective_bytes": 9,
+    }
+    assert not (workspace_root / workspace.sandbox_workspace_id / "src" / "too-large.txt").exists()
+
+    repositories.sandbox_workspaces.save(
+        replace(
+            repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id) or workspace,
+            quota_summary={"limit_bytes": 12, "used_bytes": 0, "exceeded": False},
+        )
+    )
+    written = service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/value.txt",
+        content="small\n",
+        create_dirs=True,
+    )
+    patch = (
+        "--- /workspace/src/value.txt\n"
+        "+++ /workspace/src/value.txt\n"
+        "@@ -1 +1 @@\n"
+        "-small\n"
+        "+this is much larger\n"
+    )
+    with pytest.raises(SandboxRuntimeError) as patch_error:
+        service.patch_file(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            actor_ref=agent.agent_id,
+            path="/workspace/src/value.txt",
+            base_digest=str(written["new_digest"]),
+            patch=patch,
+        )
+    assert patch_error.value.error_code == "sandbox_quota_exceeded"
+    assert (workspace_root / workspace.sandbox_workspace_id / "src" / "value.txt").read_text(
+        encoding="utf-8"
+    ) == "small\n"
+
+
 def test_sandbox_write_conflicts_with_active_exec(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
@@ -331,6 +397,58 @@ def test_sandbox_exec_snapshots_source_and_allows_output_registration(tmp_path: 
         format="text",
     )
     assert registered.artifact.metadata["source_snapshot_artifact_id"] == run.source_snapshot_artifact_id
+
+
+def test_sandbox_exec_marks_run_and_workspace_when_output_exceeds_disk_quota(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/fill.py",
+        content=(
+            "from pathlib import Path\n"
+            "Path('output/large.txt').write_text('x' * 100, encoding='utf-8')\n"
+        ),
+        create_dirs=True,
+    )
+    refreshed = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    assert refreshed is not None
+    used_bytes = int((refreshed.quota_summary or {})["used_bytes"])
+    repositories.sandbox_workspaces.save(
+        replace(
+            refreshed,
+            quota_summary={
+                "limit_bytes": used_bytes + 10,
+                "used_bytes": used_bytes,
+                "exceeded": False,
+            },
+        )
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/fill.py"],
+    )
+
+    assert run.status is SandboxRunStatus.RESOURCE_EXCEEDED
+    assert run.error_code == "sandbox_quota_exceeded"
+    exceeded_workspace = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    assert exceeded_workspace is not None
+    assert exceeded_workspace.status is SandboxWorkspaceStatus.QUOTA_EXCEEDED
+    assert (exceeded_workspace.quota_summary or {})["exceeded"] is True
+    with pytest.raises(SandboxRuntimeError) as blocked:
+        service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/fill.py"],
+        )
+    assert blocked.value.error_code == "sandbox_quota_exceeded"
 
 
 def test_sandbox_exec_transport_smoke_returns_identity_binding(tmp_path: Path) -> None:

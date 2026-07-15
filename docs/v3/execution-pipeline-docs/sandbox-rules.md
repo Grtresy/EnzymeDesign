@@ -30,6 +30,7 @@ Rules:
 - Inside the sandbox, external SDK calls are Host-supervised blocking calls. The sandbox process waits while the Host handles provider requests, local tool execution, runner submission, polling, and fetched artifacts.
 - `Pipeline sandbox completed` means only that the wrapper process reached a successful terminal state. It is internal run metadata, not the tool-level user result; executor-facing status/artifacts must be used to summarize fpocket, Vina, or other SDK outputs.
 - SSH/HPC runner timeouts during an active runner-backed call are classified as `hpc_runner_timeout` with a runner stage, not as sandbox startup or Podman preflight failures.
+- Workspace disk quota is a hard Host boundary. File writes and patches are rejected before replacement when their prospective size would exceed quota. After every command, the Host remeasures the whole workspace; a process or SDK write that crosses the limit ends the run as `resource_exceeded`, marks the workspace `quota_exceeded`, and blocks further execution until cleanup brings it under quota.
 - Use `preprocess.*` for molecular input preparation.
 - Expect dry-run to reject unauthorized paths, missing source snapshots, unsupported imports, unbounded loops, undeclared/invalid outputs, and quota violations.
 - Local sandbox workspace and HPC placement workspace are separate work surfaces. File flow must be declared through `stage_artifact` / `fetch_outputs` or equivalent Host-supervised declarations. The scheduler must not silently switch execution backends or rewrite user intent.

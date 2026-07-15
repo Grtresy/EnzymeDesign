@@ -43,6 +43,7 @@ from .harness import ToolRegistry
 from .harness import ToolResult
 from .sandbox_workspace import SANDBOX_PROTOCOL_VERSION
 from .sandbox_workspace import SANDBOX_WORKSPACE_MANIFEST_VERSION
+from .sandbox_workspace import DEFAULT_SANDBOX_QUOTA_BYTES
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import summarize_workspace_directory
 
@@ -1766,6 +1767,12 @@ class SandboxRuntimeService:
         if len(encoded) > WRITE_MAX_BYTES:
             raise SandboxRuntimeError("sandbox_resource_exceeded", "sandbox.file.write content exceeds 256KiB")
         public_path, host_path = self._regular_file_target(workspace, path)
+        old_size = host_path.stat().st_size if host_path.exists() else 0
+        self._assert_prospective_quota(
+            workspace,
+            old_size=old_size,
+            new_size=len(encoded),
+        )
         old_digest = _file_digest(host_path).content_digest if host_path.exists() else None
         if expected_digest not in {None, ""} and expected_digest != old_digest:
             raise SandboxRuntimeError("sandbox_digest_conflict", "expected_digest does not match current file digest")
@@ -1813,6 +1820,11 @@ class SandboxRuntimeService:
             raise SandboxRuntimeError("sandbox_digest_conflict", "base_digest does not match current file digest")
         original = host_path.read_text(encoding="utf-8")
         patched = _apply_unified_diff(original, patch, public_path=public_path)
+        self._assert_prospective_quota(
+            workspace,
+            old_size=host_path.stat().st_size,
+            new_size=len(patched.encode("utf-8")),
+        )
         tmp = host_path.parent / f".{host_path.name}.tmp.{uuid4().hex}"
         tmp.write_text(patched, encoding="utf-8")
         tmp.replace(host_path)
@@ -2060,6 +2072,15 @@ class SandboxRuntimeService:
         else:
             status = SandboxRunStatus.FAILED
             error_code = error_code or "sandbox_exec_nonzero"
+        workspace = self.repositories.sandbox_workspaces.get(run.sandbox_workspace_id)
+        if workspace is not None:
+            directory_summary = summarize_workspace_directory(
+                self._workspace_path(run.sandbox_workspace_id)
+            )
+            quota_summary = self._quota_summary(workspace, directory_summary)
+            if quota_summary["exceeded"]:
+                status = SandboxRunStatus.RESOURCE_EXCEEDED
+                error_code = "sandbox_quota_exceeded"
         ended_at = utc_now_iso()
         finished = replace(
             run,
@@ -2075,7 +2096,6 @@ class SandboxRuntimeService:
             updated_at=ended_at,
         )
         self.repositories.sandbox_runs.save(finished)
-        workspace = self.repositories.sandbox_workspaces.get(run.sandbox_workspace_id)
         if workspace is not None:
             self._refresh_workspace_summary(
                 workspace,
@@ -2540,17 +2560,77 @@ class SandboxRuntimeService:
     ) -> None:
         workspace_path = self._workspace_path(workspace.sandbox_workspace_id)
         directory_summary = summarize_workspace_directory(workspace_path)
+        quota_summary = self._quota_summary(workspace, directory_summary)
+        quota_exceeded = bool(quota_summary["exceeded"])
+        status = workspace.status
+        resolved_last_error = last_error
+        if quota_exceeded:
+            status = SandboxWorkspaceStatus.QUOTA_EXCEEDED
+            resolved_last_error = {
+                "error_code": "sandbox_quota_exceeded",
+                "hint": "Delete workspace files or raise the configured quota before continuing.",
+            }
+        elif status is SandboxWorkspaceStatus.QUOTA_EXCEEDED:
+            status = SandboxWorkspaceStatus.READY
+            if last_error is None:
+                resolved_last_error = None
         refreshed = replace(
             workspace,
+            status=status,
             directory_summary=directory_summary,
             volume_digest=str(directory_summary.get("volume_digest") or ""),
+            quota_summary=quota_summary,
             last_command_summary=last_command_summary
             if last_command_summary is not None
             else workspace.last_command_summary,
-            last_error=last_error,
+            last_error=resolved_last_error,
             last_attached_at=utc_now_iso(),
         )
         self.repositories.sandbox_workspaces.save(refreshed)
+
+    def _quota_summary(
+        self,
+        workspace: SandboxWorkspaceRecord,
+        directory_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        configured_limit = (workspace.quota_summary or {}).get("limit_bytes")
+        try:
+            limit_bytes = int(configured_limit)
+        except (TypeError, ValueError):
+            limit_bytes = DEFAULT_SANDBOX_QUOTA_BYTES
+        if limit_bytes <= 0:
+            limit_bytes = DEFAULT_SANDBOX_QUOTA_BYTES
+        used_bytes = int(directory_summary.get("total_bytes") or 0)
+        return {
+            "limit_bytes": limit_bytes,
+            "used_bytes": used_bytes,
+            "exceeded": used_bytes > limit_bytes,
+        }
+
+    def _assert_prospective_quota(
+        self,
+        workspace: SandboxWorkspaceRecord,
+        *,
+        old_size: int,
+        new_size: int,
+    ) -> None:
+        directory_summary = summarize_workspace_directory(
+            self._workspace_path(workspace.sandbox_workspace_id)
+        )
+        quota_summary = self._quota_summary(workspace, directory_summary)
+        prospective_bytes = int(quota_summary["used_bytes"]) - old_size + new_size
+        if prospective_bytes > int(quota_summary["limit_bytes"]):
+            self._refresh_workspace_summary(workspace)
+            raise SandboxRuntimeError(
+                "sandbox_quota_exceeded",
+                "sandbox file mutation would exceed the workspace disk quota",
+                hint="Delete workspace files or request a larger quota before retrying.",
+                details={
+                    "limit_bytes": quota_summary["limit_bytes"],
+                    "used_bytes": quota_summary["used_bytes"],
+                    "prospective_bytes": prospective_bytes,
+                },
+            )
 
     def _changed_files(self, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         before_entries = {item["relative_path"]: item for item in before.get("entries", []) if isinstance(item, dict)}

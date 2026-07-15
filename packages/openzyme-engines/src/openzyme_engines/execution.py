@@ -4676,8 +4676,13 @@ class ExecutionEngine:
         drafts: tuple[BioArtifactDraft, ...] = (),
         execution_artifacts: tuple[ExecutionArtifactRef, ...] = (),
         raw_result: dict[str, Any] | None = None,
-        allow_synthetic_missing: bool = True,
+        allow_synthetic_missing: bool = False,
     ) -> None:
+        validation_stage = (
+            "bio_tools_output_validation"
+            if sdk_method.startswith("bio_tools.")
+            else "hpc_output_validation"
+        )
         declared_by_path = {
             self._validate_hpc_workspace_path(str(item.get("path") or ""), sdk_method=sdk_method): dict(item)
             for item in declared_outputs
@@ -4709,7 +4714,7 @@ class ExecutionEngine:
                     error_type="declared_output_missing",
                     message=f"{sdk_method} runner artifact {relative_path!r} was not fetched to a readable local path.",
                     hint="Inspect runner fetch logs; do not synthesize missing declared outputs.",
-                    stage="bio_tools_output_validation",
+                    stage=validation_stage,
                     retryable=False,
                     sdk_method=sdk_method,
                     details={"missing_outputs": [relative_path]},
@@ -4738,7 +4743,7 @@ class ExecutionEngine:
                 error_type="declared_output_missing",
                 message=f"{sdk_method} did not produce all declared outputs.",
                 hint="Inspect runner logs and command templates; do not synthesize missing declared outputs.",
-                stage="bio_tools_output_validation",
+                stage=validation_stage,
                 retryable=False,
                 sdk_method=sdk_method,
                 details={"missing_outputs": [relative_path for relative_path, _ in missing_declared]},
@@ -4766,6 +4771,9 @@ class ExecutionEngine:
             "declared_outputs": declared_outputs,
             "selected_backend": "hpc",
             "status": run.status.value,
+            "cutover_eligible": not any(
+                bool(item.get("synthetic_source")) for item in outputs
+            ),
             "raw_result": dict(raw_result or {}),
             "request_metadata": dict(request_metadata),
             "outputs": outputs,
@@ -4907,8 +4915,18 @@ class ExecutionEngine:
             "runner_run_id": run.runner_run_id,
             "pipeline_invocation_id": invocation.invocation_id,
             "planned_fetch_intent": True,
+            "synthetic_source": bool(pending.get("synthetic_source")),
+            "cutover_eligible": not bool(pending.get("synthetic_source")),
             **dict(operation_payload.get("request_metadata") or {}),
         }
+        if pending.get("synthetic_source"):
+            metadata.update(
+                {
+                    "provider_status": "fixture_non_cutover",
+                    "tool_status": "fixture_non_cutover",
+                    "scientific_status": "fixture_non_cutover",
+                }
+            )
         format_value = pending.get("format") or declared.get("format")
         try:
             result = boundary.register(
@@ -4957,6 +4975,17 @@ class ExecutionEngine:
             else:
                 shutil.copyfile(source, target)
             return
+        content = pending.get("content")
+        if not pending.get("synthetic_source") and not isinstance(content, str):
+            raise PipelineSdkFailure(
+                error_type="declared_output_missing",
+                message="HPC output has no readable source or fetched content.",
+                hint="Inspect runner fetch results; synthetic output is allowed only in explicit non-cutover fixtures.",
+                stage="hpc_fetch_register",
+                retryable=False,
+                sdk_method="hpc.fetch_outputs",
+                details={"relative_path": pending.get("relative_path")},
+            )
         if self._pending_output_is_directory(pending):
             target.mkdir(parents=True, exist_ok=True)
             (target / "summary.json").write_text(
@@ -4964,7 +4993,6 @@ class ExecutionEngine:
                 encoding="utf-8",
             )
             return
-        content = pending.get("content")
         if not isinstance(content, str):
             content = self._dummy_content_for_declared_output(pending)
         target.write_text(content, encoding="utf-8")
@@ -6514,7 +6542,7 @@ class ExecutionEngine:
             hpc_workspace_id=str(placement.get("hpc_workspace_id")),
             stage_refs=stage_refs,
             declared_outputs=declared_outputs,
-            allow_synthetic_missing_outputs=False,
+            allow_explicit_fixture_placeholders=False,
         )
         if result.get("status") != RunStatus.SUCCEEDED.value:
             raise self._bio_tool_runner_failure(method=method, result=result)
@@ -6641,6 +6669,7 @@ class ExecutionEngine:
             hpc_workspace_id=str(placement.get("hpc_workspace_id")),
             stage_refs=stage_refs,
             declared_outputs=expected_outputs,
+            allow_explicit_fixture_placeholders=True,
         )
         run_handle = {
             "kind": "hpc_run_handle",
@@ -6677,6 +6706,18 @@ class ExecutionEngine:
         if isinstance(parsed_result, dict):
             completed_payload["parsed_result"] = parsed_result
         self._record_pipeline_completed_operation(invocation, operation_key, completed_payload)
+        if result.get("status") != RunStatus.SUCCEEDED.value:
+            self._emit(
+                "execution.pipeline.step.failed",
+                {
+                    "invocation_id": invocation.invocation_id,
+                    "operation": method,
+                    "operation_key": operation_key,
+                    "run_id": result.get("run_id"),
+                    "error_code": result.get("error_code"),
+                },
+            )
+            raise self._hpc_operation_runner_failure(method=method, result=result)
         self._emit(
             "execution.pipeline.step.completed",
             {
@@ -6687,6 +6728,43 @@ class ExecutionEngine:
             },
         )
         return run_handle
+
+    def _hpc_operation_runner_failure(
+        self,
+        *,
+        method: str,
+        result: dict[str, Any],
+    ) -> PipelineSdkFailure:
+        raw = dict(result.get("runner_result") or result.get("raw_result") or {})
+        runner_code = str(raw.get("error_code") or result.get("error_code") or "")
+        normalized_code = runner_code.lower()
+        timed_out = normalized_code in {
+            "timeout",
+            "command_timeout",
+            "hpc_runner_timeout",
+            "ssh_timeout",
+        }
+        return PipelineSdkFailure(
+            error_type="hpc_runner_timeout" if timed_out else "hpc_operation_failed",
+            message=f"{method} Host-supervised HPC execution failed.",
+            hint=(
+                "Inspect the HPC run and trusted runner diagnostics; do not fall back to Host-local or sandbox binaries."
+            ),
+            stage=str(raw.get("stage") or result.get("stage") or "remote_execution"),
+            retryable=timed_out,
+            sdk_method=method,
+            hpc_failure=_hpc_failure_details(
+                {
+                    "status": result.get("status"),
+                    "run_id": result.get("run_id"),
+                    "runner_run_id": result.get("runner_run_id"),
+                    "execution_mode": result.get("execution_mode"),
+                    "exit_code": result.get("exit_code"),
+                    "runner_result": raw,
+                }
+            ),
+            details={"runner_error_code": runner_code or None},
+        )
 
     def _pipeline_hpc_covered_by_approved_plan(
         self,
@@ -6755,7 +6833,7 @@ class ExecutionEngine:
         hpc_workspace_id: str,
         stage_refs: list[dict[str, Any]],
         declared_outputs: list[dict[str, Any]],
-        allow_synthetic_missing_outputs: bool = True,
+        allow_explicit_fixture_placeholders: bool = False,
     ) -> dict[str, Any]:
         required_artifacts = self._resolve_artifacts(session.session_id, handoff.required_artifact_ids)
         context_artifacts = self._resolve_artifacts(session.session_id, handoff.context_artifact_ids)
@@ -6821,9 +6899,18 @@ class ExecutionEngine:
         )
         self.repositories.runs.save(run)
         final_outcome = outcome
-        if final_outcome.status.is_terminal and (
-            final_outcome.status is RunStatus.SUCCEEDED or allow_synthetic_missing_outputs
-        ):
+        explicit_non_cutover_fixture = (
+            final_outcome.execution_mode
+            in {"fixture_non_cutover", "simulation_non_cutover"}
+            and bool(
+                final_outcome.raw_result.get("fixture")
+                or final_outcome.raw_result.get("simulation")
+            )
+        )
+        allow_synthetic_missing = (
+            allow_explicit_fixture_placeholders and explicit_non_cutover_fixture
+        )
+        if final_outcome.status is RunStatus.SUCCEEDED:
             self._save_hpc_pending_outputs(
                 session_id=session.session_id,
                 invocation=invocation,
@@ -6836,7 +6923,7 @@ class ExecutionEngine:
                 request_metadata=metadata,
                 execution_artifacts=final_outcome.artifacts,
                 raw_result=final_outcome.raw_result,
-                allow_synthetic_missing=allow_synthetic_missing_outputs,
+                allow_synthetic_missing=allow_synthetic_missing,
             )
             run = RunRecord(
                 run_id=run.run_id,
