@@ -100,7 +100,10 @@ It runs Python lint, Python non-integration tests, and the `openzyme-web-ui` Nod
 
 ## Live Test Commands
 
-Default `uv run pytest` remains local and deterministic. Real LLM, Tavily, HPC, and end-to-end tests are skipped unless explicitly enabled.
+Default `uv run pytest` remains local and deterministic. Real LLM, Tavily, HPC,
+seeded smoke, quality eval, and end-to-end tests require both the corresponding
+environment gate and an explicit command-line marker selection; configured
+credentials alone never make the default command call an external system.
 
 Examples:
 
