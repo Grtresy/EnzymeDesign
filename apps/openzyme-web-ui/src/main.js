@@ -59,6 +59,21 @@ function bindScrollableChatState() {
 
 function repaint() {
   ensureShell();
+  const appShell = document.querySelector(".app-shell");
+  if (appShell instanceof HTMLElement) {
+    appShell.dataset.mobilePane = controller.state.mobilePane ?? "conversation";
+    for (const button of appShell.querySelectorAll("[data-action='select-mobile-pane']")) {
+      const isCurrent = button.dataset.pane === appShell.dataset.mobilePane;
+      button.classList.toggle("is-current", isCurrent);
+      button.setAttribute("aria-pressed", String(isCurrent));
+    }
+    for (const button of appShell.querySelectorAll(".inspector-tab[data-section]")) {
+      const isCurrent = button.dataset.section === controller.state.currentSection;
+      button.dataset.sessionId = controller.state.currentSessionId;
+      button.classList.toggle("is-current", isCurrent);
+      button.setAttribute("aria-pressed", String(isCurrent));
+    }
+  }
   const sidebarRoot = document.querySelector("#sidebar-column-root");
   const mainRoot = document.querySelector("#main-column-root");
   const inspectorRoot = document.querySelector("#inspector-column-root");
@@ -188,6 +203,11 @@ async function onClick(event) {
     controller.toggleSessionTree(sessionToggle.dataset.sessionId);
     return;
   }
+  const mobilePane = target.closest("[data-action='select-mobile-pane']");
+  if (mobilePane instanceof HTMLElement) {
+    controller.selectMobilePane(mobilePane.dataset.pane);
+    return;
+  }
   const sessionSelect = target.closest("[data-action='select-session']");
   if (sessionSelect instanceof HTMLElement) {
     await controller.selectSession(sessionSelect.dataset.sessionId, "conversation");
@@ -195,7 +215,7 @@ async function onClick(event) {
   }
   const sectionSelect = target.closest("[data-action='select-section']");
   if (sectionSelect instanceof HTMLElement) {
-    const sessionId = sectionSelect.dataset.sessionId;
+    const sessionId = sectionSelect.dataset.sessionId || controller.state.currentSessionId;
     const section = sectionSelect.dataset.section;
     if (controller.state.currentSessionId !== sessionId) {
       await controller.selectSession(sessionId, section);

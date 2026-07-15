@@ -12,14 +12,14 @@ const sectionLabels = {
   team: "Team",
   tasks: "Tasks",
   lanes: "Lanes",
-  outputs: "Outputs",
+  outputs: "Artifacts & Reports",
   capabilities: "Capabilities",
   activity: "Activity",
 };
 
 function renderEmptyConversation(viewState) {
   return `
-    <div class="empty-chat">
+    <div class="empty-chat" id="conversation-workspace">
       <p class="eyebrow">OpenZyme V3</p>
       <h2>Select a session or create a new one</h2>
       <p class="status-line">The center column stays focused on the conversation. Operational detail lives in the inspector.</p>
@@ -247,16 +247,18 @@ export function renderV3Approvals(workspace, viewState) {
     return "";
   }
   return `
-    <div class="approval-stack" aria-label="Pending approvals">
+    <div class="approval-stack" aria-label="Pending approvals" aria-live="polite">
       ${approvals
         .map(
           (approval) => {
             const operation = approval.operation ?? {};
             const sandboxRun = approval.sandbox_run ?? {};
             return `
-            <article class="approval-card">
-              <p class="eyebrow">${escapeHtml(approval.kind ?? "approval")}</p>
-              <h4>${escapeHtml(approval.requested_action ?? "Review requested action")}</h4>
+            <article class="approval-card" role="region" aria-label="Approval required">
+              <div class="approval-heading">
+                <span class="approval-mark" aria-hidden="true">!</span>
+                <div><p class="eyebrow">Approval required</p><h3>${escapeHtml(approval.requested_action ?? "Review requested action")}</h3></div>
+              </div>
               <dl class="facts compact-facts">
                 <div><dt>Approval</dt><dd>${escapeHtml(approval.approval_id)}</dd></div>
                 <div><dt>Task</dt><dd>${escapeHtml(approval.task_id ?? "none")}</dd></div>
@@ -266,18 +268,21 @@ export function renderV3Approvals(workspace, viewState) {
                 <div><dt>Run</dt><dd>${escapeHtml(sandboxRun.sandbox_run_id ?? operation.sandbox_run_id ?? "none")}</dd></div>
               </dl>
               ${renderPanelError(viewState.errors.approvals?.[approval.approval_id] ?? "")}
-              <div class="action-row">
+              <div class="action-row approval-actions">
                 <button
                   type="button"
                   data-v3-approval-decision="approved"
                   data-approval-id="${escapeHtml(approval.approval_id)}"
                   ${viewState.pendingApprovalId === approval.approval_id ? "disabled" : ""}
-                >Approve</button>
+                  aria-busy="${viewState.pendingApprovalId === approval.approval_id}"
+                >${viewState.pendingApprovalId === approval.approval_id ? "Resolving..." : "Approve"}</button>
                 <button
                   type="button"
+                  class="button-secondary button-warning"
                   data-v3-approval-decision="rejected"
                   data-approval-id="${escapeHtml(approval.approval_id)}"
                   ${viewState.pendingApprovalId === approval.approval_id ? "disabled" : ""}
+                  aria-busy="${viewState.pendingApprovalId === approval.approval_id}"
                 >Reject</button>
               </div>
             </article>
@@ -312,7 +317,7 @@ function renderTraceStep(step, { teammate = false } = {}) {
     <li class="trace-step ${teammate ? "from-teammate" : "from-agent"}" data-trace-id="${escapeHtml(step.trace_id ?? "")}">
       <div class="trace-step-header">
         <span>${escapeHtml(step.display_name ?? step.actor_ref ?? "agent")}</span>
-        <small>${escapeHtml(step.role ?? "")} · call ${escapeHtml(step.call_index ?? "")}</small>
+        <small>${escapeHtml(step.role ?? "")} · call ${escapeHtml(step.call_index ?? "")}${step.created_at ? ` · ${escapeHtml(step.created_at)}` : ""}</small>
       </div>
       ${hasText ? `<p>${escapeHtml(step.response_text)}</p>` : ""}
       ${toolCalls.length ? `<div class="tool-call-stack">${toolCalls.map(renderToolCallCard).join("")}</div>` : ""}
@@ -348,7 +353,7 @@ export function renderV3Conversation(workspace) {
           const item = entry.item;
           return `
             <li class="chat-message ${item.role === "user" ? "from-user" : "from-agent"}${item.error ? " is-error" : ""}" data-message-id="${escapeHtml(item.message_id ?? item.event_id ?? "")}">
-              <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}</span>
+              <span>${escapeHtml(item.role === "user" ? "You" : "OpenZyme")}${item.created_at ? ` · ${escapeHtml(item.created_at)}` : ""}</span>
               <p>${escapeHtml(item.content)}</p>
             </li>
           `;
@@ -437,7 +442,7 @@ export function renderV3Outputs(workspace, viewState = {}) {
       ${
         drafts.length
           ? `<section>
-              <h4>Report Drafts</h4>
+              <h3>Report Drafts</h3>
               <ul class="record-list">
                 ${drafts
                   .map(
@@ -456,7 +461,7 @@ export function renderV3Outputs(workspace, viewState = {}) {
       ${
         reports.length
           ? `<section>
-              <h4>Reports</h4>
+              <h3>Reports</h3>
               <ul class="record-list">
                 ${reports
                   .map(
@@ -475,7 +480,7 @@ export function renderV3Outputs(workspace, viewState = {}) {
       ${
         artifacts.length
           ? `<section>
-              <h4>Artifacts</h4>
+              <h3>Artifacts</h3>
               <div class="artifact-browser">
                 <nav aria-label="Artifact tree">
                   <ul class="artifact-tree">
@@ -560,14 +565,14 @@ export function renderSessionTree(viewState) {
     return `<p class="empty-copy">No sessions yet.</p>`;
   }
   return `
-    <ul class="tree-list" role="tree">
+    <ul class="tree-list">
       ${viewState.sessionSummaries
         .map((session) => {
           const isExpanded = viewState.sidebarExpandedSessionIds.includes(session.session_id);
           const isActive = viewState.currentSessionId === session.session_id;
           const teammates = isActive ? viewState.workspace?.delegation?.agents ?? [] : [];
           return `
-            <li class="tree-node session-node" role="treeitem" aria-expanded="${isExpanded}">
+            <li class="tree-node session-node">
               <div class="session-row ${isActive ? "is-active" : ""}">
                 <button
                   type="button"
@@ -575,6 +580,7 @@ export function renderSessionTree(viewState) {
                   data-action="toggle-session"
                   data-session-id="${escapeHtml(session.session_id)}"
                   aria-label="${isExpanded ? "Collapse" : "Expand"}"
+                  aria-expanded="${isExpanded}"
                 >${isExpanded ? "▾" : "▸"}</button>
                 <button
                   type="button"
@@ -590,7 +596,7 @@ export function renderSessionTree(viewState) {
               </div>
               ${
                 isExpanded
-                  ? `<ul class="section-tree" role="group">
+                  ? `<ul class="section-tree">
                       ${Object.entries(sectionLabels)
                         .map(
                           ([sectionKey, label]) => `
@@ -605,7 +611,7 @@ export function renderSessionTree(viewState) {
                               >${escapeHtml(label)}</button>
                               ${
                                 sectionKey === "team" && teammates.length
-                                  ? `<ul class="teammate-tree" role="group">
+                                  ? `<ul class="teammate-tree">
                                       ${teammates
                                         .map((item) => {
                                           const agent = item.agent ?? {};
@@ -647,10 +653,11 @@ export function renderConversationHeader(viewState) {
     return "";
   }
   return `
-    <div>
+    <div class="conversation-title-block">
       <p class="eyebrow">${escapeHtml(viewState.selectedTeammateAgentId ? "Teammate Trace" : "Conversation")}</p>
       <h2>${escapeHtml(viewState.selectedTeammateAgentId || workspace.session.title || workspace.session.objective)}</h2>
       <p class="status-line">${escapeHtml(workspace.session.objective)}</p>
+      <p class="session-meta">${escapeHtml(workspace.session.session_id)}${workspace.session.created_at ? ` · ${escapeHtml(workspace.session.created_at)}` : ""}</p>
     </div>
     <div class="header-status-stack">
       ${viewState.refreshingWorkspace ? `<span class="status-chip">Refreshing…</span>` : ""}
@@ -671,7 +678,7 @@ export function renderComposerStatus(viewState) {
 
 export function renderInspectorHeader(viewState) {
   return `
-    <h3>${escapeHtml(sectionLabels[viewState.currentSection] ?? "Conversation")}</h3>
+    <h2>${escapeHtml(sectionLabels[viewState.currentSection] ?? "Conversation")}</h2>
     ${
       viewState.workspace?.session
         ? `<span>${escapeHtml(viewState.workspace.session.session_id)}</span>`
@@ -680,13 +687,27 @@ export function renderInspectorHeader(viewState) {
   `;
 }
 
+function renderInspectorTabs(viewState) {
+  return `
+    <nav class="inspector-tabs" aria-label="Workspace inspector sections">
+      ${Object.entries(sectionLabels)
+        .filter(([key]) => key !== "conversation")
+        .map(([key, label]) => `<button type="button" class="inspector-tab ${viewState.currentSection === key ? "is-current" : ""}" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="${escapeHtml(key)}" aria-pressed="${viewState.currentSection === key}">${escapeHtml(label)}</button>`)
+        .join("")}
+    </nav>
+  `;
+}
+
 export function renderSidebar(viewState) {
   return `
     <section class="sidebar-shell">
-      <div class="panel sidebar-panel">
-        <p class="eyebrow">OpenZyme V3</p>
-        <h1>Workspace</h1>
+      <div class="sidebar-panel">
+        <p class="brand-wordmark">OpenZyme</p>
+        <p class="eyebrow">Research workspace</p>
+        <h1>${escapeHtml(viewState.currentProjectId)}</h1>
         <div id="sidebar-status-root">${renderSidebarStatus(viewState)}</div>
+        <details class="new-session-disclosure">
+          <summary>New session</summary>
         <form id="create-session-form" class="compact-form" autocomplete="off">
           <input type="hidden" name="project_id" value="${escapeHtml(viewState.currentProjectId)}" />
           <label>
@@ -715,10 +736,11 @@ export function renderSidebar(viewState) {
           </label>
           <button id="create-session-submit" type="submit" ${viewState.createSessionBusy ? "disabled" : ""}>New Session</button>
         </form>
+        </details>
       </div>
-      <div class="panel tree-panel">
+      <div class="tree-panel">
         <div class="tree-header">
-          <h3>Sessions</h3>
+          <h2>Sessions</h2>
           <span id="session-count-root">${viewState.sidebarBusy ? "Loading..." : `${viewState.sessionSummaries.length}`}</span>
         </div>
         <div id="sidebar-tree-root">${renderSessionTree(viewState)}</div>
@@ -734,9 +756,9 @@ export function renderMainColumn(viewState) {
   }
   if (viewState.selectedTeammateAgentId) {
     return `
-      <section class="main-column-shell">
-        <header class="panel conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
-        <section class="panel conversation-panel">
+      <section class="main-column-shell" id="conversation-workspace" aria-label="Teammate trace workspace">
+        <header class="conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
+        <section class="conversation-panel">
           <div id="conversation-list-root">${renderTeammateTrace(workspace, viewState.selectedTeammateAgentId)}</div>
           <div id="approval-stack-root">${renderV3Approvals(workspace, viewState)}</div>
         </section>
@@ -744,17 +766,18 @@ export function renderMainColumn(viewState) {
     `;
   }
   return `
-    <section class="main-column-shell">
-      <header class="panel conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
-      <section class="panel conversation-panel">
+    <section class="main-column-shell" id="conversation-workspace" aria-label="Conversation workspace">
+      <header class="conversation-header" id="conversation-header-root">${renderConversationHeader(viewState)}</header>
+      <section class="conversation-panel">
         <div id="conversation-list-root">${renderV3Conversation(workspace)}</div>
         <div id="approval-stack-root">${renderV3Approvals(workspace, viewState)}</div>
       </section>
-      <form id="message-form" class="panel composer-panel" autocomplete="off">
+      <form id="message-form" class="composer-panel" autocomplete="off" aria-label="Message OpenZyme">
         <textarea
           name="message"
           rows="3"
-          placeholder="Message the harness"
+          placeholder="Message OpenZyme"
+          aria-label="Message OpenZyme"
           autocomplete="off"
           autocapitalize="off"
           autocorrect="off"
@@ -776,17 +799,45 @@ export function renderMainColumn(viewState) {
 
 export function renderInspector(viewState) {
   return `
-    <section class="panel inspector-panel">
+    <aside class="inspector-panel" aria-label="Workspace inspector">
       <div class="tree-header" id="inspector-header-root">${renderInspectorHeader(viewState)}</div>
+      ${renderInspectorTabs(viewState)}
       <div id="inspector-content-root">${renderInspectorContent(viewState)}</div>
-    </section>
+    </aside>
+  `;
+}
+
+function renderRail(viewState) {
+  const pending = viewState.workspace?.pending_approvals?.length ?? 0;
+  return `
+    <nav class="workspace-rail" aria-label="Primary workspace navigation">
+      <div class="rail-monogram" aria-label="OpenZyme">OZ</div>
+      <button type="button" data-action="select-mobile-pane" data-pane="sessions" aria-label="Sessions" title="Sessions">S</button>
+      <button type="button" data-action="select-mobile-pane" data-pane="conversation" aria-label="Conversation" title="Conversation">C</button>
+      <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="team" aria-label="Team" title="Team">T</button>
+      <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="tasks" aria-label="Tasks" title="Tasks">✓</button>
+      <button type="button" data-action="select-section" data-session-id="${escapeHtml(viewState.currentSessionId)}" data-section="outputs" aria-label="Artifacts and reports" title="Artifacts and reports">A</button>
+      ${pending ? `<span class="rail-attention" aria-label="${pending} pending approvals">${pending}</span>` : ""}
+    </nav>
+  `;
+}
+
+function renderMobileNavigation(viewState) {
+  return `
+    <nav class="mobile-workspace-nav" aria-label="Workspace panels">
+      ${[["sessions", "Sessions"], ["conversation", "Conversation"], ["inspector", "Inspector"]]
+        .map(([pane, label]) => `<button type="button" data-action="select-mobile-pane" data-pane="${pane}" class="${viewState.mobilePane === pane ? "is-current" : ""}" aria-pressed="${viewState.mobilePane === pane}">${label}</button>`)
+        .join("")}
+    </nav>
   `;
 }
 
 export function renderAppShell(viewState) {
   return `
-    <main class="app-shell chat-workspace">
-      <section id="sidebar-column-root">${renderSidebar(viewState)}</section>
+    <main class="app-shell chat-workspace" data-mobile-pane="${escapeHtml(viewState.mobilePane ?? "conversation")}">
+      ${renderRail(viewState)}
+      ${renderMobileNavigation(viewState)}
+      <section id="sidebar-column-root" aria-label="Sessions">${renderSidebar(viewState)}</section>
       <section id="main-column-root">${renderMainColumn(viewState)}</section>
       <section id="inspector-column-root">${renderInspector(viewState)}</section>
     </main>

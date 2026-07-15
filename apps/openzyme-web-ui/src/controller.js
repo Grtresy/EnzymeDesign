@@ -194,6 +194,7 @@ export class WorkspaceController {
     this.state.workspace = null;
     this.state.currentSessionId = "";
     this.state.currentSection = "conversation";
+    this.state.mobilePane = "conversation";
     this.state.selectedTeammateAgentId = "";
     this.state.selectedArtifactId = "";
     this.state.sidebarExpandedSessionIds = [];
@@ -242,6 +243,7 @@ export class WorkspaceController {
       this.state.currentSessionId = response.session_id;
       this.state.currentProjectId = response.workspace.session.project_id;
       this.state.currentSection = "conversation";
+      this.state.mobilePane = "conversation";
       this.state.selectedTeammateAgentId = "";
       this.state.selectedArtifactId = "";
       this._setExpandedSession(response.session_id);
@@ -274,6 +276,7 @@ export class WorkspaceController {
     this.state.sidebarBusy = true;
     this.state.currentSessionId = sessionId;
     this.state.currentSection = section;
+    this.state.mobilePane = section === "conversation" ? "conversation" : "inspector";
     this.state.selectedTeammateAgentId = "";
     this.state.selectedArtifactId = "";
     this._setExpandedSession(sessionId);
@@ -307,6 +310,7 @@ export class WorkspaceController {
 
   selectSection(section) {
     this.state.currentSection = section || "conversation";
+    this.state.mobilePane = this.state.currentSection === "conversation" ? "conversation" : "inspector";
     this.state.selectedTeammateAgentId = "";
     this._emit();
   }
@@ -316,6 +320,7 @@ export class WorkspaceController {
       return;
     }
     this.state.currentSection = "outputs";
+    this.state.mobilePane = "inspector";
     this.state.selectedTeammateAgentId = "";
     this.state.selectedArtifactId = artifactId;
     this._emit();
@@ -326,6 +331,7 @@ export class WorkspaceController {
       return;
     }
     this.state.currentSection = "team";
+    this.state.mobilePane = "conversation";
     this.state.selectedTeammateAgentId = agentId;
     this.state.selectedArtifactId = "";
     this._emit();
@@ -337,6 +343,14 @@ export class WorkspaceController {
     } else {
       this._setExpandedSession(sessionId);
     }
+    this._emit();
+  }
+
+  selectMobilePane(pane) {
+    if (!["sessions", "conversation", "inspector"].includes(pane)) {
+      return;
+    }
+    this.state.mobilePane = pane;
     this._emit();
   }
 

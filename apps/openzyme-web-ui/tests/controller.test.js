@@ -125,6 +125,10 @@ test("selectSession loads a workspace and can switch inspector sections", async 
 
   controller.selectSection("activity");
   assert.equal(controller.state.currentSection, "activity");
+  assert.equal(controller.state.mobilePane, "inspector");
+
+  controller.selectMobilePane("sessions");
+  assert.equal(controller.state.mobilePane, "sessions");
 });
 
 test("workspace controller selects artifact details in outputs", async () => {

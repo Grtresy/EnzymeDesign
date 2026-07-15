@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { renderMainColumn, renderV3Outputs } from "../src/view.js";
+import { renderApp, renderMainColumn, renderV3Outputs } from "../src/view.js";
 
 function workspace() {
   return {
@@ -94,4 +94,28 @@ test("outputs render folded artifact index entries with version count", () => {
   assert.match(html, /AOX_ref21\.fasta/);
   assert.match(html, /2 versions/);
   assert.doesNotMatch(html, /art_old ·/);
+});
+
+test("research notebook shell exposes real navigation and responsive panel controls", () => {
+  const state = {
+    currentProjectId: "proj_001",
+    currentSessionId: "sess_001",
+    currentSection: "tasks",
+    mobilePane: "inspector",
+    sidebarExpandedSessionIds: ["sess_001"],
+    sessionSummaries: [{ session_id: "sess_001", title: "Manual run", objective: "Manual run", status: "active" }],
+    workspace: workspace(),
+    errors: { approvals: {} },
+    pendingApprovalId: "appr_001",
+  };
+
+  const html = renderApp(state);
+
+  assert.match(html, /workspace-rail/);
+  assert.match(html, /mobile-workspace-nav/);
+  assert.match(html, /data-mobile-pane="inspector"/);
+  assert.match(html, /Workspace inspector/);
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /Resolving\.\.\./);
+  assert.match(html, /Message OpenZyme/);
 });

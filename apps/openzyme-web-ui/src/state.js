@@ -421,6 +421,7 @@ export function buildInitialViewState() {
     currentProjectId: initialProjectId(),
     currentSessionId: "",
     currentSection: "conversation",
+    mobilePane: "conversation",
     selectedTeammateAgentId: "",
     selectedArtifactId: "",
     sidebarExpandedSessionIds: [],
