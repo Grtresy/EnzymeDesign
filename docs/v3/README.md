@@ -24,6 +24,7 @@ V3 的核心立场：
 架构审计与后续修正追踪：
 
 - [harness-complexity-audit.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/harness-complexity-audit.md)
+- [compatibility-sunset.md](/home/grtresy/VSCodeRepo/EnzymeDesign/docs/v3/compatibility-sunset.md)
 
 Execution pipeline SDK docs:
 
