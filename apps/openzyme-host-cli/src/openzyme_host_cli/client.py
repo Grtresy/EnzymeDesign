@@ -42,6 +42,11 @@ def _normalize_error_text(response: ResponseProtocol) -> str:
         if isinstance(detail, str):
             return detail
         return json.dumps(detail, ensure_ascii=True, sort_keys=True)
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+        error = payload["error"]
+        code = str(error.get("code") or "host_api_error")
+        message = str(error.get("message") or f"status {response.status_code}")
+        return f"{code}: {message}"
     return json.dumps(payload, ensure_ascii=True, sort_keys=True)
 
 
@@ -96,6 +101,9 @@ class HostApiClient:
     def get_v3_workspace(self, session_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v3/sessions/{session_id}/workspace")
 
+    def get_v3_runtime_health(self) -> dict[str, Any]:
+        return self._request_json("GET", "/v3/runtime/health")
+
     def post_v3_message(
         self,
         session_id: str,
@@ -120,8 +128,8 @@ class HostApiClient:
     def create_v3_lane(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request_json("POST", "/v3/lanes", json_body=payload)
 
-    def claim_v3_lane(self, lane_id: str, claimed_ref: str) -> dict[str, Any]:
-        return self._request_json("POST", f"/v3/lanes/{lane_id}/claim", json_body={"claimed_ref": claimed_ref})
+    def claim_v3_lane(self, lane_id: str) -> dict[str, Any]:
+        return self._request_json("POST", f"/v3/lanes/{lane_id}/claim", json_body={})
 
     def keep_v3_lane(self, lane_id: str) -> dict[str, Any]:
         return self._request_json("POST", f"/v3/lanes/{lane_id}/keep", json_body={})

@@ -49,6 +49,15 @@ test("workspace controller bootstraps with project session summaries", async () 
     async listV3Sessions() {
       return [{ session_id: "sess_001", title: "Plan with V3", updated_at: "2026-04-21T00:00:00+00:00" }];
     },
+    async getV3RuntimeHealth() {
+      return {
+        schema_version: "v3.runtime_health.v1",
+        status: "degraded",
+        deployment_profile: "local-dev",
+        storage_profile: "single_process_sqlite",
+        components: {},
+      };
+    },
   };
 
   const controller = new WorkspaceController(fakeClient);
@@ -56,6 +65,7 @@ test("workspace controller bootstraps with project session summaries", async () 
 
   assert.equal(controller.state.currentProjectId, "proj_001");
   assert.equal(controller.state.sessionSummaries.length, 1);
+  assert.equal(controller.state.runtimeHealth.status, "degraded");
   assert.equal(controller.state.sidebarBusy, false);
 });
 
@@ -187,7 +197,7 @@ test("workspace controller resolves v3 approvals and refreshes summaries", async
 
   assert.deepEqual(resolveCall, {
     approvalId: "appr_v3_001",
-    payload: { decision: "approved", actor_ref: "user" },
+    payload: { decision: "approved" },
   });
   assert.equal(controller.state.workspace.pending_approvals.length, 0);
 });

@@ -14,6 +14,21 @@ class FakeSession:
     def get(self, url: str, **kwargs):
         self.last_headers = dict(kwargs.get("headers") or {})
         self.calls.append(("GET", url, None))
+        if url == "/v3/runtime/health":
+            return FakeResponse(
+                200,
+                {
+                    "schema_version": "v3.runtime_health.v1",
+                    "status": "degraded",
+                    "deployment_profile": "local-dev",
+                    "storage_profile": "single_process_sqlite",
+                    "observed_at": "2026-07-16T00:00:00+00:00",
+                    "components": {
+                        "control_plane": {"status": "ready", "details": {}},
+                        "model": {"status": "unavailable", "details": {}},
+                    },
+                },
+            )
         if url.startswith("/v3/sessions/") and url.endswith("/workspace"):
             return FakeResponse(200, build_v3_workspace())
         return FakeResponse(200, [])
@@ -204,3 +219,72 @@ def test_cli_v3_task_update_uses_patch() -> None:
 
     assert exit_code == 0
     assert session.calls[-1] == ("PATCH", "/v3/tasks/task_001", {"status": "in_progress"})
+
+
+def test_cli_lane_claim_uses_server_owned_actor() -> None:
+    session = FakeSession()
+
+    exit_code = run_cli(
+        ["lanes", "claim", "--lane-id", "lane_001"],
+        session=session,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == ("POST", "/v3/lanes/lane_001/claim", {})
+
+
+def test_cli_runtime_health_renders_public_projection() -> None:
+    stdout = StringIO()
+    session = FakeSession()
+
+    exit_code = run_cli(
+        ["runtime", "health"],
+        session=session,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert session.calls[-1] == ("GET", "/v3/runtime/health", None)
+    rendered = stdout.getvalue()
+    assert "Runtime: degraded" in rendered
+    assert "control_plane: ready" in rendered
+    assert "model: unavailable" in rendered
+
+
+class ErrorSession(FakeSession):
+    def post(self, url: str, **kwargs):
+        self.last_headers = dict(kwargs.get("headers") or {})
+        self.calls.append(("POST", url, kwargs.get("json")))
+        return FakeResponse(
+            422,
+            {
+                "error": {
+                    "code": "request_validation_error",
+                    "message": "Request payload failed validation.",
+                }
+            },
+        )
+
+
+def test_cli_renders_structured_host_error() -> None:
+    stderr = StringIO()
+
+    exit_code = run_cli(
+        [
+            "sessions",
+            "create",
+            "--project-id",
+            "proj_001",
+            "--objective",
+            "Invalid request",
+        ],
+        session=ErrorSession(),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 2
+    assert "request_validation_error: Request payload failed validation." in stderr.getvalue()

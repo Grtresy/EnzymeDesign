@@ -26,7 +26,12 @@ V3 公共接口以 harness-first 语义为唯一主线。
 - `POST /v3/sessions/{session_id}/messages`
 - `GET /v3/sessions/{session_id}/workspace`
 - `GET /v3/sessions/{session_id}/events`
+- `GET /v3/runtime/health`
 - `POST /v3/approvals/{approval_id}/resolve`
+
+Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知请求字段、空 mutation、越界长度和非法 enum 返回 `422`，不得被静默忽略；response 顶层 shape 与 event envelope 同样经过 schema 校验，防止内部字段偶然泄漏或调用方依赖未声明字段。所有 JSON 错误统一为 `{"error":{"code","message","hint?","details?"}}`；调用方必须按稳定 `code` 分支，不能解析异常字符串。
+
+`GET /v3/runtime/health` 是经过脱敏的产品运维投影，返回 `v3.runtime_health.v1`、整体 `ready|degraded`、deployment/storage profile，以及 control plane、model、background runtime、execution、research、sandbox 的公开状态。它不得返回 worker identity、原始 exception、Host path、runner 配置或 secret；更深诊断仍属于受 operator/admin gate 保护的 `/debug/*`。`fixture_non_cutover`、`unavailable` 与 `disabled` 必须与 `ready` 区分，不能为获得绿色 health 而把 fixture 伪装成真实 provider。
 
 `POST /v3/sessions/{session_id}/messages` 是用户消息 ingress。它持久化用户消息并排队 `agent:master` wakeup signal，正常产品推进由 background runtime worker claim signal 后完成。该请求不提供 `max_steps` 字段，也不允许调用方控制本次后台 turn。后台 worker 的 agent turn budget 来自 `OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT`，debug/manual `/runtime/drain` 的 turn budget 则来自 `max_steps_per_agent`。
 
@@ -261,6 +266,7 @@ V3 CLI 不再围绕 `episode phase` 渲染。
 - 处理 approvals
 - 观察 lane 状态
 - 发起消息 / 继续 agent loop
+- 通过 `openzyme runtime health` 查看脱敏 runtime readiness
 
 CLI 可以保留 task / lane mutation 命令，作为自动化、调试、迁移和 operator 用途；这不代表 Web UI 的默认用户需要手动维护这些对象。
 
@@ -295,6 +301,7 @@ V3 Web UI 默认是 conversation-first。
 - tool / engine / report / artifact activity cards
 - task board、lane/workspace 状态、delegation、artifacts / runs / reports 的只读 inspector
 - teammate roster 中的 working / idle / blocked / waiting approval / failed / shutdown 状态
+- sidebar 中的公开 runtime health 与 deployment profile；health 失败不能抹掉已可读取的 session 列表
 - 当前 active session 的 `Team` 节点下展示 teammate 名字；点击 teammate 后，中间区域切换为该 teammate 的只读执行轨迹，并隐藏消息 composer。用户输入仍只能进入 master conversation 的 `POST /v3/sessions/{session_id}/messages`
 
 Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_approval` 响应中不得把普通 assistant message 当作最终完成消息写入 conversation。
@@ -317,6 +324,8 @@ Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_ap
 V3 streaming 默认围绕 control-plane events，而不是围绕 graph implementation 细节。
 
 `GET /v3/sessions/{session_id}/events` 从 SQLite durable event log 读取。每个 SSE frame 必须包含整数 `id: <cursor>`；首次 replay 可传 `after_cursor`，自动重连使用标准 `Last-Event-ID`。二者同时提供返回 `400`，负数或非整数 cursor fail closed。`replay=false` 从请求时的 durable tail 开始 follow，不能退回进程内 list index；Host restart 后 replay 必须返回相同 event id/cursor。public endpoint 默认只投影 `visibility=public` events。
+
+浏览器等不应维护 event type allowlist 的调用方使用 `envelope=1`，此时所有 frame 的 SSE event name 固定为 `openzyme.event`，真实 `event_type` 保留在 JSON data envelope 中。默认模式继续以真实 `event_type` 作为 SSE event name，供已有调用方迁移；两种模式的数据 envelope、cursor、replay 和可见性语义完全相同。新增 durable event type 不得因为前端没有预先注册监听器而静默丢失。
 
 推送单位：
 

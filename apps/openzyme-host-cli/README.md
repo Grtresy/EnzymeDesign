@@ -15,6 +15,7 @@ uv --project apps/openzyme-host-cli run openzyme sessions create --project-id pr
 uv --project apps/openzyme-host-cli run openzyme sessions show --session-id sess_123
 uv --project apps/openzyme-host-cli run openzyme sessions message --session-id sess_123 --message "Create a research task"
 uv --project apps/openzyme-host-cli run openzyme tasks create --session-id sess_123 --subject "Collect evidence"
+uv --project apps/openzyme-host-cli run openzyme runtime health
 ```
 
 ## Configuration

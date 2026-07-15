@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi import Header
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
@@ -26,6 +27,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import Field
+from pydantic import model_validator
 
 from openzyme_runtime import MissingLlmConfigurationError
 from openzyme_runtime import LimiterRegistry
@@ -63,29 +66,202 @@ from openzyme_domain.control_plane import utc_now_iso
 
 
 class CreateV3SessionRequest(BaseModel):
-    project_id: str
-    objective: str
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    objective: str = Field(min_length=1, max_length=100_000)
     title: str | None = None
     session_id: str | None = None
 
 
 class PostV3MessageRequest(BaseModel):
-    message: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=1_000_000)
     task_id: str | None = None
     lane_id: str | None = None
-    skill_keys: list[str] = []
+    skill_keys: list[str] = Field(default_factory=list, max_length=64)
 
 
 class DrainV3RuntimeRequest(BaseModel):
-    max_signals: int = 3
-    max_steps_per_agent: int = 8
+    model_config = ConfigDict(extra="forbid")
+
+    max_signals: int = Field(default=3, ge=1, le=100)
+    max_steps_per_agent: int = Field(default=8, ge=1, le=100)
     auto_enqueue_ready_tasks: bool = False
 
 
 class ResolveV3ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decision: str
+    decision: Literal["approved", "rejected"]
+
+
+class CreateV3TaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1, max_length=200)
+    subject: str = Field(min_length=1, max_length=10_000)
+    description: str = Field(default="", max_length=100_000)
+    task_id: str | None = None
+    priority: Literal["low", "normal", "high", "urgent"] = "normal"
+    kind: str = Field(default="general", min_length=1, max_length=100)
+    status: Literal["todo", "in_progress"] = "todo"
+    lane_id: str | None = None
+    blocked_by: list[str] = Field(default_factory=list, max_length=1_000)
+
+
+class UpdateV3TaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str | None = Field(default=None, min_length=1, max_length=10_000)
+    description: str | None = Field(default=None, max_length=100_000)
+    priority: Literal["low", "normal", "high", "urgent"] | None = None
+    kind: str | None = Field(default=None, min_length=1, max_length=100)
+    status: Literal["todo", "in_progress"] | None = None
+    lane_id: str | None = None
+    blocked_by: list[str] | None = Field(default=None, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_mutation(self) -> "UpdateV3TaskRequest":
+        if not self.model_fields_set:
+            raise ValueError("task update must include at least one mutable field")
+        return self
+
+
+class CreateV3LaneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=500)
+    cwd: str = Field(default=".", min_length=1, max_length=4_096)
+    lane_id: str | None = None
+    branch_name: str | None = Field(default=None, max_length=500)
+
+
+class ClaimV3LaneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ApiErrorDetail(BaseModel):
+    code: str
+    message: str
+    hint: str | None = None
+    details: Any | None = None
+
+
+class ApiErrorResponse(BaseModel):
+    error: ApiErrorDetail
+
+
+class V3EventDto(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    session_id: str
+    event_type: str
+    schema_version: Literal["openzyme.v3.event.v1"]
+    visibility: Literal["public", "audit", "internal"]
+    created_at: str
+    payload: dict[str, Any]
+    cursor: int | None = None
+    actor_ref: str | None = None
+    command_id: str | None = None
+    correlation_id: str | None = None
+    causation_id: str | None = None
+
+
+class V3SessionCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    workspace: dict[str, Any]
+    events: list[V3EventDto]
+
+
+class V3SessionSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    project_id: str
+    title: str
+    objective: str
+    status: str
+    created_at: str
+    updated_at: str
+    latest_message_preview: str
+    pending_approval_count: int
+
+
+class V3SessionWorkspaceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session: dict[str, Any]
+    workspace: dict[str, Any]
+
+
+class V3CommandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    status: str
+    outputs: list[str]
+    workspace: dict[str, Any]
+    events: list[V3EventDto]
+
+
+class V3TaskMutationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task: dict[str, Any]
+    workspace: dict[str, Any]
+    events: list[V3EventDto]
+
+
+class V3LaneMutationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lane: dict[str, Any]
+    workspace: dict[str, Any]
+    events: list[V3EventDto]
+
+
+RuntimeHealthStatus = Literal[
+    "ready", "degraded", "disabled", "unavailable", "fixture_non_cutover"
+]
+
+
+class RuntimeComponentHealth(BaseModel):
+    status: RuntimeHealthStatus
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeHealthResponse(BaseModel):
+    schema_version: Literal["v3.runtime_health.v1"] = "v3.runtime_health.v1"
+    status: Literal["ready", "degraded"]
+    deployment_profile: Literal["local-dev", "shared"]
+    storage_profile: Literal["single_process_sqlite"] = "single_process_sqlite"
+    observed_at: str
+    components: dict[str, RuntimeComponentHealth]
+
+
+def _configured_component_status(
+    component: Any,
+    *,
+    ready_type_names: frozenset[str],
+    unavailable_type_names: frozenset[str] = frozenset(),
+) -> RuntimeHealthStatus:
+    if component is None:
+        return "unavailable"
+    type_name = type(component).__name__
+    normalized = type_name.lower()
+    if type_name in unavailable_type_names:
+        return "unavailable"
+    if any(marker in normalized for marker in ("deterministic", "fixture", "simulation")):
+        return "fixture_non_cutover"
+    if type_name in ready_type_names:
+        return "ready"
+    return "degraded"
 
 
 @dataclass(slots=True)
@@ -374,18 +550,63 @@ class HostApiDependencies:
         )
 
 
+def _api_error_payload(
+    *,
+    code: str,
+    message: str,
+    hint: str | None = None,
+    details: Any | None = None,
+) -> dict[str, Any]:
+    return ApiErrorResponse(
+        error=ApiErrorDetail(
+            code=code,
+            message=message,
+            hint=hint,
+            details=details,
+        )
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _http_exception(
+    status_code: int,
+    *,
+    code: str,
+    message: str,
+    hint: str | None = None,
+    details: Any | None = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=_api_error_payload(
+            code=code,
+            message=message,
+            hint=hint,
+            details=details,
+        )["error"],
+    )
+
+
 def _as_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, HTTPException):
         return exc
     if isinstance(exc, KeyError):
-        return HTTPException(status_code=404, detail=str(exc))
+        return _http_exception(404, code="resource_not_found", message=str(exc))
     if isinstance(exc, CommandIdempotencyConflictError):
-        return HTTPException(status_code=409, detail=str(exc))
+        return _http_exception(409, code="idempotency_conflict", message=str(exc))
     if isinstance(exc, ValueError):
-        return HTTPException(status_code=400, detail=str(exc))
+        return _http_exception(400, code="invalid_request", message=str(exc))
     if isinstance(exc, MissingLlmConfigurationError):
-        return HTTPException(status_code=503, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
+        return _http_exception(503, code="llm_not_configured", message=str(exc))
+    error_code = getattr(exc, "error_code", None)
+    hint = getattr(exc, "hint", None)
+    details = getattr(exc, "details", None)
+    return _http_exception(
+        500,
+        code=str(error_code or "internal_error"),
+        message=str(exc),
+        hint=None if hint is None else str(hint),
+        details=details,
+    )
 
 
 def _execute_idempotent_command(
@@ -451,13 +672,17 @@ def _execute_idempotent_command(
 def _request_principal(request: Request) -> HostPrincipal:
     principal = getattr(request.state, "openzyme_principal", None)
     if not isinstance(principal, HostPrincipal):
-        raise HTTPException(status_code=401, detail="request is not authenticated")
+        raise _http_exception(
+            401,
+            code="authentication_required",
+            message="request is not authenticated",
+        )
     return principal
 
 
 def _require_project_access(principal: HostPrincipal, project_id: str) -> None:
     if not principal.can_access_project(project_id):
-        raise HTTPException(status_code=404, detail="project does not exist")
+        raise _http_exception(404, code="project_not_found", message="project does not exist")
 
 
 def _require_session_access(
@@ -469,11 +694,11 @@ def _require_session_access(
 ) -> None:
     session = service.repositories.sessions.get(session_id)
     if session is None:
-        raise HTTPException(status_code=404, detail="session does not exist")
+        raise _http_exception(404, code="session_not_found", message="session does not exist")
     if not security.shared:
         return
     if not principal.can_access_project(session.project_id):
-        raise HTTPException(status_code=404, detail="session does not exist")
+        raise _http_exception(404, code="session_not_found", message="session does not exist")
     if principal.has_role("admin"):
         return
     access = service.repositories.session_access.get(
@@ -481,14 +706,14 @@ def _require_session_access(
         principal.principal_id,
     )
     if access is None:
-        raise HTTPException(status_code=404, detail="session does not exist")
+        raise _http_exception(404, code="session_not_found", message="session does not exist")
 
 
-def _sse_encode(event: dict[str, Any]) -> str:
+def _sse_encode(event: dict[str, Any], *, envelope: bool = False) -> str:
     payload = json.dumps(event, separators=(",", ":"), sort_keys=True)
     return (
         f"id: {int(event['cursor'])}\n"
-        f"event: {event['event_type']}\n"
+        f"event: {'openzyme.event' if envelope else event['event_type']}\n"
         f"data: {payload}\n\n"
     )
 
@@ -521,6 +746,59 @@ def create_app(
 
     app = FastAPI(title="OpenZyme Host API", version="0.1.0", lifespan=lifespan)
 
+    @app.exception_handler(HTTPException)
+    async def handle_http_exception(
+        request: Request,
+        exc: HTTPException,
+    ) -> JSONResponse:
+        del request
+        detail = exc.detail
+        if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+            content = {"error": detail}
+        else:
+            status_code_map = {
+                400: "invalid_request",
+                401: "authentication_required",
+                403: "forbidden",
+                404: "resource_not_found",
+                409: "conflict",
+                428: "precondition_required",
+                503: "service_unavailable",
+            }
+            content = _api_error_payload(
+                code=status_code_map.get(exc.status_code, "http_error"),
+                message=str(detail),
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        del request
+        details = [
+            {
+                "location": [str(item) for item in error.get("loc", ())],
+                "message": str(error.get("msg") or "invalid value"),
+                "type": str(error.get("type") or "validation_error"),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=422,
+            content=_api_error_payload(
+                code="request_validation_error",
+                message="Request payload failed validation.",
+                hint="Correct the fields listed in error.details and retry.",
+                details=details,
+            ),
+        )
+
     @app.middleware("http")
     async def add_trace_context(request, call_next):  # type: ignore[no-untyped-def]
         with host_request_trace_context(method=request.method, path=request.url.path):
@@ -528,14 +806,23 @@ def create_app(
             is_v3 = path == "/v3" or path.startswith("/v3/")
             is_debug = path == "/debug" or path.startswith("/debug/")
             if is_debug and not security.debug_enabled:
-                return JSONResponse(status_code=404, content={"detail": "Not Found"})
+                return JSONResponse(
+                    status_code=404,
+                    content=_api_error_payload(
+                        code="resource_not_found",
+                        message="Not Found",
+                    ),
+                )
             if is_v3 or is_debug:
                 try:
                     principal = security.authenticate(request.headers.get("authorization"))
                 except HostAuthenticationError as exc:
                     return JSONResponse(
                         status_code=401,
-                        content={"detail": str(exc)},
+                        content=_api_error_payload(
+                            code="authentication_failed",
+                            message=str(exc),
+                        ),
                         headers={"WWW-Authenticate": "Bearer"},
                     )
                 if is_debug and security.shared and not principal.has_role(
@@ -543,7 +830,10 @@ def create_app(
                 ):
                     return JSONResponse(
                         status_code=403,
-                        content={"detail": "operator role is required"},
+                        content=_api_error_payload(
+                            code="operator_role_required",
+                            message="operator role is required",
+                        ),
                     )
                 if (
                     is_v3
@@ -553,9 +843,11 @@ def create_app(
                 ):
                     return JSONResponse(
                         status_code=428,
-                        content={
-                            "detail": "Idempotency-Key is required for shared-profile mutations"
-                        },
+                        content=_api_error_payload(
+                            code="idempotency_key_required",
+                            message="Idempotency-Key is required for shared-profile mutations",
+                            hint="Retry with a stable Idempotency-Key header for this command.",
+                        ),
                     )
                 request.state.openzyme_principal = principal
             response = await call_next(request)
@@ -564,7 +856,114 @@ def create_app(
             )
             return response
 
-    @app.post("/v3/sessions")
+    @app.get(
+        "/v3/runtime/health",
+        response_model=RuntimeHealthResponse,
+        responses={401: {"model": ApiErrorResponse}},
+    )
+    def get_v3_runtime_health(request: Request) -> RuntimeHealthResponse:
+        _request_principal(request)
+        foundation = dependencies.foundation
+        model_status = _configured_component_status(
+            foundation.model_factory,
+            ready_type_names=frozenset({"OpenAICompatibleChatModelFactory"}),
+        )
+        execution_status = _configured_component_status(
+            foundation.execution_adapter,
+            ready_type_names=frozenset({"HpcRunnerExecutionAdapter"}),
+            unavailable_type_names=frozenset({"UnavailableExecutionAdapter"}),
+        )
+        research_status = _configured_component_status(
+            foundation.research_adapter,
+            ready_type_names=frozenset({"TavilyResearchAdapter"}),
+        )
+        bio_research_status = _configured_component_status(
+            foundation.bio_research_service,
+            ready_type_names=frozenset({"DefaultBioResearchService"}),
+        )
+
+        background_status = background_runtime.status()
+        if background_status["running"]:
+            worker_status = "degraded" if background_status["last_error"] else "ready"
+        elif background_status["enabled"]:
+            worker_status = "unavailable"
+        else:
+            worker_status = "disabled"
+
+        sandbox_runner = (
+            dependencies.v3_pipeline_sandbox_runner or PodmanPipelineSandboxRunner()
+        )
+        try:
+            sandbox_preflight = sandbox_runner.preflight()
+        except Exception:
+            sandbox_preflight = None
+        sandbox_identity = dict(
+            getattr(sandbox_preflight, "runtime_identity", None) or {}
+        )
+        sandbox_status = (
+            "ready"
+            if sandbox_preflight is not None and bool(sandbox_preflight.ok)
+            else "unavailable"
+        )
+        components = {
+            "control_plane": RuntimeComponentHealth(
+                status="ready",
+                details={"storage": "single_process_sqlite"},
+            ),
+            "model": RuntimeComponentHealth(status=model_status),
+            "background_runtime": RuntimeComponentHealth(
+                status=worker_status,
+                details={
+                    "enabled": bool(background_status["enabled"]),
+                    "running": bool(background_status["running"]),
+                    "disabled": background_status["disabled_reason"] is not None,
+                    "last_tick_at": background_status["last_tick_at"],
+                    "tick_count": int(background_status["tick_count"]),
+                    "processed_signal_count": int(
+                        background_status["processed_signal_count"]
+                    ),
+                    "has_error": background_status["last_error"] is not None,
+                },
+            ),
+            "execution": RuntimeComponentHealth(status=execution_status),
+            "web_research": RuntimeComponentHealth(status=research_status),
+            "bio_research": RuntimeComponentHealth(
+                status=bio_research_status,
+            ),
+            "sandbox": RuntimeComponentHealth(
+                status=sandbox_status,
+                details={
+                    key: sandbox_identity[key]
+                    for key in (
+                        "image_digest",
+                        "pipeline_sdk_digest",
+                        "runtime_identity_digest",
+                        "sandbox_protocol_version",
+                    )
+                    if key in sandbox_identity
+                },
+            ),
+        }
+        overall_status = (
+            "ready"
+            if all(
+                component.status == "ready"
+                for component in components.values()
+            )
+            else "degraded"
+        )
+        return RuntimeHealthResponse(
+            status=overall_status,
+            deployment_profile=security.deployment_profile,
+            observed_at=utc_now_iso(),
+            components=components,
+        )
+
+    @app.post(
+        "/v3/sessions",
+        response_model=V3SessionCreateResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def create_v3_session(
         request: CreateV3SessionRequest,
         http_request: Request,
@@ -608,7 +1007,10 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.get("/v3/projects/{project_id}/sessions")
+    @app.get(
+        "/v3/projects/{project_id}/sessions",
+        response_model=list[V3SessionSummaryResponse],
+    )
     def list_v3_project_sessions(
         project_id: str,
         request: Request,
@@ -630,7 +1032,10 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.get("/v3/sessions/{session_id}")
+    @app.get(
+        "/v3/sessions/{session_id}",
+        response_model=V3SessionWorkspaceResponse,
+    )
     def get_v3_session(session_id: str, request: Request) -> dict[str, Any]:
         try:
             principal = _request_principal(request)
@@ -646,7 +1051,11 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/sessions/{session_id}/messages")
+    @app.post(
+        "/v3/sessions/{session_id}/messages",
+        response_model=V3CommandResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def post_v3_message(
         session_id: str,
         request: PostV3MessageRequest,
@@ -692,7 +1101,11 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/sessions/{session_id}/runtime/drain")
+    @app.post(
+        "/v3/sessions/{session_id}/runtime/drain",
+        response_model=V3CommandResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def drain_v3_runtime(
         session_id: str,
         request: DrainV3RuntimeRequest,
@@ -759,6 +1172,7 @@ def create_app(
         replay: bool = True,
         follow: bool = False,
         after_cursor: int | None = None,
+        envelope: bool = False,
     ) -> StreamingResponse:
         principal = _request_principal(request)
         with dependencies.v3_service_scope(mode="read") as service:
@@ -803,7 +1217,7 @@ def create_app(
             if replay:
                 existing = read_events(cursor)
                 for event in existing:
-                    yield _sse_encode(event)
+                    yield _sse_encode(event, envelope=envelope)
                     cursor = int(event["cursor"])
             else:
                 existing = read_events(cursor)
@@ -816,15 +1230,19 @@ def create_app(
             while True:
                 current = read_events(cursor)
                 for event in current:
-                    yield _sse_encode(event)
+                    yield _sse_encode(event, envelope=envelope)
                     cursor = int(event["cursor"])
                 await asyncio.sleep(0.5)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    @app.post("/v3/tasks")
+    @app.post(
+        "/v3/tasks",
+        response_model=V3TaskMutationResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def create_v3_task(
-        payload: dict[str, Any],
+        payload: CreateV3TaskRequest,
         request: Request,
         idempotency_key: str | None = Header(
             default=None,
@@ -834,7 +1252,8 @@ def create_app(
         try:
             principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
-                session_id = str(payload.get("session_id") or "")
+                payload_dict = payload.model_dump(mode="json")
+                session_id = payload.session_id
                 _require_session_access(
                     service,
                     principal=principal,
@@ -847,16 +1266,20 @@ def create_app(
                     scope_ref=f"session:{session_id}",
                     session_id=session_id or None,
                     idempotency_key=idempotency_key,
-                    request_payload=payload,
-                    operation=lambda: service.create_task(payload),
+                    request_payload=payload_dict,
+                    operation=lambda: service.create_task(payload_dict),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.patch("/v3/tasks/{task_id}")
+    @app.patch(
+        "/v3/tasks/{task_id}",
+        response_model=V3TaskMutationResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def update_v3_task(
         task_id: str,
-        payload: dict[str, Any],
+        payload: UpdateV3TaskRequest,
         request: Request,
         idempotency_key: str | None = Header(
             default=None,
@@ -875,21 +1298,26 @@ def create_app(
                     security=security,
                     session_id=task.session_id,
                 )
+                payload_dict = payload.model_dump(mode="json", exclude_unset=True)
                 return _execute_idempotent_command(
                     service,
                     command_type="task.update",
                     scope_ref=f"task:{task_id}",
                     session_id=task.session_id,
                     idempotency_key=idempotency_key,
-                    request_payload=payload,
-                    operation=lambda: service.update_task(task_id, payload),
+                    request_payload=payload_dict,
+                    operation=lambda: service.update_task(task_id, payload_dict),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/lanes")
+    @app.post(
+        "/v3/lanes",
+        response_model=V3LaneMutationResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def create_v3_lane(
-        payload: dict[str, Any],
+        payload: CreateV3LaneRequest,
         request: Request,
         idempotency_key: str | None = Header(
             default=None,
@@ -899,7 +1327,8 @@ def create_app(
         try:
             principal = _request_principal(request)
             with dependencies.v3_service_scope(mode="write") as service:
-                session_id = str(payload.get("session_id") or "")
+                payload_dict = payload.model_dump(mode="json")
+                session_id = payload.session_id
                 _require_session_access(
                     service,
                     principal=principal,
@@ -912,16 +1341,20 @@ def create_app(
                     scope_ref=f"session:{session_id}",
                     session_id=session_id or None,
                     idempotency_key=idempotency_key,
-                    request_payload=payload,
-                    operation=lambda: service.create_lane(payload),
+                    request_payload=payload_dict,
+                    operation=lambda: service.create_lane(payload_dict),
                 )
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/lanes/{lane_id}/claim")
+    @app.post(
+        "/v3/lanes/{lane_id}/claim",
+        response_model=V3LaneMutationResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def claim_v3_lane(
         lane_id: str,
-        payload: dict[str, Any],
+        payload: ClaimV3LaneRequest,
         request: Request,
         idempotency_key: str | None = Header(
             default=None,
@@ -946,7 +1379,7 @@ def create_app(
                     scope_ref=f"lane:{lane_id}",
                     session_id=lane.session_id,
                     idempotency_key=idempotency_key,
-                    request_payload=payload,
+                    request_payload=payload.model_dump(mode="json"),
                     operation=lambda: service.claim_lane(
                         lane_id,
                         claimed_ref=principal.principal_id,
@@ -955,7 +1388,10 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/lanes/{lane_id}/keep")
+    @app.post(
+        "/v3/lanes/{lane_id}/keep",
+        response_model=V3LaneMutationResponse,
+    )
     def keep_v3_lane(
         lane_id: str,
         request: Request,
@@ -988,7 +1424,10 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/lanes/{lane_id}/remove")
+    @app.post(
+        "/v3/lanes/{lane_id}/remove",
+        response_model=V3LaneMutationResponse,
+    )
     def remove_v3_lane(
         lane_id: str,
         request: Request,
@@ -1021,7 +1460,11 @@ def create_app(
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 
-    @app.post("/v3/approvals/{approval_id}/resolve")
+    @app.post(
+        "/v3/approvals/{approval_id}/resolve",
+        response_model=V3CommandResponse,
+        responses={400: {"model": ApiErrorResponse}, 422: {"model": ApiErrorResponse}},
+    )
     def resolve_v3_approval(
         approval_id: str,
         request: ResolveV3ApprovalRequest,

@@ -192,13 +192,21 @@ export class WorkspaceController {
     this.messageRequestVersion += 1;
     this.approvalRequestVersion += 1;
     this.state.workspace = null;
+    this.state.runtimeHealth = null;
     this.state.currentSessionId = "";
     this.state.currentSection = "conversation";
     this.state.mobilePane = "conversation";
     this.state.selectedTeammateAgentId = "";
     this.state.selectedArtifactId = "";
     this.state.sidebarExpandedSessionIds = [];
-    this._clearErrors("sidebar", "createSession", "session", "message", "approvals");
+    this._clearErrors(
+      "sidebar",
+      "createSession",
+      "session",
+      "message",
+      "runtimeHealth",
+      "approvals",
+    );
     this.state.sidebarBusy = true;
     this.state.messageBusy = false;
     this.state.createSessionBusy = false;
@@ -206,7 +214,20 @@ export class WorkspaceController {
     this.state.refreshingWorkspace = false;
     this._emit();
     try {
-      await this._refreshSessionSummaries();
+      const [sessionsResult, healthResult] = await Promise.allSettled([
+        this._refreshSessionSummaries(),
+        typeof this.client.getV3RuntimeHealth === "function"
+          ? this.client.getV3RuntimeHealth()
+          : Promise.resolve(null),
+      ]);
+      if (healthResult.status === "fulfilled") {
+        this.state.runtimeHealth = healthResult.value;
+      } else {
+        this.state.errors.runtimeHealth = healthResult.reason?.message ?? String(healthResult.reason);
+      }
+      if (sessionsResult.status === "rejected") {
+        throw sessionsResult.reason;
+      }
     } catch (error) {
       if (!this._isCurrentRequest(requestVersion)) {
         return;
@@ -405,7 +426,7 @@ export class WorkspaceController {
     this._clearApprovalError(approvalId);
     this._emit();
     try {
-      const response = await this.client.resolveV3Approval(approvalId, { decision, actor_ref: "user" });
+      const response = await this.client.resolveV3Approval(approvalId, { decision });
       if (requestVersion !== this.approvalRequestVersion) {
         return false;
       }

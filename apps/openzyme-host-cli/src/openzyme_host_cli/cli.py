@@ -11,6 +11,7 @@ from .client import SessionProtocol
 from .config import HostCliConfig
 from .renderers import render_json
 from .renderers import render_v3_command_result
+from .renderers import render_v3_runtime_health
 from .renderers import render_v3_workspace
 
 
@@ -71,7 +72,6 @@ def _build_parser() -> argparse.ArgumentParser:
     lane_create.add_argument("--branch-name")
     lane_claim = lane_sub.add_parser("claim", help="Claim a V3 lane")
     lane_claim.add_argument("--lane-id", required=True)
-    lane_claim.add_argument("--claimed-ref", default="user")
     lane_keep = lane_sub.add_parser("keep", help="Release/keep a V3 lane for later")
     lane_keep.add_argument("--lane-id", required=True)
     lane_remove = lane_sub.add_parser("remove", help="Remove a V3 lane")
@@ -82,6 +82,10 @@ def _build_parser() -> argparse.ArgumentParser:
     approval_resolve = approval_sub.add_parser("resolve", help="Resolve a V3 approval")
     approval_resolve.add_argument("--approval-id", required=True)
     approval_resolve.add_argument("--decision", choices=("approved", "rejected"), required=True)
+
+    runtime = subparsers.add_parser("runtime", help="Runtime commands")
+    runtime_sub = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_sub.add_parser("health", help="Show public V3 runtime health")
 
     return parser
 
@@ -202,7 +206,7 @@ def run_cli(
                     payload_body["branch_name"] = args.branch_name
                 payload = client.create_v3_lane(payload_body)
             elif args.lanes_command == "claim":
-                payload = client.claim_v3_lane(args.lane_id, args.claimed_ref)
+                payload = client.claim_v3_lane(args.lane_id)
             elif args.lanes_command == "keep":
                 payload = client.keep_v3_lane(args.lane_id)
             else:
@@ -213,6 +217,13 @@ def run_cli(
         if args.resource == "approvals":
             payload = client.resolve_v3_approval(args.approval_id, args.decision)
             stdout.write(_format_output(config.output_format, payload, render_v3_command_result) + "\n")
+            return 0
+        if args.resource == "runtime":
+            payload = client.get_v3_runtime_health()
+            stdout.write(
+                _format_output(config.output_format, payload, render_v3_runtime_health)
+                + "\n"
+            )
             return 0
         raise ValueError(f"unsupported resource: {args.resource}")
     except (HostApiError, ValueError) as exc:

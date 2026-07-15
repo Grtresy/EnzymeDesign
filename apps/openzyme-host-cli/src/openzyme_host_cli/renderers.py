@@ -56,3 +56,14 @@ def render_v3_command_result(result: dict[str, Any]) -> str:
         lines.extend(f"- {output}" for output in outputs)
     lines.append(f"Events emitted: {len(result.get('events', []))}")
     return "\n".join(lines)
+
+
+def render_v3_runtime_health(health: dict[str, Any]) -> str:
+    lines = [
+        f"Runtime: {health.get('status', 'unknown')}",
+        f"Deployment profile: {health.get('deployment_profile', 'unknown')}",
+        f"Storage: {health.get('storage_profile', 'unknown')}",
+    ]
+    for name, component in sorted(dict(health.get("components") or {}).items()):
+        lines.append(f"{name}: {dict(component).get('status', 'unknown')}")
+    return "\n".join(lines)

@@ -548,8 +548,15 @@ export function renderInspectorContent(viewState) {
 }
 
 export function renderSidebarStatus(viewState) {
+  const runtime = viewState.runtimeHealth;
+  const runtimeStatus = runtime?.status ?? "unknown";
   return `
     <p class="status-line">Project <strong>${escapeHtml(viewState.currentProjectId)}</strong></p>
+    <p class="status-line" data-runtime-health="${escapeHtml(runtimeStatus)}">
+      Runtime <strong>${escapeHtml(runtimeStatus)}</strong>
+      ${runtime?.deployment_profile ? ` · ${escapeHtml(runtime.deployment_profile)}` : ""}
+    </p>
+    ${renderPanelError(viewState.errors?.runtimeHealth ?? "")}
     ${renderPanelError(viewState.errors?.createSession ?? "")}
   `;
 }

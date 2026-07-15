@@ -104,8 +104,9 @@ test("research notebook shell exposes real navigation and responsive panel contr
     mobilePane: "inspector",
     sidebarExpandedSessionIds: ["sess_001"],
     sessionSummaries: [{ session_id: "sess_001", title: "Manual run", objective: "Manual run", status: "active" }],
+    runtimeHealth: { status: "degraded", deployment_profile: "local-dev" },
     workspace: workspace(),
-    errors: { approvals: {} },
+    errors: { approvals: {}, runtimeHealth: "" },
     pendingApprovalId: "appr_001",
   };
 
@@ -118,4 +119,6 @@ test("research notebook shell exposes real navigation and responsive panel contr
   assert.match(html, /aria-busy="true"/);
   assert.match(html, /Resolving\.\.\./);
   assert.match(html, /Message OpenZyme/);
+  assert.match(html, /data-runtime-health="degraded"/);
+  assert.match(html, /Runtime <strong>degraded<\/strong>/);
 });

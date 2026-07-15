@@ -15,6 +15,7 @@ from openzyme_execution import ExecutionArtifactRef
 from openzyme_execution import ExecutionOutcome
 from openzyme_host_api import HostApiDependencies
 from openzyme_host_api import HostSecurityPolicy
+from openzyme_host_api import build_local_eval_foundation
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_host_api.app import PostV3MessageRequest
@@ -170,7 +171,115 @@ def test_v3_task_create_idempotency_replays_response_and_rejects_collision(
         json={**request, "subject": "Conflicting retry"},
     )
     assert conflict.status_code == 409
-    assert "different request" in conflict.json()["detail"]
+    assert conflict.json()["error"]["code"] == "idempotency_conflict"
+    assert "different request" in conflict.json()["error"]["message"]
+
+
+def test_v3_public_contract_rejects_unknown_and_client_owned_actor_fields(
+    monkeypatch,
+) -> None:
+    client, _ = _build_client(monkeypatch)
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_strict_contract",
+            "project_id": "proj_strict_contract",
+            "objective": "Keep public commands explicit",
+        },
+    )
+    assert created.status_code == 200
+
+    unknown_task_field = client.post(
+        "/v3/tasks",
+        json={
+            "session_id": "sess_strict_contract",
+            "subject": "Reject typo",
+            "unexpected": True,
+        },
+    )
+    client_owned_lane_actor = client.post(
+        "/v3/lanes/missing/claim",
+        json={"claimed_ref": "client:forged"},
+    )
+    client_owned_approval_actor = client.post(
+        "/v3/approvals/missing/resolve",
+        json={"decision": "approved", "actor_ref": "client:forged"},
+    )
+
+    for response in (
+        unknown_task_field,
+        client_owned_lane_actor,
+        client_owned_approval_actor,
+    ):
+        assert response.status_code == 422
+        error = response.json()["error"]
+        assert error["code"] == "request_validation_error"
+        assert error["details"]
+
+
+def test_v3_event_stream_can_use_stable_generic_envelope(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+    created = client.post(
+        "/v3/sessions",
+        json={
+            "session_id": "sess_event_envelope",
+            "project_id": "proj_event_envelope",
+            "objective": "Preserve future event types",
+        },
+    )
+    assert created.status_code == 200
+
+    events = client.get(
+        "/v3/sessions/sess_event_envelope/events?replay=1&envelope=1"
+    )
+
+    assert events.status_code == 200
+    assert "event: openzyme.event" in events.text
+    assert '"event_type":"session.created"' in events.text
+
+
+def test_v3_runtime_health_is_public_and_sanitized(monkeypatch) -> None:
+    client, _ = _build_client(monkeypatch)
+
+    response = client.get("/v3/runtime/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "v3.runtime_health.v1"
+    assert payload["deployment_profile"] == "local-dev"
+    assert payload["storage_profile"] == "single_process_sqlite"
+    assert payload["status"] in {"ready", "degraded"}
+    assert {
+        "control_plane",
+        "model",
+        "background_runtime",
+        "execution",
+        "web_research",
+        "bio_research",
+        "sandbox",
+    } <= payload["components"].keys()
+    serialized = json.dumps(payload)
+    assert "worker_id" not in serialized
+    assert "last_error" not in serialized
+    assert "secret" not in serialized.lower()
+
+
+def test_v3_runtime_health_marks_local_fixtures_non_cutover() -> None:
+    client = TestClient(
+        create_app(
+            HostApiDependencies(
+                foundation=build_local_eval_foundation(),
+                security_policy=_local_test_security(),
+                v3_pipeline_sandbox_runner=FixtureNonCutoverPipelineSandboxRunner(),
+            )
+        )
+    )
+
+    payload = client.get("/v3/runtime/health").json()
+
+    for component_name in ("model", "execution", "web_research", "bio_research"):
+        assert payload["components"][component_name]["status"] == "fixture_non_cutover"
+    assert payload["status"] == "degraded"
 
 
 def test_v3_event_insert_failure_rolls_back_local_command(
@@ -330,11 +439,12 @@ class FakeExecutionAdapter:
     def submit_execution(
         self, session_id: str, payload: dict[str, object]
     ) -> ExecutionOutcome:
+        del session_id, payload
         return ExecutionOutcome(
             run_id="run_001",
             status=RunStatus.SUCCEEDED,
-            execution_mode="ssh",
-            remote_run_dir=f"/remote/{session_id}/run_001",
+            execution_mode="fixture_non_cutover",
+            remote_run_dir="fixture://adapter/run_001",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/stdout.log",
@@ -347,7 +457,101 @@ class FakeExecutionAdapter:
                     kind=ArtifactKind.RESULT,
                 ),
             ),
-            raw_result={"status": "completed"},
+            raw_result={
+                "status": "fixture_non_cutover",
+                "fixture": True,
+                "synthetic_source": True,
+                "cutover_eligible": False,
+                "provider_status": "fixture_non_cutover",
+                "tool_status": "fixture_non_cutover",
+                "scientific_status": "fixture_non_cutover",
+            },
+        )
+
+
+def _fixture_sandbox_runtime_identity() -> dict[str, str]:
+    identity = {
+        "configured_image_ref": "openzyme-pipeline-sandbox:test",
+        "immutable_image_ref": "sha256:" + "a" * 64,
+        "image_digest": "sha256:" + "a" * 64,
+        "pipeline_sdk_digest": "sha256:" + "b" * 64,
+        "sandbox_protocol_version": "test.v1",
+    }
+    identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return identity
+
+
+class FixtureSandboxPreflight:
+    ok = True
+    message = "fixture sandbox is ready"
+    runtime_identity = _fixture_sandbox_runtime_identity()
+
+
+class FixtureNonCutoverPipelineSandboxRunner:
+    def preflight(self) -> FixtureSandboxPreflight:
+        return FixtureSandboxPreflight()
+
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome as SandboxOutcome
+
+        del session_id, code, inputs
+        assert expected_runtime_identity == _fixture_sandbox_runtime_identity()
+        assert control_handler is not None
+        workspace = dict(control_handler("hpc.workspace", {"label": "fpocket"}))
+        structure = dict(
+            control_handler(
+                "hpc.stage_artifact",
+                {
+                    "hpc_workspace": workspace,
+                    "artifact_id": "art_v3_structure",
+                    "workspace_path": "inputs/structure.pdb",
+                },
+            )
+        )
+        run = dict(
+            control_handler(
+                "structure_tools.fpocket",
+                {
+                    "structure": structure,
+                    "placement": workspace,
+                    "expected_outputs": [
+                        {
+                            "path": "target_out",
+                            "kind": "directory",
+                            "format": "fpocket",
+                        }
+                    ],
+                    "params": {},
+                },
+            )
+        )
+        control_handler(
+            "hpc.fetch_outputs",
+            {"hpc_workspace": workspace, "run_id": run["run_id"]},
+        )
+        return SandboxOutcome(
+            run_id=f"sandbox_{invocation_id}",
+            status=RunStatus.SUCCEEDED,
+            execution_mode="fixture_non_cutover",
+            remote_run_dir=f"fixture://sandbox/{invocation_id}",
+            raw_result={
+                "fixture": True,
+                "synthetic_source": True,
+                "cutover_eligible": False,
+                "scientific_status": "fixture_non_cutover",
+            },
+            artifacts=(),
         )
 
 
@@ -1416,6 +1620,7 @@ def _build_v3_engine_llm_client(
                 HostApiDependencies(
                     foundation=replace(foundation, model_factory=model_factory),
                     v3_legacy_repositories_for_tests=v3_repositories,
+                    v3_pipeline_sandbox_runner=FixtureNonCutoverPipelineSandboxRunner(),
                 )
             )
         ),
@@ -1689,8 +1894,8 @@ def test_v3_task_crud_rejects_business_exit_statuses(monkeypatch) -> None:
                 "status": status,
             },
         )
-        assert rejected_create.status_code == 400
-        assert "task.create cannot set business exit status" in rejected_create.text
+        assert rejected_create.status_code == 422
+        assert rejected_create.json()["error"]["code"] == "request_validation_error"
 
     created_task = client.post(
         "/v3/tasks",
@@ -1706,8 +1911,8 @@ def test_v3_task_crud_rejects_business_exit_statuses(monkeypatch) -> None:
             "/v3/tasks/task_edit_exit_guard",
             json={"status": status},
         )
-        assert rejected_update.status_code == 400
-        assert "task.edit cannot set business exit status" in rejected_update.text
+        assert rejected_update.status_code == 422
+        assert rejected_update.json()["error"]["code"] == "request_validation_error"
 
 
 def test_v3_drain_runtime_does_not_auto_claim_by_default() -> None:
@@ -2299,6 +2504,7 @@ def test_v3_background_runtime_runs_teammate_and_master_followup_without_manual_
         security_policy=_local_test_security(),
         v3_repository_provider=repository_provider,
         v3_background_runtime_enabled=True,
+        v3_pipeline_sandbox_runner=FixtureNonCutoverPipelineSandboxRunner(),
     )
     app = create_app(dependencies)
     with TestClient(app) as background_client:

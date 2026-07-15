@@ -426,7 +426,8 @@ export function buildInitialViewState() {
     selectedArtifactId: "",
     sidebarExpandedSessionIds: [],
     sessionSummaries: [],
-      workspace: null,
+    runtimeHealth: null,
+    workspace: null,
     sidebarBusy: false,
     messageBusy: false,
     refreshingWorkspace: false,
@@ -437,6 +438,7 @@ export function buildInitialViewState() {
       createSession: "",
       session: "",
       message: "",
+      runtimeHealth: "",
       approvals: {},
     },
   };
