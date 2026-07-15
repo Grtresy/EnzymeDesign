@@ -76,6 +76,8 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LIMIT_LLM_PROVIDER_CONCURRENCY",
         "OPENZYME_LIMIT_RESEARCH_PROVIDER_CONCURRENCY",
         "OPENZYME_LIMIT_EXECUTION_PROVIDER_CONCURRENCY",
+        "OPENZYME_EXECUTION_BACKEND",
+        "OPENZYME_HPC_RUNNER_CONFIG",
         "OPENZYME_V3_BACKGROUND_RUNTIME_ENABLED",
         "OPENZYME_V3_BACKGROUND_RUNTIME_POLL_INTERVAL_SECONDS",
         "OPENZYME_V3_BACKGROUND_RUNTIME_MAX_SIGNALS_PER_TICK",
@@ -132,6 +134,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.host_api.bind_port == DEFAULT_HOST_API_BIND_PORT
     assert settings.host_api.deployment_profile == "local-dev"
     assert settings.host_api.debug_enabled is False
+    assert settings.execution.backend == "disabled"
     assert settings.v3_background_runtime.enabled is True
     assert settings.v3_background_runtime.poll_interval_seconds == 2.0
     assert settings.v3_background_runtime.max_signals_per_tick == 3

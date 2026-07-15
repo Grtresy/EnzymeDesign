@@ -309,7 +309,7 @@ Pocket 2 :
     assert result.structured_findings["top_pocket"]["volume"] == 1006.516
 
 
-def test_execution_registry_uses_fpocket_raw_result_fallback_when_artifact_missing() -> None:
+def test_execution_registry_rejects_fpocket_raw_result_fallback_when_artifact_missing() -> None:
     registry = DefaultHpcExecutionRegistry(RepoBackedHpcCatalogProvider())
 
     @dataclass
@@ -334,10 +334,12 @@ def test_execution_registry_uses_fpocket_raw_result_fallback_when_artifact_missi
         ],
     )
 
-    assert result.result_summary == "fpocket found 2 pocket(s) for the selected artifact set."
-    assert result.structured_findings["design_signal"] == "proceed"
-    assert result.structured_findings["parser_status"] == "raw_result_fallback"
-    assert result.structured_findings["pockets_found"] == 2
+    assert result.result_summary == (
+        "fpocket completed, but no target_info.txt artifact was available for parsing."
+    )
+    assert result.structured_findings["design_signal"] == "revise"
+    assert result.structured_findings["parser_status"] == "missing_artifact"
+    assert result.structured_findings["pockets_found"] == 0
 
 
 def test_execution_registry_does_not_fabricate_results_when_artifact_missing() -> None:

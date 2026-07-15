@@ -73,6 +73,33 @@ def _context(repositories: CoreRepositories, session: Session) -> SessionRuntime
     )
 
 
+def test_bio_research_tools_do_not_install_implicit_fixture_service() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    register_bio_research_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_unconfigured_bio",
+            tool_name="uniprot.lookup",
+            arguments={"accession": "P12345"},
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "unknown_tool"
+
+
 @pytest.mark.parametrize(
     ("tool_name", "arguments", "provider", "external_id", "artifact_format"),
     (

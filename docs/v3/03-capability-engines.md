@@ -174,6 +174,7 @@ deep research 对 harness 至少提供：
 - execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
 - Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 sandbox/execution status、artifacts 和 structured error 后生成用户可见收尾
 - 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或在明确不可修复时用 `task.finish(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
+- “成功”必须由对应 output artifact parser 证明，不能由 runner `raw_result` 自报字段代替。fpocket 缺失/不可读/不可解析 `target_info.txt` 时必须保留 `missing_artifact` / `read_error` / `unparsed`，不得用 `pockets_found` fallback 生成 `proceed`；未注册 parser 的工具默认 `revise` 而不是 `proceed`
 - execution / HPC retry 与失败诊断策略属于 executor prompt、受控 docs 或 tool result hints；runtime wakeup instruction 只应携带 invocation/status/artifact/error evidence，不应规定重试或修复策略
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
@@ -182,6 +183,7 @@ deep research 对 harness 至少提供：
 - 本地 sandbox workspace 与 HPC placement workspace 是两个独立工作面；文件流必须通过显式 `stage_artifact` / `fetch_outputs` 或等价 Host-supervised declarations 表达，scheduler 不得把本地执行和 HPC 执行自动重写成不同后端
 - 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
 - 远端结果只有在 `expected_outputs` 中声明且 runner 返回可读内容后才会被下载并登记为 artifact；Host 不得为 missing output 或 failed run 合成占位产物。显式 `fixture_non_cutover` / `simulation_non_cutover` 测试 outcome 可生成带 `synthetic_source=true`、`cutover_eligible=false` 的 fixture placeholder，但不能进入产品/cutover 证据
+- configured foundation 缺真实 execution backend 时使用显式 unavailable adapter，缺 Tavily 时不注册 web research provider，缺 bio service 时不注册 bio research tools；任何位置都不得自动回退 deterministic adapter。deterministic foundation 仅供显式 fixture eval，Web UI 本地 server 也必须通过 `--fixture-non-cutover` 才能选择，且其 outcome 全链路保持 non-cutover 标记
 - output artifact 必须保留相对路径层级，不能只保留 basename
 
 ### 3.1 Execution Pipeline Sandbox

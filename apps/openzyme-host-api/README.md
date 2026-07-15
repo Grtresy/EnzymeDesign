@@ -42,7 +42,7 @@ Use the repository-level environment file conventions described in [README.md](/
 4. run `uv run python -m openzyme_runtime.llm_connectivity` for a minimal Responses API connectivity check
 5. run `uv run python -m openzyme_host_api.evals`
 
-If no API key is set, the local eval harness keeps using the deterministic fallback path.
+If no API key is set, the explicitly selected local eval harness uses deterministic `fixture_non_cutover` components. The configured Host never falls back to them.
 For the MICU OpenAI Responses endpoint, `function_calling` remains the default structured-output strategy used by the OpenZyme runtime. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
 `OPENZYME_LLM_MAX_RETRIES=N` allows one initial provider call plus at most `N` runtime-managed retries. The OpenAI-compatible provider client itself always uses `max_retries=0`, so structured and tool-calling requests share the same retry taxonomy and attempt budget. The former `STRUCTURED_OUTPUT_MAX_ATTEMPTS` settings are no longer accepted; configure `MAX_RETRIES` instead.
 
@@ -75,7 +75,7 @@ Useful commands:
 
 For a manual Host API plus HPC smoke test:
 
-1. start the Host API with `OPENZYME_EXECUTION_BACKEND=hpc`
+1. start the configured Host API with `OPENZYME_EXECUTION_BACKEND=hpc uv run python -m openzyme_host_api.dev_web_ui`; use `--fixture-non-cutover` only for synthetic UI/control-flow checks that are excluded from cutover evidence
 2. open `http://127.0.0.1:8000/ui/`
 3. use session `sess_executor_demo`
 4. send `对 art_eval_structure 运行 fpocket 并返回结果`

@@ -20,7 +20,6 @@ from openzyme_domain import SourceRefKind
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_research import BioResearchService
 from openzyme_research import DownloadedResearchAsset
-from openzyme_research import DeterministicBioResearchService
 from openzyme_research import ResearchArtifactManifest
 from openzyme_research import ResearchObservation
 from openzyme_research import ResearchUnit
@@ -575,9 +574,9 @@ def register_bio_research_tools(
     *,
     service: BioResearchService | None = None,
 ) -> None:
-    BioResearchToolRegistrar(service or DeterministicBioResearchService()).register(
-        registry
-    )
+    if service is None:
+        return
+    BioResearchToolRegistrar(service).register(registry)
 
 
 def _web_tool_enabled(adapter: object | None) -> bool:

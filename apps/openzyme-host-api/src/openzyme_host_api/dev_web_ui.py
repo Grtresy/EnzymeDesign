@@ -105,9 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite path for V3 control-plane local manual testing.",
     )
     parser.add_argument(
-        "--configured",
+        "--fixture-non-cutover",
         action="store_true",
-        help="Use configured runtime adapters from environment instead of deterministic local adapters.",
+        help="Use deterministic local fixture adapters; outputs are synthetic and never cutover evidence.",
     )
     return parser
 
@@ -121,11 +121,13 @@ def main(argv: list[str] | None = None) -> int:
             "Run `cd apps/openzyme-web-ui && npm run build` first."
         )
     foundation_builder = (
-        build_configured_foundation if args.configured else build_local_eval_foundation
+        build_local_eval_foundation
+        if args.fixture_non_cutover
+        else build_configured_foundation
     )
     foundation = foundation_builder()
     v3_repository_provider = _build_v3_repository_provider(args.v3_sqlite_db)
-    if args.configured:
+    if not args.fixture_non_cutover:
         with v3_repository_provider.write() as scope:
             _register_existing_sandbox_image(scope.repositories)
     app = create_app(

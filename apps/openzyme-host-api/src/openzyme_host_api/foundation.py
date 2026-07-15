@@ -47,7 +47,7 @@ class DeterministicExecutionAdapter:
         return ExecutionOutcome(
             run_id=run_id,
             status=RunStatus.SUCCEEDED,
-            execution_mode="demo",
+            execution_mode="fixture_non_cutover",
             artifacts=(
                 ExecutionArtifactRef(
                     storage_uri="/tmp/openzyme-local/stdout.log",
@@ -60,8 +60,28 @@ class DeterministicExecutionAdapter:
                     kind=ArtifactKind.RESULT,
                 ),
             ),
-            raw_result={"status": "completed", "mode": "demo"},
+            raw_result={
+                "status": "fixture_non_cutover",
+                "mode": "fixture_non_cutover",
+                "fixture": True,
+                "synthetic_source": True,
+                "cutover_eligible": False,
+                "provider_status": "fixture_non_cutover",
+                "tool_status": "fixture_non_cutover",
+                "scientific_status": "fixture_non_cutover",
+            },
         )
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableExecutionAdapter:
+    reason: str = "No real execution backend is configured."
+
+    def submit_execution(
+        self, session_id: str, payload: dict[str, object]
+    ) -> ExecutionOutcome:
+        del session_id, payload
+        raise RuntimeError(self.reason)
 
 
 @dataclass(slots=True)
@@ -95,6 +115,10 @@ class DeterministicResearchAdapter:
                     "title": f"Reference source for {topic}",
                     "url": f"https://example.org/reference/{topic.replace(' ', '-')}",
                     "content": f"Deterministic finding for {query}",
+                    "fixture": True,
+                    "synthetic_source": True,
+                    "cutover_eligible": False,
+                    "scientific_status": "fixture_non_cutover",
                 }
             ]
         }
@@ -115,6 +139,10 @@ class DeterministicResearchAdapter:
                     "title": "Deterministic web page",
                     "url": url,
                     "raw_content": f"Deterministic extracted content for {url}",
+                    "fixture": True,
+                    "synthetic_source": True,
+                    "cutover_eligible": False,
+                    "scientific_status": "fixture_non_cutover",
                 }
             ]
         }
@@ -127,19 +155,22 @@ class DeterministicResearchAdapter:
         locator = str(
             result.get("url") or f"https://example.org/reference/{unit.unit_id}"
         )
-        summary = str(
+        summary = "[fixture_non_cutover] " + str(
             result.get("content")
             or result.get("raw_content")
             or f"Deterministic finding for {unit.query}"
         )
         return ResearchUnitResult(
             unit_id=unit.unit_id,
-            summary=f"{unit.topic} supports the current design objective.",
+            summary=(
+                "[fixture_non_cutover] "
+                f"{unit.topic} produced deterministic local control-flow evidence."
+            ),
             findings=(
                 ResearchFinding(
                     summary=summary,
                     query=unit.query,
-                    confidence_label="high",
+                    confidence_label="low",
                     sources=(
                         ResearchSource(
                             title=f"Reference source for {unit.unit_id}",
@@ -274,8 +305,13 @@ def _build_execution_adapter(
     settings: OpenZymeSettings,
     limiter_registry: LimiterRegistry,
 ):
-    if settings.execution.backend == "demo":
-        return DeterministicExecutionAdapter()
+    if settings.execution.backend == "disabled":
+        return UnavailableExecutionAdapter()
+    if settings.execution.backend in {"demo", "fixture", "fixture_non_cutover"}:
+        raise ValueError(
+            "Configured Host cannot use a deterministic execution backend; "
+            "use build_local_eval_foundation() for explicit fixture_non_cutover evals."
+        )
     if settings.execution.backend == "hpc":
         return HpcRunnerExecutionAdapter(
             config_path=settings.execution.hpc_runner_config,
@@ -300,7 +336,7 @@ def _build_research_adapter(settings: OpenZymeSettings):
                 else None
             ),
         )
-    return DeterministicResearchAdapter()
+    return None
 
 
 def _build_bio_research_service(settings: OpenZymeSettings) -> BioResearchService:
@@ -347,6 +383,17 @@ def build_configured_foundation(
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)
+    research_tool_provider = (
+        None
+        if research_adapter is None
+        else DefaultResearchToolProvider(
+            research_adapter,
+            mcp_tools=build_bio_research_tools(bio_research_service),
+            mcp_enabled=True,
+            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+            limiter_registry=limiter_registry,
+        )
+    )
     return RuntimeFoundation(
         execution_adapter=_build_execution_adapter(effective_settings, limiter_registry),
         hpc_catalog_provider=RepoBackedHpcCatalogProvider(),
@@ -354,13 +401,7 @@ def build_configured_foundation(
             RepoBackedHpcCatalogProvider()
         ),
         research_adapter=research_adapter,
-        research_tool_provider=DefaultResearchToolProvider(
-            research_adapter,
-            mcp_tools=build_bio_research_tools(bio_research_service),
-            mcp_enabled=True,
-            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
-            limiter_registry=limiter_registry,
-        ),
+        research_tool_provider=research_tool_provider,
         bio_research_service=bio_research_service,
         model_factory=build_model_factory_from_settings(
             effective_settings,

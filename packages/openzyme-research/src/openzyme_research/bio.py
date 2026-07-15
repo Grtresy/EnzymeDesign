@@ -273,6 +273,17 @@ def _rcsb_search_query_candidates(query: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class DeterministicBioResearchService:
+    @staticmethod
+    def _fixture_metadata(**values: Any) -> dict[str, Any]:
+        return {
+            **values,
+            "fixture": True,
+            "synthetic_source": True,
+            "cutover_eligible": False,
+            "scientific_status": "fixture_non_cutover",
+            "provider_status": "fixture_non_cutover",
+        }
+
     def search_pubmed(self, *, query: str, limit: int = 5) -> tuple[LiteratureHit, ...]:
         del limit
         return (
@@ -283,7 +294,7 @@ class DeterministicBioResearchService:
                 summary="Deterministic PubMed literature hit for testing.",
                 locator="https://pubmed.ncbi.nlm.nih.gov/1001/",
                 year=2024,
-                metadata={"query": query},
+                metadata=self._fixture_metadata(query=query),
             ),
         )
 
@@ -298,7 +309,7 @@ class DeterministicBioResearchService:
                 locator="https://www.semanticscholar.org/paper/S2:1001",
                 year=2024,
                 citation_count=42,
-                metadata={"query": query},
+                metadata=self._fixture_metadata(query=query),
             ),
         )
 
@@ -310,7 +321,7 @@ class DeterministicBioResearchService:
             organism="Escherichia coli",
             length=321,
             locator=f"https://rest.uniprot.org/uniprotkb/{accession}",
-            metadata={"reviewed": True},
+            metadata=self._fixture_metadata(reviewed=True),
         )
 
     def download_uniprot_fasta(self, *, accession: str) -> DownloadedResearchAsset:
@@ -325,7 +336,7 @@ class DeterministicBioResearchService:
             content=content,
             title=f"{accession} FASTA sequence",
             description="Downloaded protein FASTA from UniProt.",
-            metadata={"accession": accession},
+            metadata=self._fixture_metadata(accession=accession),
         )
 
     def search_rcsb_pdb(self, *, query: str, limit: int = 5) -> tuple[StructureHit, ...]:
@@ -337,7 +348,7 @@ class DeterministicBioResearchService:
                 title=f"Structure result for {query}",
                 locator="https://www.rcsb.org/structure/1ABC",
                 resolution=1.8,
-                metadata={"query": query},
+                metadata=self._fixture_metadata(query=query),
             ),
         )
 
@@ -354,7 +365,7 @@ class DeterministicBioResearchService:
             content=content,
             title=f"{pdb_id} structure file",
             description="Downloaded structure file from RCSB PDB.",
-            metadata={"pdb_id": pdb_id, "format": suffix},
+            metadata=self._fixture_metadata(pdb_id=pdb_id, format=suffix),
         )
 
     def query_interpro(self, *, accession: str, limit: int = 10) -> AnnotationRecord:
@@ -367,6 +378,7 @@ class DeterministicBioResearchService:
                     "entry_id": "IPR000001",
                     "name": "Deterministic domain",
                     "type": "domain",
+                    **self._fixture_metadata(),
                 },
             ),
             locator=f"https://www.ebi.ac.uk/interpro/api/entry/InterPro/protein/uniprot/{accession}",

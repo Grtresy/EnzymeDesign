@@ -164,20 +164,16 @@ def parse_execution_result(
     tool_inputs: dict[str, Any],
     artifact_refs: Sequence[Any],
 ) -> ParsedExecutionResult:
+    del raw_result
     artifact_payloads = [_artifact_payload(artifact) for artifact in artifact_refs]
     if tool_id == "fpocket":
         parsed = parse_fpocket_artifacts(artifact_payloads)
-        fallback_pockets = raw_result.get("pockets_found")
         try:
-            pockets_found = int(parsed.findings.get("pockets_found") or fallback_pockets or 0)
+            pockets_found = int(parsed.findings.get("pockets_found") or 0)
         except (TypeError, ValueError):
             pockets_found = 0
-        used_raw_result_fallback = parsed.parser_status != "parsed" and pockets_found > 0
-        result_summary = parsed.summary
-        if used_raw_result_fallback:
-            result_summary = f"fpocket found {pockets_found} pocket(s) for the selected artifact set."
         return ParsedExecutionResult(
-            result_summary=result_summary
+            result_summary=parsed.summary
             or (
                 f"fpocket found {pockets_found} pocket(s) for the selected artifact set."
                 if pockets_found
@@ -186,9 +182,7 @@ def parse_execution_result(
             structured_findings={
                 "design_signal": "proceed" if pockets_found > 0 else "revise",
                 "confidence": "medium" if parsed.parser_status == "parsed" else "low",
-                "parser_status": (
-                    "raw_result_fallback" if used_raw_result_fallback else parsed.parser_status
-                ),
+                "parser_status": parsed.parser_status,
                 "artifacts": artifact_payloads,
                 **parsed.findings,
                 "pockets_found": pockets_found,
@@ -211,9 +205,10 @@ def parse_execution_result(
             structured_findings=structured_findings,
         )
     return ParsedExecutionResult(
-        result_summary=f"{tool_id} execution completed.",
+        result_summary=f"{tool_id} completed, but no scientific result parser is registered.",
         structured_findings={
-            "design_signal": "proceed",
+            "design_signal": "revise",
+            "parser_status": "unsupported_tool_parser",
             "artifacts": artifact_payloads,
             "tool_inputs": dict(tool_inputs),
         },

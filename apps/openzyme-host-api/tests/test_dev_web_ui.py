@@ -21,6 +21,9 @@ def test_web_ui_parser_exposes_only_v3_sqlite_database() -> None:
 
     assert "sqlite_db" not in destinations
     assert "v3_sqlite_db" in destinations
+    assert "configured" not in destinations
+    assert "fixture_non_cutover" in destinations
+    assert build_parser().parse_args([]).fixture_non_cutover is False
 
 
 def test_configured_web_ui_registers_existing_sandbox_image(monkeypatch) -> None:

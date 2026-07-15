@@ -548,7 +548,7 @@ class ExecutionSettings:
     @classmethod
     def from_env(cls) -> "ExecutionSettings":
         return cls(
-            backend=os.getenv("OPENZYME_EXECUTION_BACKEND", "demo"),
+            backend=os.getenv("OPENZYME_EXECUTION_BACKEND", "disabled"),
             hpc_runner_config=(
                 os.getenv("OPENZYME_HPC_RUNNER_CONFIG")
                 or os.getenv("HPC_RUNNER_CONFIG")

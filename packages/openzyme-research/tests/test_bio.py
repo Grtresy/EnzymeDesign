@@ -31,6 +31,15 @@ def test_deterministic_bio_research_service_returns_provider_specific_records() 
     assert structure_hits[0].provider == "rcsb_pdb"
     assert structure.kind is ArtifactKind.STRUCTURE
     assert annotations.provider == "interpro"
+    assert pubmed_hits[0].metadata is not None
+    assert pubmed_hits[0].metadata["scientific_status"] == "fixture_non_cutover"
+    assert protein.metadata is not None
+    assert protein.metadata["cutover_eligible"] is False
+    assert fasta.metadata is not None
+    assert fasta.metadata["synthetic_source"] is True
+    assert structure.metadata is not None
+    assert structure.metadata["provider_status"] == "fixture_non_cutover"
+    assert annotations.entries[0]["scientific_status"] == "fixture_non_cutover"
 
 
 def test_read_json_allows_empty_rcsb_no_content_response(monkeypatch) -> None:

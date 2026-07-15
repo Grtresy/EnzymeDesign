@@ -7,6 +7,7 @@ import threading
 import time
 
 from fastapi.testclient import TestClient
+import pytest
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_host_api.app import V3ExecutionRunnerAdapter
@@ -18,7 +19,9 @@ from openzyme_host_api.foundation import build_model_factory_from_env
 from openzyme_host_api.foundation import build_model_factory_from_settings
 from openzyme_host_api.foundation import DeterministicExecutionAdapter
 from openzyme_host_api.foundation import DeterministicResearchAdapter
+from openzyme_host_api.foundation import UnavailableExecutionAdapter
 from openzyme_host_api.eval_support import DeterministicLocalModelFactory
+from openzyme_research import ResearchUnit
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_MODEL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_USER_AGENT
@@ -81,7 +84,7 @@ def _settings() -> OpenZymeSettings:
             max_steps_per_agent=8,
             shutdown_timeout_seconds=10.0,
         ),
-        execution=ExecutionSettings(backend="demo", hpc_runner_config=None),
+        execution=ExecutionSettings(backend="disabled", hpc_runner_config=None),
         test=RuntimeTestSettings(
             enable_live_llm=False,
             enable_live_tavily=False,
@@ -100,14 +103,26 @@ def _settings() -> OpenZymeSettings:
     )
 
 
-def test_configured_foundation_uses_demo_adapters_without_live_integrations() -> None:
+def test_configured_foundation_fails_closed_without_live_integrations() -> None:
     foundation = build_configured_foundation(
         settings=_settings(),
     )
 
-    assert isinstance(foundation.execution_adapter, DeterministicExecutionAdapter)
-    assert isinstance(foundation.research_adapter, DeterministicResearchAdapter)
+    assert isinstance(foundation.execution_adapter, UnavailableExecutionAdapter)
+    assert foundation.research_adapter is None
+    assert foundation.research_tool_provider is None
     assert isinstance(foundation.model_factory, OpenAICompatibleChatModelFactory)
+
+
+@pytest.mark.parametrize("backend", ["demo", "fixture", "fixture_non_cutover"])
+def test_configured_foundation_rejects_fixture_execution_backends(backend: str) -> None:
+    with pytest.raises(ValueError, match="deterministic execution backend"):
+        build_configured_foundation(
+            settings=replace(
+                _settings(),
+                execution=ExecutionSettings(backend=backend, hpc_runner_config=None),
+            )
+        )
 
 
 def test_configured_foundation_uses_hpc_and_tavily_when_enabled(monkeypatch) -> None:
@@ -276,6 +291,16 @@ def test_local_eval_foundation_wires_deterministic_components() -> None:
     assert isinstance(foundation.research_adapter, DeterministicResearchAdapter)
     assert isinstance(foundation.model_factory, DeterministicLocalModelFactory)
     assert foundation.research_tool_provider is not None
+    response = foundation.research_adapter.web_search(query="fixture check")
+    result = dict(response["results"][0])
+    assert result["scientific_status"] == "fixture_non_cutover"
+    assert result["cutover_eligible"] is False
+    normalized = foundation.research_adapter.normalize_search_response(
+        unit=ResearchUnit(unit_id="fixture", topic="fixture", query="fixture check"),
+        response=response,
+    )
+    assert normalized.findings[0].summary.startswith("[fixture_non_cutover]")
+    assert normalized.findings[0].confidence_label == "low"
 
 
 def test_local_eval_foundation_owns_deterministic_model_factory() -> None:
@@ -322,6 +347,9 @@ def test_deterministic_execution_adapter_scopes_run_ids_per_session_and_call_cou
     assert second.run_id == "run_sess_local_2"
     assert third.run_id == "run_sess_other_1"
     assert first.status is RunStatus.SUCCEEDED
+    assert first.execution_mode == "fixture_non_cutover"
+    assert first.raw_result["scientific_status"] == "fixture_non_cutover"
+    assert first.raw_result["cutover_eligible"] is False
     assert first.remote_run_dir == ""
     assert first.artifacts[0].kind is ArtifactKind.LOG
 
