@@ -174,7 +174,7 @@ deep research 对 harness 至少提供：
 - execution engine、pipeline SDK 与 supervisor 都不代表用户批准；pending approval 下，对应 SDK step / engine invocation 必须保持 `waiting_approval`，直到 resolved approval 通过 runtime signal 唤醒并继续
 - Host-supervised pipeline completion 是 engine/workspace event，不是用户最终答复；approval resolved 后无论 pipeline `succeeded`、`failed` 还是 `cancelled`，Host 都应把原 executor 唤醒，由 executor 读取 sandbox/execution status、artifacts 和 structured error 后生成用户可见收尾
 - 成功时 executor 必须总结工具级结果和 output artifacts，例如 fpocket pocket count / artifact ids；失败时 executor 根据 `pipeline.error` 决定 materially changed retry，或在明确不可修复时用 `task.finish(status="failed", failure_summary, failure_ref)` 写入 canonical 失败状态
-- “成功”必须由对应 output artifact parser 证明，不能由 runner `raw_result` 自报字段代替。fpocket 缺失/不可读/不可解析 `target_info.txt` 时必须保留 `missing_artifact` / `read_error` / `unparsed`，不得用 `pockets_found` fallback 生成 `proceed`；未注册 parser 的工具默认 `revise` 而不是 `proceed`
+- “成功”必须由对应 output artifact parser 证明，不能由 runner `raw_result` 自报字段代替。Host-supervised pipeline step 在生成 parsed result 时必须传入本次 runner 实际返回的 artifact refs，不能以空列表调用 parser；fpocket 缺失/不可读/不可解析 `target_info.txt` 时必须保留 `missing_artifact` / `read_error` / `unparsed`，不得用 `pockets_found` fallback 生成 `proceed`；未注册 parser 的工具默认 `revise` 而不是 `proceed`
 - execution / HPC retry 与失败诊断策略属于 executor prompt、受控 docs 或 tool result hints；runtime wakeup instruction 只应携带 invocation/status/artifact/error evidence，不应规定重试或修复策略
 - 执行结果必须回填 `run`、`artifact`
 - 结果必须能对 report draft / workspace UI 统一投影
@@ -198,7 +198,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - sandbox 运行在 rootless Podman 容器中，默认无网络、非 root、资源受限，并按 executor/session 持久化工作目录
 - 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 container process 并挂载各自的 persistent `/workspace`；image layer 可以共享，sandbox workspace volume 不共享
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
-- `image_ref` 只用于配置与 preflight 查找。plan 创建时 Host 必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；两者连同 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
+- `image_ref` 只用于配置与 preflight 查找。plan 创建时 Host 必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；Podman `image inspect .Id` 在不同版本可能返回裸 64 位 hex 或带 `sha256:` 前缀，Host 只允许这两种精确格式并统一规范化为后者。image、SDK 与 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
 - 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
 - sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
 - `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog

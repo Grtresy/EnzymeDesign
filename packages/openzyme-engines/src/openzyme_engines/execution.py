@@ -7215,7 +7215,7 @@ class ExecutionEngine:
             parsed_result = parser.parse_result(
                 handoff=handoff,
                 outcome=final_outcome,
-                artifact_refs=(),
+                artifact_refs=final_outcome.artifacts,
             )
         return {
             "tool_id": handoff.catalog_tool_id,

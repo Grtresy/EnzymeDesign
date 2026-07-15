@@ -92,10 +92,12 @@ class PodmanPipelineSandboxRunner:
             capture_output=True,
             text=True,
         )
-        digest = completed.stdout.strip()
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        image_id = completed.stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{64}", image_id):
+            return f"sha256:{image_id}"
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
             raise RuntimeError(f"podman returned an invalid immutable image id for {self.image!r}")
-        return digest
+        return image_id
 
     def preflight(self) -> PodmanSandboxPreflight:
         podman = shutil.which(self.podman_binary)

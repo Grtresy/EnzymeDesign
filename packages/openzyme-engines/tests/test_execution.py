@@ -236,9 +236,15 @@ class ImmediateSuccessRunner:
             if relative_path.endswith((".pdb", ".pdbqt", ".sdf", ".mol2", ".cif")):
                 kind = ArtifactKind.STRUCTURE
             storage_path = Path("/tmp/openzyme-test-runner") / relative_path
-            if dict(output).get("kind") == "dir":
+            if dict(output).get("kind") in {"dir", "directory"}:
                 storage_path.mkdir(parents=True, exist_ok=True)
                 (storage_path / "summary.txt").write_text("runner directory output\n", encoding="utf-8")
+                if relative_path == "target_out" or dict(output).get("format") == "fpocket":
+                    (storage_path / "target_info.txt").write_text(
+                        "Pocket 1 :\n\tScore : \t0.928\n\tVolume : \t1006.516\n\n"
+                        "Pocket 2 :\n\tScore : \t0.215\n\tVolume : \t326.310\n",
+                        encoding="utf-8",
+                    )
             else:
                 storage_path.parent.mkdir(parents=True, exist_ok=True)
                 storage_path.write_text(_runner_output_content(relative_path), encoding="utf-8")
@@ -1155,11 +1161,11 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
     assert resumed.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert resumed.run is not None
     assert resumed.run.status is RunStatus.SUCCEEDED
-    assert resumed.run.summary == "fpocket found 2 pocket(s) for the selected artifact set."
+    assert resumed.run.summary == "fpocket found 2 pocket(s); top pocket score 0.928."
     assert resumed.parsed_result is not None
     assert (
         resumed.parsed_result.result_summary
-        == "fpocket found 2 pocket(s) for the selected artifact set."
+        == "fpocket found 2 pocket(s); top pocket score 0.928."
     )
     assert resumed.artifacts[0].artifact_id == "run_inv_exec_001:target_out"
     payload = resumed.to_dict()
@@ -4372,9 +4378,12 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     assert resumed.parsed_result is not None
     assert (
         resumed.parsed_result.result_summary
-        == "fpocket found 2 pocket(s) for the selected artifact set."
+        == "fpocket found 2 pocket(s); top pocket score 0.928."
     )
-    assert status["parsed_result"]["result_summary"] == "fpocket found 2 pocket(s) for the selected artifact set."
+    assert (
+        status["parsed_result"]["result_summary"]
+        == "fpocket found 2 pocket(s); top pocket score 0.928."
+    )
     assert status["details"]["source_code_artifact_id"] == code_artifact_id
     assert status["output_artifact_ids"]
     assert status["runs"]

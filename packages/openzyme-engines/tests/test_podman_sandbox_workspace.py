@@ -20,7 +20,7 @@ def test_podman_runner_can_bind_existing_sandbox_workspace(
         if command[1:3] == ["image", "inspect"]:
             return SimpleNamespace(
                 returncode=0,
-                stdout="sha256:" + "a" * 64 + "\n",
+                stdout="a" * 64 + "\n",
                 stderr="",
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")

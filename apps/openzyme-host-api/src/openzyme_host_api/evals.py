@@ -2887,9 +2887,18 @@ def _run_v3_aox_hmm_prompt_scenario(
         if scenario_class == "live" and prerequisite_report is not None:
             _s15_bootstrap_live_sandbox_image(v3_repositories, prerequisite_report)
         if use_fixture_dependencies:
+            fixture_image = _s15_sandbox_image_prerequisite()
+            if fixture_image.get("status") != "ok":
+                raise RuntimeError(
+                    "AOX/HMM fixture sandbox image prerequisite failed: "
+                    f"{fixture_image.get('hint') or fixture_image.get('error_code')}"
+                )
             v3_repositories.sandbox_images.save(
                 sandbox_image_record(
-                    image_digest="sha256:" + "f" * 64,
+                    image_ref=str(
+                        fixture_image.get("image_ref") or DEFAULT_SANDBOX_IMAGE_REF
+                    ),
+                    image_digest=str(fixture_image["image_digest"]),
                 )
             )
         dependencies_kwargs: dict[str, Any] = {
