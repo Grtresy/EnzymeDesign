@@ -78,10 +78,9 @@ def _poll_v3_background_workspace(
     )
 
 
-def test_live_v3_message_loop_can_create_a_task_via_real_llm(tmp_path) -> None:
+def test_live_v3_message_loop_can_create_a_task_via_real_llm() -> None:
     settings = apply_live_llm_test_budget(get_settings())
     foundation = build_configured_foundation(
-        sqlite_db_path=tmp_path / "live-v3-llm.sqlite3",
         settings=settings,
     )
     app = create_app(

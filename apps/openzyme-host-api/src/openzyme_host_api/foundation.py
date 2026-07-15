@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
-from pathlib import Path
 
 from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_domain import ArtifactKind
@@ -295,13 +294,10 @@ def _build_bio_research_service(settings: OpenZymeSettings) -> BioResearchServic
 
 def build_local_eval_foundation(
     *,
-    sqlite_db_path: Path | None,
     settings: OpenZymeSettings | None = None,
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
-    if sqlite_db_path is not None:
-        sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     research_adapter = DeterministicResearchAdapter()
     bio_research_service = DeterministicBioResearchService()
     return RuntimeFoundation(
@@ -327,15 +323,12 @@ def build_local_eval_foundation(
 
 def build_configured_foundation(
     *,
-    sqlite_db_path: Path | None,
     settings: OpenZymeSettings | None = None,
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
         effective_settings = apply_live_llm_test_budget(effective_settings)
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
-    if sqlite_db_path is not None:
-        sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)
     return RuntimeFoundation(

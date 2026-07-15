@@ -47,7 +47,7 @@ from .foundation import build_local_eval_foundation
 from .tracing import workflow_trace
 
 
-FoundationBuilder = Callable[[Path], RuntimeFoundation]
+FoundationBuilder = Callable[[], RuntimeFoundation]
 
 
 def _message_role(message: object) -> str | None:
@@ -2431,10 +2431,9 @@ class AoxHmmFixtureSandboxRunner:
                 raise ValueError(f"fixture CSV output {relative_path} is missing required columns: {missing}")
 
 
-def build_local_eval_runtime(sqlite_db_path: Path) -> RuntimeFoundation:
+def build_local_eval_runtime() -> RuntimeFoundation:
     settings = get_settings()
     return build_local_eval_foundation(
-        sqlite_db_path=sqlite_db_path,
         settings=replace(
             settings,
             llm=replace(settings.llm, api_key=None),
@@ -2442,8 +2441,8 @@ def build_local_eval_runtime(sqlite_db_path: Path) -> RuntimeFoundation:
     )
 
 
-def build_live_eval_foundation(sqlite_db_path: Path) -> RuntimeFoundation:
-    return build_configured_foundation(sqlite_db_path=sqlite_db_path)
+def build_live_eval_foundation() -> RuntimeFoundation:
+    return build_configured_foundation()
 
 
 def build_v3_eval_repositories() -> CoreRepositories:
@@ -2633,8 +2632,8 @@ def _run_v3_design_cutover_scenario(
         "Given a literature brief on a thermostable enzyme scaffold, extract design "
         "goals and run the V3 research, execution, and report delivery path."
     )
-    with tempfile.TemporaryDirectory(prefix="openzyme-v3-eval-") as temp_dir:
-        foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
+    with tempfile.TemporaryDirectory(prefix="openzyme-v3-eval-"):
+        foundation = foundation_builder()
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
         v3_repositories = build_v3_eval_repositories()
@@ -2774,7 +2773,7 @@ def _run_v3_aox_hmm_prompt_scenario(
     )
     session_id = "sess_eval_aox_hmm"
     with tempfile.TemporaryDirectory(prefix="openzyme-v3-aox-hmm-eval-") as temp_dir:
-        foundation = foundation_builder(Path(temp_dir) / "eval.sqlite3")
+        foundation = foundation_builder()
         if model_factory is not None:
             foundation = replace(foundation, model_factory=model_factory)
         v3_repositories = build_v3_eval_repositories()
@@ -3088,8 +3087,8 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
         "Extract enzyme design goals from a literature abstract and generate an "
         "executable V3 design workflow task plan."
     )
-    with tempfile.TemporaryDirectory(prefix="openzyme-v3-live-eval-") as temp_dir:
-        foundation = build_live_eval_foundation(Path(temp_dir) / "eval.sqlite3")
+    with tempfile.TemporaryDirectory(prefix="openzyme-v3-live-eval-"):
+        foundation = build_live_eval_foundation()
         app = create_app(
             HostApiDependencies(
                 foundation=foundation,

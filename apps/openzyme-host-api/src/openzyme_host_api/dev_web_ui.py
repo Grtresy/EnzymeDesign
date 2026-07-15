@@ -27,10 +27,6 @@ def _default_ui_dist() -> Path:
     return REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
 
 
-def _default_sqlite_db() -> Path:
-    return Path("/tmp/openzyme-web-ui-runtime.sqlite3")
-
-
 def _default_v3_sqlite_db() -> Path:
     return Path("/tmp/openzyme-web-ui-v3.sqlite3")
 
@@ -105,12 +101,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Built web UI dist directory. Run npm run build in apps/openzyme-web-ui first.",
     )
     parser.add_argument(
-        "--sqlite-db",
-        type=Path,
-        default=_default_sqlite_db(),
-        help="SQLite path for legacy/runtime local manual testing.",
-    )
-    parser.add_argument(
         "--v3-sqlite-db",
         type=Path,
         default=_default_v3_sqlite_db(),
@@ -135,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     foundation_builder = (
         build_configured_foundation if args.configured else build_local_eval_foundation
     )
-    foundation = foundation_builder(sqlite_db_path=args.sqlite_db)
+    foundation = foundation_builder()
     v3_repositories = _build_v3_repositories(args.v3_sqlite_db)
     if args.configured:
         _register_existing_sandbox_image(v3_repositories)

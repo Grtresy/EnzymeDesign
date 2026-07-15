@@ -101,9 +101,8 @@ def _settings() -> OpenZymeSettings:
     )
 
 
-def test_configured_foundation_uses_demo_adapters_without_live_integrations(tmp_path) -> None:
+def test_configured_foundation_uses_demo_adapters_without_live_integrations() -> None:
     foundation = build_configured_foundation(
-        sqlite_db_path=tmp_path / "foundation.sqlite3",
         settings=_settings(),
     )
 
@@ -112,7 +111,7 @@ def test_configured_foundation_uses_demo_adapters_without_live_integrations(tmp_
     assert isinstance(foundation.model_factory, OpenAICompatibleChatModelFactory)
 
 
-def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkeypatch) -> None:
+def test_configured_foundation_uses_hpc_and_tavily_when_enabled(monkeypatch) -> None:
     configured_settings = replace(
         _settings(),
         research=ResearchSettings(
@@ -150,7 +149,6 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(tmp_path, monkey
     )
 
     foundation = build_configured_foundation(
-        sqlite_db_path=tmp_path / "foundation.sqlite3",
         settings=configured_settings,
     )
 
@@ -228,8 +226,8 @@ def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.5
 
 
-def test_local_eval_foundation_wires_deterministic_components(tmp_path) -> None:
-    foundation = build_local_eval_foundation(sqlite_db_path=tmp_path / "eval.sqlite3")
+def test_local_eval_foundation_wires_deterministic_components() -> None:
+    foundation = build_local_eval_foundation()
 
     assert isinstance(foundation.execution_adapter, DeterministicExecutionAdapter)
     assert isinstance(foundation.research_adapter, DeterministicResearchAdapter)
@@ -237,10 +235,9 @@ def test_local_eval_foundation_wires_deterministic_components(tmp_path) -> None:
     assert foundation.research_tool_provider is not None
 
 
-def test_local_eval_foundation_owns_deterministic_model_factory(tmp_path) -> None:
-    foundation = build_local_eval_foundation(sqlite_db_path=tmp_path / "eval.sqlite3")
+def test_local_eval_foundation_owns_deterministic_model_factory() -> None:
+    foundation = build_local_eval_foundation()
     configured = build_configured_foundation(
-        sqlite_db_path=tmp_path / "configured.sqlite3",
         settings=replace(_settings(), llm=replace(_settings().llm, api_key=None)),
     )
 

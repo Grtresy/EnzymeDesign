@@ -7,12 +7,20 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_host_api.dev_web_ui import _build_v3_repositories
 from openzyme_host_api.dev_web_ui import _register_existing_sandbox_image
+from openzyme_host_api.dev_web_ui import build_parser
 
 
 def _repositories() -> CoreRepositories:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+def test_web_ui_parser_exposes_only_v3_sqlite_database() -> None:
+    destinations = {action.dest for action in build_parser()._actions}
+
+    assert "sqlite_db" not in destinations
+    assert "v3_sqlite_db" in destinations
 
 
 def test_configured_web_ui_registers_existing_sandbox_image(monkeypatch) -> None:

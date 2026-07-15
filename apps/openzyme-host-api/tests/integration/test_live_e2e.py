@@ -127,7 +127,7 @@ def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[st
     raise AssertionError(_workspace_failure_summary(workspace))
 
 
-def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
+def test_live_v3_master_message_e2e_reaches_report() -> None:
     log_live_phase("loading live E2E settings")
     settings = apply_live_llm_test_budget(get_settings())
     tuned_settings = replace(
@@ -160,7 +160,6 @@ def test_live_v3_master_message_e2e_reaches_report(tmp_path) -> None:
         minimum_seconds=300,
     )
     foundation = build_configured_foundation(
-        sqlite_db_path=tmp_path / "live-v3-e2e.sqlite3",
         settings=tuned_settings,
     )
     v3_repositories = _build_v3_repositories()

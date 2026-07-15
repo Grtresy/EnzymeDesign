@@ -155,7 +155,7 @@ def _succeeded_capability(workspace: dict[str, Any], capability: str) -> dict[st
     raise AssertionError(_workspace_failure_summary(workspace))
 
 
-def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> None:
+def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
     settings = apply_live_llm_test_budget(get_settings())
     tuned_settings = replace(
         settings,
@@ -186,7 +186,6 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report(tmp_path) -> No
     )
     _log_phase("building configured foundation")
     foundation = build_configured_foundation(
-        sqlite_db_path=tmp_path / "seeded-v3-smoke.sqlite3",
         settings=tuned_settings,
     )
     v3_repositories = _build_v3_repositories()
