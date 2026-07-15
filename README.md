@@ -81,7 +81,8 @@ Intended use:
 - `OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD` controls the default schema enforcement strategy. For the MICU OpenAI Responses-compatible default, the default is `function_calling`.
 - `OPENZYME_LLM_EXTRA_BODY` can pass provider-specific JSON fields to OpenAI-compatible endpoints.
 - `OPENZYME_LLM_USE_RESPONSES_API` and `OPENZYME_LLM_USER_AGENT` control the OpenAI Responses API mode and provider-facing user-agent header.
-- `OPENZYME_LLM_MAX_TOKENS` and `OPENZYME_LLM_<PURPOSE>_*` can override output budget, timeout, retries, and structured-output policy for `intake`, `research`, `design`, and `report_review` calls.
+- `OPENZYME_LLM_MAX_RETRIES=N` means one initial provider call plus at most `N` runtime-managed retries; provider-client internal retries stay disabled. `OPENZYME_LLM_MAX_TOKENS` and `OPENZYME_LLM_<PURPOSE>_*` can override output budget, timeout, retries, and structured-output policy for `intake`, `research`, `design`, `report_review`, `v3_harness_loop`, and deep-research calls.
+- `OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS` and its per-purpose/live-test variants have been removed; use the corresponding `MAX_RETRIES` setting. The legacy-named `STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS` currently controls the shared runtime retry backoff for both structured and tool-calling requests.
 - `OPENZYME_TEST_LIVE_LLM_*` lets live LLM smoke tests use a different timeout/retry budget from the main app runtime.
 
 The HPC runner keeps its own independent TOML config under `apps/mcp-hpc-runner/config/` and is not folded into the main OpenZyme `.env` settings.

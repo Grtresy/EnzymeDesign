@@ -6,6 +6,7 @@ import threading
 import time
 from types import ModuleType
 
+import pytest
 from pydantic import BaseModel
 
 from openzyme_runtime import LimiterRegistry
@@ -16,7 +17,9 @@ from openzyme_runtime.ai import LangChainToolCallingInvoker
 from openzyme_runtime.ai import OpenAICompatibleChatModelFactory
 from openzyme_runtime.ai import _is_retryable_openai_error
 from openzyme_runtime.llm_invocation import classify_llm_provider_error
+from openzyme_runtime.llm_invocation import LlmInvocationRuntime
 from openzyme_runtime.llm_invocation import LlmProviderInvocationError
+from openzyme_runtime.llm_invocation import max_attempts_from_retries
 from openzyme_runtime.llm_debug import get_llm_debug_recorder
 from openzyme_runtime.llm_debug import llm_debug_context
 
@@ -42,6 +45,83 @@ class FakeApiStatusError(Exception):
             (),
             {"status_code": status_code, "headers": headers or {}},
         )()
+
+
+def test_retry_budget_maps_to_one_initial_attempt_plus_retries() -> None:
+    assert max_attempts_from_retries(0) == 1
+    assert max_attempts_from_retries(2) == 3
+    with pytest.raises(ValueError, match="max_retries must be non-negative"):
+        max_attempts_from_retries(-1)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_category"),
+    [
+        (
+            FakeApiStatusError(429, "temporary rate_limit_exceeded"),
+            "rate_limit_transient",
+        ),
+        (FakeApiStatusError(503, "service unavailable"), "transient_http"),
+        (TimeoutError("provider timed out"), "transport_timeout"),
+    ],
+)
+def test_retryable_provider_errors_use_exact_n_plus_one_attempts(
+    error: BaseException,
+    expected_category: str,
+) -> None:
+    attempts = 0
+
+    def fail() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    runtime = LlmInvocationRuntime(
+        purpose="v3_harness_loop",
+        kind="tool_calling",
+        max_attempts=max_attempts_from_retries(2),
+        retry_backoff_seconds=0.0,
+    )
+
+    with pytest.raises(LlmProviderInvocationError) as caught:
+        runtime.invoke(request={}, call=fail, phase="testing retry budget")
+
+    assert attempts == 3
+    assert caught.value.classification.category == expected_category
+    assert caught.value.classification.retryable is True
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_category"),
+    [
+        (FakeApiStatusError(400, "bad request"), "invalid_or_auth_request"),
+        (ValueError("bad schema"), "schema_or_tool_error"),
+    ],
+)
+def test_terminal_provider_errors_fail_on_first_attempt(
+    error: BaseException,
+    expected_category: str,
+) -> None:
+    attempts = 0
+
+    def fail() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    runtime = LlmInvocationRuntime(
+        purpose="report_review",
+        kind="structured",
+        max_attempts=max_attempts_from_retries(5),
+        retry_backoff_seconds=0.0,
+    )
+
+    with pytest.raises(LlmProviderInvocationError) as caught:
+        runtime.invoke(request={}, call=fail, phase="testing terminal error")
+
+    assert attempts == 1
+    assert caught.value.classification.category == expected_category
+    assert caught.value.classification.retryable is False
 
 
 def _task_create_spec() -> ToolSpec:
@@ -423,8 +503,8 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
         max_tokens=700,
         timeout=30.0,
         max_retries=1,
+        model_kwargs={"max_retries": 99},
         structured_output_method="function_calling",
-        structured_output_max_attempts=3,
         structured_output_retry_backoff_seconds=1.0,
         purpose_policies={
             "report_review": {
@@ -432,7 +512,6 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
                 "max_tokens": 300,
                 "max_retries": 0,
                 "structured_output_method": "json_mode",
-                "structured_output_max_attempts": 2,
                 "structured_output_retry_backoff_seconds": 0.5,
             }
         },
@@ -441,6 +520,7 @@ def test_openai_compatible_factory_uses_init_chat_model_and_purpose_policy(monke
     invoker = factory.create_structured_invoker(purpose="report_review")
     assert isinstance(invoker, LangChainStructuredInvoker)
     assert invoker.invocation_timeout_seconds == 90.0
+    assert invoker.max_attempts == 1
     result = invoker.invoke_structured(
         schema=ExampleSchema,
         system_prompt="Return the schema.",
@@ -485,6 +565,7 @@ def test_openai_compatible_factory_aliases_dotted_tool_names_only_for_micu(monke
 
     assert isinstance(micu_invoker, LangChainToolCallingInvoker)
     assert micu_invoker.dotted_tool_name_aliasing is True
+    assert micu_invoker.max_attempts == 2
 
     other_factory = OpenAICompatibleChatModelFactory(
         model="gpt-5.5",
@@ -495,6 +576,50 @@ def test_openai_compatible_factory_aliases_dotted_tool_names_only_for_micu(monke
 
     assert isinstance(other_invoker, LangChainToolCallingInvoker)
     assert other_invoker.dotted_tool_name_aliasing is False
+
+
+def test_purpose_policy_none_fields_inherit_factory_retry_budget(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeModel:
+        def bind_tools(self, tools):
+            del tools
+            raise AssertionError("tool invocation is not part of this factory test")
+
+    def fake_init_chat_model(*args, **kwargs):
+        del args
+        observed["provider_max_retries"] = kwargs["max_retries"]
+        observed["timeout"] = kwargs["timeout"]
+        return FakeModel()
+
+    monkeypatch.setattr(
+        "langchain.chat_models.init_chat_model",
+        fake_init_chat_model,
+        raising=False,
+    )
+    factory = OpenAICompatibleChatModelFactory(
+        model="gpt-5-mini",
+        api_key="llm-key",
+        base_url="https://example.test/v1",
+        max_retries=2,
+        purpose_policies={
+            "v3_harness_loop": {
+                "timeout": 90.0,
+                "max_tokens": None,
+                "max_retries": None,
+                "structured_output_method": None,
+                "structured_output_retry_backoff_seconds": None,
+            }
+        },
+    )
+
+    invoker = factory.create_tool_calling_invoker(purpose="v3_harness_loop")
+
+    assert isinstance(invoker, LangChainToolCallingInvoker)
+    assert invoker.max_attempts == 3
+    assert invoker.invocation_timeout_seconds == 90.0
+    assert invoker.retry_backoff_seconds == 1.0
+    assert observed == {"provider_max_retries": 0, "timeout": 90.0}
 
 
 def test_openai_compatible_factory_counts_bigmodel_prompt_tokens(monkeypatch) -> None:

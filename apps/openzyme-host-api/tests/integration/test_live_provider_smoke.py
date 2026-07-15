@@ -33,7 +33,7 @@ def test_live_llm_and_tavily_smoke_return_within_timeout() -> None:
     invoker = factory.create_structured_invoker(purpose="live_provider_smoke")
     llm_timeout_seconds = derive_live_stage_timeout_seconds(
         provider_timeout_seconds=settings.llm.timeout,
-        attempts=settings.llm.structured_output_max_attempts,
+        attempts=settings.llm.max_retries + 1,
         buffer_seconds=30,
         minimum_seconds=60,
     )

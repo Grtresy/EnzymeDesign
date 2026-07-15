@@ -44,6 +44,7 @@ Use the repository-level environment file conventions described in [README.md](/
 
 If no API key is set, the local eval harness keeps using the deterministic fallback path.
 For the MICU OpenAI Responses endpoint, `function_calling` remains the default structured-output strategy used by the OpenZyme runtime. If the provider requires extra request payload fields, set them through `OPENZYME_LLM_EXTRA_BODY`.
+`OPENZYME_LLM_MAX_RETRIES=N` allows one initial provider call plus at most `N` runtime-managed retries. The OpenAI-compatible provider client itself always uses `max_retries=0`, so structured and tool-calling requests share the same retry taxonomy and attempt budget. The former `STRUCTURED_OUTPUT_MAX_ATTEMPTS` settings are no longer accepted; configure `MAX_RETRIES` instead.
 
 By default the eval harness stays local and does not upload LangSmith results. To emit LangSmith traces:
 

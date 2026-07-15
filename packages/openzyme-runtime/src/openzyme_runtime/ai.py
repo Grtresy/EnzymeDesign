@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from .limits import LimiterRegistry
 from .llm_invocation import is_retryable_llm_provider_error
 from .llm_invocation import LlmInvocationRuntime
+from .llm_invocation import max_attempts_from_retries
 from .llm_debug import serialize_llm_payload
 from .provider_tools import ProviderToolAdapter
 
@@ -284,8 +285,8 @@ class LangChainToolCallingInvoker:
 class LangChainModelFactory:
     model: str
     model_kwargs: dict[str, Any] | None = None
+    max_retries: int = 0
     structured_output_method: str = "json_schema"
-    structured_output_max_attempts: int = 1
     structured_output_retry_backoff_seconds: float = 1.0
     limiter_registry: LimiterRegistry | None = None
     diagnostic_label: str | None = None
@@ -302,7 +303,9 @@ class LangChainModelFactory:
             ) from exc
 
         try:
-            chat_model = init_chat_model(self.model, **(self.model_kwargs or {}))
+            provider_kwargs = dict(self.model_kwargs or {})
+            provider_kwargs["max_retries"] = 0
+            chat_model = init_chat_model(self.model, **provider_kwargs)
         except ImportError as exc:  # pragma: no cover - provider package missing
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
@@ -313,7 +316,7 @@ class LangChainModelFactory:
             model_name=self.model,
             diagnostic_label=self.diagnostic_label,
             structured_output_method=self.structured_output_method,
-            max_attempts=self.structured_output_max_attempts,
+            max_attempts=max_attempts_from_retries(self.max_retries),
             retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
             invocation_timeout_seconds=self.invocation_timeout_seconds,
             limiter_registry=self.limiter_registry,
@@ -330,7 +333,9 @@ class LangChainModelFactory:
                 "Install langchain to create a chat model factory."
             ) from exc
         try:
-            chat_model = init_chat_model(self.model, **(self.model_kwargs or {}))
+            provider_kwargs = dict(self.model_kwargs or {})
+            provider_kwargs["max_retries"] = 0
+            chat_model = init_chat_model(self.model, **provider_kwargs)
         except ImportError as exc:  # pragma: no cover - provider package missing
             raise MissingLangChainProviderDependencyError(
                 f"Missing provider dependency while initializing model {self.model!r}."
@@ -341,7 +346,7 @@ class LangChainModelFactory:
             model_name=self.model,
             diagnostic_label=self.diagnostic_label,
             invocation_timeout_seconds=self.invocation_timeout_seconds,
-            max_attempts=self.structured_output_max_attempts,
+            max_attempts=max_attempts_from_retries(self.max_retries),
             retry_backoff_seconds=self.structured_output_retry_backoff_seconds,
             limiter_registry=self.limiter_registry,
         )
@@ -362,7 +367,6 @@ class OpenAICompatibleChatModelFactory:
     max_retries: int = 1
     model_kwargs: dict[str, Any] | None = None
     structured_output_method: str = "function_calling"
-    structured_output_max_attempts: int = 3
     structured_output_retry_backoff_seconds: float = 1.0
     purpose_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
     limiter_registry: LimiterRegistry | None = None
@@ -380,6 +384,8 @@ class OpenAICompatibleChatModelFactory:
             ) from exc
 
         policy = self._resolve_policy(purpose)
+        provider_kwargs = dict(self.model_kwargs or {})
+        provider_kwargs["max_retries"] = 0
         chat_model = init_chat_model(
             model=self.model,
             model_provider="openai",
@@ -391,8 +397,7 @@ class OpenAICompatibleChatModelFactory:
             max_tokens=policy["max_tokens"],
             temperature=self.temperature,
             timeout=policy["timeout"],
-            max_retries=0,
-            **(self.model_kwargs or {}),
+            **provider_kwargs,
         )
         invoker = LangChainStructuredInvoker(
             model=chat_model,
@@ -401,7 +406,7 @@ class OpenAICompatibleChatModelFactory:
             base_url=self.base_url,
             diagnostic_label=self.diagnostic_label,
             structured_output_method=policy["structured_output_method"],
-            max_attempts=policy["structured_output_max_attempts"],
+            max_attempts=max_attempts_from_retries(policy["max_retries"]),
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
             invocation_timeout_seconds=policy["timeout"],
             limiter_registry=self.limiter_registry,
@@ -417,6 +422,8 @@ class OpenAICompatibleChatModelFactory:
             ) from exc
 
         policy = self._resolve_policy(purpose)
+        provider_kwargs = dict(self.model_kwargs or {})
+        provider_kwargs["max_retries"] = 0
         chat_model = init_chat_model(
             model=self.model,
             model_provider="openai",
@@ -428,8 +435,7 @@ class OpenAICompatibleChatModelFactory:
             max_tokens=policy["max_tokens"],
             temperature=self.temperature,
             timeout=policy["timeout"],
-            max_retries=0,
-            **(self.model_kwargs or {}),
+            **provider_kwargs,
         )
         invoker = LangChainToolCallingInvoker(
             model=chat_model,
@@ -438,7 +444,7 @@ class OpenAICompatibleChatModelFactory:
             base_url=self.base_url,
             diagnostic_label=self.diagnostic_label,
             invocation_timeout_seconds=policy["timeout"],
-            max_attempts=policy["structured_output_max_attempts"],
+            max_attempts=max_attempts_from_retries(policy["max_retries"]),
             retry_backoff_seconds=policy["structured_output_retry_backoff_seconds"],
             limiter_registry=self.limiter_registry,
             dotted_tool_name_aliasing=_is_micu_base_url(self.base_url),
@@ -447,19 +453,20 @@ class OpenAICompatibleChatModelFactory:
 
     def _resolve_policy(self, purpose: str) -> dict[str, Any]:
         override = self.purpose_policies.get(purpose, {})
+
+        def inherit_when_none(key: str, default: Any) -> Any:
+            value = override.get(key)
+            return default if value is None else value
+
         return {
-            "max_tokens": override.get("max_tokens", self.max_tokens),
-            "timeout": override.get("timeout", self.timeout),
-            "max_retries": override.get("max_retries", self.max_retries),
-            "structured_output_method": override.get(
+            "max_tokens": inherit_when_none("max_tokens", self.max_tokens),
+            "timeout": inherit_when_none("timeout", self.timeout),
+            "max_retries": inherit_when_none("max_retries", self.max_retries),
+            "structured_output_method": inherit_when_none(
                 "structured_output_method",
                 self.structured_output_method,
             ),
-            "structured_output_max_attempts": override.get(
-                "structured_output_max_attempts",
-                self.structured_output_max_attempts,
-            ),
-            "structured_output_retry_backoff_seconds": override.get(
+            "structured_output_retry_backoff_seconds": inherit_when_none(
                 "structured_output_retry_backoff_seconds",
                 self.structured_output_retry_backoff_seconds,
             ),

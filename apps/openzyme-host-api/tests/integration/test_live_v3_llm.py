@@ -92,7 +92,7 @@ def test_live_v3_message_loop_can_create_a_task_via_real_llm() -> None:
 
     message_timeout_seconds = derive_live_stage_timeout_seconds(
         provider_timeout_seconds=settings.llm.timeout,
-        attempts=settings.llm.structured_output_max_attempts,
+        attempts=settings.llm.max_retries + 1,
         buffer_seconds=45,
         minimum_seconds=90,
     )
@@ -149,7 +149,7 @@ def test_live_v3_eval_generates_design_task_plan() -> None:
     settings = apply_live_llm_test_budget(get_settings())
     eval_timeout_seconds = derive_live_stage_timeout_seconds(
         provider_timeout_seconds=settings.llm.timeout,
-        attempts=settings.llm.structured_output_max_attempts,
+        attempts=settings.llm.max_retries + 1,
         buffer_seconds=60,
         minimum_seconds=120,
     )

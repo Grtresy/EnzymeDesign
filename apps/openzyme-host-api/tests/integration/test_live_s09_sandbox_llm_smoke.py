@@ -148,15 +148,11 @@ def test_live_executor_llm_writes_and_executes_sandbox_code() -> None:
             settings.llm,
             max_tokens=max(settings.llm.max_tokens or 0, 900),
             max_retries=max(settings.llm.max_retries or 0, 1),
-            structured_output_max_attempts=max(
-                settings.llm.structured_output_max_attempts or 0,
-                2,
-            ),
         ),
     )
     timeout_seconds = derive_live_graph_timeout_seconds(
         llm_timeout_seconds=tuned_settings.llm.timeout,
-        structured_attempts=tuned_settings.llm.structured_output_max_attempts,
+        structured_attempts=tuned_settings.llm.max_retries + 1,
         tavily_timeout_seconds=None,
         expected_llm_call_budget=8,
         expected_tavily_budget=0,

@@ -22,7 +22,6 @@ DEFAULT_OPENAI_COMPAT_USER_AGENT = (
 )
 DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API = True
 DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD = "function_calling"
-DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS = 3
 DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_HOST_API_BIND_HOST = "127.0.0.1"
@@ -40,6 +39,7 @@ LLM_PURPOSES = (
     "research",
     "design",
     "report_review",
+    "v3_harness_loop",
     "deep_research_brief",
     "deep_research_supervisor",
     "deep_research_researcher",
@@ -127,7 +127,6 @@ class ResolvedLlmPolicy:
     timeout: float | None
     max_retries: int
     structured_output_method: str
-    structured_output_max_attempts: int
     structured_output_retry_backoff_seconds: float
 
 
@@ -137,7 +136,6 @@ class LlmPurposePolicy:
     timeout: float | None = None
     max_retries: int | None = None
     structured_output_method: str | None = None
-    structured_output_max_attempts: int | None = None
     structured_output_retry_backoff_seconds: float | None = None
 
 
@@ -154,7 +152,6 @@ class LlmSettings:
     max_retries: int
     temperature: float
     structured_output_method: str
-    structured_output_max_attempts: int
     structured_output_retry_backoff_seconds: float
     purpose_policies: dict[str, LlmPurposePolicy]
     context_window_tokens: int | None = None
@@ -178,11 +175,6 @@ class LlmSettings:
                 self.structured_output_method
                 if override.structured_output_method is None
                 else override.structured_output_method
-            ),
-            structured_output_max_attempts=(
-                self.structured_output_max_attempts
-                if override.structured_output_max_attempts is None
-                else override.structured_output_max_attempts
             ),
             structured_output_retry_backoff_seconds=(
                 self.structured_output_retry_backoff_seconds
@@ -230,10 +222,6 @@ class LlmSettings:
             structured_output_method=os.getenv(
                 "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",
                 DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD,
-            ),
-            structured_output_max_attempts=_parse_int(
-                os.getenv("OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS"),
-                DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS,
             ),
             structured_output_retry_backoff_seconds=_parse_float(
                 os.getenv("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS"),
@@ -286,11 +274,6 @@ def _load_llm_purpose_policies() -> dict[str, LlmPurposePolicy]:
                 else _parse_int(os.getenv(f"{env_prefix}MAX_RETRIES"), 0)
             ),
             structured_output_method=os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_METHOD") or None,
-            structured_output_max_attempts=(
-                None
-                if os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_MAX_ATTEMPTS") in {None, ""}
-                else _parse_int(os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_MAX_ATTEMPTS"), 0)
-            ),
             structured_output_retry_backoff_seconds=(
                 None
                 if os.getenv(f"{env_prefix}STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS") in {None, ""}
@@ -307,7 +290,6 @@ def _load_llm_purpose_policies() -> dict[str, LlmPurposePolicy]:
                 policy.max_tokens,
                 policy.max_retries,
                 policy.structured_output_method,
-                policy.structured_output_max_attempts,
                 policy.structured_output_retry_backoff_seconds,
             )
         ):
@@ -501,7 +483,6 @@ class LiveLlmTestSettings:
     timeout: float | None
     max_retries: int | None
     structured_output_method: str | None
-    structured_output_max_attempts: int | None
     structured_output_retry_backoff_seconds: float | None
 
     @classmethod
@@ -520,11 +501,6 @@ class LiveLlmTestSettings:
             ),
             structured_output_method=(
                 os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD") or None
-            ),
-            structured_output_max_attempts=(
-                None
-                if os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS") in {None, ""}
-                else _parse_int(os.getenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS"), 0)
             ),
             structured_output_retry_backoff_seconds=(
                 None
@@ -603,7 +579,6 @@ __all__ = [
     "DEFAULT_HOST_API_BIND_HOST",
     "DEFAULT_HOST_API_BIND_PORT",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD",
-    "DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
     "DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     "DEFAULT_OPENAI_COMPAT_BASE_URL",
     "DEFAULT_OPENAI_COMPAT_EXTRA_BODY",

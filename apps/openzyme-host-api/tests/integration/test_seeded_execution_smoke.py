@@ -162,10 +162,7 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
         llm=replace(
             settings.llm,
             max_tokens=max(settings.llm.max_tokens or 0, 512),
-            structured_output_max_attempts=max(
-                settings.llm.structured_output_max_attempts or 0,
-                2,
-            ),
+            max_retries=max(settings.llm.max_retries, 1),
         ),
         research=replace(
             settings.research,
@@ -177,7 +174,7 @@ def test_seeded_v3_master_message_execution_smoke_reaches_report() -> None:
     )
     e2e_timeout_seconds = derive_live_graph_timeout_seconds(
         llm_timeout_seconds=tuned_settings.llm.timeout,
-        structured_attempts=tuned_settings.llm.structured_output_max_attempts,
+        structured_attempts=tuned_settings.llm.max_retries + 1,
         tavily_timeout_seconds=tuned_settings.research.tavily_timeout_seconds,
         expected_llm_call_budget=14,
         expected_tavily_budget=1,

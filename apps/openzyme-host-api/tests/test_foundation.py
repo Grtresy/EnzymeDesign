@@ -52,7 +52,6 @@ def _settings() -> OpenZymeSettings:
             max_retries=5,
             temperature=0.0,
             structured_output_method="function_calling",
-            structured_output_max_attempts=3,
             structured_output_retry_backoff_seconds=1.0,
             purpose_policies={},
         ),
@@ -94,7 +93,6 @@ def _settings() -> OpenZymeSettings:
                 timeout=None,
                 max_retries=None,
                 structured_output_method=None,
-                structured_output_max_attempts=None,
                 structured_output_retry_backoff_seconds=None,
             ),
         ),
@@ -170,7 +168,6 @@ def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
             timeout=60.0,
             max_retries=2,
             structured_output_method="json_schema",
-            structured_output_max_attempts=4,
             structured_output_retry_backoff_seconds=2.0,
             purpose_policies={"report_review": LlmPurposePolicy(timeout=90.0)},
         ),
@@ -182,7 +179,6 @@ def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
                 timeout=12.0,
                 max_retries=0,
                 structured_output_method="function_calling",
-                structured_output_max_attempts=2,
                 structured_output_retry_backoff_seconds=0.25,
             ),
         ),
@@ -194,7 +190,6 @@ def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
     assert constrained.llm.timeout == 12.0
     assert constrained.llm.max_retries == 0
     assert constrained.llm.structured_output_method == "function_calling"
-    assert constrained.llm.structured_output_max_attempts == 2
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.25
     assert constrained.llm.purpose_policies == {}
 
@@ -211,7 +206,6 @@ def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
                 timeout=240.0,
                 max_retries=0,
                 structured_output_method="function_calling",
-                structured_output_max_attempts=2,
                 structured_output_retry_backoff_seconds=0.5,
             ),
         ),
@@ -222,7 +216,6 @@ def test_apply_live_llm_test_budget_respects_long_env_driven_budget() -> None:
     assert constrained.llm.max_tokens == 512
     assert constrained.llm.timeout == 240.0
     assert constrained.llm.max_retries == 0
-    assert constrained.llm.structured_output_max_attempts == 2
     assert constrained.llm.structured_output_retry_backoff_seconds == 0.5
 
 

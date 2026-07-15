@@ -184,11 +184,6 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
                 if live_policy.structured_output_method is None
                 else live_policy.structured_output_method
             ),
-            structured_output_max_attempts=(
-                1
-                if live_policy.structured_output_max_attempts is None
-                else live_policy.structured_output_max_attempts
-            ),
             structured_output_retry_backoff_seconds=(
                 0.5
                 if live_policy.structured_output_retry_backoff_seconds is None
@@ -219,7 +214,6 @@ def build_model_factory_from_settings(
         timeout=settings.llm.timeout,
         max_retries=settings.llm.max_retries,
         structured_output_method=settings.llm.structured_output_method,
-        structured_output_max_attempts=settings.llm.structured_output_max_attempts,
         structured_output_retry_backoff_seconds=settings.llm.structured_output_retry_backoff_seconds,
         context_window_tokens=settings.llm.context_window_tokens,
         default_output_tokens=settings.llm.default_output_tokens,
@@ -230,7 +224,6 @@ def build_model_factory_from_settings(
                 "max_tokens": policy.max_tokens,
                 "max_retries": policy.max_retries,
                 "structured_output_method": policy.structured_output_method,
-                "structured_output_max_attempts": policy.structured_output_max_attempts,
                 "structured_output_retry_backoff_seconds": (
                     policy.structured_output_retry_backoff_seconds
                 ),

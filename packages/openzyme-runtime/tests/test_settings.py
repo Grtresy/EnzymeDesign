@@ -2,7 +2,6 @@ from openzyme_runtime import DEFAULT_HOST_BASE_URL
 from openzyme_runtime import DEFAULT_HOST_API_BIND_HOST
 from openzyme_runtime import DEFAULT_HOST_API_BIND_PORT
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
-from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS
 from openzyme_runtime import DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_BASE_URL
 from openzyme_runtime import DEFAULT_OPENAI_COMPAT_EXTRA_BODY
@@ -35,7 +34,6 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LLM_TEMPERATURE",
         "OPENZYME_LLM_EXTRA_BODY",
         "OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD",
-        "OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
         "OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
         "OPENZYME_LLM_CONTEXT_WINDOW_TOKENS",
         "OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS",
@@ -46,6 +44,7 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LLM_REPORT_REVIEW_TIMEOUT",
         "OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS",
         "OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD",
+        "OPENZYME_LLM_V3_HARNESS_LOOP_MAX_RETRIES",
         "OPENZYME_RESEARCH_MAX_UNITS",
         "OPENZYME_TAVILY_TIMEOUT_SECONDS",
         "OPENZYME_HOST_BASE_URL",
@@ -61,7 +60,6 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_MAX_TOKENS",
         "OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
-        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
         "OPENZYME_LIMIT_GLOBAL_CONCURRENCY",
         "OPENZYME_LIMIT_SESSION_CONCURRENCY",
@@ -90,7 +88,6 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_TEST_LIVE_LLM_MAX_TOKENS",
         "OPENZYME_TEST_LIVE_LLM_MAX_RETRIES",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD",
-        "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS",
         "OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS",
     ):
         monkeypatch.setenv(key, "")
@@ -106,10 +103,6 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.llm.use_responses_api is DEFAULT_OPENAI_COMPAT_USE_RESPONSES_API
     assert settings.llm.max_tokens is None
     assert settings.llm.structured_output_method == DEFAULT_LLM_STRUCTURED_OUTPUT_METHOD
-    assert (
-        settings.llm.structured_output_max_attempts
-        == DEFAULT_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS
-    )
     assert (
         settings.llm.structured_output_retry_backoff_seconds
         == DEFAULT_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS
@@ -157,7 +150,6 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LLM_MAX_RETRIES", "5")
     monkeypatch.setenv("OPENZYME_LLM_TEMPERATURE", "0.25")
     monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_METHOD", "json_mode")
-    monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS", "4")
     monkeypatch.setenv("OPENZYME_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "2.5")
     monkeypatch.setenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", "123456")
     monkeypatch.setenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", "6543")
@@ -168,6 +160,7 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_TIMEOUT", "90")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_MAX_TOKENS", "300")
     monkeypatch.setenv("OPENZYME_LLM_REPORT_REVIEW_STRUCTURED_OUTPUT_METHOD", "function_calling")
+    monkeypatch.setenv("OPENZYME_LLM_V3_HARNESS_LOOP_MAX_RETRIES", "2")
     monkeypatch.setenv("OPENZYME_RESEARCH_MAX_UNITS", "7")
     monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
     monkeypatch.setenv("OPENZYME_TAVILY_MAX_RESULTS", "9")
@@ -204,7 +197,6 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_MAX_TOKENS", "500")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_MAX_RETRIES", "0")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_METHOD", "function_calling")
-    monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_MAX_ATTEMPTS", "2")
     monkeypatch.setenv("OPENZYME_TEST_LIVE_LLM_STRUCTURED_OUTPUT_RETRY_BACKOFF_SECONDS", "0.5")
 
     reset_settings_cache()
@@ -221,7 +213,6 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.llm.max_retries == 5
     assert settings.llm.temperature == 0.25
     assert settings.llm.structured_output_method == "json_mode"
-    assert settings.llm.structured_output_max_attempts == 4
     assert settings.llm.structured_output_retry_backoff_seconds == 2.5
     assert settings.llm.context_window_tokens == 123456
     assert settings.llm.default_output_tokens == 6543
@@ -233,6 +224,7 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert report_review_policy.max_tokens == 300
     assert report_review_policy.timeout == 90.0
     assert report_review_policy.structured_output_method == "function_calling"
+    assert settings.llm.policy_for_purpose("v3_harness_loop").max_retries == 2
     assert settings.research.max_units == 7
     assert settings.research.tavily_api_key == "tavily-key"
     assert settings.research.tavily_max_results == 9
@@ -270,7 +262,6 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.test.live_llm.timeout == 120.0
     assert settings.test.live_llm.max_retries == 0
     assert settings.test.live_llm.structured_output_method == "function_calling"
-    assert settings.test.live_llm.structured_output_max_attempts == 2
     assert settings.test.live_llm.structured_output_retry_backoff_seconds == 0.5
 
 

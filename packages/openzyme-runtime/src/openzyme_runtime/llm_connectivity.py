@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from .llm_invocation import LlmInvocationRuntime
+from .llm_invocation import max_attempts_from_retries
 from .settings import get_settings
 
 
@@ -46,7 +47,7 @@ def run_connectivity_check() -> dict[str, Any]:
         kind="connectivity",
         model=llm.model,
         base_url=llm.base_url,
-        max_attempts=llm.structured_output_max_attempts,
+        max_attempts=max_attempts_from_retries(llm.max_retries),
         retry_backoff_seconds=llm.structured_output_retry_backoff_seconds,
         invocation_timeout_seconds=llm.timeout or 60.0,
     ).invoke(

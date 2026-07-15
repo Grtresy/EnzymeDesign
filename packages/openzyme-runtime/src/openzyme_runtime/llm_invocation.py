@@ -79,6 +79,14 @@ def is_retryable_llm_provider_error(exc: BaseException) -> bool:
     return classify_llm_provider_error(exc).retryable
 
 
+def max_attempts_from_retries(max_retries: int) -> int:
+    """Convert a retry budget into the runtime's total-attempt budget."""
+    retries = int(max_retries)
+    if retries < 0:
+        raise ValueError("max_retries must be non-negative")
+    return retries + 1
+
+
 @dataclass(frozen=True, slots=True)
 class LlmInvocationRuntime:
     purpose: str
@@ -722,4 +730,5 @@ __all__ = [
     "classify_llm_provider_error",
     "extract_llm_usage",
     "is_retryable_llm_provider_error",
+    "max_attempts_from_retries",
 ]

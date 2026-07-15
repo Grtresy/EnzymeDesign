@@ -33,9 +33,6 @@ def _live_llm_settings() -> LlmSettings:
             if live_policy.structured_output_method is None
             else live_policy.structured_output_method
         ),
-        structured_output_max_attempts=1
-        if live_policy.structured_output_max_attempts is None
-        else live_policy.structured_output_max_attempts,
         structured_output_retry_backoff_seconds=(
             0.5
             if live_policy.structured_output_retry_backoff_seconds is None
@@ -58,7 +55,7 @@ def test_live_llm_generates_structured_report_draft() -> None:
     invoker = factory.create_structured_invoker(purpose="report_review")
     stage_timeout_seconds = derive_live_stage_timeout_seconds(
         provider_timeout_seconds=llm_settings.timeout,
-        attempts=llm_settings.structured_output_max_attempts,
+        attempts=llm_settings.max_retries + 1,
         buffer_seconds=30,
         minimum_seconds=70,
     )
