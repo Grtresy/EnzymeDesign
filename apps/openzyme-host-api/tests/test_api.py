@@ -61,6 +61,7 @@ from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
 from openzyme_core import CoreRepositories
 from openzyme_core import DurableEventRepository
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
@@ -188,6 +189,132 @@ def test_v3_event_insert_failure_rolls_back_local_command(
     with provider.read() as owner:
         assert owner.repositories.sessions.get("sess_rolled_back") is None
         assert owner.repositories.agents.list_by_session("sess_rolled_back") == []
+
+
+def test_v3_execution_callback_scope_inherits_runtime_fence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "callback-fence.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+    )
+    session = Session.create(
+        "sess_callback_fence",
+        "proj_001",
+        "Callback fence",
+        "Reject stale sandbox callback writes",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+    with provider.connection_scope() as coordinator:
+        acquired = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:callback",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert acquired.lease is not None
+        registry = dependencies.build_v3_engine_registry(
+            coordinator.repositories,
+            acquired.lease,
+        )
+        execution_engine = registry.require("execution")
+        callback_scope = execution_engine.repository_scope_factory
+        assert callback_scope is not None
+
+        coordinator.connection.execute(
+            "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+            ("2020-01-01T00:00:00+00:00", acquired.lease.lease_token),
+        )
+        coordinator.connection.commit()
+        replacement = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:replacement",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert replacement.acquired is True
+
+        with pytest.raises(RuntimeWriteFencingError, match="stale business write"):
+            with callback_scope():
+                pass
+
+
+def test_v3_timed_out_callback_cannot_apply_late_business_effect(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "late-effect-fence.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+    )
+    session = Session.create(
+        "sess_late_effect",
+        "proj_001",
+        "Late effect",
+        "Preserve original state after timeout",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+    with provider.connection_scope() as coordinator:
+        acquired = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:timed-out-callback",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert acquired.lease is not None
+        execution_engine = dependencies.build_v3_engine_registry(
+            coordinator.repositories,
+            acquired.lease,
+        ).require("execution")
+        callback_scope = execution_engine.repository_scope_factory
+        assert callback_scope is not None
+        callback_started = threading.Event()
+        release_callback = threading.Event()
+        callback_errors: list[BaseException] = []
+
+        def return_late_after_timeout() -> None:
+            try:
+                with callback_scope() as callback_repositories:
+                    callback_started.set()
+                    assert release_callback.wait(timeout=5)
+                    callback_repositories.sessions.save(
+                        replace(session, objective="Late stale callback overwrite")
+                    )
+            except BaseException as exc:
+                callback_errors.append(exc)
+
+        callback = threading.Thread(target=return_late_after_timeout)
+        callback.start()
+        assert callback_started.wait(timeout=5)
+        coordinator.connection.execute(
+            "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+            ("2020-01-01T00:00:00+00:00", acquired.lease.lease_token),
+        )
+        coordinator.connection.commit()
+        replacement = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:replacement",
+            mode="test",
+            lease_seconds=60,
+        )
+        assert replacement.acquired is True
+        release_callback.set()
+        callback.join(timeout=5)
+
+    assert not callback.is_alive()
+    assert len(callback_errors) == 1
+    assert isinstance(callback_errors[0], RuntimeWriteFencingError)
+    with provider.read() as owner:
+        assert owner.repositories.sessions.get(session.session_id) == session
 
 
 class FakeExecutionAdapter:

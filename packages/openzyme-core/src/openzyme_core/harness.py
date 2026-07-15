@@ -1361,6 +1361,9 @@ def run_agent_harness_loop(
 
     for _ in range(harness_input.max_steps):
         try:
+            repositories.assert_runtime_write_fence(
+                session_id=harness_input.session_id,
+            )
             step = driver.plan(context, harness_input, tool_results)
         except Exception as exc:
             outputs.append(_format_runtime_error(exc))

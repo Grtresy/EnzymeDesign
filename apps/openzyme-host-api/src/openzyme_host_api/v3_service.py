@@ -20,6 +20,7 @@ from openzyme_core import HarnessStatus
 from openzyme_core import LaneManager
 from openzyme_core import RestoreFocus
 from openzyme_core import RuntimeConsistencyService
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import SessionProjectionBuilder
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
@@ -30,6 +31,7 @@ from openzyme_core import AgentRuntimeService
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import persist_conversation_message
 from openzyme_core import SessionRuntimeLeaseLockedError
+from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import AgentRuntimeSignalReason
@@ -169,7 +171,13 @@ class V3EventStoreSink:
 
     def emit(self, event: HarnessEvent) -> None:
         self.events.append(event)
-        self.event_store.append(event.session_id, [event.to_dict()])
+        try:
+            self.event_store.append(event.session_id, [event.to_dict()])
+        except RuntimeWriteFencingError:
+            # The coordinator persists the shared collector after the stale
+            # worker returns. A stale worker must never bypass its write fence
+            # merely to publish the rejection diagnostic itself.
+            return
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +211,10 @@ class V3HostApiService:
     runtime_repository_scope_factory: Callable[
         [], ContextManager[CoreRepositories]
     ] | None = None
-    engine_registry_factory: Callable[[CoreRepositories], EngineRegistry] | None = None
+    engine_registry_factory: Callable[
+        [CoreRepositories, SessionRuntimeLease | None],
+        EngineRegistry,
+    ] | None = None
     operation_lock: threading.RLock = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:

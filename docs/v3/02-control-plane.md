@@ -291,6 +291,10 @@ claimed --operator release--> pending
 - 同一 session 同时只能有一个未过期 active lease；不同 session 的 lease 互不阻塞
 - lease 过期后可由新的 owner reclaim，并分配新的单调 `fencing_token`
 - heartbeat / extend / release 必须校验 `owner_id + lease_token`
+- scheduler 在 blocking provider/tool turn 期间按 lease TTL 的有界分数持续 heartbeat；heartbeat 更新失败或返回 no-match 表示 ownership 已丢失，不得继续 claim 新 signal
+- runtime worker connection 绑定 `session_id + lease_token + fencing_token`；write commit 前必须重新确认 lease 未过期且未释放，session-scoped write 还必须与 leased session 一致
+- scheduler worker 重建的 capability engine、sandbox SDK control server、adapter executor 与 HPC fetch callback scope 必须继承同一 fence；不能因为切换线程/connection 而退化成 unfenced Host write
+- write/approval/external tool 在 side effect 前做 fence preflight；commit fence 是竞态条件下的第二道防线。超时或取消后迟到返回的旧 callback 不得写 task、operation、run、artifact、report 或 event
 - session runtime lease 只管理“谁有权推进 session runtime”，不判断 task 是否完成或失败
 - `/runtime/drain`、background runtime、recovery worker 和测试 scheduler 都必须尊重同一 session lease；已被占用时返回或记录 locked diagnostic
 

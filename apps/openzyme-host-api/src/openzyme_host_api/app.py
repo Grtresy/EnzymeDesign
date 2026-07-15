@@ -52,6 +52,7 @@ from openzyme_engines import ProviderHttpBioDatabaseAdapter
 from openzyme_engines import build_engine_registry
 from openzyme_engines.execution import ExecutionArtifactRef as V3ExecutionArtifactRef
 from openzyme_domain import RunStatus
+from openzyme_domain import SessionRuntimeLease
 from openzyme_domain.control_plane import utc_now_iso
 
 
@@ -321,7 +322,17 @@ class HostApiDependencies:
     def build_v3_engine_registry(
         self,
         repositories: CoreRepositories,
+        runtime_lease: SessionRuntimeLease | None = None,
     ) -> EngineRegistry:
+        @contextmanager
+        def runtime_repository_scope() -> Iterator[CoreRepositories]:
+            with self.v3_repository_scope(mode="connection") as scoped_repositories:
+                if runtime_lease is None:
+                    yield scoped_repositories
+                    return
+                with scoped_repositories.runtime_write_fence(runtime_lease):
+                    yield scoped_repositories
+
         return build_engine_registry(
             DeepResearchEngine(
                 repositories,
@@ -345,7 +356,7 @@ class HostApiDependencies:
                 allow_bio_fixture_adapter=self.v3_allow_bio_fixture_adapter,
                 sandbox_runner=self.v3_pipeline_sandbox_runner
                 or PodmanPipelineSandboxRunner(),
-                repository_scope_factory=self.v3_repository_scope,
+                repository_scope_factory=runtime_repository_scope,
             ),
         )
 

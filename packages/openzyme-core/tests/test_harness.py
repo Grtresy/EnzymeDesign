@@ -29,6 +29,7 @@ from openzyme_core import HarnessStep
 from openzyme_core import HarnessStatus
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import ResumeDecision
 from openzyme_core import ResumeEnvelope
 from openzyme_core import SessionRuntimeContext
@@ -3039,6 +3040,59 @@ def test_legacy_tool_runtime_uses_conservative_governance_defaults() -> None:
     assert governance.supports_parallel is False
     assert governance.side_effect is ToolSideEffect.WRITE
     assert governance.approval_required is False
+
+
+def test_tool_router_rejects_write_before_stale_runtime_side_effect(
+    monkeypatch,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    dispatched = False
+
+    def write_handler(_context, _invocation):
+        nonlocal dispatched
+        dispatched = True
+        return "must not run"
+
+    def reject_stale_fence(self, *, session_id=None):  # type: ignore[no-untyped-def]
+        del self, session_id
+        raise RuntimeWriteFencingError("stale runtime lease")
+
+    monkeypatch.setattr(
+        CoreRepositories,
+        "assert_runtime_write_fence",
+        reject_stale_fence,
+    )
+    registry = ToolRegistry()
+    registry.register("example.write", write_handler)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+    )
+    descriptor = ToolDescriptor(
+        tool_name="example.write",
+        description="Write only with a live runtime lease.",
+        input_schema={"type": "object", "properties": {}},
+    )
+    router = registry.to_tool_router(context, descriptors=(descriptor,))
+    step_context = build_agent_step_context(context, call_index=1)
+
+    result = router.dispatch(
+        step_context,
+        ToolInvocation(
+            call_id="call_stale_write",
+            tool_name="example.write",
+            arguments={},
+        ),
+    )
+
+    assert dispatched is False
+    assert result.ok is False
+    assert result.status == "runtime_fencing_rejected"
+    assert result.error_code == "runtime_fencing_rejected"
 
 
 def test_tool_registry_register_runtime_coexists_with_legacy_and_typed_wins() -> None:

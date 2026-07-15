@@ -435,7 +435,61 @@ class ToolRouter:
         validation_error = self.validate(step_context, invocation)
         if validation_error is not None:
             return validation_error.to_tool_result(invocation)
-        return runtime.dispatch(step_context, invocation, self.dispatch_context)
+        governance = runtime.governance(step_context)
+        if governance.side_effect is not ToolSideEffect.READ:
+            repositories = getattr(self.dispatch_context, "repositories", None)
+            assert_fence = getattr(repositories, "assert_runtime_write_fence", None)
+            if callable(assert_fence):
+                try:
+                    assert_fence(session_id=step_context.session_id)
+                except RuntimeError as exc:
+                    message = (
+                        "Tool execution rejected because the session runtime lease "
+                        "is no longer active."
+                    )
+                    return ToolResult(
+                        call_id=invocation.call_id,
+                        tool_name=invocation.tool_name,
+                        ok=False,
+                        content=message,
+                        task_id=invocation.task_id,
+                        lane_id=invocation.lane_id,
+                        status="runtime_fencing_rejected",
+                        summary=message,
+                        error_code="runtime_fencing_rejected",
+                        hint="Allow the active runtime owner to resume this work.",
+                        details={"reason": str(exc)},
+                    )
+        try:
+            return runtime.dispatch(step_context, invocation, self.dispatch_context)
+        except RuntimeError:
+            if governance.side_effect is ToolSideEffect.READ:
+                raise
+            repositories = getattr(self.dispatch_context, "repositories", None)
+            assert_fence = getattr(repositories, "assert_runtime_write_fence", None)
+            if not callable(assert_fence):
+                raise
+            try:
+                assert_fence(session_id=step_context.session_id)
+            except RuntimeError as exc:
+                message = (
+                    "Tool execution rejected because the session runtime lease "
+                    "is no longer active."
+                )
+                return ToolResult(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    ok=False,
+                    content=message,
+                    task_id=invocation.task_id,
+                    lane_id=invocation.lane_id,
+                    status="runtime_fencing_rejected",
+                    summary=message,
+                    error_code="runtime_fencing_rejected",
+                    hint="Allow the active runtime owner to resume this work.",
+                    details={"reason": str(exc)},
+                )
+            raise
 
 
 class ToolRegistryProtocol:

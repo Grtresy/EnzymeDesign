@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
@@ -54,7 +55,10 @@ class AgentRuntimeScheduler:
     repository_scope_factory: Callable[
         [], AbstractContextManager[CoreRepositories]
     ] | None = None
-    engine_registry_factory: Callable[[CoreRepositories], EngineRegistry] | None = None
+    engine_registry_factory: Callable[
+        [CoreRepositories, SessionRuntimeLease | None],
+        EngineRegistry,
+    ] | None = None
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -86,6 +90,11 @@ class AgentRuntimeScheduler:
         session_lease, owns_session_lease = self._acquire_session_lease(session_id)
         previous_session_lease = self.context.session_runtime_lease
         self.context.session_runtime_lease = session_lease
+        heartbeat_task: asyncio.Task[None] | None = None
+        if owns_session_lease:
+            heartbeat_task = asyncio.create_task(
+                self._maintain_session_lease(session_lease)
+            )
         global_limiter = asyncio.Semaphore(self.max_global_concurrency)
         session_limiter = asyncio.Semaphore(self.max_session_concurrency)
         agent_limiters: dict[str, asyncio.Semaphore] = {}
@@ -158,6 +167,8 @@ class AgentRuntimeScheduler:
                 return ()
             outcomes: list[AgentRuntimeOutcome] = []
             while len(outcomes) < max_signals and not self._shutdown_requested:
+                if heartbeat_task is not None and heartbeat_task.done():
+                    break
                 claim_limit = min(
                     max_signals - len(outcomes),
                     self.max_global_concurrency,
@@ -183,6 +194,10 @@ class AgentRuntimeScheduler:
                 )
             return tuple(outcomes)
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat_task
             self.context.session_runtime_lease = previous_session_lease
             if owns_session_lease:
                 self.context.repositories.session_runtime_leases.release(
@@ -206,14 +221,24 @@ class AgentRuntimeScheduler:
         """
 
         if self.repository_scope_factory is None:
-            return AgentRuntimeService(self.context).wake_agent(
-                signal,
-                max_steps=max_steps,
-            )
+            lease = self.context.session_runtime_lease
+            if lease is None:
+                return AgentRuntimeService(self.context).wake_agent(
+                    signal,
+                    max_steps=max_steps,
+                )
+            with self.context.repositories.runtime_write_fence(lease):
+                return AgentRuntimeService(self.context).wake_agent(
+                    signal,
+                    max_steps=max_steps,
+                )
         with self.repository_scope_factory() as repositories:
             engine_registry = self.context.engine_registry
             if self.engine_registry_factory is not None:
-                engine_registry = self.engine_registry_factory(repositories)
+                engine_registry = self.engine_registry_factory(
+                    repositories,
+                    self.context.session_runtime_lease,
+                )
             event_sink = self.context.event_sink
             scoped_sink_factory = getattr(event_sink, "for_repositories", None)
             if callable(scoped_sink_factory):
@@ -228,10 +253,52 @@ class AgentRuntimeScheduler:
                 engine_registry=engine_registry,
                 event_sink=event_sink,
             )
-            return AgentRuntimeService(scoped_context).wake_agent(
-                signal,
-                max_steps=max_steps,
-            )
+            lease = scoped_context.session_runtime_lease
+            if lease is None:
+                return AgentRuntimeService(scoped_context).wake_agent(
+                    signal,
+                    max_steps=max_steps,
+                )
+            with repositories.runtime_write_fence(lease):
+                return AgentRuntimeService(scoped_context).wake_agent(
+                    signal,
+                    max_steps=max_steps,
+                )
+
+    async def _maintain_session_lease(self, lease: SessionRuntimeLease) -> None:
+        interval = max(0.25, min(self.session_lease_seconds / 3, 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                heartbeat = self.context.repositories.session_runtime_leases.heartbeat(
+                    session_id=lease.session_id,
+                    owner_id=self.worker_id,
+                    lease_token=lease.lease_token,
+                    lease_seconds=self.session_lease_seconds,
+                )
+            except Exception as exc:
+                self.context.emit(
+                    "runtime.lease_heartbeat_failed",
+                    {
+                        "session_id": lease.session_id,
+                        "lease_token": lease.lease_token,
+                        "fencing_token": lease.fencing_token,
+                        "worker_id": self.worker_id,
+                        "error_type": exc.__class__.__name__,
+                    },
+                )
+                return
+            if heartbeat is None:
+                self.context.emit(
+                    "runtime.lease_lost",
+                    {
+                        "session_id": lease.session_id,
+                        "lease_token": lease.lease_token,
+                        "fencing_token": lease.fencing_token,
+                        "worker_id": self.worker_id,
+                    },
+                )
+                return
 
     async def run_forever(
         self,

@@ -69,6 +69,7 @@ session ownership 与 signal claim 是两层不同语义：
 - background runtime、manual `/runtime/drain`、recovery worker 和测试 scheduler 在推进某个 session 前都必须先 acquire session lease
 - `/runtime/drain` 是 debug/operator/manual recovery command；如果 session 已由 background/manual/recovery worker 持有未过期 lease，它必须返回结构化 locked/blocked 结果或等价 HTTP conflict，而不能并发推进
 - session lease 过期后可由新 owner reclaim，并通过单调 fencing token 让旧 worker 迟到写回失败
+- scheduler 在 blocking provider/tool turn 期间持续 heartbeat；heartbeat 失败后停止 claim 新 signal，正在运行的 worker 只能以 fenced failure 收尾
 - session lease 只管理 runtime 推进权，不判断 task 是否完成或失败
 
 signal claim 语义：
@@ -83,7 +84,9 @@ signal claim 语义：
 
 第一阶段不要求跨进程 worker、Redis queue 或共享分布式 limiter。代码边界必须保留这些演进点：session lease 与 signal claim API 是 repository 层能力，scheduler 通过 worker id、session lease 和 signal lease 认领 work，provider/tool quota 通过 limiter 抽象表达，而不是靠线程池大小间接表达。
 
-当前单进程 scheduler 的 coordinator 在自己的 connection 上获取 session lease 与 claim signal；blocking agent turn 进入 worker thread 后，必须在该 worker 内重新打开 repository scope、重建绑定同一 scope 的 engine registry，并从 canonical state 重载 snapshot。worker 不得复用 coordinator/request connection。该 worker scope 可以跨 provider 等待，但不持 `BEGIN IMMEDIATE`；每个本地 mutation 仍需是短提交。sandbox SDK control server 线程遵循相同 ownership 规则，每次 callback 打开并关闭自己的 scope。
+当前单进程 scheduler 的 coordinator 在自己的 connection 上获取 session lease、持续 heartbeat 并 claim signal；blocking agent turn 进入 worker thread 后，必须在该 worker 内重新打开 repository scope、重建绑定同一 scope 的 engine registry，并从 canonical state 重载 snapshot。worker 不得复用 coordinator/request connection。该 worker scope 可以跨 provider 等待，但不持 `BEGIN IMMEDIATE`；每个本地 mutation 仍需是短提交，并在 commit 前校验绑定的 `session_id + lease_token + fencing_token` 仍 active。write/approval/external tool dispatch 前先做 fence preflight，commit 时再次检查以封住检查后失效竞态。
+
+sandbox SDK control server、adapter executor 与 HPC fetch 回调线程遵循相同 ownership 规则：每次 callback 打开独立 scope，但必须继承发起 runtime turn 的 lease fence。若 callback 在 timeout/cancel 后迟到，或 lease 已被新 owner reclaim，其 canonical task/operation/run/artifact/report/event 写回必须失败。外部动作是否已被远端接受由 operation digest、idempotency key 与 opaque handle 解决；不能因本地 write 被 fence 就无条件重复提交外部动作。
 
 runtime state consistency guard 是只读诊断层。它可以在 workspace projection 与 events 中报告：
 

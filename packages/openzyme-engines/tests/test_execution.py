@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from http import client as http_client
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from openzyme_core import RestoreFocus
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import ToolInvocation
 from openzyme_core import ToolRegistry
 from openzyme_core import build_agent_step_context
@@ -3311,7 +3313,17 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
     if not preflight.ok:
         pytest.skip(f"S14 product-route live HPC smoke requires pipeline sandbox: {preflight.message}")
 
-    repositories = _build_repositories()
+    repository_provider = SQLiteRepositoryProvider(
+        str(tmp_path / "s14-live-control-plane.sqlite3")
+    )
+    main_connection = connect_sqlite(repository_provider.database_path)
+    repositories = CoreRepositories.from_connection(main_connection)
+
+    @contextmanager
+    def repository_scope():
+        with repository_provider.connection_scope() as owner:
+            yield owner.repositories
+
     _seed_session(repositories)
     fixture_root = (
         Path(__file__).resolve().parents[3]
@@ -3389,6 +3401,7 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
             server=MCPHpcServer(settings.execution.hpc_runner_config),
         ),
         sandbox_runner=sandbox,
+        repository_scope_factory=repository_scope,
     )
 
     first = engine.start_pipeline(

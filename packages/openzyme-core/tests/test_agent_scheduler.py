@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import replace
+from threading import Event
+from threading import Thread
+import time
 
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionRuntimeContext
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
@@ -40,6 +45,33 @@ class FakeModelFactory:
         self.invoker = FakeToolCallingInvoker()
 
     def create_tool_calling_invoker(self, *, purpose: str) -> FakeToolCallingInvoker:
+        del purpose
+        return self.invoker
+
+
+class BlockingHeartbeatInvoker:
+    def __init__(self, started: Event, release: Event) -> None:
+        self.started = started
+        self.release = release
+
+    def invoke_with_tools(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[object],
+        tools: list[object],
+    ) -> object:
+        del system_prompt, messages, tools
+        self.started.set()
+        assert self.release.wait(timeout=10)
+        return {"content": "handled after heartbeat", "tool_calls": []}
+
+
+class BlockingHeartbeatModelFactory:
+    def __init__(self, started: Event, release: Event) -> None:
+        self.invoker = BlockingHeartbeatInvoker(started, release)
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> BlockingHeartbeatInvoker:
         del purpose
         return self.invoker
 
@@ -304,6 +336,94 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
     task = repositories.tasks.get("task_0")
     assert task is not None
     assert task.status is TaskStatus.COMPLETED
+
+
+def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
+    tmp_path,
+) -> None:
+    provider = SQLiteRepositoryProvider(str(tmp_path / "heartbeat.sqlite3"))
+    started = Event()
+    release = Event()
+    session = Session.create(
+        "sess_heartbeat",
+        "proj_001",
+        "Heartbeat",
+        "Keep lease active during provider wait",
+    )
+    with provider.write() as owner:
+        repositories = owner.repositories
+        repositories.sessions.save(session)
+        agent = create_agent_member(
+            repositories,
+            session_id=session.session_id,
+            role="researcher",
+        )
+        task = Task.create(
+            "task_heartbeat",
+            session.session_id,
+            "Wait for provider",
+            "The lease must be renewed while blocked.",
+            assigned_ref=agent.agent_id,
+        )
+        repositories.tasks.save(task)
+        repositories.runtime_signals.save(
+            AgentRuntimeSignal(
+                signal_id="sig_heartbeat",
+                session_id=session.session_id,
+                agent_id=agent.agent_id,
+                task_id=task.task_id,
+                reason=AgentRuntimeSignalReason.MANUAL_RESUME,
+                status=AgentRuntimeSignalStatus.PENDING,
+                created_at="2026-07-16T00:00:00+00:00",
+            )
+        )
+
+    @contextmanager
+    def repository_scope():
+        with provider.connection_scope() as owner:
+            yield owner.repositories
+
+    contender_result: dict[str, object] = {}
+
+    def attempt_reclaim_after_original_expiry() -> None:
+        assert started.wait(timeout=5)
+        time.sleep(3.5)
+        with provider.connection_scope() as owner:
+            contender_result["result"] = owner.repositories.session_runtime_leases.acquire(
+                session_id=session.session_id,
+                owner_id="test:contender",
+                mode="test",
+                lease_seconds=3,
+            )
+        release.set()
+
+    contender = Thread(target=attempt_reclaim_after_original_expiry)
+    contender.start()
+    with provider.connection_scope() as coordinator:
+        context = SessionRuntimeContext(
+            repositories=coordinator.repositories,
+            event_sink=MemoryEventBus(),
+            snapshot=SessionRuntimeSnapshot.load(
+                coordinator.repositories,
+                session.session_id,
+            ),
+            tool_registry=ToolRegistry(),
+            restore_focus=RestoreFocus(),
+            model_factory=BlockingHeartbeatModelFactory(started, release),
+        )
+        outcomes = AgentRuntimeScheduler(
+            context,
+            worker_id="test:heartbeat-owner",
+            session_lease_seconds=3,
+            repository_scope_factory=repository_scope,
+        ).run_once_sync(session.session_id, max_signals=1)
+    contender.join(timeout=5)
+
+    assert not contender.is_alive()
+    contender_attempt = contender_result["result"]
+    assert getattr(contender_attempt, "acquired") is False
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is True
 
 
 def test_reporter_can_publish_report_and_finish_delegated_task() -> None:

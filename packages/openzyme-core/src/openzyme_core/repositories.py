@@ -97,6 +97,10 @@ class CommandIdempotencyConflictError(ValueError):
     """Raised when an idempotency key is reused with a different request."""
 
 
+class RuntimeWriteFencingError(RuntimeError):
+    """Raised when a runtime worker attempts a write without its active lease."""
+
+
 @dataclass(frozen=True, slots=True)
 class SessionRuntimeLeaseAcquireResult:
     acquired: bool
@@ -110,6 +114,7 @@ class _OpenZymeSQLiteConnection(sqlite3.Connection):
     """SQLite connection carrying transaction ownership local to the connection."""
 
     _openzyme_managed_transaction_depth: int = 0
+    _openzyme_runtime_write_fence: tuple[str, str, int] | None = None
 
 
 def connect_sqlite(
@@ -130,6 +135,7 @@ def connect_sqlite(
         factory=_OpenZymeSQLiteConnection,
     )
     connection._openzyme_managed_transaction_depth = 0  # type: ignore[attr-defined]
+    connection._openzyme_runtime_write_fence = None  # type: ignore[attr-defined]
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
@@ -153,7 +159,51 @@ def _commit(connection: sqlite3.Connection) -> None:
     """Commit standalone repository calls, but never an owning UoW transaction."""
 
     if _managed_transaction_depth(connection) == 0:
+        _validate_runtime_write_fence(connection)
         connection.commit()
+
+
+def _runtime_write_fence(
+    connection: sqlite3.Connection,
+) -> tuple[str, str, int] | None:
+    value = getattr(connection, "_openzyme_runtime_write_fence", None)
+    if value is None:
+        return None
+    session_id, lease_token, fencing_token = value
+    return str(session_id), str(lease_token), int(fencing_token)
+
+
+def _validate_runtime_write_fence(
+    connection: sqlite3.Connection,
+    *,
+    expected_session_id: str | None = None,
+) -> None:
+    fence = _runtime_write_fence(connection)
+    if fence is None:
+        return
+    session_id, lease_token, fencing_token = fence
+    if expected_session_id is not None and expected_session_id != session_id:
+        raise RuntimeWriteFencingError(
+            "runtime write crossed its leased session boundary: "
+            f"expected {session_id!r}, received {expected_session_id!r}"
+        )
+    now = _utc_now_iso()
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM session_runtime_leases
+        WHERE session_id = ?
+          AND lease_token = ?
+          AND fencing_token = ?
+          AND released_at IS NULL
+          AND expires_at > ?
+        """,
+        (session_id, lease_token, fencing_token, now),
+    ).fetchone()
+    if row is None:
+        raise RuntimeWriteFencingError(
+            "session runtime lease fencing rejected a stale business write"
+        )
 
 
 @contextmanager
@@ -269,6 +319,10 @@ def _changed_task_fields(existing: Task, updated: Task) -> frozenset[str]:
 
 
 def _require_session_exists(connection: sqlite3.Connection, session_id: str) -> None:
+    _validate_runtime_write_fence(
+        connection,
+        expected_session_id=session_id,
+    )
     row = connection.execute(
         "SELECT 1 FROM sessions WHERE session_id = ?",
         (session_id,),
@@ -411,6 +465,10 @@ class SessionRepository:
 
     def save(self, session: Session) -> None:
         _require_enum_member(session.status, SessionStatus, "Session.status")
+        _validate_runtime_write_fence(
+            self.connection,
+            expected_session_id=session.session_id,
+        )
         self.connection.execute(
             """
             INSERT INTO sessions (session_id, project_id, title, objective, status, created_at, updated_at)
@@ -4298,6 +4356,26 @@ class ArtifactMaterializationRepository:
         sandbox_path: str,
         created_at: str,
     ) -> None:
+        workspace_row = self.connection.execute(
+            "SELECT session_id FROM sandbox_workspace_records WHERE sandbox_workspace_id = ?",
+            (sandbox_workspace_id,),
+        ).fetchone()
+        if workspace_row is None:
+            raise OwnershipError(
+                f"sandbox_workspace_records.sandbox_workspace_id={sandbox_workspace_id!r} does not exist"
+            )
+        session_id = str(workspace_row["session_id"])
+        _validate_runtime_write_fence(
+            self.connection,
+            expected_session_id=session_id,
+        )
+        _require_linked_session_id(
+            self.connection,
+            table_name="session_artifact_records",
+            id_column="artifact_id",
+            record_id=artifact_id,
+            expected_session_id=session_id,
+        )
         self.connection.execute(
             """
             INSERT INTO artifact_materialization_records (
@@ -4818,6 +4896,10 @@ class ResearchEvidenceRepository:
         return [self._row_to_evidence(row) for row in rows]
 
     def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        _validate_runtime_write_fence(
+            self.connection,
+            expected_session_id=session_id,
+        )
         self.connection.execute(
             "DELETE FROM session_research_evidence WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
@@ -4946,6 +5028,10 @@ class ResearchSourceRefRepository:
         return [self._row_to_source_ref(row) for row in rows]
 
     def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        _validate_runtime_write_fence(
+            self.connection,
+            expected_session_id=session_id,
+        )
         self.connection.execute(
             "DELETE FROM session_research_source_refs WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
@@ -5056,6 +5142,10 @@ class ResearchGapRepository:
         return [self._row_to_gap(row) for row in rows]
 
     def delete_by_invocation(self, session_id: str, invocation_id: str) -> None:
+        _validate_runtime_write_fence(
+            self.connection,
+            expected_session_id=session_id,
+        )
         self.connection.execute(
             "DELETE FROM session_research_gaps WHERE session_id = ? AND invocation_id = ?",
             (session_id, invocation_id),
@@ -5108,6 +5198,39 @@ class CoreRepositories:
     research_evidence: ResearchEvidenceRepository
     research_source_refs: ResearchSourceRefRepository
     research_gaps: ResearchGapRepository
+
+    def assert_runtime_write_fence(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        _validate_runtime_write_fence(
+            self.tasks.connection,
+            expected_session_id=session_id,
+        )
+
+    @contextmanager
+    def runtime_write_fence(
+        self,
+        lease: SessionRuntimeLease,
+    ) -> Iterator[None]:
+        connection = self.tasks.connection
+        previous = _runtime_write_fence(connection)
+        candidate = (
+            lease.session_id,
+            lease.lease_token,
+            lease.fencing_token,
+        )
+        if previous is not None and previous != candidate:
+            raise RuntimeWriteFencingError(
+                "repository connection is already bound to a different runtime lease"
+            )
+        setattr(connection, "_openzyme_runtime_write_fence", candidate)
+        try:
+            _validate_runtime_write_fence(connection)
+            yield
+        finally:
+            setattr(connection, "_openzyme_runtime_write_fence", previous)
 
     @contextmanager
     def atomic(self, *, prefix: str) -> Iterator[None]:
@@ -5213,6 +5336,7 @@ class CoreUnitOfWork:
             if self._write:
                 if exc_type is None:
                     try:
+                        _validate_runtime_write_fence(connection)
                         connection.commit()
                     except BaseException:
                         connection.rollback()

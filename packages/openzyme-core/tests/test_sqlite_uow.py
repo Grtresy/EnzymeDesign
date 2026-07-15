@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import sqlite3
 from threading import Event
 from threading import Thread
@@ -9,11 +10,13 @@ import pytest
 
 from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain import Task
 
 
@@ -205,6 +208,81 @@ def test_standalone_repository_save_still_commits(tmp_path) -> None:
         assert CoreRepositories.from_connection(reopened).sessions.get(session.session_id) == session
     finally:
         reopened.close()
+
+
+def test_runtime_write_fence_rejects_stale_worker_business_write(tmp_path) -> None:
+    provider = _provider(tmp_path)
+    session = Session.create("sess_fenced", "proj_001", "Fenced", "Fenced")
+    task = Task.create(
+        "task_fenced",
+        session.session_id,
+        "Original subject",
+        "Reject late worker writes.",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+        owner.repositories.tasks.save(task)
+
+    with provider.connection_scope() as coordinator:
+        acquired = coordinator.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:first",
+            mode=SessionRuntimeLeaseMode.TEST,
+            lease_seconds=60,
+        )
+        assert acquired.lease is not None
+        first_lease = acquired.lease
+        with provider.connection_scope() as worker:
+            with worker.repositories.runtime_write_fence(first_lease):
+                coordinator.connection.execute(
+                    "UPDATE session_runtime_leases SET expires_at = ? WHERE lease_token = ?",
+                    ("2020-01-01T00:00:00+00:00", first_lease.lease_token),
+                )
+                coordinator.connection.commit()
+                replacement = coordinator.repositories.session_runtime_leases.acquire(
+                    session_id=session.session_id,
+                    owner_id="worker:replacement",
+                    mode=SessionRuntimeLeaseMode.TEST,
+                    lease_seconds=60,
+                )
+                assert replacement.acquired is True
+                assert replacement.lease is not None
+                assert replacement.lease.fencing_token == first_lease.fencing_token + 1
+
+                with pytest.raises(RuntimeWriteFencingError, match="stale business write"):
+                    worker.repositories.tasks.save(
+                        replace(task, subject="Late stale write")
+                    )
+
+    with provider.read() as owner:
+        assert owner.repositories.tasks.get(task.task_id) == task
+
+
+def test_runtime_write_fence_rejects_cross_session_write(tmp_path) -> None:
+    provider = _provider(tmp_path)
+    first = Session.create("sess_fence_a", "proj_001", "A", "A")
+    second = Session.create("sess_fence_b", "proj_001", "B", "B")
+    with provider.write() as owner:
+        owner.repositories.sessions.save(first)
+        owner.repositories.sessions.save(second)
+    with provider.connection_scope() as owner:
+        acquired = owner.repositories.session_runtime_leases.acquire(
+            session_id=first.session_id,
+            owner_id="worker:first",
+            mode=SessionRuntimeLeaseMode.TEST,
+            lease_seconds=60,
+        )
+        assert acquired.lease is not None
+        with owner.repositories.runtime_write_fence(acquired.lease):
+            with pytest.raises(RuntimeWriteFencingError, match="crossed"):
+                owner.repositories.tasks.save(
+                    Task.create(
+                        "task_other_session",
+                        second.session_id,
+                        "Cross-session write",
+                        "Must be rejected by the lease scope.",
+                    )
+                )
 
 
 def test_read_scope_does_not_block_a_short_write_scope(tmp_path) -> None:

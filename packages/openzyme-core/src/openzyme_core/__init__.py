@@ -119,6 +119,7 @@ from .repositories import ResearchGapRepository
 from .repositories import ResearchSourceRefRepository
 from .repositories import ResearchSummaryRepository
 from .repositories import RunRecordRepository
+from .repositories import RuntimeWriteFencingError
 from .repositories import SandboxImageRecordRepository
 from .repositories import SandboxRunRecordRepository
 from .repositories import SandboxWorkspaceRecordRepository
@@ -249,6 +250,7 @@ __all__ = [
     "ResearchSourceRefRepository",
     "ResearchSummaryRepository",
     "RunRecordRepository",
+    "RuntimeWriteFencingError",
     "RuntimeConsistencyService",
     "RuntimeConsistencyWarning",
     "RuntimeStateAudit",
