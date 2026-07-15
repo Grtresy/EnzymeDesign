@@ -125,6 +125,51 @@ def test_json_payload_repositories_tolerate_json_null_payload_rows() -> None:
     assert repositories.engine_documents.get("doc_null_payload").payload == {}
 
 
+def test_engine_document_repository_atomically_consumes_plan_call_budget() -> None:
+    connection = connect_sqlite(":memory:")
+    apply_sqlite_migrations(connection)
+    repositories = CoreRepositories.from_connection(connection)
+    session = Session.create(
+        session_id="sess_plan_budget",
+        project_id="proj_001",
+        title="Plan budget",
+        objective="Bound execution plan calls",
+    )
+    repositories.sessions.save(session)
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="doc_plan_budget",
+            session_id=session.session_id,
+            invocation_id=None,
+            document_kind="execution_input",
+            payload={"pipeline": {"operation_call_counts": {}}},
+            created_at="2026-07-16T00:00:00+00:00",
+            updated_at="2026-07-16T00:00:00+00:00",
+        )
+    )
+
+    assert repositories.engine_documents.consume_pipeline_operation_call(
+        document_id="doc_plan_budget",
+        method="bio.uniprot_fetch",
+        max_calls=2,
+    ) == (1, True)
+    assert repositories.engine_documents.consume_pipeline_operation_call(
+        document_id="doc_plan_budget",
+        method="bio.uniprot_fetch",
+        max_calls=2,
+    ) == (2, True)
+    assert repositories.engine_documents.consume_pipeline_operation_call(
+        document_id="doc_plan_budget",
+        method="bio.uniprot_fetch",
+        max_calls=2,
+    ) == (2, False)
+    document = repositories.engine_documents.get("doc_plan_budget")
+    assert document is not None
+    assert document.payload["pipeline"]["operation_call_counts"] == {
+        "bio.uniprot_fetch": 2
+    }
+
+
 def test_repositories_reject_invalid_domain_enum_status_values() -> None:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)

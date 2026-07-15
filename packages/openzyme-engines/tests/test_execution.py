@@ -427,6 +427,15 @@ class ExplicitNonCutoverFixtureRunner(CapturingSuccessRunner):
         )
 
 
+class CountingBioFixtureAdapter(DeterministicBioDatabaseAdapter):
+    def __init__(self) -> None:
+        self.ncbi_calls = 0
+
+    def ncbi_fetch_proteins(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.ncbi_calls += 1
+        return super().ncbi_fetch_proteins(**kwargs)
+
+
 class CapturingTimeoutRunner(CapturingFailedRunner):
     def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
@@ -1691,6 +1700,163 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
     assert rejected.invocation.status is EngineInvocationStatus.FAILED
     assert rejected.parsed_result is not None
     assert rejected.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_network_call"
+
+
+def test_pipeline_plan_counts_repeated_and_literal_bounded_sdk_calls() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    repeated_code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_repeated_bio_calls",
+        "from openzyme_pipeline import bio\n"
+        "bio.uniprot_fetch(accessions=['P1'], output_dir='/workspace/output/bio/one')\n"
+        "bio.uniprot_fetch(accessions=['P2'], output_dir='/workspace/output/bio/two')\n",
+    )
+    loop_code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bounded_bio_loop",
+        "from openzyme_pipeline import bio\n"
+        "for index in range(3):\n"
+        "    bio.ncbi_fetch_proteins(accessions=[str(index)], output_dir=f'/workspace/output/bio/{index}')\n",
+    )
+    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+
+    repeated = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=repeated_code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+    bounded_loop = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=loop_code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+
+    assert repeated.parsed_result is not None
+    repeated_plan = repeated.parsed_result.structured_findings["plan"]
+    assert repeated_plan["bio_operations"][0]["max_calls"] == 2
+    assert repeated_plan["bio_operations"][0]["quota_estimate"]["provider_requests"] == 2
+    assert repeated_plan["resource_quota_estimate"]["bio_operation_count"] == 2
+    assert repeated_plan["resource_quota_estimate"]["provider_requests"] == 2
+    assert bounded_loop.parsed_result is not None
+    loop_plan = bounded_loop.parsed_result.structured_findings["plan"]
+    assert loop_plan["bio_operations"][0]["max_calls"] == 3
+    assert loop_plan["bio_operations"][0]["quota_estimate"]["provider_requests"] == 3
+    assert loop_plan["operations"][0]["call_sites"] == [
+        {"line": 3, "bounded": True, "multiplier": 3}
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        (
+            "accessions = ['P1', 'P2']\n"
+            "for accession in accessions:\n"
+            "    bio.uniprot_fetch(accessions=[accession], output_dir='/workspace/output/bio/dynamic')\n"
+        ),
+        (
+            "def fetch():\n"
+            "    return bio.uniprot_fetch(accessions=['P1'], output_dir='/workspace/output/bio/function')\n"
+            "fetch()\n"
+        ),
+    ],
+)
+def test_pipeline_plan_rejects_sdk_calls_without_static_upper_bound(body: str) -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        f"code_unbounded_{hashlib.sha256(body.encode('utf-8')).hexdigest()[:8]}",
+        "from openzyme_pipeline import bio\n" + body,
+    )
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(repositories, runner)
+
+    result = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["error_code"] == "execution_plan_unbounded_calls"
+    assert error["stage"] == "pipeline_static_policy"
+    assert runner.payloads == []
+
+
+def test_pipeline_runtime_cannot_exceed_approved_static_call_bound() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_runtime_call_bound",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P1'], output_dir='/workspace/output/bio/planned')\n",
+    )
+    runtime_operations = (
+        (
+            "bio.ncbi_fetch_proteins",
+            {
+                "accessions": ["P1"],
+                "output_dir": "/workspace/output/bio/runtime-one",
+            },
+        ),
+        (
+            "bio.ncbi_fetch_proteins",
+            {
+                "accessions": ["P2"],
+                "output_dir": "/workspace/output/bio/runtime-two",
+            },
+        ),
+    )
+    adapter = CountingBioFixtureAdapter()
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=BioSandboxRunner(runtime_operations),
+        bio_adapter=adapter,
+        allow_bio_fixture_adapter=True,
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_runtime_call_bound",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_runtime_call_bound",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "execution_plan_quota_exceeded"
+    assert error["stage"] == "execution_plan_quota"
+    assert error["details"] == {
+        "method": "bio.ncbi_fetch_proteins",
+        "max_calls": 1,
+        "consumed_calls": 1,
+    }
+    assert adapter.ncbi_calls == 1
+    input_document = repositories.engine_documents.get(str(result.invocation.input_ref))
+    assert input_document is not None
+    assert input_document.payload["pipeline"]["operation_call_counts"] == {
+        "bio.ncbi_fetch_proteins": 1
+    }
 
 
 def test_pipeline_dry_run_lists_bio_tool_operations_and_rejects_direct_cli() -> None:

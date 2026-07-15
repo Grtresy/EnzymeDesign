@@ -21,10 +21,9 @@ remote_receptor = ws.stage_artifact(
     workspace_path="inputs/receptor.pdbqt",
 )
 
-ligand_ids = ["lig_1", "lig_2", "lig_3"]
 results = []
 
-for ligand_id in ligand_ids:
+for ligand_id in ("lig_1", "lig_2", "lig_3"):
     ligand = artifacts.get(ligand_id)
     if ligand.get("format") != "pdbqt":
         ligand = preprocess.prepare_ligand(artifact_id=ligand["artifact_id"])
@@ -57,7 +56,7 @@ for result in results:
 
 Rules:
 
-- Dry-run must show total job count before execution.
+- Dry-run must show each supervised operation's static `max_calls` and the total job/request count before execution. Repeated direct calls and literal bounded loops count toward that bound.
 - Quota must limit CPU, memory, wall time, job count, and output size.
-- Approval should cover the planned batch, not an unbounded loop.
-- Avoid dynamic discovery of unlimited work inside the sandbox.
+- Approval covers the exact bounded batch. The Host atomically consumes the approved per-operation call budget before each provider/tool/HPC action and returns `execution_plan_quota_exceeded` before touching the adapter/runner when exhausted.
+- External SDK calls inside dynamic iterables, functions, `while`, or comprehensions are rejected as `execution_plan_unbounded_calls`. Materialize a finite list first, then author the formal execution source with a literal tuple/list bound.

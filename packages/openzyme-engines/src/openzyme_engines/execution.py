@@ -3624,6 +3624,7 @@ class ExecutionEngine:
             "sdk_operation_log": execution_plan["operations"],
             "approved_operation_keys": [],
             "approved_plan_digest": None,
+            "operation_call_counts": {},
             "completed_operations": {},
         }
         if dry_run:
@@ -5441,16 +5442,72 @@ class ExecutionEngine:
         plan = dict(pipeline.get("execution_plan") or {})
         if not plan or pipeline.get("approved_plan_digest") != plan.get("plan_digest"):
             return False
-        return any(operation.get("method") == method for operation in list(plan.get("bio_operations") or []))
+        return any(
+            operation.get("method") == method and int(operation.get("max_calls") or 0) > 0
+            for operation in list(plan.get("bio_operations") or [])
+        )
 
     def _pipeline_bio_tool_covered_by_approved_plan(self, *, pipeline: dict[str, Any], method: str) -> bool:
         plan = dict(pipeline.get("execution_plan") or {})
         if not plan or pipeline.get("approved_plan_digest") != plan.get("plan_digest"):
             return False
         return any(
-            operation.get("method") == method and operation.get("selected_backend") == "hpc"
+            operation.get("method") == method
+            and operation.get("selected_backend") == "hpc"
+            and int(operation.get("max_calls") or 0) > 0
             for operation in list(plan.get("bio_tool_operations") or [])
         )
+
+    def _consume_approved_plan_operation_call(
+        self,
+        *,
+        invocation: EngineInvocation,
+        method: str,
+        operation_group: str,
+    ) -> int:
+        pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        plan = dict(pipeline.get("execution_plan") or {})
+        if not plan or pipeline.get("approved_plan_digest") != plan.get("plan_digest"):
+            raise PipelineSdkFailure(
+                error_type="execution_plan_not_approved",
+                message=f"{method} is not covered by the currently approved execution plan.",
+                hint="Request approval for the changed operation before executing it.",
+                stage="execution_plan_quota",
+                retryable=False,
+                sdk_method=method,
+            )
+        planned_operation = next(
+            (
+                operation
+                for operation in list(plan.get(operation_group) or [])
+                if operation.get("method") == method
+            ),
+            None,
+        )
+        max_calls = 0 if planned_operation is None else int(planned_operation.get("max_calls") or 0)
+        if invocation.input_ref is None:
+            consumed, allowed = 0, False
+        else:
+            consumed, allowed = self.repositories.engine_documents.consume_pipeline_operation_call(
+                document_id=invocation.input_ref,
+                method=method,
+                max_calls=max_calls,
+            )
+        if not allowed:
+            raise PipelineSdkFailure(
+                error_type="execution_plan_quota_exceeded",
+                message=f"{method} exceeded the approved execution-plan call bound.",
+                hint="Create and approve a new bounded plan with the required operation count.",
+                stage="execution_plan_quota",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "method": method,
+                    "max_calls": max_calls,
+                    "consumed_calls": consumed,
+                },
+            )
+        return consumed
 
     def _bio_adapter_approval_envelope(
         self,
@@ -6152,6 +6209,12 @@ class ExecutionEngine:
                     "required_backend": route_policy["selected_backend"],
                 },
             )
+        if covered_by_approved_plan:
+            self._consume_approved_plan_operation_call(
+                invocation=invocation,
+                method=method,
+                operation_group="bio_operations",
+            )
         retrieved_at = utc_now_iso()
         provider_request_id = self._bio_provider_request_id(
             invocation=invocation,
@@ -6532,6 +6595,12 @@ class ExecutionEngine:
             execution_mode="ssh",
             require_approval=False,
         )
+        if covered_by_approved_plan:
+            self._consume_approved_plan_operation_call(
+                invocation=invocation,
+                method=method,
+                operation_group="bio_tool_operations",
+            )
         result = self._submit_pipeline_hpc_step(
             session=session,
             task=task,
@@ -6612,7 +6681,12 @@ class ExecutionEngine:
             )
             self._validate_fpocket_artifact(structure_id, sdk_method=method)
         approved = set(str(value) for value in list(pipeline.get("approved_operation_keys") or []))
-        if operation_key not in approved and not self._pipeline_hpc_covered_by_approved_plan(pipeline=pipeline, method=method, params=params):
+        covered_by_approved_plan = self._pipeline_hpc_covered_by_approved_plan(
+            pipeline=pipeline,
+            method=method,
+            params=params,
+        )
+        if operation_key not in approved and not covered_by_approved_plan:
             approval = self._request_pipeline_approval(invocation=invocation, method=method, params=params, operation_key=operation_key)
             raise PipelineApprovalRequired(approval)
         tool_params = dict(params.get("params") or {})
@@ -6659,6 +6733,12 @@ class ExecutionEngine:
         stage_refs = [
             value for value in (params.get("structure"), params.get("receptor"), params.get("ligand")) if isinstance(value, dict)
         ]
+        if covered_by_approved_plan:
+            self._consume_approved_plan_operation_call(
+                invocation=invocation,
+                method=method,
+                operation_group="hpc_operations",
+            )
         result = self._submit_pipeline_hpc_step(
             session=session,
             task=task,
@@ -6783,6 +6863,8 @@ class ExecutionEngine:
             return False
         for operation in list(plan.get("hpc_operations") or []):
             if operation.get("method") != method:
+                continue
+            if int(operation.get("max_calls") or 0) <= 0:
                 continue
             planned_ids = {str(value) for value in list(operation.get("artifact_ids") or [])}
             if planned_ids and not requested_artifact_ids.issubset(planned_ids | set(pipeline.get("preprocess_artifact_ids") or [])):
@@ -8361,60 +8443,174 @@ class ExecutionEngine:
                     "doc_keyword": "execution.pipeline.start",
                 }
             ]
-        operations: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if not isinstance(func, ast.Attribute):
-                continue
-            owner = func.value
-            if not isinstance(owner, ast.Name):
-                continue
-            operation = f"{owner.id}.{func.attr}"
-            if operation not in {
-                "artifacts.get",
-                "artifacts.register",
-                "artifacts.register_many",
-                "bio.ncbi_fetch_proteins",
-                "bio.uniprot_fetch",
-                "bio.hmmer_search",
-                "rcsb_pdb.download_structure",
-                "bio_tools.cdhit",
-                "bio_tools.mafft",
-                "bio_tools.hmmbuild",
-                "bio_tools.hmmalign",
-                "bio_tools.hmmer_search_cli",
-                "preprocess.convert_format",
-                "preprocess.prepare_receptor",
-                "preprocess.prepare_ligand",
-                "preprocess.smiles_to_3d",
-                "hpc.workspace",
-                "structure_tools.fpocket",
-                "docking.vina",
-                "run.wait",
-                "run.fetch_artifacts",
-            } or operation in seen:
-                continue
-            seen.add(operation)
-            keyword, doc_id = doc_hints.get(operation, (operation, None))
-            item: dict[str, Any] = {
-                "operation": operation,
-                "approval_required": operation in {
-                    "bio.ncbi_fetch_proteins",
-                    "bio.uniprot_fetch",
-                    "bio.hmmer_search",
-                    "rcsb_pdb.download_structure",
-                    "structure_tools.fpocket",
-                    "docking.vina",
-                },
-                "doc_keyword": keyword,
-            }
-            if doc_id is not None:
-                item["doc_id"] = doc_id
-            operations.append(item)
+        supported_operations = {
+            "artifacts.get",
+            "artifacts.register",
+            "artifacts.register_many",
+            "bio.ncbi_fetch_proteins",
+            "bio.uniprot_fetch",
+            "bio.hmmer_search",
+            "rcsb_pdb.download_structure",
+            "bio_tools.cdhit",
+            "bio_tools.mafft",
+            "bio_tools.hmmbuild",
+            "bio_tools.hmmalign",
+            "bio_tools.hmmer_search_cli",
+            "preprocess.convert_format",
+            "preprocess.prepare_receptor",
+            "preprocess.prepare_ligand",
+            "preprocess.smiles_to_3d",
+            "hpc.workspace",
+            "structure_tools.fpocket",
+            "docking.vina",
+            "run.wait",
+            "run.fetch_artifacts",
+        }
+        operations_by_name: dict[str, dict[str, Any]] = {}
+
+        class OperationBoundVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.multiplier = 1
+                self.dynamic_depth = 0
+
+            def _visit_statements(self, statements: list[ast.stmt]) -> None:
+                for statement in statements:
+                    self.visit(statement)
+
+            def _visit_dynamic(self, nodes: list[ast.AST]) -> None:
+                self.dynamic_depth += 1
+                try:
+                    for nested in nodes:
+                        self.visit(nested)
+                finally:
+                    self.dynamic_depth -= 1
+
+            def visit_Call(self, node: ast.Call) -> None:  # noqa: N802 - ast visitor API
+                func = node.func
+                if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                    operation = f"{func.value.id}.{func.attr}"
+                    if operation in supported_operations:
+                        keyword, doc_id = doc_hints.get(operation, (operation, None))
+                        item = operations_by_name.setdefault(
+                            operation,
+                            {
+                                "operation": operation,
+                                "approval_required": operation
+                                in {
+                                    "bio.ncbi_fetch_proteins",
+                                    "bio.uniprot_fetch",
+                                    "bio.hmmer_search",
+                                    "rcsb_pdb.download_structure",
+                                    "structure_tools.fpocket",
+                                    "docking.vina",
+                                },
+                                "doc_keyword": keyword,
+                                "max_calls": 0,
+                                "dynamic_call_count": 0,
+                                "call_sites": [],
+                            },
+                        )
+                        if doc_id is not None:
+                            item["doc_id"] = doc_id
+                        dynamic = self.dynamic_depth > 0
+                        if dynamic:
+                            item["dynamic_call_count"] += 1
+                        else:
+                            item["max_calls"] += self.multiplier
+                        item["call_sites"].append(
+                            {
+                                "line": int(getattr(node, "lineno", 0)),
+                                "bounded": not dynamic,
+                                "multiplier": None if dynamic else self.multiplier,
+                            }
+                        )
+                self.generic_visit(node)
+
+            def visit_For(self, node: ast.For) -> None:  # noqa: N802 - ast visitor API
+                self.visit(node.iter)
+                iterations = ExecutionEngine._static_pipeline_loop_iterations(node.iter)
+                if iterations is None:
+                    self._visit_dynamic([*node.body, *node.orelse])
+                    return
+                previous_multiplier = self.multiplier
+                self.multiplier *= iterations
+                try:
+                    self._visit_statements(node.body)
+                finally:
+                    self.multiplier = previous_multiplier
+                self._visit_statements(node.orelse)
+
+            def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802 - ast visitor API
+                self.visit(node.iter)
+                self._visit_dynamic([*node.body, *node.orelse])
+
+            def visit_While(self, node: ast.While) -> None:  # noqa: N802 - ast visitor API
+                self._visit_dynamic([node.test, *node.body, *node.orelse])
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802 - ast visitor API
+                for decorator in node.decorator_list:
+                    self.visit(decorator)
+                for default in [*node.args.defaults, *node.args.kw_defaults]:
+                    if default is not None:
+                        self.visit(default)
+                self._visit_dynamic(list(node.body))
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802 - ast visitor API
+                self.visit_FunctionDef(node)
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802 - ast visitor API
+                self._visit_dynamic([node.body])
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802 - ast visitor API
+                for decorator in node.decorator_list:
+                    self.visit(decorator)
+                for base in node.bases:
+                    self.visit(base)
+                self._visit_dynamic(list(node.body))
+
+            def _visit_comprehension(self, node: ast.AST) -> None:
+                self._visit_dynamic(list(ast.iter_child_nodes(node)))
+
+            visit_ListComp = _visit_comprehension
+            visit_SetComp = _visit_comprehension
+            visit_DictComp = _visit_comprehension
+            visit_GeneratorExp = _visit_comprehension
+
+        OperationBoundVisitor().visit(tree)
+        operations = [
+            item
+            for item in operations_by_name.values()
+            if int(item["max_calls"]) > 0 or int(item["dynamic_call_count"]) > 0
+        ]
+        for item in operations:
+            item["bounded"] = int(item["dynamic_call_count"]) == 0
         return operations
+
+    @staticmethod
+    def _static_pipeline_loop_iterations(iterator: ast.AST) -> int | None:
+        if isinstance(iterator, (ast.List, ast.Tuple, ast.Set)):
+            return len(iterator.elts)
+        if not (
+            isinstance(iterator, ast.Call)
+            and isinstance(iterator.func, ast.Name)
+            and iterator.func.id == "range"
+            and not iterator.keywords
+            and 1 <= len(iterator.args) <= 3
+        ):
+            return None
+        values: list[int] = []
+        for argument in iterator.args:
+            if not (
+                isinstance(argument, ast.Constant)
+                and isinstance(argument.value, int)
+                and not isinstance(argument.value, bool)
+            ):
+                return None
+            values.append(argument.value)
+        try:
+            return len(range(*values))
+        except ValueError:
+            return None
 
     def _build_execution_plan(
         self,
@@ -8450,6 +8646,8 @@ class ExecutionEngine:
                 "method": item["operation"],
                 "approval_required": False,
                 "doc_keyword": item.get("doc_keyword"),
+                "max_calls": int(item.get("max_calls") or 0),
+                "bounded": bool(item.get("bounded")),
             }
             for item in operations
             if str(item.get("operation", "")).startswith("preprocess.")
@@ -8461,9 +8659,14 @@ class ExecutionEngine:
                 "approval_required": True,
                 "route_policy_id": BIO_PROVIDER_ROUTE_POLICY_IDS.get(str(item["operation"])),
                 "expected_outputs": self._planned_bio_expected_outputs(str(item["operation"])),
-                "quota_estimate": self._planned_bio_quota_estimate(str(item["operation"])),
+                "quota_estimate": self._scale_plan_estimate(
+                    self._planned_bio_quota_estimate(str(item["operation"])),
+                    multiplier=int(item.get("max_calls") or 0),
+                ),
                 "doc_keyword": item.get("doc_keyword"),
                 "doc_id": item.get("doc_id"),
+                "max_calls": int(item.get("max_calls") or 0),
+                "bounded": bool(item.get("bounded")),
             }
             for item in operations
             if str(item.get("operation", "")) in BIO_PROVIDER_ROUTE_POLICY_IDS
@@ -8479,10 +8682,18 @@ class ExecutionEngine:
                 "selected_backend": self._planned_bio_tool_backend(str(item["operation"])),
                 "route_status": self._planned_bio_tool_route_status(str(item["operation"])),
                 "expected_outputs": self._planned_bio_tool_expected_outputs(str(item["operation"])),
-                "resource_estimate": self._planned_bio_tool_resource_estimate(str(item["operation"])),
-                "quota_estimate": self._planned_bio_tool_quota_estimate(str(item["operation"])),
+                "resource_estimate": self._scale_plan_estimate(
+                    self._planned_bio_tool_resource_estimate(str(item["operation"])),
+                    multiplier=int(item.get("max_calls") or 0),
+                ),
+                "quota_estimate": self._scale_plan_estimate(
+                    self._planned_bio_tool_quota_estimate(str(item["operation"])),
+                    multiplier=int(item.get("max_calls") or 0),
+                ),
                 "doc_keyword": item.get("doc_keyword"),
                 "doc_id": item.get("doc_id"),
+                "max_calls": int(item.get("max_calls") or 0),
+                "bounded": bool(item.get("bounded")),
             }
             for item in operations
             if str(item.get("operation", "")).startswith("bio_tools.")
@@ -8502,10 +8713,18 @@ class ExecutionEngine:
                     "params": {"source": "static_dry_run", "runtime_params_must_match_policy": True},
                     "approval_required": True,
                     "expected_outputs": self._planned_expected_outputs(method),
-                    "resource_estimate": self._planned_resource_estimate(method),
-                    "quota_estimate": self._planned_quota_estimate(method),
+                    "resource_estimate": self._scale_plan_estimate(
+                        self._planned_resource_estimate(method),
+                        multiplier=int(item.get("max_calls") or 0),
+                    ),
+                    "quota_estimate": self._scale_plan_estimate(
+                        self._planned_quota_estimate(method),
+                        multiplier=int(item.get("max_calls") or 0),
+                    ),
                     "doc_keyword": item.get("doc_keyword"),
                     "doc_id": item.get("doc_id"),
+                    "max_calls": int(item.get("max_calls") or 0),
+                    "bounded": bool(item.get("bounded")),
                 }
             )
         if single_plan_approval_required and operations:
@@ -8516,6 +8735,10 @@ class ExecutionEngine:
                     "operation_key": f"pipeline_plan:{code_digest[:16]}",
                     "reason": "A single execution plan approval is required by pipeline input policy.",
                     "operation_methods": [str(operation.get("operation")) for operation in operations],
+                    "operation_call_bounds": {
+                        str(operation.get("operation")): int(operation.get("max_calls") or 0)
+                        for operation in operations
+                    },
                 }
             ]
         else:
@@ -8525,6 +8748,7 @@ class ExecutionEngine:
                     "method": operation["method"],
                     "operation_key": f"{operation['method']}:provider_policy",
                     "route_policy_id": operation.get("route_policy_id"),
+                    "max_calls": operation.get("max_calls"),
                     "reason": "Bio provider execution is approval-gated by policy.",
                 }
                 for operation in bio_operations
@@ -8534,6 +8758,7 @@ class ExecutionEngine:
                     "kind": "hpc_operation",
                     "method": operation["method"],
                     "operation_key": operation["operation_key"],
+                    "max_calls": operation.get("max_calls"),
                     "reason": "HPC execution is approval-gated by policy.",
                 }
                 for operation in hpc_operations
@@ -8544,6 +8769,7 @@ class ExecutionEngine:
                     "method": operation["method"],
                     "operation_key": f"{operation['method']}:hpc_policy",
                     "route_policy_id": operation.get("route_policy_id"),
+                    "max_calls": operation.get("max_calls"),
                     "reason": "Bio tool HPC execution is approval-gated by S14 route policy.",
                 }
                 for operation in bio_tool_operations
@@ -8571,10 +8797,11 @@ class ExecutionEngine:
             ]
             + declared_pipeline_outputs,
             "resource_quota_estimate": {
-                "hpc_operation_count": len(hpc_operations),
-                "bio_operation_count": len(bio_operations),
-                "bio_tool_operation_count": len(bio_tool_operations),
-                "preprocess_operation_count": len(preprocess_operations),
+                "hpc_operation_count": sum(int(operation["max_calls"]) for operation in hpc_operations),
+                "hpc_jobs": sum(int(operation["quota_estimate"].get("hpc_jobs") or 0) for operation in hpc_operations),
+                "bio_operation_count": sum(int(operation["max_calls"]) for operation in bio_operations),
+                "bio_tool_operation_count": sum(int(operation["max_calls"]) for operation in bio_tool_operations),
+                "preprocess_operation_count": sum(int(operation["max_calls"]) for operation in preprocess_operations),
                 "max_runtime_minutes": sum(int(operation["resource_estimate"]["max_runtime_minutes"]) for operation in hpc_operations),
                 "provider_requests": sum(int(operation["quota_estimate"]["provider_requests"]) for operation in bio_operations),
                 "local_tool_invocations": sum(int(operation["quota_estimate"]["local_tool_invocations"]) for operation in bio_tool_operations),
@@ -8785,6 +9012,26 @@ class ExecutionEngine:
     def _planned_quota_estimate(self, method: str) -> dict[str, Any]:
         return {"hpc_jobs": 1, "operation": method}
 
+    def _scale_plan_estimate(
+        self,
+        estimate: dict[str, Any],
+        *,
+        multiplier: int,
+    ) -> dict[str, Any]:
+        scaled = dict(estimate)
+        for key in {
+            "max_runtime_minutes",
+            "provider_requests",
+            "pagination_pages",
+            "local_tool_invocations",
+            "hpc_jobs",
+        }:
+            value = scaled.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                scaled[key] = value * multiplier
+        scaled["max_calls"] = multiplier
+        return scaled
+
     def _plan_doc_hints(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
         hints: list[dict[str, Any]] = []
         seen: set[tuple[str | None, str | None]] = set()
@@ -8805,6 +9052,24 @@ class ExecutionEngine:
         session_id: str,
         execution_plan: dict[str, Any],
     ) -> dict[str, Any] | None:
+        unbounded_operations = [
+            operation
+            for operation in list(execution_plan.get("operations") or [])
+            if not bool(operation.get("bounded"))
+        ]
+        if unbounded_operations:
+            methods = [str(operation.get("operation")) for operation in unbounded_operations]
+            return {
+                "type": "execution_plan_unbounded_calls",
+                "stage": "pipeline_static_policy",
+                "retryable": False,
+                "message": "Pipeline external SDK calls must have a finite static call bound.",
+                "hint": (
+                    "Inline external SDK calls into top-level code or literal bounded for loops; "
+                    f"dynamic calls were found in: {methods}"
+                ),
+                "sdk_method": methods[0] if methods else None,
+            }
         for operation in list(execution_plan.get("hpc_operations") or []):
             if operation.get("method") != "structure_tools.fpocket":
                 continue

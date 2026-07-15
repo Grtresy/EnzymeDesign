@@ -3966,6 +3966,52 @@ class EngineDocumentRepository:
             return None
         return self._row_to_document(row)
 
+    def consume_pipeline_operation_call(
+        self,
+        *,
+        document_id: str,
+        method: str,
+        max_calls: int,
+    ) -> tuple[int, bool]:
+        if max_calls <= 0:
+            return 0, False
+        with _repository_immediate_transaction(
+            self.connection,
+            prefix="engine_plan_call_consume",
+        ):
+            row = self.connection.execute(
+                "SELECT payload_json FROM engine_documents WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                return 0, False
+            payload = _json_loads_object(row["payload_json"]) or {}
+            pipeline = dict(payload.get("pipeline") or {})
+            counts = {
+                str(key): int(value)
+                for key, value in dict(pipeline.get("operation_call_counts") or {}).items()
+            }
+            consumed = counts.get(method, 0)
+            if consumed >= max_calls:
+                return consumed, False
+            consumed += 1
+            counts[method] = consumed
+            pipeline["operation_call_counts"] = counts
+            payload["pipeline"] = pipeline
+            self.connection.execute(
+                """
+                UPDATE engine_documents
+                SET payload_json = ?, updated_at = ?
+                WHERE document_id = ?
+                """,
+                (
+                    json.dumps(payload, sort_keys=True),
+                    _utc_now_iso(),
+                    document_id,
+                ),
+            )
+            return consumed, True
+
     def list_by_session(self, session_id: str) -> list[EngineDocumentRecord]:
         rows = self.connection.execute(
             """
