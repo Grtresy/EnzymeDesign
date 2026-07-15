@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import json
+import re
 import tempfile
 from typing import Any
 
@@ -37,6 +38,17 @@ REQUIRED_IMAGE_CAPABILITIES = (
     "python",
     "openzyme_pipeline",
 )
+
+
+def normalize_immutable_image_id(value: str) -> str:
+    """Normalize a Podman image ID without accepting tags or short digests."""
+
+    image_id = value.strip()
+    if re.fullmatch(r"[0-9a-f]{64}", image_id):
+        return f"sha256:{image_id}"
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        return image_id
+    raise ValueError("image ID must be a full sha256 digest")
 
 
 def derive_sandbox_workspace_id(session_id: str, agent_member_id: str) -> str:
@@ -437,6 +449,7 @@ __all__ = [
     "SandboxWorkspaceService",
     "default_missing_image_record",
     "derive_sandbox_workspace_id",
+    "normalize_immutable_image_id",
     "register_sandbox_workspace_tools",
     "sandbox_image_record",
     "summarize_workspace_directory",

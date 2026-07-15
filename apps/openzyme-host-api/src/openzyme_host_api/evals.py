@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import sandbox_image_record
+from openzyme_core import normalize_immutable_image_id
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
@@ -227,7 +228,7 @@ class V3LocalEvalInvoker:
                             "name": "web.search",
                             "args": {
                                 "query": "thermostable glycoside hydrolase xylan substrate evidence",
-                                "topic": "enzyme design",
+                                "topic": "general",
                                 "max_results": 3,
                             },
                         }
@@ -1074,8 +1075,8 @@ def _s15_sandbox_image_prerequisite(
             hint=f"Sandbox image digest inspection failed: {exc}",
             image_ref=image_ref,
         )
-    image_digest = inspect.stdout.strip()
-    if inspect.returncode != 0 or not image_digest:
+    image_id = inspect.stdout.strip()
+    if inspect.returncode != 0 or not image_id:
         detail = inspect.stderr.strip() or inspect.stdout.strip() or "image digest is empty"
         return _s15_prerequisite_entry(
             name="sandbox_image",
@@ -1084,8 +1085,16 @@ def _s15_sandbox_image_prerequisite(
             hint=f"Sandbox image digest inspection failed: {detail}",
             image_ref=image_ref,
         )
-    if not image_digest.startswith("sha256:"):
-        image_digest = f"sha256:{image_digest}"
+    try:
+        image_digest = normalize_immutable_image_id(image_id)
+    except ValueError as exc:
+        return _s15_prerequisite_entry(
+            name="sandbox_image",
+            status="prerequisite_missing",
+            error_code="sandbox_image_identity_invalid",
+            hint=f"Sandbox image digest inspection returned an invalid identity: {exc}",
+            image_ref=image_ref,
+        )
     return _s15_prerequisite_entry(
         name="sandbox_image",
         status="ok",

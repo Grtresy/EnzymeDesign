@@ -120,7 +120,10 @@ class TavilyResearchAdapter:
         self, *, session_id: str, research_brief: str, unit: ResearchUnit
     ) -> ResearchUnitResult:
         del session_id, research_brief
-        response = self.web_search(query=unit.query, topic=unit.topic)
+        # ResearchUnit.topic is the semantic subject being investigated, not the
+        # provider's search-category enum. Keep provider routing under adapter
+        # configuration while preserving the semantic topic in normalized output.
+        response = self.web_search(query=unit.query)
         return self.normalize_search_response(unit=unit, response=response)
 
     def search(self, query: str) -> dict[str, Any]:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
@@ -28,6 +30,7 @@ def test_web_ui_parser_exposes_only_v3_sqlite_database() -> None:
 
 def test_configured_web_ui_registers_existing_sandbox_image(monkeypatch) -> None:
     repositories = _repositories()
+    image_digest = "sha256:" + "a" * 64
     monkeypatch.setattr("openzyme_host_api.dev_web_ui.shutil.which", lambda binary: "/usr/bin/podman")
 
     def fake_run(args, **kwargs):
@@ -35,7 +38,7 @@ def test_configured_web_ui_registers_existing_sandbox_image(monkeypatch) -> None
         if args[:3] == ["podman", "image", "exists"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:3] == ["podman", "image", "inspect"]:
-            return subprocess.CompletedProcess(args, 0, stdout="sha256:configured\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout=f"{image_digest}\n", stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr("openzyme_host_api.dev_web_ui.subprocess.run", fake_run)
@@ -45,7 +48,27 @@ def test_configured_web_ui_registers_existing_sandbox_image(monkeypatch) -> None
     image = repositories.sandbox_images.get_default()
     assert image is not None
     assert image.image_ref == "localhost/openzyme-pipeline-sandbox:dev"
-    assert image.image_digest == "sha256:configured"
+    assert image.image_digest == image_digest
+
+
+def test_configured_web_ui_rejects_invalid_sandbox_image_identity(monkeypatch) -> None:
+    repositories = _repositories()
+    monkeypatch.setattr("openzyme_host_api.dev_web_ui.shutil.which", lambda binary: "/usr/bin/podman")
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        if args[:3] == ["podman", "image", "exists"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ["podman", "image", "inspect"]:
+            return subprocess.CompletedProcess(args, 0, stdout="sha256:short\n", stderr="")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr("openzyme_host_api.dev_web_ui.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="invalid immutable image ID"):
+        _register_existing_sandbox_image(repositories)
+
+    assert repositories.sandbox_images.get_default() is None
 
 
 def test_configured_web_ui_does_not_build_missing_sandbox_image(monkeypatch) -> None:

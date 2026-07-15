@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from openzyme_core import CoreRepositories
 from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
@@ -15,6 +17,7 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import build_teammate_registry
 from openzyme_core import connect_sqlite
 from openzyme_core import derive_sandbox_workspace_id
+from openzyme_core import normalize_immutable_image_id
 from openzyme_core import sandbox_image_record
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
@@ -27,6 +30,17 @@ def _build_repositories() -> CoreRepositories:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
     return CoreRepositories.from_connection(connection)
+
+
+def test_normalize_immutable_image_id_accepts_only_full_sha256_ids() -> None:
+    bare = "a" * 64
+
+    assert normalize_immutable_image_id(bare) == f"sha256:{bare}"
+    assert normalize_immutable_image_id(f"sha256:{bare}\n") == f"sha256:{bare}"
+
+    for invalid in ("sha256:short", "latest", "sha256:" + "G" * 64):
+        with pytest.raises(ValueError, match="full sha256 digest"):
+            normalize_immutable_image_id(invalid)
 
 
 def _seed_session(

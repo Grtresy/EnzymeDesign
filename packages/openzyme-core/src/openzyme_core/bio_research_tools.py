@@ -644,6 +644,11 @@ def register_web_research_tools(
         query = str(invocation.arguments["query"])
         max_results = int(invocation.arguments.get("max_results", 3))
         topic = str(invocation.arguments.get("topic", "general"))
+        if topic not in {"general", "news", "finance"}:
+            raise ValueError(
+                "topic must be one of 'general', 'news', or 'finance'; "
+                "put the semantic research subject in query"
+            )
         include_raw_content = bool(
             invocation.arguments.get("include_raw_content", True)
         )

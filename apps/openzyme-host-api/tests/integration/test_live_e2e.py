@@ -14,6 +14,7 @@ from openzyme_host_api.app import create_app
 from openzyme_host_api.security import HostSecurityPolicy
 from openzyme_host_api.foundation import apply_live_llm_test_budget
 from openzyme_host_api.foundation import build_configured_foundation
+from openzyme_host_api.eval_support import product_path_has_quiescent_failure
 from openzyme_runtime import get_settings
 from openzyme_runtime.live_testing import LiveStageTimeout
 from openzyme_runtime.live_testing import derive_live_graph_timeout_seconds
@@ -87,6 +88,8 @@ def _poll_until_product_path_quiescent(
             item.get("status") == "succeeded"
             for item in workspace["capabilities"].get("execution", [])
         ):
+            return workspace, latest_events, latest_runtime
+        if product_path_has_quiescent_failure(workspace):
             return workspace, latest_events, latest_runtime
         time.sleep(1.0)
 

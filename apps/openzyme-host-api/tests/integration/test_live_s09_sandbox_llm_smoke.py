@@ -18,6 +18,7 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import build_teammate_registry
 from openzyme_core import connect_sqlite
 from openzyme_core import derive_sandbox_workspace_id
+from openzyme_core import normalize_immutable_image_id
 from openzyme_core import run_agent_harness_loop
 from openzyme_core import sandbox_image_record
 from openzyme_domain import AgentMember
@@ -51,7 +52,7 @@ def _build_repositories() -> CoreRepositories:
     return CoreRepositories.from_connection(connection)
 
 
-def _require_local_sandbox_runtime() -> None:
+def _require_local_sandbox_runtime() -> str:
     if shutil.which("podman") is None:
         pytest.skip("S09 sandbox live smoke requires podman.")
     rootless = subprocess.run(
@@ -73,9 +74,35 @@ def _require_local_sandbox_runtime() -> None:
             "S09 sandbox live smoke requires the default sandbox image "
             f"{DEFAULT_SANDBOX_IMAGE_REF!r}."
         )
+    inspected = subprocess.run(
+        [
+            "podman",
+            "image",
+            "inspect",
+            DEFAULT_SANDBOX_IMAGE_REF,
+            "--format",
+            "{{.Id}}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if inspected.returncode != 0:
+        pytest.fail(
+            "S09 sandbox live smoke could not resolve the configured image ID: "
+            f"{inspected.stderr.strip() or inspected.stdout.strip()}"
+        )
+    try:
+        return normalize_immutable_image_id(inspected.stdout)
+    except ValueError as exc:
+        pytest.fail(f"S09 sandbox live smoke received an invalid Podman image ID: {exc}")
 
 
-def _seed_executor_session(repositories: CoreRepositories) -> tuple[str, str, str]:
+def _seed_executor_session(
+    repositories: CoreRepositories,
+    *,
+    image_digest: str,
+) -> tuple[str, str, str]:
     session_id = "sess_live_s09_sandbox_llm"
     task_id = "task_live_s09_sandbox"
     agent_id = "agent:executor"
@@ -126,7 +153,7 @@ def _seed_executor_session(repositories: CoreRepositories) -> tuple[str, str, st
     repositories.sandbox_images.save(
         sandbox_image_record(
             image_ref=DEFAULT_SANDBOX_IMAGE_REF,
-            image_digest="sha256:live-s09-smoke",
+            image_digest=image_digest,
         )
     )
     return session_id, task_id, agent_id
@@ -140,7 +167,7 @@ def _tool_payload(result: Any) -> dict[str, Any]:
 
 
 def test_live_executor_llm_writes_and_executes_sandbox_code() -> None:
-    _require_local_sandbox_runtime()
+    image_digest = _require_local_sandbox_runtime()
     settings = apply_live_llm_test_budget(get_settings())
     tuned_settings = replace(
         settings,
@@ -160,7 +187,10 @@ def test_live_executor_llm_writes_and_executes_sandbox_code() -> None:
         minimum_seconds=180,
     )
     repositories = _build_repositories()
-    session_id, task_id, agent_id = _seed_executor_session(repositories)
+    session_id, task_id, agent_id = _seed_executor_session(
+        repositories,
+        image_digest=image_digest,
+    )
     workspace_id = derive_sandbox_workspace_id(session_id, "member_live_s09_executor")
     model_factory = build_model_factory_from_settings(tuned_settings)
     assert model_factory is not None

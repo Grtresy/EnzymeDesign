@@ -71,6 +71,8 @@ Useful commands:
 2. `uv run pytest -m "integration and live_e2e"`
 3. `uv run pytest -m quality_eval`
 
+The live E2E poller exits as soon as a failed task is quiescent (no working agent, pending runtime signal, or unread inbox). Provider rate limits, missing artifacts, and other fail-closed outcomes remain explicit failures instead of waiting for the full graph timeout or being treated as cutover evidence.
+
 ## V3 `/ui` fpocket Smoke Test
 
 For a manual Host API plus HPC smoke test:

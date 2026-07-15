@@ -75,6 +75,7 @@ from .runtime_consistency import RuntimeConsistencyWarning
 from .runtime_consistency import RuntimeStateAudit
 from .sandbox_workspace import SandboxWorkspaceService
 from .sandbox_workspace import derive_sandbox_workspace_id
+from .sandbox_workspace import normalize_immutable_image_id
 from .sandbox_workspace import register_sandbox_workspace_tools
 from .sandbox_workspace import sandbox_image_record
 from .sandbox_runtime import SandboxRuntimeError
@@ -321,6 +322,7 @@ __all__ = [
     "get_migration_sql",
     "load_recent_conversation",
     "model_context_profile_from_env_or_factory",
+    "normalize_immutable_image_id",
     "persist_conversation_message",
     "prompt_budget_config_from_env",
     "register_memory_tools",

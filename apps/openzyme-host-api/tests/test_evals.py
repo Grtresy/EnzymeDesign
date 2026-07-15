@@ -683,6 +683,7 @@ def test_s15_live_prerequisite_report_requires_sandbox_image(monkeypatch) -> Non
 
 
 def test_s15_bootstrap_live_sandbox_image_registers_probe_digest(monkeypatch) -> None:
+    image_digest = "sha256:" + "b" * 64
     monkeypatch.setenv("OPENZYME_NCBI_EMAIL", "dev@example.org")
     monkeypatch.setattr("openzyme_host_api.evals.live_e2e_skip_reason", lambda settings: None)
     monkeypatch.setattr("openzyme_host_api.evals.live_llm_skip_reason", lambda settings: None)
@@ -697,7 +698,7 @@ def test_s15_bootstrap_live_sandbox_image_registers_probe_digest(monkeypatch) ->
         if args[:3] == ["podman", "image", "exists"]:
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:3] == ["podman", "image", "inspect"]:
-            return subprocess.CompletedProcess(args, 0, stdout="sha256:live-image\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout=f"{image_digest}\n", stderr="")
         raise AssertionError(f"unexpected command: {args}")
 
     monkeypatch.setattr("openzyme_host_api.evals.subprocess.run", fake_run)
@@ -715,9 +716,9 @@ def test_s15_bootstrap_live_sandbox_image_registers_probe_digest(monkeypatch) ->
     image = repositories.sandbox_images.get_default()
     image_check = next(check for check in report["checks"] if check["name"] == "sandbox_image")
     assert report["status"] == "ok"
-    assert image_check["image_digest"] == "sha256:live-image"
+    assert image_check["image_digest"] == image_digest
     assert image is not None
-    assert image.image_digest == "sha256:live-image"
+    assert image.image_digest == image_digest
     assert image.compatibility is SandboxImageCompatibility.COMPATIBLE_NON_CUTOVER_GRADE
 
 

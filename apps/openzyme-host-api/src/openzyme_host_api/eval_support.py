@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
 from openzyme_engines import ResearchBriefDraft as EngineResearchBriefDraft
@@ -16,6 +18,22 @@ from openzyme_runtime import IntakeClarification
 from openzyme_runtime import IntakePhaseOutput
 from openzyme_runtime import ReportDraft
 from openzyme_runtime import ResearchBriefDraft as RuntimeResearchBriefDraft
+
+
+def product_path_has_quiescent_failure(workspace: dict[str, Any]) -> bool:
+    """Detect a failed live workflow only after all recovery work is drained."""
+
+    task_items = (workspace.get("task_board") or {}).get("items") or []
+    if not any((item.get("task") or {}).get("status") == "failed" for item in task_items):
+        return False
+    agents = (workspace.get("delegation") or {}).get("agents") or []
+    return all(
+        int(item.get("pending_signal_count") or 0) == 0
+        and int(item.get("unread_inbox_count") or 0) == 0
+        and (item.get("agent") or {}).get("runtime_state")
+        not in {"active", "working"}
+        for item in agents
+    )
 
 
 class DeterministicLocalStructuredInvoker:
@@ -162,7 +180,7 @@ class DeterministicLocalToolCallingInvoker:
                         "name": "web.search",
                         "args": {
                             "query": "thermostability evidence",
-                            "topic": "supporting evidence",
+                            "topic": "general",
                             "max_results": 1,
                         },
                     }

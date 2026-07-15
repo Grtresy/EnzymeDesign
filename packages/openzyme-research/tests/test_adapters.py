@@ -35,6 +35,7 @@ def test_tavily_adapter_normalizes_search_results_without_provider_leakage() -> 
     assert result.findings[0].query == "thermostable catalase homolog activity 60C"
     assert result.findings[0].sources[0].locator == "https://example.org/paper"
     assert observed["timeout"] == 12.5
+    assert observed["topic"] == "general"
 
 
 def test_tavily_adapter_normalizes_fetch_results() -> None:

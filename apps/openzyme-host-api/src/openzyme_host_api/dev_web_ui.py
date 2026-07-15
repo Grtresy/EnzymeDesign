@@ -16,6 +16,7 @@ from .foundation import build_local_eval_foundation
 from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SQLiteSchemaMismatchError
+from openzyme_core import normalize_immutable_image_id
 from openzyme_core import sandbox_image_record
 
 
@@ -76,11 +77,15 @@ def _register_existing_sandbox_image(
         )
     except (OSError, subprocess.TimeoutExpired):
         return
-    image_digest = inspect.stdout.strip()
-    if inspect.returncode != 0 or not image_digest:
+    image_id = inspect.stdout.strip()
+    if inspect.returncode != 0 or not image_id:
         return
-    if not image_digest.startswith("sha256:"):
-        image_digest = f"sha256:{image_digest}"
+    try:
+        image_digest = normalize_immutable_image_id(image_id)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Podman returned an invalid immutable image ID for {image_ref!r}"
+        ) from exc
     repositories.sandbox_images.save(
         sandbox_image_record(image_ref=image_ref, image_digest=image_digest)
     )

@@ -913,7 +913,7 @@ class FakePhaseBToolCallingInvoker:
                         "name": "web.search",
                         "args": {
                             "query": "thermostability evidence",
-                            "topic": "supporting evidence",
+                            "topic": "general",
                             "max_results": 1,
                         },
                     }

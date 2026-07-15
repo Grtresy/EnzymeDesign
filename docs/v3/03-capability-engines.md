@@ -146,6 +146,7 @@ deep research 对 harness 至少提供：
 - 对 harness 可恢复的状态必须回写 `engine_invocation + evidence artifacts`
 - search / lookup 类 observation 应能规范化为 canonical evidence 与 source refs
 - download 类 observation 应能规范化为 workspace artifacts，并可附带 evidence/source provenance
+- `ResearchUnit.topic` 是科学语义主题，不是 provider category。Tavily `web.search.topic` 只暴露 `general` / `news` / `finance` 枚举并默认使用 adapter 配置；非法类别在 provider 前返回 `invalid_tool_arguments`，不能把 scientific subject 透传给 Tavily 或静默替换
 
 ## 3. Execution Engine
 
@@ -198,7 +199,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - sandbox 运行在 rootless Podman 容器中，默认无网络、非 root、资源受限，并按 executor/session 持久化工作目录
 - 默认多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 container process 并挂载各自的 persistent `/workspace`；image layer 可以共享，sandbox workspace volume 不共享
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
-- `image_ref` 只用于配置与 preflight 查找。plan 创建时 Host 必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；Podman `image inspect .Id` 在不同版本可能返回裸 64 位 hex 或带 `sha256:` 前缀，Host 只允许这两种精确格式并统一规范化为后者。image、SDK 与 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
+- `image_ref` 只用于配置与 preflight 查找。local Host startup、live/eval bootstrap 和 plan 创建都必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；Podman `image inspect .Id` 在不同版本可能返回裸 64 位 hex 或带 `sha256:` 前缀，Host 只允许这两种精确格式并统一规范化为后者，其他输出不得登记。image、SDK 与 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
 - 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
 - sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
 - `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog

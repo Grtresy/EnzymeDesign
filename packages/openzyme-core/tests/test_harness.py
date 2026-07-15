@@ -2309,6 +2309,54 @@ def test_researcher_tool_descriptors_include_web_tools_when_adapter_supports_the
 
     assert "web.search" in tool_names
     assert "web.fetch" in tool_names
+    search = next(
+        descriptor
+        for descriptor in teammate_tool_descriptors(
+            role="researcher", research_adapter=adapter
+        )
+        if descriptor.tool_name == "web.search"
+    )
+    assert search.input_schema["properties"]["topic"]["enum"] == [
+        "general",
+        "news",
+        "finance",
+    ]
+
+
+def test_researcher_web_search_rejects_semantic_subject_as_provider_topic() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    provider_calls: list[dict[str, object]] = []
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **kwargs: provider_calls.append(kwargs) or {"results": []},
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_invalid_web_topic",
+            tool_name="web.search",
+            arguments={
+                "query": "thermostable enzyme engineering",
+                "topic": "enzyme engineering",
+            },
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "invalid_tool_arguments"
+    assert "semantic research subject" in result.content
+    assert provider_calls == []
 
 
 def test_research_words_do_not_hide_direct_research_tools() -> (

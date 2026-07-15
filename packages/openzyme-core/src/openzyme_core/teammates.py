@@ -222,7 +222,14 @@ def teammate_tool_descriptors(
                                 "minimum": 1,
                                 "maximum": 20,
                             },
-                            "topic": {"type": "string"},
+                            "topic": {
+                                "type": "string",
+                                "enum": ["general", "news", "finance"],
+                                "description": (
+                                    "Provider search category, not the semantic "
+                                    "research subject. Defaults to general."
+                                ),
+                            },
                             "include_raw_content": {"type": "boolean"},
                         },
                         "required": ["query"],
