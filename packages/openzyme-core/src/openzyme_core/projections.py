@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from openzyme_research import safe_public_locator
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import ApprovalRequestStatus
@@ -100,6 +101,7 @@ class SessionWorkspaceProjection:
     sandbox_runs: tuple[dict[str, Any], ...]
     report_drafts: tuple[dict[str, Any], ...]
     reports: tuple[dict[str, Any], ...]
+    scientific_evidence: dict[str, Any]
     capabilities: dict[str, list[dict[str, Any]]]
     runtime_state: dict[str, Any]
 
@@ -121,6 +123,7 @@ class SessionWorkspaceProjection:
             "sandbox_runs": list(self.sandbox_runs),
             "report_drafts": list(self.report_drafts),
             "reports": list(self.reports),
+            "scientific_evidence": self.scientific_evidence,
             "capabilities": self.capabilities,
             "runtime_state": self.runtime_state,
         }
@@ -134,34 +137,70 @@ class SessionProjectionBuilder:
         session = self.repositories.sessions.get(session_id)
         if session is None:
             raise ValueError(f"session {session_id!r} does not exist")
-        task_board = TaskBoardService(self.repositories).build_projection(session_id).to_dict()
-        lane_board = LaneManager(self.repositories).build_projection(session_id).to_dict()
-        conversation = tuple(entry.to_dict() for entry in build_conversation_projection(self.repositories, session_id))
+        task_board = (
+            TaskBoardService(self.repositories).build_projection(session_id).to_dict()
+        )
+        lane_board = (
+            LaneManager(self.repositories).build_projection(session_id).to_dict()
+        )
+        conversation = tuple(
+            entry.to_dict()
+            for entry in build_conversation_projection(self.repositories, session_id)
+        )
         approvals = tuple(
             self._project_pending_approval(approval)
-            for approval in self.repositories.approvals.list_pending_by_session(session_id)
+            for approval in self.repositories.approvals.list_pending_by_session(
+                session_id
+            )
         )
-        inbox = tuple(message.to_dict() for message in self.repositories.inbox.list_by_session(session_id))
-        memory = tuple(entry.to_dict() for entry in self.repositories.memory.list_by_session(session_id))
+        inbox = tuple(
+            message.to_dict()
+            for message in self.repositories.inbox.list_by_session(session_id)
+        )
+        memory = tuple(
+            entry.to_dict()
+            for entry in self.repositories.memory.list_by_session(session_id)
+        )
         delegation = self.build_delegation_projection(session_id).to_dict()
         agent_traces = self.build_agent_traces_projection(session_id)
-        activity_feed = tuple(item.to_dict() for item in self.build_activity_feed(session_id))
-        artifacts = tuple(self._project_workspace_artifact(artifact) for artifact in self.repositories.artifacts.list_by_session(session_id))
+        activity_feed = tuple(
+            item.to_dict() for item in self.build_activity_feed(session_id)
+        )
+        artifacts = tuple(
+            self._project_workspace_artifact(artifact)
+            for artifact in self.repositories.artifacts.list_by_session(session_id)
+        )
         artifact_index = tuple(self._build_artifact_index(artifacts))
         sandbox_workspaces = tuple(
             workspace.to_dict()
-            for workspace in self.repositories.sandbox_workspaces.list_by_session(session_id)
+            for workspace in self.repositories.sandbox_workspaces.list_by_session(
+                session_id
+            )
         )
         sandbox_runs = tuple(
             self._project_sandbox_run(run)
             for run in self.repositories.sandbox_runs.list_by_session(session_id)
         )
-        report_drafts = tuple(draft.to_dict() for draft in self.repositories.report_drafts.list_by_session(session_id))
-        reports = tuple(report.to_dict() for report in self.repositories.reports.list_by_session(session_id))
+        report_drafts = tuple(
+            self._project_report_draft_summary(draft)
+            for draft in self.repositories.report_drafts.list_by_session(session_id)
+        )
+        reports = tuple(
+            self._project_report_summary(report)
+            for report in self.repositories.reports.list_by_session(session_id)
+        )
+        scientific_evidence = self._build_scientific_evidence_projection(
+            session_id,
+            artifacts=artifacts,
+            report_drafts=report_drafts,
+            reports=reports,
+        )
         capabilities = self._build_capabilities_projection(session_id)
-        runtime_state = RuntimeConsistencyService(self.repositories).audit_session(
-            session_id
-        ).to_dict()
+        runtime_state = (
+            RuntimeConsistencyService(self.repositories)
+            .audit_session(session_id)
+            .to_dict()
+        )
         return SessionWorkspaceProjection(
             session=session.to_dict(),
             conversation=conversation,
@@ -179,6 +218,7 @@ class SessionProjectionBuilder:
             sandbox_runs=sandbox_runs,
             report_drafts=report_drafts,
             reports=reports,
+            scientific_evidence=scientific_evidence,
             capabilities=capabilities,
             runtime_state=runtime_state,
         )
@@ -210,18 +250,54 @@ class SessionProjectionBuilder:
                 "backend_category": operation.backend_category,
                 "route_policy_id": operation.route_policy_id,
                 "selected_backend": operation.selected_backend,
+                "input_artifact_ids": list(operation.input_artifact_ids),
+                "input_artifact_digests": list(operation.input_artifact_digests),
                 "resource_estimate": operation.resource_estimate or {},
                 "expected_outputs_summary": operation.expected_outputs_summary or {},
                 "source_snapshot_artifact_id": operation.source_snapshot_artifact_id,
+                "source_snapshot_digest": operation.source_snapshot_digest,
                 "error_code": operation.error_code,
-                "error_summary": operation.error_summary,
                 "created_at": operation.created_at,
                 "updated_at": operation.updated_at,
             }
         )
 
+    def _project_report_summary(self, report: Any) -> dict[str, Any]:
+        return self._sanitize_execution_projection(
+            {
+                "report_id": report.report_id,
+                "session_id": report.session_id,
+                "task_id": report.task_id,
+                "lane_id": report.lane_id,
+                "invocation_id": report.invocation_id,
+                "run_id": report.run_id,
+                "artifact_id": report.artifact_id,
+                "status": report.status.value,
+                "title": report.title,
+                "created_at": report.created_at,
+                "updated_at": report.updated_at,
+            }
+        )
+
+    def _project_report_draft_summary(self, draft: Any) -> dict[str, Any]:
+        return self._sanitize_execution_projection(
+            {
+                "draft_id": draft.draft_id,
+                "session_id": draft.session_id,
+                "task_id": draft.task_id,
+                "owner_agent_id": draft.owner_agent_id,
+                "status": draft.status.value,
+                "title": draft.title,
+                "published_report_id": draft.published_report_id,
+                "created_at": draft.created_at,
+                "updated_at": draft.updated_at,
+            }
+        )
+
     def _project_sandbox_run(self, run: Any) -> dict[str, Any]:
-        operations = self.repositories.controlled_operations.list_by_run(run.sandbox_run_id)
+        operations = self.repositories.controlled_operations.list_by_run(
+            run.sandbox_run_id
+        )
         payload = run.to_dict()
         payload["operation_ids"] = [operation.operation_id for operation in operations]
         payload["operation_statuses"] = {
@@ -234,7 +310,9 @@ class SessionProjectionBuilder:
     ) -> list[dict[str, Any]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for artifact in artifacts:
-            relative_path = str(artifact.get("relative_path") or artifact.get("artifact_id") or "")
+            relative_path = str(
+                artifact.get("relative_path") or artifact.get("artifact_id") or ""
+            )
             if not relative_path:
                 continue
             grouped.setdefault(relative_path, []).append(artifact)
@@ -261,6 +339,567 @@ class SessionProjectionBuilder:
                 }
             )
         return sorted(index, key=lambda item: str(item["relative_path"]))
+
+    def _project_research_source_ref(self, source_ref: Any) -> dict[str, Any]:
+        locator = safe_public_locator(str(source_ref.locator or ""))
+        projected = {
+            "source_ref_id": source_ref.source_ref_id,
+            "task_id": source_ref.task_id,
+            "lane_id": source_ref.lane_id,
+            "invocation_id": source_ref.invocation_id,
+            "evidence_id": source_ref.evidence_id,
+            "title": source_ref.title,
+            "kind": source_ref.kind.value,
+            "provider": self._safe_identifier(source_ref.provider),
+            "external_id": self._safe_identifier(source_ref.external_id),
+            "pmid": (
+                source_ref.pmid
+                if source_ref.pmid is not None and source_ref.pmid.isdigit()
+                else None
+            ),
+            "doi": self._safe_short_text(source_ref.doi),
+            "venue": self._safe_short_text(source_ref.venue),
+            "publication_date": self._safe_short_text(source_ref.publication_date),
+            "retrieved_at": self._safe_short_text(source_ref.retrieved_at),
+            "request_digest": self._safe_digest(source_ref.request_digest),
+            "response_digest": self._safe_digest(source_ref.response_digest),
+            "evidence_artifact_id": self._safe_identifier(
+                source_ref.evidence_artifact_id
+            ),
+            "created_at": source_ref.created_at,
+        }
+        if locator is not None:
+            projected["locator"] = locator
+        return {key: value for key, value in projected.items() if value is not None}
+
+    def _project_provider_call(
+        self,
+        value: Any,
+        *,
+        invocation_id: str | None,
+        observed_at: str,
+    ) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        provenance = value.get("provenance")
+        if not isinstance(provenance, dict):
+            return None
+        provider = self._safe_identifier(provenance.get("provider"))
+        if provider is None:
+            return None
+        outcome = self._safe_status(
+            value.get("outcome"),
+            allowed={"completed", "empty", "degraded", "failed"},
+            default="unknown",
+        )
+        item_count = value.get("item_count")
+        if not isinstance(item_count, int) or isinstance(item_count, bool):
+            item_count = 0
+        failure = value.get("failure")
+        error_code = (
+            self._safe_identifier(failure.get("error_code"))
+            if isinstance(failure, dict)
+            else None
+        )
+        return {
+            "provider": provider,
+            "requirement": self._provider_requirement(provider),
+            "outcome": outcome,
+            "item_count": max(0, item_count),
+            "request_digest": self._safe_digest(provenance.get("request_digest")),
+            "response_digest": self._safe_digest(provenance.get("response_digest")),
+            "retrieved_at": self._safe_short_text(provenance.get("retrieved_at")),
+            "attempt_count": self._safe_nonnegative_int(
+                provenance.get("attempt_count")
+            ),
+            "error_code": error_code,
+            "invocation_id": invocation_id,
+            "observed_at": observed_at,
+        }
+
+    def _project_quorum(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        status = self._safe_status(
+            value.get("status"),
+            allowed={"complete", "degraded", "failed"},
+            default="failed",
+        )
+        members: list[dict[str, Any]] = []
+        for raw_member in value.get("members") or []:
+            if not isinstance(raw_member, dict):
+                continue
+            provider = self._safe_identifier(raw_member.get("provider"))
+            if provider is None:
+                continue
+            member = {
+                "provider": provider,
+                "requirement": self._safe_status(
+                    raw_member.get("requirement"),
+                    allowed={"required", "enrichment"},
+                    default=self._provider_requirement(provider),
+                ),
+                "outcome": self._safe_status(
+                    raw_member.get("outcome"),
+                    allowed={"completed", "empty", "degraded", "failed"},
+                    default="unknown",
+                ),
+                "record_count": self._safe_nonnegative_int(
+                    raw_member.get("record_count")
+                ),
+                "accepted": raw_member.get("accepted") is True,
+                "error_code": self._safe_identifier(raw_member.get("error_code")),
+            }
+            members.append(member)
+        return {
+            "status": status,
+            "cutover_eligible": value.get("cutover_eligible") is True,
+            "members": members,
+            "warning_count": len(value.get("warnings") or []),
+        }
+
+    def _project_cutover_artifact(self, artifact: dict[str, Any]) -> dict[str, Any]:
+        metadata = artifact.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        provenance = metadata.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+        candidate_count = self._safe_nonnegative_int(metadata.get("candidate_count"))
+        scientific_outcome = self._safe_identifier(
+            metadata.get("scientific_outcome") or metadata.get("scientific_status")
+        )
+        if (
+            scientific_outcome is None
+            and candidate_count == 0
+            and "candidate_count" in metadata
+        ):
+            scientific_outcome = "empty_result"
+        return {
+            "artifact_id": artifact.get("artifact_id"),
+            "kind": artifact.get("kind"),
+            "title": artifact.get("title"),
+            "relative_path": artifact.get("relative_path"),
+            "schema_id": self._safe_identifier(
+                metadata.get("schema_id") or metadata.get("schema_version")
+            ),
+            "provider": self._safe_identifier(
+                metadata.get("provider") or provenance.get("provider")
+            ),
+            "provider_outcome": self._safe_status(
+                metadata.get("provider_outcome"),
+                allowed={"completed", "empty", "degraded", "failed"},
+                default=None,
+            ),
+            "quorum_status": self._safe_status(
+                metadata.get("quorum_status"),
+                allowed={"complete", "degraded", "failed"},
+                default=None,
+            ),
+            "cutover_eligible": (
+                metadata.get("cutover_eligible")
+                if isinstance(metadata.get("cutover_eligible"), bool)
+                else None
+            ),
+            "content_digest": self._safe_digest(metadata.get("content_digest")),
+            "sealed_digest": self._safe_digest(metadata.get("sealed_digest")),
+            "request_digest": self._safe_digest(provenance.get("request_digest")),
+            "response_digest": self._safe_digest(provenance.get("response_digest")),
+            "verification_status": self._safe_status(
+                metadata.get("verification_status") or metadata.get("verifier_status"),
+                allowed={"passed", "failed", "pending"},
+                default=None,
+            ),
+            "scientific_outcome": scientific_outcome,
+            "candidate_count": candidate_count,
+            "created_at": artifact.get("created_at"),
+        }
+
+    def _build_scientific_evidence_projection(
+        self,
+        session_id: str,
+        *,
+        artifacts: tuple[dict[str, Any], ...],
+        report_drafts: tuple[dict[str, Any], ...],
+        reports: tuple[dict[str, Any], ...],
+    ) -> dict[str, Any]:
+        provider_calls: dict[str, dict[str, Any]] = {}
+        quorum: dict[str, Any] | None = None
+        for document in self.repositories.engine_documents.list_by_session(session_id):
+            if not isinstance(document.payload, dict):
+                continue
+            raw_ref = document.payload.get("raw_ref")
+            if not isinstance(raw_ref, dict):
+                continue
+            provider_call = self._project_provider_call(
+                raw_ref.get("provider_call"),
+                invocation_id=document.invocation_id,
+                observed_at=document.updated_at,
+            )
+            if provider_call is not None:
+                provider_calls[provider_call["provider"]] = provider_call
+            projected_quorum = self._project_quorum(
+                raw_ref.get("call_local_literature_quorum")
+            )
+            if projected_quorum is not None:
+                quorum = projected_quorum
+
+        citations = [
+            self._project_research_source_ref(source_ref)
+            for source_ref in self.repositories.research_source_refs.list_by_session(
+                session_id
+            )
+        ]
+        artifact_summaries = [
+            self._project_cutover_artifact(artifact) for artifact in artifacts
+        ]
+        for artifact in artifact_summaries:
+            provider = artifact.get("provider")
+            if not provider or provider in provider_calls:
+                continue
+            provider_calls[provider] = {
+                "provider": provider,
+                "requirement": self._provider_requirement(provider),
+                "outcome": artifact.get("provider_outcome") or "recorded",
+                "item_count": 0,
+                "request_digest": artifact.get("request_digest"),
+                "response_digest": artifact.get("response_digest"),
+                "retrieved_at": artifact.get("created_at"),
+                "attempt_count": None,
+                "error_code": None,
+                "invocation_id": None,
+                "observed_at": artifact.get("created_at"),
+            }
+
+        active = bool(provider_calls) or any(
+            artifact.get("cutover_eligible") is not None
+            or str(artifact.get("schema_id") or "").startswith("aox_")
+            for artifact in artifact_summaries
+        )
+        if active:
+            for provider in ("pubmed", "semantic_scholar", "tavily"):
+                provider_calls.setdefault(
+                    provider,
+                    {
+                        "provider": provider,
+                        "requirement": self._provider_requirement(provider),
+                        "outcome": "not_attempted",
+                        "item_count": 0,
+                        "request_digest": None,
+                        "response_digest": None,
+                        "retrieved_at": None,
+                        "attempt_count": None,
+                        "error_code": "provider_absent",
+                        "invocation_id": None,
+                        "observed_at": None,
+                    },
+                )
+            if quorum is not None:
+                for member in quorum.get("members") or []:
+                    provider = member.get("provider")
+                    if provider not in provider_calls:
+                        continue
+                    provider_calls[provider]["requirement"] = member.get(
+                        "requirement"
+                    ) or self._provider_requirement(provider)
+                    provider_calls[provider]["outcome"] = (
+                        member.get("outcome") or provider_calls[provider]["outcome"]
+                    )
+                    provider_calls[provider]["item_count"] = (
+                        member.get("record_count")
+                        or provider_calls[provider]["item_count"]
+                    )
+                    provider_calls[provider]["error_code"] = (
+                        member.get("error_code")
+                        or provider_calls[provider]["error_code"]
+                    )
+
+        for provider, summary in provider_calls.items():
+            provider_citations = [
+                citation
+                for citation in citations
+                if citation.get("provider") == provider
+            ]
+            provider_artifacts = [
+                artifact
+                for artifact in artifact_summaries
+                if artifact.get("provider") == provider
+            ]
+            summary["source_ref_ids"] = [
+                citation["source_ref_id"] for citation in provider_citations
+            ]
+            summary["evidence_artifact_ids"] = [
+                artifact["artifact_id"] for artifact in provider_artifacts
+            ]
+            if summary.get("item_count") == 0 and provider_citations:
+                summary["item_count"] = len(provider_citations)
+
+        if quorum is None and active:
+            pubmed = provider_calls["pubmed"]
+            explicit_artifact_eligibility = any(
+                artifact.get("provider") == "pubmed"
+                and artifact.get("cutover_eligible") is True
+                for artifact in artifact_summaries
+            )
+            accepted = (
+                pubmed.get("outcome") == "completed"
+                and pubmed.get("item_count", 0) > 0
+                and any(
+                    citation.get("provider") == "pubmed"
+                    and str(citation.get("pmid") or "").isdigit()
+                    for citation in citations
+                )
+                and explicit_artifact_eligibility
+            )
+            artifact_quorum_status = next(
+                (
+                    artifact.get("quorum_status")
+                    for artifact in reversed(artifact_summaries)
+                    if artifact.get("provider") == "pubmed"
+                    and artifact.get("quorum_status")
+                ),
+                None,
+            )
+            quorum = {
+                "status": artifact_quorum_status
+                or ("failed" if not accepted else "degraded"),
+                "cutover_eligible": accepted,
+                "members": [
+                    {
+                        "provider": provider,
+                        "requirement": summary["requirement"],
+                        "outcome": summary["outcome"],
+                        "record_count": summary["item_count"],
+                        "accepted": (
+                            accepted
+                            if provider == "pubmed"
+                            else summary["outcome"] == "completed"
+                        ),
+                        "error_code": summary.get("error_code"),
+                    }
+                    for provider, summary in provider_calls.items()
+                ],
+                "warning_count": sum(
+                    1
+                    for provider in ("semantic_scholar", "tavily")
+                    if provider_calls[provider]["outcome"] != "completed"
+                ),
+            }
+        elif quorum is None:
+            quorum = {
+                "status": "not_evaluated",
+                "cutover_eligible": False,
+                "members": [],
+                "warning_count": 0,
+            }
+
+        operation_summaries = [
+            self._project_operation_summary(operation)
+            for operation in self.repositories.controlled_operations.list_by_session(
+                session_id
+            )
+        ]
+        artifact_by_id = {
+            artifact["artifact_id"]: artifact for artifact in artifact_summaries
+        }
+        published_drafts_by_report_id: dict[str, dict[str, Any]] = {}
+        for draft_record in self.repositories.report_drafts.list_by_session(session_id):
+            draft = draft_record.to_dict()
+            report_id = str(draft.get("published_report_id") or "")
+            content_ref = str(draft.get("content_ref") or "")
+            content_document = (
+                None
+                if not content_ref
+                else self.repositories.engine_documents.get(content_ref)
+            )
+            content_available = (
+                content_document is not None
+                and content_document.document_kind == "report_draft_content"
+                and isinstance(content_document.payload, dict)
+                and bool(str(content_document.payload.get("markdown") or "").strip())
+            )
+            if draft.get("status") == "published" and report_id and content_available:
+                published_drafts_by_report_id[report_id] = {
+                    "draft_id": draft.get("draft_id"),
+                    "content_ref": content_ref,
+                }
+        report_summaries = [
+            {
+                **report,
+                "published": (
+                    report.get("status") in {"ready", "published"}
+                    and report.get("report_id") in published_drafts_by_report_id
+                ),
+                "artifact_registered": report.get("artifact_id") in artifact_by_id,
+                "published_draft_id": dict(
+                    published_drafts_by_report_id.get(
+                        str(report.get("report_id") or ""),
+                        {},
+                    )
+                ).get("draft_id"),
+                "content_document_bound": report.get("report_id")
+                in published_drafts_by_report_id,
+                "cutover_eligible": (
+                    report.get("status") in {"ready", "published"}
+                    and report.get("report_id") in published_drafts_by_report_id
+                ),
+            }
+            for report in reports
+        ]
+        published_report_ids = {
+            report["report_id"] for report in report_summaries if report["published"]
+        }
+        published_draft_ids = [
+            draft["draft_id"]
+            for draft in report_drafts
+            if draft.get("status") == "published"
+            and draft.get("published_report_id") in published_report_ids
+        ]
+
+        verification_artifacts = [
+            artifact
+            for artifact in artifact_summaries
+            if artifact.get("schema_id") == "aox_blank_world_verification@1"
+        ]
+        verifier_passed = any(
+            artifact.get("verification_status") == "passed"
+            and artifact.get("cutover_eligible") is True
+            for artifact in verification_artifacts
+        )
+        blockers: list[str] = []
+        warnings: list[str] = []
+        if active:
+            if any(
+                "fixture" in str(artifact.get("schema_id") or "").casefold()
+                or str(artifact.get("scientific_outcome") or "").casefold()
+                == "fixture_non_cutover"
+                for artifact in artifact_summaries
+            ):
+                blockers.append("fixture_non_cutover")
+            if quorum.get("cutover_eligible") is not True:
+                blockers.extend(
+                    str(member.get("error_code"))
+                    for member in quorum.get("members") or []
+                    if member.get("requirement") == "required"
+                    and member.get("accepted") is not True
+                    and member.get("error_code")
+                )
+                blockers.append("required_provider_quorum_incomplete")
+            for operation in operation_summaries:
+                if operation.get("status") in {"failed", "recovery_failed"}:
+                    blockers.append(
+                        operation.get("error_code") or "required_operation_failed"
+                    )
+                elif operation.get("status") not in {"completed", "succeeded"}:
+                    blockers.append("required_operation_incomplete")
+            if not any(report["published"] for report in report_summaries):
+                blockers.append("published_report_missing")
+            elif not any(report["cutover_eligible"] for report in report_summaries):
+                blockers.append("published_report_not_evidence_bound")
+            if not verifier_passed:
+                blockers.append("offline_verifier_evidence_missing")
+            for provider in ("semantic_scholar", "tavily"):
+                if provider_calls[provider]["outcome"] != "completed":
+                    warnings.append(f"{provider}_enrichment_degraded")
+
+        blockers = list(dict.fromkeys(blockers))
+        warnings = list(dict.fromkeys(warnings))
+        cutover_eligible = active and verifier_passed and not blockers
+        scientific_outcomes = [
+            artifact.get("scientific_outcome")
+            for artifact in artifact_summaries
+            if artifact.get("scientific_outcome")
+        ]
+        return {
+            "schema_version": "v3.scientific_evidence.v1",
+            "active": active,
+            "providers": sorted(
+                provider_calls.values(),
+                key=lambda item: (
+                    item.get("requirement") != "required",
+                    str(item.get("provider") or ""),
+                ),
+            ),
+            "quorum": quorum,
+            "citations": citations,
+            "operations": operation_summaries,
+            "artifacts": artifact_summaries,
+            "reports": report_summaries,
+            "published_draft_ids": published_draft_ids,
+            "scientific_outcome": (
+                "empty_result"
+                if "empty_result" in scientific_outcomes
+                else (scientific_outcomes[-1] if scientific_outcomes else "unknown")
+            ),
+            "verifier": {
+                "status": "passed" if verifier_passed else "missing",
+                "artifact_ids": [
+                    artifact["artifact_id"] for artifact in verification_artifacts
+                ],
+            },
+            "cutover": {
+                "status": (
+                    "eligible"
+                    if cutover_eligible
+                    else ("blocked" if active else "not_evaluated")
+                ),
+                "eligible": cutover_eligible,
+                "blocker_codes": blockers,
+                "warning_codes": warnings,
+            },
+        }
+
+    def _provider_requirement(self, provider: str) -> str:
+        return (
+            "enrichment" if provider in {"semantic_scholar", "tavily"} else "required"
+        )
+
+    def _safe_identifier(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or len(text) > 200:
+            return None
+        if not all(char.isalnum() or char in "-._:@/+" for char in text):
+            return None
+        return text
+
+    def _safe_short_text(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or len(text) > 300:
+            return None
+        if text.startswith(("/", "~", "file://", "storage://", "artifact://")):
+            return None
+        return text
+
+    def _safe_digest(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value)
+        if not text.startswith("sha256:") or len(text) != 71:
+            return None
+        try:
+            int(text.removeprefix("sha256:"), 16)
+        except ValueError:
+            return None
+        return text
+
+    def _safe_nonnegative_int(self, value: Any) -> int | None:
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+        return value
+
+    def _safe_status(
+        self,
+        value: Any,
+        *,
+        allowed: set[str],
+        default: str | None,
+    ) -> str | None:
+        text = str(value or "").strip().lower()
+        return text if text in allowed else default
 
     def build_agent_traces_projection(
         self, session_id: str
@@ -295,7 +934,8 @@ class SessionProjectionBuilder:
             agent_messages = [
                 message
                 for message in messages
-                if message.sender == agent.agent_id or message.recipient == agent.agent_id
+                if message.sender == agent.agent_id
+                or message.recipient == agent.agent_id
             ]
             correlation_ids = tuple(
                 dict.fromkeys(
@@ -312,29 +952,51 @@ class SessionProjectionBuilder:
                     {
                         "correlation_id": correlation_id,
                         "status": thread.status.value,
-                        "request_message_type": None if thread.request is None else thread.request.message_type,
+                        "request_message_type": None
+                        if thread.request is None
+                        else thread.request.message_type,
                         "response_count": len(thread.responses),
-                        "latest_message_type": None if not thread.responses else thread.responses[-1].message_type,
+                        "latest_message_type": None
+                        if not thread.responses
+                        else thread.responses[-1].message_type,
                     }
                 )
                 if thread.status.value == "waiting":
                     pending.append(correlation_id)
             latest_message = None if not agent_messages else agent_messages[-1]
-            agent_signals = [signal for signal in signals if signal.agent_id == agent.agent_id]
-            pending_signals = [signal for signal in agent_signals if signal.status is AgentRuntimeSignalStatus.PENDING]
+            agent_signals = [
+                signal for signal in signals if signal.agent_id == agent.agent_id
+            ]
+            pending_signals = [
+                signal
+                for signal in agent_signals
+                if signal.status is AgentRuntimeSignalStatus.PENDING
+            ]
             latest_signal = None if not agent_signals else agent_signals[-1]
             items.append(
                 DelegationProjectionItem(
                     agent=agent,
                     correlation_ids=correlation_ids,
-                    latest_correlation_id=None if latest_message is None else latest_message.correlation_id,
-                    latest_message_type=None if latest_message is None else latest_message.message_type,
-                    latest_message_at=None if latest_message is None else latest_message.created_at,
+                    latest_correlation_id=None
+                    if latest_message is None
+                    else latest_message.correlation_id,
+                    latest_message_type=None
+                    if latest_message is None
+                    else latest_message.message_type,
+                    latest_message_at=None
+                    if latest_message is None
+                    else latest_message.created_at,
                     pending_correlation_ids=tuple(pending),
                     thread_summaries=tuple(thread_summaries),
-                    unread_inbox_count=len(self.repositories.inbox.list_unread_for_recipient(session_id, agent.agent_id)),
+                    unread_inbox_count=len(
+                        self.repositories.inbox.list_unread_for_recipient(
+                            session_id, agent.agent_id
+                        )
+                    ),
                     pending_signal_count=len(pending_signals),
-                    latest_signal_reason=None if latest_signal is None else latest_signal.reason.value,
+                    latest_signal_reason=None
+                    if latest_signal is None
+                    else latest_signal.reason.value,
                     last_active_at=agent.last_active_at,
                     idle_since=agent.idle_since,
                     wakeup_reason=agent.wakeup_reason,
@@ -360,7 +1022,10 @@ class SessionProjectionBuilder:
                     payload=approval.to_dict(),
                 )
             )
-            if approval.status is not ApprovalRequestStatus.PENDING and approval.resolved_at is not None:
+            if (
+                approval.status is not ApprovalRequestStatus.PENDING
+                and approval.resolved_at is not None
+            ):
                 items.append(
                     ActivityFeedItem(
                         event_type="approval.resolved",
@@ -369,12 +1034,20 @@ class SessionProjectionBuilder:
                     )
                 )
         for message in self.repositories.inbox.list_by_session(session_id):
-            event_type = "agent.message.delivered" if (
-                message.sender_kind is InboxParticipantKind.AGENT or message.recipient_kind is InboxParticipantKind.AGENT
-            ) else "inbox.delivered"
+            event_type = (
+                "agent.message.delivered"
+                if (
+                    message.sender_kind is InboxParticipantKind.AGENT
+                    or message.recipient_kind is InboxParticipantKind.AGENT
+                )
+                else "inbox.delivered"
+            )
             if message.message_type == "background_completion":
                 event_type = "background.completed"
-            elif message.message_type == "delegation_request" and message.recipient_kind is InboxParticipantKind.AGENT:
+            elif (
+                message.message_type == "delegation_request"
+                and message.recipient_kind is InboxParticipantKind.AGENT
+            ):
                 event_type = "agent.delegated"
             items.append(
                 ActivityFeedItem(
@@ -410,17 +1083,26 @@ class SessionProjectionBuilder:
                 )
         for signal in self.repositories.runtime_signals.list_by_session(session_id):
             if signal.status is AgentRuntimeSignalStatus.PENDING:
-                event_type = "agent.inbox_unread" if signal.reason.value == "inbox_unread" else "agent.wakeup_pending"
+                event_type = (
+                    "agent.inbox_unread"
+                    if signal.reason.value == "inbox_unread"
+                    else "agent.wakeup_pending"
+                )
             elif signal.status is AgentRuntimeSignalStatus.CLAIMED:
                 event_type = "agent.woken"
-            elif signal.reason.value == "task_available" and signal.status is AgentRuntimeSignalStatus.COMPLETED:
+            elif (
+                signal.reason.value == "task_available"
+                and signal.status is AgentRuntimeSignalStatus.COMPLETED
+            ):
                 event_type = "agent.task_claimed"
             else:
                 event_type = "agent.runtime_signal.updated"
             items.append(
                 ActivityFeedItem(
                     event_type=event_type,
-                    created_at=signal.completed_at or signal.claimed_at or signal.created_at,
+                    created_at=signal.completed_at
+                    or signal.claimed_at
+                    or signal.created_at,
                     payload=signal.to_dict(),
                 )
             )
@@ -492,18 +1174,24 @@ class SessionProjectionBuilder:
                     ActivityFeedItem(
                         event_type="execution.artifacts.fetched",
                         created_at=run.finished_at or run.updated_at,
-                        payload=self._sanitize_execution_projection({
-                            "run": run.to_dict(),
-                            "artifact_ids": [artifact.artifact_id for artifact in artifacts],
-                        }),
+                        payload=self._sanitize_execution_projection(
+                            {
+                                "run": run.to_dict(),
+                                "artifact_ids": [
+                                    artifact.artifact_id for artifact in artifacts
+                                ],
+                            }
+                        ),
                     )
                 )
-        for operation in self.repositories.controlled_operations.list_by_session(session_id):
+        for operation in self.repositories.controlled_operations.list_by_session(
+            session_id
+        ):
             items.append(
                 ActivityFeedItem(
                     event_type="sdk_controlled_operation.updated",
                     created_at=operation.updated_at,
-                    payload=self._sanitize_execution_projection(operation.to_dict()),
+                    payload=self._project_operation_summary(operation),
                 )
             )
         for sandbox_run in self.repositories.sandbox_runs.list_by_session(session_id):
@@ -519,28 +1207,34 @@ class SessionProjectionBuilder:
                 ActivityFeedItem(
                     event_type="report_draft.updated",
                     created_at=draft.updated_at,
-                    payload=draft.to_dict(),
+                    payload=self._project_report_draft_summary(draft),
                 )
             )
         for report in self.repositories.reports.list_by_session(session_id):
             items.append(
                 ActivityFeedItem(
-                    event_type="report.generated" if report.status.is_terminal else "report.updated",
+                    event_type="report.generated"
+                    if report.status.is_terminal
+                    else "report.updated",
                     created_at=report.updated_at,
-                    payload=report.to_dict(),
+                    payload=self._project_report_summary(report),
                 )
             )
         return sorted(items, key=lambda item: (item.created_at, item.event_type))
 
-    def _build_capabilities_projection(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+    def _build_capabilities_projection(
+        self, session_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
         grouped: dict[str, list[dict[str, Any]]] = {}
         for invocation in self.repositories.invocations.list_by_session(session_id):
-            grouped.setdefault(self._capability_key_for_engine(invocation.engine_name), []).append(
-                self._project_invocation(session_id, invocation)
-            )
+            grouped.setdefault(
+                self._capability_key_for_engine(invocation.engine_name), []
+            ).append(self._project_invocation(session_id, invocation))
         operations = [
-            self._sanitize_execution_projection(operation.to_dict())
-            for operation in self.repositories.controlled_operations.list_by_session(session_id)
+            self._project_operation_summary(operation)
+            for operation in self.repositories.controlled_operations.list_by_session(
+                session_id
+            )
         ]
         if operations:
             grouped["sdk_supervisor"] = operations
@@ -548,34 +1242,52 @@ class SessionProjectionBuilder:
 
     def _project_invocation(self, session_id: str, invocation: Any) -> dict[str, Any]:
         projected = invocation.to_dict()
-        documents = self.repositories.engine_documents.list_by_invocation(session_id, invocation.invocation_id)
+        documents = self.repositories.engine_documents.list_by_invocation(
+            session_id, invocation.invocation_id
+        )
         if documents:
             projected["documents"] = [
                 self._sanitize_execution_projection(document.to_dict())
                 for document in documents
             ]
             output_document = next(
-                (document for document in reversed(documents) if document.document_id == invocation.output_ref),
+                (
+                    document
+                    for document in reversed(documents)
+                    if document.document_id == invocation.output_ref
+                ),
                 None,
             )
             if output_document is not None:
                 output_dict = output_document.to_dict()
-                projected["output_document"] = (
-                    self._sanitize_execution_projection(output_dict)
+                projected["output_document"] = self._sanitize_execution_projection(
+                    output_dict
                 )
-                projected["output_payload"] = (
-                    self._sanitize_execution_projection(output_document.payload)
+                projected["output_payload"] = self._sanitize_execution_projection(
+                    output_document.payload
                 )
-        summary = self.repositories.research_summaries.get_by_invocation(session_id, invocation.invocation_id)
+        summary = self.repositories.research_summaries.get_by_invocation(
+            session_id, invocation.invocation_id
+        )
         if summary is not None:
-            evidence = self.repositories.research_evidence.list_by_invocation(session_id, invocation.invocation_id)
-            source_refs = self.repositories.research_source_refs.list_by_invocation(session_id, invocation.invocation_id)
-            gaps = self.repositories.research_gaps.list_by_invocation(session_id, invocation.invocation_id)
+            evidence = self.repositories.research_evidence.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            source_refs = self.repositories.research_source_refs.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            gaps = self.repositories.research_gaps.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
             projected["canonical_summary"] = summary.to_dict()
             projected["evidence"] = [item.to_dict() for item in evidence]
-            projected["source_refs"] = [item.to_dict() for item in source_refs]
+            projected["source_refs"] = [
+                self._project_research_source_ref(item) for item in source_refs
+            ]
             projected["gaps"] = [item.to_dict() for item in gaps]
-        runs = self.repositories.runs.list_by_invocation(session_id, invocation.invocation_id)
+        runs = self.repositories.runs.list_by_invocation(
+            session_id, invocation.invocation_id
+        )
         if runs:
             projected["runs"] = [run.to_dict() for run in runs]
             run = runs[-1]
@@ -589,23 +1301,40 @@ class SessionProjectionBuilder:
                     artifact_payload = project_artifact_for_agent(item)
                     artifact_payloads.append(artifact_payload)
             projected["artifacts"] = artifact_payloads
-            projected["output_artifact_ids"] = [artifact["artifact_id"] for artifact in artifact_payloads]
+            projected["output_artifact_ids"] = [
+                artifact["artifact_id"] for artifact in artifact_payloads
+            ]
         request_document = next(
-            (document for document in documents if document.document_kind == "execution_input"),
+            (
+                document
+                for document in documents
+                if document.document_kind == "execution_input"
+            ),
             None,
         )
         request_runspec = {}
         if request_document is not None:
-            request_runspec = dict((request_document.payload.get("request") or {}).get("runspec") or {})
+            request_runspec = dict(
+                (request_document.payload.get("request") or {}).get("runspec") or {}
+            )
         if request_runspec:
             metadata = dict(request_runspec.get("metadata") or {})
             projected["tool_contract"] = dict(metadata.get("tool_contract") or {})
-            projected["input_artifact_ids"] = list(metadata.get("input_artifact_ids") or [])
-            projected["preprocess_artifact_ids"] = list(metadata.get("preprocess_artifact_ids") or [])
+            projected["input_artifact_ids"] = list(
+                metadata.get("input_artifact_ids") or []
+            )
+            projected["preprocess_artifact_ids"] = list(
+                metadata.get("preprocess_artifact_ids") or []
+            )
             projected["bio_artifact_ids"] = list(metadata.get("bio_artifact_ids") or [])
-            projected["pipeline_invocation_id"] = metadata.get("pipeline_invocation_id") or invocation.invocation_id
+            projected["pipeline_invocation_id"] = (
+                metadata.get("pipeline_invocation_id") or invocation.invocation_id
+            )
             projected["code_digest"] = metadata.get("code_digest")
-            projected["sandbox_status"] = metadata.get("sandbox_status", "completed" if invocation.status.is_terminal else "running")
+            projected["sandbox_status"] = metadata.get(
+                "sandbox_status",
+                "completed" if invocation.status.is_terminal else "running",
+            )
             projected["hpc_run_ids"] = [
                 run["runner_run_id"]
                 for run in projected.get("runs", [])
@@ -616,31 +1345,78 @@ class SessionProjectionBuilder:
             if pipeline:
                 projected["pipeline_invocation_id"] = invocation.invocation_id
                 projected["code_digest"] = pipeline.get("code_digest")
-                projected["sandbox_status"] = "dry_run" if pipeline.get("dry_run") else "pending"
+                projected["sandbox_status"] = (
+                    "dry_run" if pipeline.get("dry_run") else "pending"
+                )
                 projected["hpc_run_ids"] = []
-                projected["input_artifact_ids"] = list((pipeline.get("inputs") or {}).get("artifact_ids") or [])
+                projected["input_artifact_ids"] = list(
+                    (pipeline.get("inputs") or {}).get("artifact_ids") or []
+                )
                 projected["preprocess_artifact_ids"] = []
-                projected["bio_artifact_ids"] = list(pipeline.get("bio_artifact_ids") or [])
-        report = self.repositories.reports.get_by_invocation(session_id, invocation.invocation_id)
+                projected["bio_artifact_ids"] = list(
+                    pipeline.get("bio_artifact_ids") or []
+                )
+        report = self.repositories.reports.get_by_invocation(
+            session_id, invocation.invocation_id
+        )
         if report is not None:
-            projected["report"] = report.to_dict()
+            projected["report"] = self._project_report_summary(report)
         return projected
 
     def _sanitize_execution_projection(self, value: Any) -> Any:
         private_keys = {
             "pipeline_code",
+            "raw_ref",
             *PRIVATE_ARTIFACT_KEYS,
             "remote_path",
+        }
+        sensitive_keys = {
+            "authorization",
+            "cookie",
+            "set_cookie",
+            "private_locator",
         }
         if isinstance(value, dict):
             sanitized: dict[str, Any] = {}
             for key, item in value.items():
-                if str(key).lower() in private_keys:
+                key_lower = str(key).lower()
+                if (
+                    key_lower in private_keys
+                    or key_lower in sensitive_keys
+                    or any(
+                        marker in key_lower
+                        for marker in (
+                            "api_key",
+                            "credential",
+                            "password",
+                            "private_key",
+                            "private",
+                            "secret",
+                        )
+                    )
+                    or key_lower.endswith("_token")
+                ):
                     continue
                 sanitized[key] = self._sanitize_execution_projection(item)
             return sanitized
-        if isinstance(value, list):
+        if isinstance(value, list | tuple):
             return [self._sanitize_execution_projection(item) for item in value]
+        if isinstance(value, str):
+            if value.startswith(
+                (
+                    "/home/",
+                    "/tmp/",
+                    "/var/",
+                    "/mnt/",
+                    "/data/",
+                    "~/",
+                    "file://",
+                    "storage://",
+                )
+            ):
+                return "[redacted]"
+            if value.startswith(("http://", "https://")):
+                return safe_public_locator(value) or "[redacted]"
         return value
 
     def _string_or_none(self, value: Any) -> str | None:
@@ -663,8 +1439,12 @@ class SessionProjectionBuilder:
         artifact_ids.extend(self._string_list(metadata.get("source_artifact_ids")))
         return artifact_ids
 
-    def _infer_artifact_format(self, payload: dict[str, Any], metadata: dict[str, Any]) -> str | None:
-        explicit = self._string_or_none(metadata.get("format")) or self._string_or_none(metadata.get("output_format"))
+    def _infer_artifact_format(
+        self, payload: dict[str, Any], metadata: dict[str, Any]
+    ) -> str | None:
+        explicit = self._string_or_none(metadata.get("format")) or self._string_or_none(
+            metadata.get("output_format")
+        )
         if explicit is not None:
             return explicit
         filename = str(payload.get("relative_path") or "").rsplit("/", maxsplit=1)[-1]
@@ -672,8 +1452,14 @@ class SessionProjectionBuilder:
             return None
         return filename.rsplit(".", maxsplit=1)[-1].lower() or None
 
-    def _project_artifact_provenance(self, payload: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
-        run = self.repositories.runs.get(payload["run_id"]) if payload.get("run_id") else None
+    def _project_artifact_provenance(
+        self, payload: dict[str, Any], metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        run = (
+            self.repositories.runs.get(payload["run_id"])
+            if payload.get("run_id")
+            else None
+        )
         produced_by = (
             self._string_or_none(metadata.get("produced_by"))
             or self._string_or_none(metadata.get("source"))
@@ -689,26 +1475,40 @@ class SessionProjectionBuilder:
             "format": self._infer_artifact_format(payload, metadata),
             "provider": self._string_or_none(metadata.get("provider")),
             "external_id": self._string_or_none(metadata.get("external_id")),
-            "source_locator": self._string_or_none(metadata.get("source_locator")),
+            "source_locator": safe_public_locator(
+                str(metadata.get("source_locator") or "")
+            ),
             "source_artifact_ids": self._source_artifact_ids(metadata),
             "input_artifact_ids": self._string_list(metadata.get("input_artifact_ids")),
-            "preprocess_artifact_ids": self._string_list(metadata.get("preprocess_artifact_ids")),
+            "preprocess_artifact_ids": self._string_list(
+                metadata.get("preprocess_artifact_ids")
+            ),
             "bio_artifact_ids": self._string_list(metadata.get("bio_artifact_ids")),
             "runner_run_id": self._string_or_none(metadata.get("runner_run_id"))
             or (run.runner_run_id if run is not None else None),
-            "pipeline_invocation_id": self._string_or_none(metadata.get("pipeline_invocation_id")),
+            "pipeline_invocation_id": self._string_or_none(
+                metadata.get("pipeline_invocation_id")
+            ),
             "code_digest": self._string_or_none(metadata.get("code_digest")),
-            "source_code_artifact_id": self._string_or_none(metadata.get("source_code_artifact_id")),
-            "source_code_digest": self._string_or_none(metadata.get("source_code_digest")),
+            "source_code_artifact_id": self._string_or_none(
+                metadata.get("source_code_artifact_id")
+            ),
+            "source_code_digest": self._string_or_none(
+                metadata.get("source_code_digest")
+            ),
             "source_code_version": metadata.get("source_code_version"),
-            "tool_contract": dict(metadata.get("tool_contract")) if isinstance(metadata.get("tool_contract"), dict) else {},
+            "tool_contract": dict(metadata.get("tool_contract"))
+            if isinstance(metadata.get("tool_contract"), dict)
+            else {},
         }
 
     def _project_workspace_artifact(self, artifact: Any) -> dict[str, Any]:
         payload = project_artifact_for_agent(artifact)
         metadata = dict(payload.get("metadata") or {})
         payload["provenance"] = self._project_artifact_provenance(payload, metadata)
-        return sanitize_private_artifact_fields(payload)
+        return self._sanitize_execution_projection(
+            sanitize_private_artifact_fields(payload)
+        )
 
     def _capability_key_for_engine(self, engine_name: str) -> str:
         return {

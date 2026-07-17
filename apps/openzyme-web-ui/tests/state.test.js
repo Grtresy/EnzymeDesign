@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildInitialViewState,
   buildSessionSummaryFromWorkspace,
+  eventRequiresWorkspaceRefresh,
   reduceWorkspaceWithEvent,
   upsertSessionSummary,
 } from "../src/state.js";
@@ -479,6 +480,34 @@ test("approval events update pending approvals and activity", () => {
 
   assert.equal(workspace.pending_approvals.length, 0);
   assert.equal(workspace.activity_feed[0].event_type, "approval.resolved");
+});
+
+test("scientific evidence and controlled operation events refresh the canonical workspace", () => {
+  assert.equal(
+    eventRequiresWorkspaceRefresh({ event_type: "research.evidence.recorded" }),
+    true,
+  );
+  assert.equal(
+    eventRequiresWorkspaceRefresh({
+      event_type: "sdk_controlled_operation.approval_resolved",
+    }),
+    true,
+  );
+
+  const workspace = buildV3Workspace();
+  const next = reduceWorkspaceWithEvent(workspace, {
+    event_id: "evt_operation_resolved",
+    event_type: "sdk_controlled_operation.approval_resolved",
+    created_at: "2026-04-21T00:00:04+00:00",
+    payload: {
+      approval_id: "appr_001",
+      operation_id: "op_001",
+      operation_digest: `sha256:${"a".repeat(64)}`,
+    },
+  });
+
+  assert.equal(next.activity_feed[0].payload.operation_id, "op_001");
+  assert.equal(next.activity_feed[0].payload.operation_digest, `sha256:${"a".repeat(64)}`);
 });
 
 test("duplicate events are ignored without cloning the workspace", () => {

@@ -293,7 +293,10 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             document_kind="execution_result",
             payload={
                 "run": {"run_id": "run_exec_001"},
-                "parsed_result": {"result_summary": "Execution completed successfully.", "structured_findings": {}},
+                "parsed_result": {
+                    "result_summary": "Execution completed successfully.",
+                    "structured_findings": {},
+                },
             },
             created_at="2026-04-17T13:00:07+00:00",
             updated_at="2026-04-17T13:00:07+00:00",
@@ -461,10 +464,17 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
 
     assert workspace["session"]["session_id"] == session.session_id
-    assert [entry["role"] for entry in workspace["conversation"]] == ["user", "assistant"]
+    assert [entry["role"] for entry in workspace["conversation"]] == [
+        "user",
+        "assistant",
+    ]
     assert workspace["conversation"][0]["content"] == "Start the research task."
     assert workspace["task_board"]["next_task_id"] == "task_001"
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
@@ -494,27 +504,327 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
         "report_inv_report_001",
     }
     assert workspace["report_drafts"][0]["draft_id"] == "draft_001"
-    assert workspace["report_drafts"][0]["published_report_id"] == "report_inv_report_001"
-    assert workspace["agent_traces"]["harness"][0]["response_text"] == "I will inspect the workspace."
-    assert workspace["agent_traces"]["harness"][0]["tool_calls"][0]["tool_name"] == "task.get"
+    assert (
+        workspace["report_drafts"][0]["published_report_id"] == "report_inv_report_001"
+    )
+    assert (
+        workspace["agent_traces"]["harness"][0]["response_text"]
+        == "I will inspect the workspace."
+    )
+    assert (
+        workspace["agent_traces"]["harness"][0]["tool_calls"][0]["tool_name"]
+        == "task.get"
+    )
     assert "deep_research" in workspace["capabilities"]
     assert "execution" in workspace["capabilities"]
     assert "reporting" not in workspace["capabilities"]
-    assert workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"] == "Normalized evidence dossier"
-    assert workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"] == "Normalized evidence dossier"
-    assert workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"] == "high"
-    assert workspace["capabilities"]["deep_research"][0]["source_refs"][0]["kind"] == "paper"
-    assert workspace["capabilities"]["deep_research"][0]["gaps"][0]["summary"] == "Need wet-lab validation"
-    assert workspace["capabilities"]["execution"][0]["runs"][0]["run_id"] == "run_exec_001"
-    assert workspace["capabilities"]["execution"][0]["artifacts"][0]["artifact_id"] == "run_exec_001:stdout.log"
-    assert workspace["capabilities"]["execution"][0]["report"]["report_id"] == "report_inv_exec_001"
-    assert any(item["event_type"] == "approval.requested" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "agent.spawned" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "engine.invocation.started" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "research.summary.updated" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "report_draft.updated" for item in workspace["activity_feed"])
-    assert any(item["event_type"] == "report.generated" for item in workspace["activity_feed"])
+    assert (
+        workspace["capabilities"]["deep_research"][0]["output_payload"]["summary"]
+        == "Normalized evidence dossier"
+    )
+    assert (
+        workspace["capabilities"]["deep_research"][0]["canonical_summary"]["summary"]
+        == "Normalized evidence dossier"
+    )
+    assert (
+        workspace["capabilities"]["deep_research"][0]["evidence"][0]["confidence_label"]
+        == "high"
+    )
+    assert (
+        workspace["capabilities"]["deep_research"][0]["source_refs"][0]["kind"]
+        == "paper"
+    )
+    assert (
+        workspace["capabilities"]["deep_research"][0]["gaps"][0]["summary"]
+        == "Need wet-lab validation"
+    )
+    assert (
+        workspace["capabilities"]["execution"][0]["runs"][0]["run_id"] == "run_exec_001"
+    )
+    assert (
+        workspace["capabilities"]["execution"][0]["artifacts"][0]["artifact_id"]
+        == "run_exec_001:stdout.log"
+    )
+    assert (
+        workspace["capabilities"]["execution"][0]["report"]["report_id"]
+        == "report_inv_exec_001"
+    )
+    assert any(
+        item["event_type"] == "approval.requested"
+        for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "agent.spawned" for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "engine.invocation.started"
+        for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "research.summary.updated"
+        for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "artifact.recorded" for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "report_draft.updated"
+        for item in workspace["activity_feed"]
+    )
+    assert any(
+        item["event_type"] == "report.generated" for item in workspace["activity_feed"]
+    )
+
+
+def test_scientific_evidence_projection_is_fail_closed_and_public_safe() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+
+    def digest(char: str) -> str:
+        return f"sha256:{char * 64}"
+
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_pubmed_evidence",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri="/tmp/private/pubmed.json",
+            relative_path="evidence/pubmed.json",
+            title="PubMed evidence",
+            description=None,
+            metadata={
+                "schema_version": "provider_literature_evidence@1",
+                "provider": "pubmed",
+                "provider_outcome": "completed",
+                "citation_count": 1,
+                "quorum_status": "degraded",
+                "cutover_eligible": True,
+                "content_digest": digest("1"),
+                "sealed_digest": digest("2"),
+                "api_key": "never-project-this-key",
+                "private_locator": "http://127.0.0.1/private",
+                "provenance": {
+                    "provider": "pubmed",
+                    "request_digest": digest("3"),
+                    "response_digest": digest("4"),
+                    "authorization": "Bearer never-project-this-token",
+                    "host_path": "/home/private/provider.json",
+                },
+            },
+            created_at="2026-04-17T13:00:11+00:00",
+        )
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_empty_science",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_exec_001",
+            run_id="run_exec_001",
+            kind=ArtifactKind.RESULT,
+            storage_uri="/tmp/private/scored.csv",
+            relative_path="aox/scored_ref_plus_hits.csv",
+            title="AOX scored candidates",
+            description=None,
+            metadata={
+                "schema_version": "aox_motif_rule_score@1",
+                "candidate_count": 0,
+                "cutover_eligible": True,
+                "content_digest": digest("5"),
+            },
+            created_at="2026-04-17T13:00:12+00:00",
+        )
+    )
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_published_report",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id=None,
+            run_id=None,
+            kind=ArtifactKind.REPORT,
+            storage_uri="/tmp/private/report.md",
+            relative_path="reports/aox.md",
+            title="AOX report",
+            description=None,
+            metadata={
+                "schema_version": "aox_report@1",
+                "cutover_eligible": True,
+                "content_digest": digest("6"),
+            },
+            created_at="2026-04-17T13:00:13+00:00",
+        )
+    )
+    repositories.engine_documents.save(
+        EngineDocumentRecord(
+            document_id="doc_pubmed_provider_status",
+            session_id=session.session_id,
+            invocation_id="inv_001",
+            document_kind="research_tool_observation",
+            payload={
+                "raw_ref": {
+                    "provider_call": {
+                        "outcome": "completed",
+                        "item_count": 1,
+                        "provenance": {
+                            "provider": "pubmed",
+                            "request_digest": digest("3"),
+                            "response_digest": digest("4"),
+                            "retrieved_at": "2026-04-17T13:00:11+00:00",
+                            "attempt_count": 1,
+                            "private_header": "never-project-this-header",
+                        },
+                    },
+                    "call_local_literature_quorum": {
+                        "status": "degraded",
+                        "cutover_eligible": True,
+                        "members": [
+                            {
+                                "provider": "pubmed",
+                                "requirement": "required",
+                                "outcome": "completed",
+                                "record_count": 1,
+                                "accepted": True,
+                            },
+                            {
+                                "provider": "semantic_scholar",
+                                "requirement": "enrichment",
+                                "outcome": "completed",
+                                "record_count": 1,
+                                "accepted": True,
+                            },
+                            {
+                                "provider": "tavily",
+                                "requirement": "enrichment",
+                                "outcome": "degraded",
+                                "record_count": 0,
+                                "accepted": False,
+                                "error_code": "provider_rate_limited",
+                                "warning": "private warning body",
+                            },
+                        ],
+                        "warnings": ["private warning body"],
+                    },
+                }
+            },
+            created_at="2026-04-17T13:00:11+00:00",
+            updated_at="2026-04-17T13:00:11+00:00",
+        )
+    )
+    repositories.research_source_refs.save(
+        ResearchSourceRef(
+            source_ref_id="source_pubmed_aox",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            evidence_id="inv_001:evidence:1",
+            title="AOX PubMed record",
+            locator="http://127.1/private?token=never-project-this",
+            kind=SourceRefKind.PAPER,
+            created_at="2026-04-17T13:00:11+00:00",
+            provider="pubmed",
+            external_id="PMID:12345678",
+            pmid="12345678",
+            retrieved_at="2026-04-17T13:00:11+00:00",
+            request_digest=digest("3"),
+            response_digest=digest("4"),
+            provider_provenance={
+                "authorization": "Bearer private",
+                "host_path": "/home/private/source.json",
+            },
+            evidence_artifact_id="art_pubmed_evidence",
+        )
+    )
+
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    evidence = workspace["scientific_evidence"]
+    pubmed = next(
+        item for item in evidence["providers"] if item["provider"] == "pubmed"
+    )
+    tavily = next(
+        item for item in evidence["providers"] if item["provider"] == "tavily"
+    )
+
+    assert evidence["active"] is True
+    assert evidence["quorum"]["status"] == "degraded"
+    assert evidence["quorum"]["cutover_eligible"] is True
+    assert pubmed["requirement"] == "required"
+    assert pubmed["outcome"] == "completed"
+    assert pubmed["source_ref_ids"] == ["source_pubmed_aox"]
+    assert tavily["outcome"] == "degraded"
+    assert tavily["error_code"] == "provider_rate_limited"
+    assert evidence["scientific_outcome"] == "empty_result"
+    published_report = next(
+        report
+        for report in evidence["reports"]
+        if report["report_id"] == "report_inv_report_001"
+    )
+    assert published_report["status"] == "ready"
+    assert published_report["artifact_id"] is None
+    assert published_report["artifact_registered"] is False
+    assert published_report["published"] is True
+    assert published_report["published_draft_id"] == "draft_001"
+    assert published_report["content_document_bound"] is True
+    assert published_report["cutover_eligible"] is True
+    assert evidence["cutover"]["eligible"] is False
+    assert evidence["cutover"]["blocker_codes"] == ["offline_verifier_evidence_missing"]
+    assert evidence["cutover"]["warning_codes"] == ["tavily_enrichment_degraded"]
+    assert "locator" not in next(
+        item
+        for item in evidence["citations"]
+        if item["source_ref_id"] == "source_pubmed_aox"
+    )
+    payload_text = json.dumps(workspace, sort_keys=True)
+    assert "never-project-this" not in payload_text
+    assert "Bearer private" not in payload_text
+    assert "127.1" not in payload_text
+    assert "/home/private" not in payload_text
+
+
+def test_scientific_evidence_projection_rejects_fixture_cutover_marker() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id="art_fixture_non_cutover",
+            session_id=session.session_id,
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="inv_001",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri="/tmp/fixture.json",
+            relative_path="fixtures/aox.json",
+            title="Fixture evidence",
+            description=None,
+            metadata={
+                "schema_version": "aox_fixture_non_cutover@1",
+                "scientific_status": "fixture_non_cutover",
+                "cutover_eligible": False,
+            },
+            created_at="2026-04-17T13:00:11+00:00",
+        )
+    )
+
+    evidence = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()["scientific_evidence"]
+    )
+
+    assert evidence["cutover"]["eligible"] is False
+    assert "fixture_non_cutover" in evidence["cutover"]["blocker_codes"]
 
 
 def test_agent_trace_projection_applies_public_allowlist_and_sanitizers() -> None:
@@ -678,8 +988,16 @@ def test_workspace_artifact_projection_normalizes_execution_provenance() -> None
         )
     )
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
-    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "run_exec_001:outputs/result.pdbqt")
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    artifact = next(
+        item
+        for item in workspace["artifacts"]
+        if item["artifact_id"] == "run_exec_001:outputs/result.pdbqt"
+    )
     provenance = artifact["provenance"]
 
     assert "storage_uri" not in artifact
@@ -746,8 +1064,16 @@ def test_workspace_artifact_projection_normalizes_direct_research_provenance() -
         )
     )
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
-    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "research:uniprot:P12345")
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    artifact = next(
+        item
+        for item in workspace["artifacts"]
+        if item["artifact_id"] == "research:uniprot:P12345"
+    )
     provenance = artifact["provenance"]
 
     assert "storage_uri" not in artifact
@@ -767,7 +1093,9 @@ def test_workspace_artifact_projection_normalizes_direct_research_provenance() -
     assert provenance["tool_contract"] == {}
 
 
-def test_workspace_artifact_projection_exposes_code_artifact_lineage_without_private_paths() -> None:
+def test_workspace_artifact_projection_exposes_code_artifact_lineage_without_private_paths() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     repositories.artifacts.save(
@@ -796,8 +1124,14 @@ def test_workspace_artifact_projection_exposes_code_artifact_lineage_without_pri
         )
     )
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
-    artifact = next(item for item in workspace["artifacts"] if item["artifact_id"] == "art_code_v2")
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
+    artifact = next(
+        item for item in workspace["artifacts"] if item["artifact_id"] == "art_code_v2"
+    )
 
     assert artifact["kind"] == "code"
     assert artifact["metadata"]["semantic_type"] == "pipeline_source"
@@ -808,7 +1142,9 @@ def test_workspace_artifact_projection_exposes_code_artifact_lineage_without_pri
     assert "storage_uri" not in json.dumps(artifact)
 
 
-def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines() -> None:
+def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     repositories.invocations.save(
@@ -853,7 +1189,11 @@ def test_capability_projection_sanitizes_private_artifact_paths_for_all_engines(
         )
     )
 
-    workspace = SessionProjectionBuilder(repositories).build_session_workspace(session.session_id).to_dict()
+    workspace = (
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict()
+    )
     payload_text = json.dumps(workspace["capabilities"]["deep_research"])
 
     assert "storage_uri" not in payload_text

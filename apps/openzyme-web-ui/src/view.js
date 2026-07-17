@@ -13,6 +13,7 @@ const sectionLabels = {
   tasks: "Tasks",
   lanes: "Lanes",
   outputs: "Artifacts & Reports",
+  evidence: "Scientific Evidence",
   capabilities: "Capabilities",
   activity: "Activity",
 };
@@ -33,6 +34,19 @@ function renderPanelError(message) {
     return "";
   }
   return `<p class="error-banner" role="alert">${escapeHtml(message)}</p>`;
+}
+
+function digestPrefix(value) {
+  const text = String(value ?? "");
+  if (!text) {
+    return "none";
+  }
+  return text.length > 22 ? `${text.slice(0, 22)}…` : text;
+}
+
+function renderStatusChip(status, label = status) {
+  const normalized = String(status ?? "unknown").replaceAll("_", "-");
+  return `<span class="evidence-status" data-evidence-status="${escapeHtml(normalized)}">${escapeHtml(label ?? "unknown")}</span>`;
 }
 
 const privateArtifactKeys = new Set(["storage_uri", "source_storage_uri", "intermediate_storage_uri", "local_path"]);
@@ -263,7 +277,10 @@ export function renderV3Approvals(workspace, viewState) {
                 <div><dt>Approval</dt><dd>${escapeHtml(approval.approval_id)}</dd></div>
                 <div><dt>Task</dt><dd>${escapeHtml(approval.task_id ?? "none")}</dd></div>
                 <div><dt>Lane</dt><dd>${escapeHtml(approval.lane_id ?? "none")}</dd></div>
-                <div><dt>Operation</dt><dd>${escapeHtml(operation.logical_operation_key ?? operation.operation_id ?? "none")}</dd></div>
+                <div><dt>Operation ID</dt><dd>${escapeHtml(operation.operation_id ?? "none")}</dd></div>
+                <div><dt>Operation</dt><dd>${escapeHtml(operation.logical_operation_key ?? "none")}</dd></div>
+                <div><dt>Identity digest</dt><dd>${escapeHtml(digestPrefix(operation.operation_digest))}</dd></div>
+                <div><dt>Route policy</dt><dd>${escapeHtml(operation.route_policy_id ?? "none")}</dd></div>
                 <div><dt>Backend</dt><dd>${escapeHtml(operation.selected_backend ?? operation.backend_category ?? "unknown")}</dd></div>
                 <div><dt>Run</dt><dd>${escapeHtml(sandboxRun.sandbox_run_id ?? operation.sandbox_run_id ?? "none")}</dd></div>
               </dl>
@@ -397,7 +414,7 @@ export function renderV3Capabilities(workspace) {
               <span>${escapeHtml(item.invocation_id ?? item.operation_id ?? "invocation")} · ${escapeHtml(item.status ?? "unknown")}</span>
               ${
                 item.logical_operation_key
-                  ? `<small>${escapeHtml(item.logical_operation_key)} · ${escapeHtml(item.selected_backend ?? item.backend_category ?? "backend")}</small>`
+                  ? `<small>${escapeHtml(item.logical_operation_key)} · ${escapeHtml(item.selected_backend ?? item.backend_category ?? "backend")} · ${escapeHtml(digestPrefix(item.operation_digest))}</small>`
                   : ""
               }
             </li>
@@ -496,6 +513,125 @@ export function renderV3Outputs(workspace, viewState = {}) {
   `;
 }
 
+export function renderV3ScientificEvidence(workspace) {
+  const evidence = workspace.scientific_evidence ?? {};
+  const providers = evidence.providers ?? [];
+  const quorum = evidence.quorum ?? {};
+  const operations = evidence.operations ?? [];
+  const artifacts = evidence.artifacts ?? [];
+  const reports = evidence.reports ?? [];
+  const citations = evidence.citations ?? [];
+  const cutover = evidence.cutover ?? {};
+  if (!evidence.active && !operations.length) {
+    return `<p class="empty-copy">No cutover evidence has been evaluated for this session.</p>`;
+  }
+  return `
+    <div class="stack evidence-stack" data-cutover-eligible="${cutover.eligible === true}">
+      <section class="evidence-overview" aria-label="Cutover eligibility">
+        <div>
+          <p class="eyebrow">Attempt eligibility</p>
+          <h3>${escapeHtml(cutover.status ?? "not_evaluated")}</h3>
+        </div>
+        ${renderStatusChip(cutover.status, cutover.eligible === true ? "eligible" : "fail-closed")}
+        <dl class="facts compact-facts">
+          <div><dt>Literature quorum</dt><dd>${escapeHtml(quorum.status ?? "not_evaluated")}</dd></div>
+          <div><dt>Scientific outcome</dt><dd>${escapeHtml(evidence.scientific_outcome ?? "unknown")}</dd></div>
+          <div><dt>Offline verifier</dt><dd>${escapeHtml(evidence.verifier?.status ?? "missing")}</dd></div>
+        </dl>
+        ${
+          evidence.scientific_outcome === "empty_result"
+            ? `<p class="status-line">Healthy empty result: execution may be complete, but no candidate discovery is claimed.</p>`
+            : ""
+        }
+        ${
+          (cutover.blocker_codes ?? []).length
+            ? `<div class="evidence-blockers" role="status"><strong>Fail-closed blockers</strong><ul>${cutover.blocker_codes.map((code) => `<li>${escapeHtml(code)}</li>`).join("")}</ul></div>`
+            : ""
+        }
+        ${
+          (cutover.warning_codes ?? []).length
+            ? `<div class="evidence-warnings"><strong>Degradation</strong><ul>${cutover.warning_codes.map((code) => `<li>${escapeHtml(code)}</li>`).join("")}</ul></div>`
+            : ""
+        }
+      </section>
+      <section>
+        <h3>Provider quorum</h3>
+        <ul class="record-list evidence-records">
+          ${providers
+            .map(
+              (provider) => `
+                <li>
+                  <strong>${escapeHtml(provider.provider ?? "provider")}</strong>
+                  <span>${escapeHtml(provider.requirement ?? "unknown")} · ${escapeHtml(provider.outcome ?? "unknown")} · ${escapeHtml(provider.item_count ?? 0)} records</span>
+                  <small>request ${escapeHtml(digestPrefix(provider.request_digest))} · response ${escapeHtml(digestPrefix(provider.response_digest))}${provider.error_code ? ` · ${escapeHtml(provider.error_code)}` : ""}</small>
+                </li>
+              `,
+            )
+            .join("") || `<li><span>No provider receipts.</span></li>`}
+        </ul>
+      </section>
+      <section>
+        <h3>Operation identity & approval continuity</h3>
+        <ul class="record-list evidence-records">
+          ${operations
+            .map(
+              (operation) => `
+                <li data-operation-id="${escapeHtml(operation.operation_id ?? "")}">
+                  <strong>${escapeHtml(operation.logical_operation_key ?? operation.operation_id ?? "operation")}</strong>
+                  <span>${escapeHtml(operation.operation_id ?? "none")} · ${escapeHtml(operation.status ?? "unknown")}</span>
+                  <small>identity ${escapeHtml(digestPrefix(operation.operation_digest))} · approval ${escapeHtml(operation.approval_id ?? "none")} / ${escapeHtml(operation.approval_state ?? "none")} · ${escapeHtml(operation.route_policy_id ?? "unrouted")} → ${escapeHtml(operation.selected_backend ?? operation.backend_category ?? "unknown")}</small>
+                </li>
+              `,
+            )
+            .join("") || `<li><span>No controlled operations.</span></li>`}
+        </ul>
+      </section>
+      <section>
+        <h3>Artifacts & report evidence</h3>
+        <ul class="record-list evidence-records">
+          ${artifacts
+            .filter(
+              (artifact) =>
+                (artifact.cutover_eligible !== null && artifact.cutover_eligible !== undefined)
+                || artifact.schema_id
+                || artifact.content_digest,
+            )
+            .map(
+              (artifact) => `
+                <li>
+                  <strong>${escapeHtml(artifact.title ?? artifact.artifact_id ?? "artifact")}</strong>
+                  <span>${escapeHtml(artifact.schema_id ?? artifact.kind ?? "artifact")} · eligible ${escapeHtml(artifact.cutover_eligible ?? "unverified")}</span>
+                  <small>${escapeHtml(artifact.artifact_id ?? "none")} · ${escapeHtml(digestPrefix(artifact.content_digest ?? artifact.sealed_digest))}</small>
+                </li>
+              `,
+            )
+            .join("") || `<li><span>No cutover-scoped artifacts.</span></li>`}
+          ${reports
+            .map(
+              (report) => `
+                <li>
+                  <strong>${escapeHtml(report.title ?? report.report_id ?? "report")}</strong>
+                  <span>${escapeHtml(report.status ?? "unknown")} · published ${escapeHtml(report.published === true)} · eligible ${escapeHtml(report.cutover_eligible === true)}</span>
+                  <small>${escapeHtml(report.report_id ?? "none")} · artifact ${escapeHtml(report.artifact_id ?? "none")}</small>
+                </li>
+              `,
+            )
+            .join("")}
+        </ul>
+      </section>
+      ${
+        citations.length
+          ? `<section><h3>Safe citations</h3><ul class="record-list evidence-records">${citations
+              .map(
+                (citation) => `<li><strong>${escapeHtml(citation.title ?? citation.source_ref_id)}</strong><span>${escapeHtml(citation.provider ?? "provider")} · PMID ${escapeHtml(citation.pmid ?? "none")} · DOI ${escapeHtml(citation.doi ?? "none")}</span><small>${escapeHtml(citation.source_ref_id ?? "none")} · ${escapeHtml(digestPrefix(citation.response_digest))}</small></li>`,
+              )
+              .join("")}</ul></section>`
+          : ""
+      }
+    </div>
+  `;
+}
+
 export function renderV3Activity(workspace) {
   const events = workspace.activity_feed ?? [];
   if (!events.length) {
@@ -538,6 +674,8 @@ export function renderInspectorContent(viewState) {
       return renderV3Lanes(workspace);
     case "outputs":
       return renderV3Outputs(workspace, viewState);
+    case "evidence":
+      return renderV3ScientificEvidence(workspace);
     case "capabilities":
       return renderV3Capabilities(workspace);
     case "activity":

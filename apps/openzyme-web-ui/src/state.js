@@ -14,6 +14,17 @@ function ensureWorkspace(workspace) {
   workspace.sandbox_runs ??= [];
   workspace.report_drafts ??= [];
   workspace.reports ??= [];
+  workspace.scientific_evidence ??= {
+    schema_version: "v3.scientific_evidence.v1",
+    active: false,
+    providers: [],
+    quorum: { status: "not_evaluated", cutover_eligible: false, members: [] },
+    citations: [],
+    operations: [],
+    artifacts: [],
+    reports: [],
+    cutover: { status: "not_evaluated", eligible: false, blocker_codes: [], warning_codes: [] },
+  };
   workspace.capabilities ??= {};
 }
 
@@ -206,7 +217,11 @@ export function eventRequiresWorkspaceRefresh(event) {
     "engine.invocation.started",
     "engine.invocation.updated",
     "engine.invocation.completed",
+    "research.summary.updated",
+    "research.evidence.recorded",
     "artifact.recorded",
+    "sdk_controlled_operation.updated",
+    "sdk_controlled_operation.approval_resolved",
     "sandbox.run.updated",
     "report_draft.updated",
     "report.generated",
@@ -359,7 +374,9 @@ export function reduceWorkspaceWithEvent(workspace, event) {
     case "agent.status_updated":
     case "memory.compacted":
     case "research.summary.updated":
-    case "research.evidence.recorded": {
+    case "research.evidence.recorded":
+    case "sdk_controlled_operation.updated":
+    case "sdk_controlled_operation.approval_resolved": {
       if (hasActivityEntry(workspace, event)) {
         return workspace;
       }

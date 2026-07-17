@@ -857,6 +857,58 @@ h4 {
   font-size: 1rem;
 }
 
+.evidence-overview {
+  padding: 0.8rem;
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--amber);
+  border-radius: 5px;
+  background: var(--amber-wash);
+}
+
+.evidence-stack[data-cutover-eligible="true"] .evidence-overview {
+  border-left-color: var(--forest-bright);
+  background: var(--forest-wash);
+}
+
+.evidence-status {
+  display: inline-flex;
+  margin-top: 0.25rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.45rem;
+  color: var(--amber);
+  background: #fff;
+  font: 700 0.68rem/1.2 var(--mono);
+  text-transform: uppercase;
+}
+
+.evidence-status[data-evidence-status="eligible"] {
+  color: var(--forest);
+}
+
+.evidence-blockers,
+.evidence-warnings {
+  margin-top: 0.75rem;
+  color: var(--danger);
+  font-size: 0.76rem;
+}
+
+.evidence-warnings {
+  color: var(--amber);
+}
+
+.evidence-blockers ul,
+.evidence-warnings ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  font-family: var(--mono);
+}
+
+.evidence-records small {
+  color: var(--muted);
+  font: 0.64rem/1.45 var(--mono);
+  overflow-wrap: anywhere;
+}
+
 .artifact-browser {
   display: grid;
   gap: 0.85rem;
