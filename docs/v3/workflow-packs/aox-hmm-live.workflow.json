@@ -1,9 +1,9 @@
 {
   "workflow_id": "aox-hmm-live",
-  "version": "1.0.0",
-  "content_sha256": "sha256:f4b1659a6c4bf6db56a8bf4e1f97491579904d370699c68206dec3a0e0200309",
+  "version": "2.0.0",
+  "content_sha256": "sha256:88a98c4a9fcc81c85414a66a88bc1c316c00f5ac7ce95414d5c6e2cf0fb1dbad",
   "title": "AOX/HMM live cutover",
-  "summary": "Versioned, fail-closed scientific cutover workflow using Host-supervised provider and HPC operations.",
+  "summary": "Digest-pinned exact-14 AOX/HMM cutover with split model/coordinate references, HMMER-to-UniProt identity joins, artifact-derived healthy-empty closure, and scientific fail-closed acceptance.",
   "capability_requirements": [
     "role:executor",
     "engine:execution"
@@ -17,7 +17,17 @@
     {
       "doc_id": "aox-hmm-live",
       "version": "v3",
-      "content_sha256": "sha256:9130dc874940fb91f0febe08651754a50818a8cbf4fcff47043c79450119d7e5"
+      "content_sha256": "sha256:735da4c5980e5eebc4fcee16555d2f4e623d84c10d69f906d4adf9c9b838d74e"
+    },
+    {
+      "doc_id": "aox-motif-rule-score-v1",
+      "version": "v3",
+      "content_sha256": "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"
+    },
+    {
+      "doc_id": "aox-sequence-similarity-v1",
+      "version": "v3",
+      "content_sha256": "sha256:99147d4332068ae75ea1dd424887c90b6a56ba8ebc7b52ac04bf38f64ac22eb5"
     }
   ]
 }

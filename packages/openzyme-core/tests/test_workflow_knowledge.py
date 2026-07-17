@@ -17,7 +17,9 @@ def _digest(content: str) -> str:
     return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
 
 
-def _document_registry(content: str = "# Controlled workflow\n\nUse real evidence.") -> DocumentRegistry:
+def _document_registry(
+    content: str = "# Controlled workflow\n\nUse real evidence.",
+) -> DocumentRegistry:
     record = DocumentRecord(
         doc_id="controlled-workflow",
         title="Controlled workflow",
@@ -76,6 +78,77 @@ def test_default_workflow_registry_resolves_pinned_relative_manifests() -> None:
     for manifest in manifests:
         assert not manifest.manifest_path.startswith("/")
         assert registry.resolve(manifest.selection_ref).manifest == manifest
+
+
+def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> None:
+    registry = default_workflow_registry()
+    manifest = next(
+        item for item in registry.list_manifests() if item.workflow_id == "aox-hmm-live"
+    )
+
+    assert manifest.selection_ref == (
+        "workflow:aox-hmm-live@2.0.0#"
+        "sha256:88a98c4a9fcc81c85414a66a88bc1c316c00f5ac7ce95414d5c6e2cf0fb1dbad"
+    )
+    pack = registry.resolve(manifest.selection_ref)
+    documents = {document.doc_id: document for document in pack.documents}
+    assert {
+        doc_id: document.content_sha256 for doc_id, document in documents.items()
+    } == {
+        "aox-hmm-live": (
+            "sha256:735da4c5980e5eebc4fcee16555d2f4e623d84c10d69f906d4adf9c9b838d74e"
+        ),
+        "aox-motif-rule-score-v1": (
+            "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"
+        ),
+        "aox-sequence-similarity-v1": (
+            "sha256:99147d4332068ae75ea1dd424887c90b6a56ba8ebc7b52ac04bf38f64ac22eb5"
+        ),
+    }
+
+    sop = documents["aox-hmm-live"].content
+    expected_accessions = (
+        "AAC72747.1",
+        "KDQ24956.1",
+        "9AVH_A",
+        "XP_014653549.1",
+        "KIS68002.1",
+        "XP_003660923.1",
+        "AMW87253.1",
+        "AFP17823.1",
+        "WP_190019735.1",
+        "WP_138089821.1",
+        "WP_176407597.1",
+        "CAQ19343.1",
+        "CAQ19344.1",
+    )
+    accession_block = sop.split("```text\n", maxsplit=1)[1].split("\n```", maxsplit=1)[
+        0
+    ]
+    assert tuple(accession_block.splitlines()) == expected_accessions
+    for required_identity in (
+        "PubMed supplies the required literature evidence",
+        "NCBI supplies one exact 14-record protein FASTA aggregate",
+        "EBI HMMER REST supplies the real `refprot` search receipt",
+        "UniProt supplies candidate identity",
+        "Semantic Scholar and Tavily are enrichment only",
+        "`aox_hmm_reference_set_selection@1`",
+        "`aox_reference_selection@1`",
+        "`aox_scoring_input_assembly@1`",
+        "`hmmer_score_filtered_accessions@1`",
+        "`aox_sequence_length_join@1`",
+        "`aox_known_positive_probe@2`",
+        "`aox_motif_rule_score@1`",
+        "`cdhit_cluster_membership@1`",
+        "`aox_candidate_graph_nodes@1`",
+        "`aox_candidate_graph_edges@1`",
+        "`aox_candidate_similarity_graph_manifest@1`",
+        '`scientific_outcome.status="empty"`',
+        "Scientific fail-closed matrix",
+        "workflow graph",
+        "execution order",
+    ):
+        assert required_identity in sop
 
 
 def test_document_registry_exact_read_rejects_version_and_digest_drift() -> None:

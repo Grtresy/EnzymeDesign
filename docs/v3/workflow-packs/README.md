@@ -14,6 +14,6 @@
 当前 manifest：
 
 - `generic-sandbox-execution.workflow.json`：领域无关的 sandbox authoring 与 Host-supervised execution 约束。
-- `aox-hmm-live.workflow.json`：AOX/HMM live cutover 的严格科学 prerequisite、provider/HPC route 与 deliverable contract；fixture/simulation 不具备 live cutover 资格。
+- `aox-hmm-live.workflow.json`：`2.0.0` correctional breaking contract，同时 pin 主 SOP、`aox_motif_rule_score@1` 与真实序列/CD-HIT 图合同；固定 exact-14 NCBI aggregate 向 13-record HMM model reference 与 AAB-only coordinate reference 的显式拆分、HMMER → score-filter → conditional UniProt → identity-preserving join、`aox_known_positive_probe@2`、required provider quorum、artifact-derived healthy-empty omission/skip receipt 与科学 fail-closed 条件，但不固定 agent 的命令顺序或研究策略。fixture/simulation 不具备 live cutover 资格。
 
 修改 manifest 或其引用文档时，必须重新计算并更新对应 digest、补充 drift/requirement 回归，并同步更新架构文档。不得只改正文而保留旧 digest。
