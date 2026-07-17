@@ -101,7 +101,7 @@ _CONTRACTS: dict[str, ToolExecutionContract] = {
     "bio_tools.cdhit": ToolExecutionContract(
         tool_id="bio_tools.cdhit",
         adapter_id="bio_tools.cdhit",
-        command_template_id="bio_tools_cdhit_sif_v1",
+        command_template_id="bio_tools_cdhit_sif_v2",
         resources={"cpus": 2, "mem_mb": 4096, "gpus": 0, "time_minutes": 30, "partition": None},
         input_slots=(
             ToolInputSlot(slot_id="input_fasta", remote_path="input.fasta", accepted_formats=("fasta", "fa", "faa")),
@@ -114,13 +114,30 @@ _CONTRACTS: dict[str, ToolExecutionContract] = {
             {"check_type": "exists", "path": "bio_tools/cdhit/clustered.fasta"},
             {"check_type": "exists", "path": "bio_tools/cdhit/clusters.csv"},
             {"check_type": "non_empty", "path": "bio_tools/cdhit/clustered.fasta"},
+            {"check_type": "non_empty", "path": "bio_tools/cdhit/clusters.csv"},
         ),
         failure_signatures=(
             {"pattern": "SIF image not found", "error_code": "SIF_MISSING"},
             {"pattern": "apptainer: command not found", "error_code": "APPTAINER_MISSING"},
             {"pattern": "Fatal|No such file", "error_code": "INPUT_OR_ENTRYPOINT_MISSING"},
         ),
-        parser_hints={"parser": "bio_tools_cdhit", "primary_output": "bio_tools/cdhit/clustered.fasta"},
+        parser_hints={
+            "parser": "bio_tools_cdhit",
+            "primary_output": "bio_tools/cdhit/clusters.csv",
+            "representative_fasta": "bio_tools/cdhit/clustered.fasta",
+            "membership_schema_id": "cdhit_cluster_membership@1",
+            "membership_columns": (
+                "cluster_id",
+                "member_id",
+                "representative_id",
+                "is_representative",
+                "identity_to_representative",
+                "member_length",
+            ),
+            "row_semantics": "one_member_per_row",
+            "identity_scale": "fraction_0_to_1",
+            "normalized_from": "bio_tools/cdhit/clustered.fasta.clstr",
+        },
         preprocess_requirements={},
     ),
     "bio_tools.mafft": ToolExecutionContract(

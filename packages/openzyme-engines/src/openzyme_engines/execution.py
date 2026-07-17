@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+import csv
 from dataclasses import dataclass
 from dataclasses import replace
+from decimal import Decimal
+from decimal import InvalidOperation
 from http import client as http_client
 import hashlib
 import json
@@ -55,6 +58,8 @@ from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_tools import compile_hpc_tool_request
+from openzyme_tools import CDHIT_MEMBERSHIP_COLUMNS
+from openzyme_tools import CDHIT_MEMBERSHIP_SCHEMA_ID
 from openzyme_tools import parse_execution_result
 
 
@@ -2205,7 +2210,21 @@ class DeterministicBioToolsAdapter:
                 details={"identity": identity},
             )
         sequences = self._read_fasta(input_fasta, sdk_method="bio_tools.cdhit")
-        content = self._fasta(sequences[: max(1, len(sequences))])
+        content = self._fasta(sequences)
+        membership_rows = "\n".join(
+            ",".join(
+                (
+                    _csv_cell(f"cluster_{index}"),
+                    _csv_cell(name),
+                    _csv_cell(name),
+                    "true",
+                    "1.000000",
+                    str(len(sequence)),
+                )
+            )
+            for index, (name, sequence) in enumerate(sequences)
+        )
+        membership = ",".join(CDHIT_MEMBERSHIP_COLUMNS) + "\n" + membership_rows + "\n"
         summary = {
             "tool_name": "cd-hit",
             "input_artifact_ids": [input_fasta.artifact_id],
@@ -2236,16 +2255,19 @@ class DeterministicBioToolsAdapter:
                     relative_path="bio_tools/cdhit/clusters.csv",
                     kind=ArtifactKind.RESULT,
                     title="cdhit_clusters.csv",
-                    content="cluster_id,representative,member_count\ncluster_1," + sequences[0][0] + f",{len(sequences)}\n",
+                    content=membership,
                     format="csv",
                     metadata={
                         "tool_name": "cd-hit",
                         "input_artifact_ids": [input_fasta.artifact_id],
                         "parameters": {"identity": identity, "mode": mode},
                         "retrieved_at": retrieved_at,
+                        "membership_schema_id": CDHIT_MEMBERSHIP_SCHEMA_ID,
+                        "membership_columns": list(CDHIT_MEMBERSHIP_COLUMNS),
+                        "row_semantics": "one_member_per_row",
                     },
                     required_format="csv",
-                    required_columns=("cluster_id", "representative", "member_count"),
+                    required_columns=CDHIT_MEMBERSHIP_COLUMNS,
                 ),
             ),
         )
@@ -2556,13 +2578,18 @@ class DeterministicBioToolsAdapter:
             content=content,
             format=format,
             metadata={
-                "source": "host_supervised_bio_tools_sdk",
+                "source": "deterministic_bio_tools_fixture",
                 "format": format,
                 "tool_version": self.tool_version,
                 "command_template": metadata.get("tool_name"),
                 "sanitized_args": dict(metadata.get("parameters") or {}),
                 "parameter_digest": parameter_digest,
                 "resource_estimate": {"cpu": 2, "memory_gb": 4, "max_runtime_minutes": 30},
+                "fixture_classification": "deterministic_fixture",
+                "provider_status": "fixture_non_cutover",
+                "tool_status": "fixture_non_cutover",
+                "scientific_status": "fixture_non_cutover",
+                "cutover_eligible": False,
                 **metadata,
             },
         )
@@ -2615,6 +2642,11 @@ class DeterministicBioToolsAdapter:
                 **summary,
                 "expected_outputs": [artifact.relative_path for artifact in artifacts],
                 "warning_count": len(warnings),
+                "fixture_classification": "deterministic_fixture",
+                "provider_status": "fixture_non_cutover",
+                "tool_status": "fixture_non_cutover",
+                "scientific_status": "fixture_non_cutover",
+                "cutover_eligible": False,
             },
             warnings=warnings,
             artifacts=artifacts,
@@ -4689,9 +4721,20 @@ class ExecutionEngine:
         if existing_fetch is not None:
             return dict(existing_fetch)
         boundary = self._ensure_pipeline_artifact_boundary_workspace(invocation)
+        prepared_outputs = [
+            (
+                output,
+                self._prepare_hpc_pending_output_source(
+                    invocation=invocation,
+                    pending=output,
+                    operation_payload=pending,
+                ),
+            )
+            for output in list(pending.get("outputs") or [])
+        ]
         registered: list[SessionArtifactRecord] = []
         fetch_refs: list[dict[str, Any]] = []
-        for output in list(pending.get("outputs") or []):
+        for output, source_path in prepared_outputs:
             registered_artifact, fetch_ref = self._register_hpc_pending_output(
                 boundary=boundary,
                 session_id=session.session_id,
@@ -4700,6 +4743,7 @@ class ExecutionEngine:
                 hpc_workspace_id=str(workspace["hpc_workspace_id"]),
                 pending=output,
                 operation_payload=pending,
+                source_path=source_path,
             )
             registered.append(registered_artifact)
             fetch_refs.append(fetch_ref)
@@ -5060,21 +5104,13 @@ class ExecutionEngine:
         hpc_workspace_id: str,
         pending: dict[str, Any],
         operation_payload: dict[str, Any],
+        source_path: Path,
     ) -> tuple[SessionArtifactRecord, dict[str, Any]]:
         relative_path = self._validate_hpc_workspace_path(
             str(pending.get("relative_path") or ""),
             sdk_method="hpc.fetch_outputs",
         )
         sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
-        workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
-        source_path = workspace_root / sandbox_workspace_id / "output" / relative_path
-        self._write_hpc_pending_output_source(source_path, pending)
-        self._validate_hpc_pending_output_source(
-            source_path,
-            sdk_method=str(operation_payload.get("sdk_method") or "hpc.fetch_outputs"),
-            relative_path=relative_path,
-            declared=dict(pending.get("declared_output") or {}),
-        )
         output_digest = self._digest_hpc_output_source(source_path)
         fetch_ref_id = "fetch_" + hashlib.sha256(
             f"{hpc_workspace_id}:{run.run_id}:{relative_path}:{output_digest}".encode("utf-8")
@@ -5098,6 +5134,17 @@ class ExecutionEngine:
             "cutover_eligible": not bool(pending.get("synthetic_source")),
             **dict(operation_payload.get("request_metadata") or {}),
         }
+        if (
+            operation_payload.get("sdk_method") == "bio_tools.cdhit"
+            and relative_path.endswith("/clusters.csv")
+        ):
+            metadata.update(
+                {
+                    "membership_schema_id": CDHIT_MEMBERSHIP_SCHEMA_ID,
+                    "membership_columns": list(CDHIT_MEMBERSHIP_COLUMNS),
+                    "row_semantics": "one_member_per_row",
+                }
+            )
         if pending.get("synthetic_source"):
             metadata.update(
                 {
@@ -5138,6 +5185,30 @@ class ExecutionEngine:
             "output_digest": artifact_digest,
         }
         return result.artifact, fetch_ref
+
+    def _prepare_hpc_pending_output_source(
+        self,
+        *,
+        invocation: EngineInvocation,
+        pending: dict[str, Any],
+        operation_payload: dict[str, Any],
+    ) -> Path:
+        relative_path = self._validate_hpc_workspace_path(
+            str(pending.get("relative_path") or ""),
+            sdk_method="hpc.fetch_outputs",
+        )
+        sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
+        workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        source_path = workspace_root / sandbox_workspace_id / "output" / relative_path
+        self._write_hpc_pending_output_source(source_path, pending)
+        self._validate_hpc_pending_output_source(
+            source_path,
+            sdk_method=str(operation_payload.get("sdk_method") or "hpc.fetch_outputs"),
+            relative_path=relative_path,
+            declared=dict(pending.get("declared_output") or {}),
+            operation_payload=operation_payload,
+        )
+        return source_path
 
     def _write_hpc_pending_output_source(self, target: Path, pending: dict[str, Any]) -> None:
         if target.exists():
@@ -5183,6 +5254,7 @@ class ExecutionEngine:
         sdk_method: str,
         relative_path: str,
         declared: dict[str, Any],
+        operation_payload: dict[str, Any] | None = None,
     ) -> None:
         if not sdk_method.startswith("bio_tools."):
             return
@@ -5210,13 +5282,19 @@ class ExecutionEngine:
         format_value = str(declared.get("format") or "").lower()
         if relative_path.endswith(".hmm") or format_value == "hmm":
             valid = content.startswith("HMMER")
+        elif sdk_method == "bio_tools.cdhit" and (
+            relative_path.endswith("/clusters.csv") or format_value == "csv"
+        ):
+            self._validate_cdhit_membership_output(
+                path,
+                relative_path=relative_path,
+                operation_payload=operation_payload,
+            )
+            return
         elif relative_path.endswith(".csv") or format_value == "csv":
             lines = [line for line in content.splitlines() if line.strip()]
             header = set(lines[0].split(",")) if lines else set()
-            valid = bool(lines) and (
-                {"cluster_id", "representative", "member_count"}.issubset(header)
-                or {"target", "accession", "evalue", "score"}.issubset(header)
-            )
+            valid = bool(lines) and {"target", "accession", "evalue", "score"}.issubset(header)
         elif relative_path.endswith((".fasta", ".fa", ".faa", ".afa")) or format_value in {"fasta", "fa", "faa", "afa"}:
             records = sum(1 for line in content.splitlines() if line.startswith(">"))
             valid = records >= (2 if sdk_method in {"bio_tools.mafft", "bio_tools.hmmalign"} else 1)
@@ -5232,6 +5310,230 @@ class ExecutionEngine:
                 sdk_method=sdk_method,
                 details={"path": relative_path, "format": format_value or None},
             )
+
+    def _validate_cdhit_membership_output(
+        self,
+        path: Path,
+        *,
+        relative_path: str,
+        operation_payload: dict[str, Any] | None,
+    ) -> None:
+        try:
+            with path.open(encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle, strict=True)
+                fieldnames = list(reader.fieldnames or [])
+                rows = list(reader)
+        except (OSError, csv.Error) as exc:
+            raise self._cdhit_membership_failure(
+                relative_path=relative_path,
+                reason="invalid_csv",
+                details={"error": type(exc).__name__},
+            ) from exc
+        if fieldnames != list(CDHIT_MEMBERSHIP_COLUMNS):
+            raise self._cdhit_membership_failure(
+                relative_path=relative_path,
+                reason="schema_mismatch",
+                details={
+                    "schema_id": CDHIT_MEMBERSHIP_SCHEMA_ID,
+                    "expected_columns": list(CDHIT_MEMBERSHIP_COLUMNS),
+                    "actual_columns": fieldnames,
+                },
+            )
+        if not rows:
+            raise self._cdhit_membership_failure(
+                relative_path=relative_path,
+                reason="membership_empty",
+            )
+
+        member_rows: dict[str, dict[str, str]] = {}
+        clusters: dict[str, list[dict[str, str]]] = {}
+        for row_index, raw_row in enumerate(rows, start=2):
+            if None in raw_row or any(value is None for value in raw_row.values()):
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="row_shape_mismatch",
+                    details={"row": row_index},
+                )
+            row = {column: str(raw_row[column]) for column in CDHIT_MEMBERSHIP_COLUMNS}
+            empty_columns = [column for column, value in row.items() if not value.strip()]
+            if empty_columns:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="missing_membership_value",
+                    details={"row": row_index, "columns": empty_columns},
+                )
+            member_id = row["member_id"]
+            if member_id in member_rows:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="duplicate_membership",
+                    details={"row": row_index, "member_id": member_id},
+                )
+            if row["is_representative"] not in {"true", "false"}:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="invalid_representative_flag",
+                    details={"row": row_index, "value": row["is_representative"]},
+                )
+            identity_text = row["identity_to_representative"]
+            if re.fullmatch(r"(?:0|1)\.[0-9]{6}", identity_text) is None:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="invalid_identity",
+                    details={"row": row_index, "value": identity_text},
+                )
+            try:
+                identity = Decimal(identity_text)
+            except InvalidOperation as exc:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="invalid_identity",
+                    details={"row": row_index, "value": identity_text},
+                ) from exc
+            if not identity.is_finite() or identity < 0 or identity > 1:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="invalid_identity",
+                    details={"row": row_index, "value": identity_text},
+                )
+            if re.fullmatch(r"[1-9][0-9]*", row["member_length"]) is None:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="invalid_member_length",
+                    details={"row": row_index, "value": row["member_length"]},
+                )
+            member_rows[member_id] = row
+            clusters.setdefault(row["cluster_id"], []).append(row)
+
+        for cluster_id, cluster_rows in clusters.items():
+            representative_rows = [row for row in cluster_rows if row["is_representative"] == "true"]
+            if len(representative_rows) != 1:
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="representative_membership_missing_or_duplicate",
+                    details={"cluster_id": cluster_id, "representative_count": len(representative_rows)},
+                )
+            representative_row = representative_rows[0]
+            representative_id = representative_row["member_id"]
+            if (
+                representative_row["representative_id"] != representative_id
+                or representative_row["identity_to_representative"] != "1.000000"
+                or any(row["representative_id"] != representative_id for row in cluster_rows)
+            ):
+                raise self._cdhit_membership_failure(
+                    relative_path=relative_path,
+                    reason="inconsistent_representative_membership",
+                    details={"cluster_id": cluster_id, "representative_id": representative_id},
+                )
+
+        expected_members = self._expected_cdhit_members(operation_payload)
+        if expected_members is None:
+            return
+        actual_member_ids = set(member_rows)
+        expected_member_ids = set(expected_members)
+        missing_member_ids = sorted(expected_member_ids - actual_member_ids)
+        unexpected_member_ids = sorted(actual_member_ids - expected_member_ids)
+        length_mismatches = {
+            member_id: {
+                "expected": expected_members[member_id],
+                "actual": int(member_rows[member_id]["member_length"]),
+            }
+            for member_id in sorted(expected_member_ids & actual_member_ids)
+            if int(member_rows[member_id]["member_length"]) != expected_members[member_id]
+        }
+        if missing_member_ids or unexpected_member_ids or length_mismatches:
+            raise self._cdhit_membership_failure(
+                relative_path=relative_path,
+                reason="membership_input_mismatch",
+                details={
+                    "missing_member_ids": missing_member_ids,
+                    "unexpected_member_ids": unexpected_member_ids,
+                    "length_mismatches": length_mismatches,
+                },
+            )
+
+    def _expected_cdhit_members(
+        self,
+        operation_payload: dict[str, Any] | None,
+    ) -> dict[str, int] | None:
+        if operation_payload is None:
+            return None
+        stage_refs = list(operation_payload.get("stage_refs") or [])
+        if len(stage_refs) != 1 or not isinstance(stage_refs[0], dict):
+            raise self._cdhit_membership_failure(
+                relative_path="bio_tools/cdhit/clusters.csv",
+                reason="membership_input_unavailable",
+                details={"stage_ref_count": len(stage_refs)},
+            )
+        artifact_id = str(stage_refs[0].get("artifact_id") or "")
+        artifact = self.repositories.artifacts.get(artifact_id)
+        if artifact is None:
+            raise self._cdhit_membership_failure(
+                relative_path="bio_tools/cdhit/clusters.csv",
+                reason="membership_input_unavailable",
+                details={"artifact_id": artifact_id},
+            )
+        try:
+            content = Path(artifact.storage_uri).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise self._cdhit_membership_failure(
+                relative_path="bio_tools/cdhit/clusters.csv",
+                reason="membership_input_unavailable",
+                details={"artifact_id": artifact_id},
+            ) from exc
+        members: dict[str, int] = {}
+        current_id: str | None = None
+        current_length = 0
+        for line in content.splitlines():
+            if line.startswith(">"):
+                if current_id is not None:
+                    members[current_id] = current_length
+                header = line[1:].strip()
+                current_id = header.split(maxsplit=1)[0] if header else ""
+                if not current_id or current_id in members:
+                    raise self._cdhit_membership_failure(
+                        relative_path="bio_tools/cdhit/clusters.csv",
+                        reason="duplicate_or_empty_input_member_id",
+                        details={"artifact_id": artifact_id, "member_id": current_id},
+                    )
+                current_length = 0
+            elif line.strip() and current_id is not None:
+                current_length += len(line.strip())
+        if current_id is not None:
+            if current_id in members:
+                raise self._cdhit_membership_failure(
+                    relative_path="bio_tools/cdhit/clusters.csv",
+                    reason="duplicate_or_empty_input_member_id",
+                    details={"artifact_id": artifact_id, "member_id": current_id},
+                )
+            members[current_id] = current_length
+        if not members or any(length <= 0 for length in members.values()):
+            raise self._cdhit_membership_failure(
+                relative_path="bio_tools/cdhit/clusters.csv",
+                reason="membership_input_unavailable",
+                details={"artifact_id": artifact_id},
+            )
+        return members
+
+    def _cdhit_membership_failure(
+        self,
+        *,
+        relative_path: str,
+        reason: str,
+        details: dict[str, Any] | None = None,
+    ) -> PipelineSdkFailure:
+        return PipelineSdkFailure(
+            error_type="output_validation_failed",
+            message=(
+                f"bio_tools.cdhit declared membership output {relative_path!r} "
+                f"does not satisfy {CDHIT_MEMBERSHIP_SCHEMA_ID}."
+            ),
+            hint="Regenerate clusters.csv from the complete CD-HIT .clstr output; do not infer or aggregate memberships.",
+            stage="bio_tools_output_validation",
+            retryable=False,
+            sdk_method="bio_tools.cdhit",
+            details={"path": relative_path, "schema_id": CDHIT_MEMBERSHIP_SCHEMA_ID, "reason": reason, **(details or {})},
+        )
 
     def _pending_output_is_directory(self, pending: dict[str, Any]) -> bool:
         declared = dict(pending.get("declared_output") or {})

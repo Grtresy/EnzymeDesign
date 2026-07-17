@@ -56,7 +56,7 @@ S14 product-route live smoke 使用 `apps/mcp-hpc-runner/fixtures/hpc_tool_sampl
 
 | SDK operation | staged inputs | canonical declared outputs | validator |
 | --- | --- | --- | --- |
-| `bio_tools.cdhit` | `input_fasta` | `bio_tools/cdhit/clustered.fasta`; `bio_tools/cdhit/clusters.csv` | FASTA 非空且至少一个 sequence；CSV 有 required columns 或可由 `.clstr` raw output normalize 生成 |
+| `bio_tools.cdhit` | `input_fasta` | `bio_tools/cdhit/clustered.fasta`; `bio_tools/cdhit/clusters.csv` | FASTA 非空；完整 `.clstr` normalize 为 `cdhit_cluster_membership@1` 的 one-member-per-row CSV，并在任何 output 注册前核对 staged FASTA 成员全集、长度和每簇唯一 representative；fixture 标记为 `fixture_non_cutover` |
 | `bio_tools.mafft` | `input_fasta` | `bio_tools/mafft/alignment.fasta` | FASTA/MSA 非空，至少两个 aligned sequence record |
 | `bio_tools.hmmbuild` | `alignment` | `bio_tools/hmmbuild/model.hmm` | HMMER3 profile marker 存在，文件非空 |
 | `bio_tools.hmmalign` | `hmm`; `fasta` | `bio_tools/hmmalign/aligned.fasta` | FASTA/MSA 非空；runner 的 Stockholm raw output 可作为 diagnostic/raw artifact，但 product declared output 必须被 normalize/validated 后登记 |

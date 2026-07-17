@@ -54,6 +54,7 @@ from openzyme_engines.execution import BioArtifactDraft
 from openzyme_engines.execution import BioProviderHttpConfig
 from openzyme_engines.execution import BioSdkResult
 from openzyme_engines.execution import DeterministicBioDatabaseAdapter
+from openzyme_engines.execution import DeterministicBioToolsAdapter
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
 from openzyme_engines.execution import ProviderHttpBioDatabaseAdapter
@@ -63,6 +64,10 @@ from openzyme_runtime import ToolSideEffect
 
 FPOCKET_EXPECTED_OUTPUTS = [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
 VINA_EXPECTED_OUTPUTS = [{"path": "outputs/vina_out.pdbqt", "kind": "structure", "format": "pdbqt"}]
+CDHIT_MEMBERSHIP_HEADER = (
+    "cluster_id,member_id,representative_id,is_representative,"
+    "identity_to_representative,member_length"
+)
 
 
 def _fpocket_pipeline_code(artifact_id: str = "art_001") -> str:
@@ -201,8 +206,14 @@ def _bio_tool_outputs(method: str) -> list[dict[str, str]]:
 def _runner_output_content(relative_path: str) -> str:
     if relative_path.endswith(".hmm"):
         return "HMMER3/f [runner]\nNAME runner_model\n//\n"
-    if relative_path.endswith(".csv"):
-        return "cluster_id,representative,member_count\ncluster_0,seq1,2\n"
+    if relative_path.endswith("/clusters.csv"):
+        return (
+            f"{CDHIT_MEMBERSHIP_HEADER}\n"
+            "cluster_0,seq1,seq1,true,1.000000,22\n"
+            "cluster_0,seq2,seq1,false,0.900000,22\n"
+        )
+    if relative_path.endswith("/hits.csv"):
+        return "target,accession,evalue,score\nseq1,seq1,1e-20,100.0\n"
     if relative_path.endswith((".fasta", ".fa", ".faa", ".afa")):
         return ">seq1\nMKTAYIAKQRQISFVKSHFSRQ\n>seq2\nMKADKSELVQKAKLAEQAERYD\n"
     if relative_path.endswith(".log"):
@@ -401,6 +412,25 @@ class MissingDeclaredOutputRunner(CapturingSuccessRunner):
             artifacts=outcome.artifacts[:1],
             exit_code=outcome.exit_code,
         )
+
+
+class CdhitMembershipOutputRunner(CapturingSuccessRunner):
+    def __init__(self, membership_content: str) -> None:
+        super().__init__()
+        self.membership_content = membership_content
+
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        outcome = super().submit_execution(session_id, payload)
+        membership_artifact = next(
+            artifact
+            for artifact in outcome.artifacts
+            if artifact.relative_path.endswith("/clusters.csv")
+        )
+        Path(membership_artifact.storage_uri).write_text(
+            self.membership_content,
+            encoding="utf-8",
+        )
+        return outcome
 
 
 class MissingAllDeclaredOutputsRunner(CapturingSuccessRunner):
@@ -3327,6 +3357,38 @@ def test_pipeline_bio_schema_and_pagination_failures_are_structured(
     assert error["retryable"] is retryable
 
 
+def test_deterministic_cdhit_adapter_emits_canonical_non_cutover_membership() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    fasta_artifact_id = _save_fasta_artifact(repositories, "art_fixture_cdhit")
+    fasta_artifact = repositories.artifacts.get(fasta_artifact_id)
+    assert fasta_artifact is not None
+
+    result = DeterministicBioToolsAdapter().cdhit(
+        input_fasta=fasta_artifact,
+        identity=0.9,
+        mode="protein",
+        retrieved_at="2026-07-17T00:00:00+00:00",
+    )
+
+    membership = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.relative_path == "bio_tools/cdhit/clusters.csv"
+    )
+    assert membership.content.splitlines() == [
+        CDHIT_MEMBERSHIP_HEADER,
+        "cluster_0,seq1,seq1,true,1.000000,22",
+        "cluster_1,seq2,seq2,true,1.000000,22",
+    ]
+    assert membership.metadata["membership_schema_id"] == "cdhit_cluster_membership@1"
+    assert membership.metadata["fixture_classification"] == "deterministic_fixture"
+    assert membership.metadata["scientific_status"] == "fixture_non_cutover"
+    assert membership.metadata["cutover_eligible"] is False
+    assert result.summary["scientific_status"] == "fixture_non_cutover"
+    assert result.summary["cutover_eligible"] is False
+
+
 def test_pipeline_bio_tools_persist_declared_outputs_with_provenance() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
@@ -3436,6 +3498,18 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance() -> None:
     assert clustered.metadata["catalog_tool_id"] == "bio_tools.cdhit"
     assert clustered.metadata["tool_inputs"]["route_policy_id"] == "bio_tools.cdhit.hpc:v1"
     assert clustered.metadata["source_code_artifact_id"] == code_artifact_id
+    membership = next(artifact for artifact in artifacts if artifact.relative_path == "bio_tools/cdhit/clusters.csv")
+    assert membership.metadata is not None
+    assert membership.metadata["membership_schema_id"] == "cdhit_cluster_membership@1"
+    assert membership.metadata["membership_columns"] == [
+        "cluster_id",
+        "member_id",
+        "representative_id",
+        "is_representative",
+        "identity_to_representative",
+        "member_length",
+    ]
+    assert membership.metadata["row_semantics"] == "one_member_per_row"
 
 
 def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -> None:
@@ -3567,6 +3641,94 @@ def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact
     assert error["stage"] == "bio_tools_output_validation"
     assert error["details"]["missing_outputs"] == ["bio_tools/cdhit/clusters.csv"]
     assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_tools_missing_output") == []
+
+
+@pytest.mark.parametrize(
+    ("membership_content", "expected_reason"),
+    [
+        (
+            "cluster_id,representative,member_count\ncluster_0,seq1,2\n",
+            "schema_mismatch",
+        ),
+        (
+            f"{CDHIT_MEMBERSHIP_HEADER}\n"
+            "cluster_0,seq1,seq1,true,1.000000,22\n",
+            "membership_input_mismatch",
+        ),
+        (
+            f"{CDHIT_MEMBERSHIP_HEADER}\n"
+            "cluster_0,seq1,seq1,true,1.000000,22\n"
+            "cluster_0,seq2,seq1,false,0.900000,22\n"
+            "cluster_0,seq2,seq1,false,0.900000,22\n",
+            "duplicate_membership",
+        ),
+    ],
+    ids=("legacy_aggregate_schema", "missing_member", "duplicate_member"),
+)
+def test_pipeline_cdhit_membership_fails_closed_before_output_registration(
+    membership_content: str,
+    expected_reason: str,
+) -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    fasta_artifact_id = _save_fasta_artifact(repositories, f"art_cdhit_{expected_reason}")
+    workspace = _workspace_payload(f"cdhit_{expected_reason}")
+    staged_fasta = _stage_payload(
+        repositories,
+        fasta_artifact_id,
+        workspace,
+        "inputs/sequences.fasta",
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        f"code_cdhit_{expected_reason}",
+        "from openzyme_pipeline import bio_tools\n"
+        "# Runtime sandbox fixture supplies placement-aware cdhit.\n",
+    )
+    sandbox = FetchAfterEachBioToolSandboxRunner(
+        ((
+            "bio_tools.cdhit",
+            {
+                "input_fasta": staged_fasta,
+                "placement": workspace,
+                "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                "identity": 0.9,
+                "mode": "protein",
+            },
+        ),),
+        workspace,
+    )
+    runner = CdhitMembershipOutputRunner(membership_content)
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    invocation_id = f"inv_pipeline_cdhit_{expected_reason}"
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id=invocation_id,
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [fasta_artifact_id]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id=invocation_id,
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "output_validation_failed"
+    assert error["stage"] == "bio_tools_output_validation"
+    assert error["details"]["schema_id"] == "cdhit_cluster_membership@1"
+    assert error["details"]["reason"] == expected_reason
+    output_paths = {
+        artifact.relative_path
+        for artifact in repositories.artifacts.list_by_invocation("sess_001", invocation_id)
+    }
+    assert "bio_tools/cdhit/clustered.fasta" not in output_paths
+    assert "bio_tools/cdhit/clusters.csv" not in output_paths
 
 
 def test_pipeline_bio_tools_accepts_hpc_runner_artifact_refs_without_metadata() -> None:

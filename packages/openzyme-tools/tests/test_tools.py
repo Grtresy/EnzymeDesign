@@ -1,14 +1,120 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from openzyme_runtime import HpcCatalogQuery
 from openzyme_runtime import ExecutionPlanDraft
 from openzyme_tools import DefaultHpcExecutionRegistry
+from openzyme_tools import CDHIT_MEMBERSHIP_COLUMNS
+from openzyme_tools import CDHIT_MEMBERSHIP_SCHEMA_ID
 from openzyme_tools import RepoBackedHpcCatalogProvider
+from openzyme_tools import get_hpc_tool_contract
+from openzyme_tools import render_cdhit_membership_normalizer_command
+from openzyme_tools import render_contract_command
+
+
+def test_cdhit_contract_exposes_one_member_per_row_schema() -> None:
+    contract = get_hpc_tool_contract("bio_tools.cdhit")
+
+    assert contract.command_template_id == "bio_tools_cdhit_sif_v2"
+    assert contract.parser_hints["membership_schema_id"] == CDHIT_MEMBERSHIP_SCHEMA_ID
+    assert tuple(contract.parser_hints["membership_columns"]) == CDHIT_MEMBERSHIP_COLUMNS
+    assert contract.parser_hints["row_semantics"] == "one_member_per_row"
+    assert contract.parser_hints["identity_scale"] == "fraction_0_to_1"
+
+    rendered = render_contract_command(contract, {"identity": 0.85, "word_size": 5})
+    assert "cluster_id,member_id,representative_id,is_representative" in rendered[2]
+    assert "member_count" not in rendered[2]
+
+
+def test_cdhit_normalizer_parses_every_real_clstr_member(tmp_path: Path) -> None:
+    cdhit_root = tmp_path / "bio_tools" / "cdhit"
+    cdhit_root.mkdir(parents=True)
+    (cdhit_root / "clustered.fasta.clstr").write_text(
+        """>Cluster 0
+0\t20aa, >aox_ref... *
+1\t20aa, >aox_variant_1... at 95.00%
+2\t19aa, >aox_variant_2... at +/97.50%
+>Cluster 1
+0\t18aa, >aox,\"divergent... *
+""",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", "-lc", render_cdhit_membership_normalizer_command()],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "MCP_OUTDIR": str(tmp_path)},
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    with (cdhit_root / "clusters.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert list(rows[0]) == list(CDHIT_MEMBERSHIP_COLUMNS)
+    assert rows == [
+        {
+            "cluster_id": "cluster_0",
+            "member_id": "aox_ref",
+            "representative_id": "aox_ref",
+            "is_representative": "true",
+            "identity_to_representative": "1.000000",
+            "member_length": "20",
+        },
+        {
+            "cluster_id": "cluster_0",
+            "member_id": "aox_variant_1",
+            "representative_id": "aox_ref",
+            "is_representative": "false",
+            "identity_to_representative": "0.950000",
+            "member_length": "20",
+        },
+        {
+            "cluster_id": "cluster_0",
+            "member_id": "aox_variant_2",
+            "representative_id": "aox_ref",
+            "is_representative": "false",
+            "identity_to_representative": "0.975000",
+            "member_length": "19",
+        },
+        {
+            "cluster_id": "cluster_1",
+            "member_id": 'aox,\"divergent',
+            "representative_id": 'aox,\"divergent',
+            "is_representative": "true",
+            "identity_to_representative": "1.000000",
+            "member_length": "18",
+        },
+    ]
+
+
+def test_cdhit_normalizer_rejects_cluster_without_representative(tmp_path: Path) -> None:
+    cdhit_root = tmp_path / "bio_tools" / "cdhit"
+    cdhit_root.mkdir(parents=True)
+    (cdhit_root / "clustered.fasta.clstr").write_text(
+        ">Cluster 0\n0\t20aa, >orphan... at 95.00%\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", "-lc", render_cdhit_membership_normalizer_command()],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "MCP_OUTDIR": str(tmp_path)},
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "must contain exactly one representative" in completed.stderr
+    assert not (cdhit_root / "clusters.csv").exists()
+    assert not (cdhit_root / "clusters.csv.tmp").exists()
 
 
 def test_catalog_search_filters_by_capability_and_execution_support() -> None:

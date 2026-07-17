@@ -155,6 +155,7 @@
     {
       "tool_id": "bio_tools.cdhit",
       "adapter_id": "bio_tools.cdhit",
+      "command_template_id": "bio_tools_cdhit_sif_v2",
       "stage": "execution",
       "deployment_mode": "sif",
       "entrypoint": {
@@ -178,6 +179,25 @@
         { "path": "bio_tools/cdhit/clustered.fasta", "kind": "file", "required": true, "non_empty": true },
         { "path": "bio_tools/cdhit/clusters.csv", "kind": "file", "required": true, "non_empty": true }
       ],
+      "normalization_contract": {
+        "schema_id": "cdhit_cluster_membership@1",
+        "source": "bio_tools/cdhit/clustered.fasta.clstr",
+        "output": "bio_tools/cdhit/clusters.csv",
+        "row_semantics": "one_member_per_row",
+        "identity_scale": "fraction_0_to_1",
+        "columns": [
+          "cluster_id",
+          "member_id",
+          "representative_id",
+          "is_representative",
+          "identity_to_representative",
+          "member_length"
+        ]
+      },
+      "smoke_fixture": {
+        "classification": "deterministic_fixture",
+        "scientific_evidence": false
+      },
       "success_checks": [
         "command exits 0",
         "clustered FASTA exists",
@@ -190,7 +210,7 @@
       ],
       "support_status": "smoke_runnable",
       "executor_relevance": "compile_and_parse",
-      "notes": "S14 AOX/HMM CD-HIT product-route prerequisite smoke using committed tiny FASTA fixture."
+      "notes": "S14 AOX/HMM CD-HIT product-route prerequisite smoke using a committed deterministic tiny FASTA fixture; it is not scientific evidence."
     },
     {
       "tool_id": "bio_tools.mafft",

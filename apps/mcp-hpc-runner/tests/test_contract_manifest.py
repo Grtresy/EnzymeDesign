@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import csv
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from mcp_hpc_runner.contract_manifest import (
+    CDHIT_MEMBERSHIP_COLUMNS,
+    CDHIT_MEMBERSHIP_SCHEMA_ID,
     ContractManifestError,
     build_discovery_runspec,
     build_smoke_runspec,
+    default_manifest_path,
     load_contract_manifest,
+    render_cdhit_membership_normalizer_command,
     sanitize_record,
     validate_contract_manifest,
     write_contract_record,
@@ -94,6 +101,15 @@ def test_contract_manifest_rejects_duplicate_tool_ids() -> None:
         validate_contract_manifest(payload)
 
 
+def test_contract_manifest_rejects_cdhit_membership_schema_drift() -> None:
+    payload = json.loads(default_manifest_path().read_text(encoding="utf-8"))
+    cdhit = next(tool for tool in payload["tools"] if tool["tool_id"] == "bio_tools.cdhit")
+    cdhit["normalization_contract"]["columns"] = ["cluster_id", "member_count"]
+
+    with pytest.raises(ContractManifestError, match="canonical schema"):
+        validate_contract_manifest(payload)
+
+
 @pytest.mark.parametrize(
     "tool_id",
     [
@@ -119,6 +135,67 @@ def test_smoke_runspec_generation_is_valid(tool_id: str) -> None:
     assert spec.metadata["tool_contract"]["tool_id"] == tool_id
     assert spec.metadata["tool_contract"]["preflight_hints"]["entrypoint"]["kind"] == "sif"
     assert spec.expected_outputs
+
+
+def test_cdhit_smoke_runspec_normalizes_real_membership_and_marks_fixture() -> None:
+    contract = next(
+        contract
+        for contract in load_contract_manifest()
+        if contract.tool_id == "bio_tools.cdhit"
+    )
+    spec = build_smoke_runspec(
+        contract,
+        _project_root() / "fixtures" / "hpc_tool_samples",
+        partition="cpu",
+    )
+
+    command = spec.command[2]
+    assert "cluster_id,member_id,representative_id,is_representative" in command
+    assert "member_count" not in command
+    assert (
+        spec.metadata["tool_contract"]["command_template_id"]
+        == "bio_tools_cdhit_sif_v2"
+    )
+    normalization = spec.metadata["tool_contract"]["normalization_contract"]
+    assert normalization["schema_id"] == CDHIT_MEMBERSHIP_SCHEMA_ID
+    assert normalization["columns"] == list(CDHIT_MEMBERSHIP_COLUMNS)
+    assert spec.metadata["tool_contract"]["smoke_fixture"] == {
+        "classification": "deterministic_fixture",
+        "scientific_evidence": False,
+    }
+
+
+def test_runner_cdhit_normalizer_emits_one_row_per_clstr_member(tmp_path: Path) -> None:
+    cdhit_root = tmp_path / "bio_tools" / "cdhit"
+    cdhit_root.mkdir(parents=True)
+    (cdhit_root / "clustered.fasta.clstr").write_text(
+        """>Cluster 0
+0\t20aa, >representative... *
+1\t19aa, >member... at 94.74%
+""",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", "-lc", render_cdhit_membership_normalizer_command()],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "MCP_OUTDIR": str(tmp_path)},
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    with (cdhit_root / "clusters.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 2
+    assert rows[1] == {
+        "cluster_id": "cluster_0",
+        "member_id": "member",
+        "representative_id": "representative",
+        "is_representative": "false",
+        "identity_to_representative": "0.947400",
+        "member_length": "19",
+    }
 
 
 def test_discovery_runspec_generation_is_valid_for_each_contract() -> None:
