@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 from contextlib import contextmanager
 from http import client as http_client
@@ -57,13 +58,18 @@ from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import DeterministicBioToolsAdapter
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
+from openzyme_engines.execution import PipelineSdkFailure
 from openzyme_engines.execution import ProviderHttpBioDatabaseAdapter
 from openzyme_research import DeterministicBioResearchService
 from openzyme_runtime import ToolSideEffect
 
 
-FPOCKET_EXPECTED_OUTPUTS = [{"path": "target_out", "kind": "directory", "format": "fpocket"}]
-VINA_EXPECTED_OUTPUTS = [{"path": "outputs/vina_out.pdbqt", "kind": "structure", "format": "pdbqt"}]
+FPOCKET_EXPECTED_OUTPUTS = [
+    {"path": "target_out", "kind": "directory", "format": "fpocket"}
+]
+VINA_EXPECTED_OUTPUTS = [
+    {"path": "outputs/vina_out.pdbqt", "kind": "structure", "format": "pdbqt"}
+]
 CDHIT_MEMBERSHIP_HEADER = (
     "cluster_id,member_id,representative_id,is_representative,"
     "identity_to_representative,member_length"
@@ -104,7 +110,11 @@ def _call_fpocket(control_handler, artifact_id: str = "art_001") -> dict[str, ob
             },
         )
     )
-    return dict(control_handler("hpc.fetch_outputs", {"hpc_workspace": ws, "run_id": run["run_id"]}))
+    return dict(
+        control_handler(
+            "hpc.fetch_outputs", {"hpc_workspace": ws, "run_id": run["run_id"]}
+        )
+    )
 
 
 def _call_vina(control_handler, artifact_id: str = "art_001") -> dict[str, object]:  # type: ignore[no-untyped-def]
@@ -148,9 +158,12 @@ def _content_digest(content: str) -> str:
 
 
 def _payload_digest(payload: object) -> str:
-    return "sha256:" + hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
 
 
 def _artifact_digest(repositories: CoreRepositories, artifact_id: str) -> str:
@@ -190,15 +203,33 @@ def _stage_payload(
 def _bio_tool_outputs(method: str) -> list[dict[str, str]]:
     return {
         "bio_tools.cdhit": [
-            {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"},
+            {
+                "path": "bio_tools/cdhit/clustered.fasta",
+                "kind": "sequence",
+                "format": "fasta",
+            },
             {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
         ],
-        "bio_tools.mafft": [{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}],
-        "bio_tools.hmmbuild": [{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}],
-        "bio_tools.hmmalign": [{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}],
+        "bio_tools.mafft": [
+            {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}
+        ],
+        "bio_tools.hmmbuild": [
+            {"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}
+        ],
+        "bio_tools.hmmalign": [
+            {"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}
+        ],
         "bio_tools.hmmer_search_cli": [
-            {"path": "bio_tools/hmmer_search_cli/hits.csv", "kind": "result", "format": "csv"},
-            {"path": "bio_tools/hmmer_search_cli/tool.log", "kind": "log", "format": "txt"},
+            {
+                "path": "bio_tools/hmmer_search_cli/hits.csv",
+                "kind": "result",
+                "format": "csv",
+            },
+            {
+                "path": "bio_tools/hmmer_search_cli/tool.log",
+                "kind": "log",
+                "format": "txt",
+            },
         ],
     }[method]
 
@@ -227,7 +258,9 @@ class ImmediateSuccessRunner:
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id
-        expected_outputs = list((dict(payload.get("runspec") or {}).get("expected_outputs") or []))
+        expected_outputs = list(
+            (dict(payload.get("runspec") or {}).get("expected_outputs") or [])
+        )
         runspec = dict(payload.get("runspec") or {})
         run_suffix = hashlib.sha256(
             json.dumps(
@@ -243,14 +276,23 @@ class ImmediateSuccessRunner:
         refs = []
         for output in expected_outputs or [{"path": "stdout.log"}]:
             relative_path = str(dict(output).get("path") or "stdout.log")
-            kind = ArtifactKind.LOG if relative_path.endswith(".log") else ArtifactKind.RESULT
+            kind = (
+                ArtifactKind.LOG
+                if relative_path.endswith(".log")
+                else ArtifactKind.RESULT
+            )
             if relative_path.endswith((".pdb", ".pdbqt", ".sdf", ".mol2", ".cif")):
                 kind = ArtifactKind.STRUCTURE
             storage_path = Path("/tmp/openzyme-test-runner") / relative_path
             if dict(output).get("kind") in {"dir", "directory"}:
                 storage_path.mkdir(parents=True, exist_ok=True)
-                (storage_path / "summary.txt").write_text("runner directory output\n", encoding="utf-8")
-                if relative_path == "target_out" or dict(output).get("format") == "fpocket":
+                (storage_path / "summary.txt").write_text(
+                    "runner directory output\n", encoding="utf-8"
+                )
+                if (
+                    relative_path == "target_out"
+                    or dict(output).get("format") == "fpocket"
+                ):
                     (storage_path / "target_info.txt").write_text(
                         "Pocket 1 :\n\tScore : \t0.928\n\tVolume : \t1006.516\n\n"
                         "Pocket 2 :\n\tScore : \t0.215\n\tVolume : \t326.310\n",
@@ -258,7 +300,9 @@ class ImmediateSuccessRunner:
                     )
             else:
                 storage_path.parent.mkdir(parents=True, exist_ok=True)
-                storage_path.write_text(_runner_output_content(relative_path), encoding="utf-8")
+                storage_path.write_text(
+                    _runner_output_content(relative_path), encoding="utf-8"
+                )
             refs.append(
                 ExecutionArtifactRef(
                     storage_uri=str(storage_path),
@@ -276,7 +320,9 @@ class ImmediateSuccessRunner:
         )
 
     def get_execution_status(self, *, run_id: str):  # type: ignore[no-untyped-def]
-        raise AssertionError("status polling should not be used for immediate execution")
+        raise AssertionError(
+            "status polling should not be used for immediate execution"
+        )
 
     def fetch_execution_artifacts(self, *, run_id: str):  # type: ignore[no-untyped-def]
         raise AssertionError("fetch should not be used for immediate execution")
@@ -343,7 +389,9 @@ class CapturingSuccessRunner(ImmediateSuccessRunner):
 
 
 class AdapterShapeArtifactRef:
-    def __init__(self, *, storage_uri: str, relative_path: str, kind: ArtifactKind) -> None:
+    def __init__(
+        self, *, storage_uri: str, relative_path: str, kind: ArtifactKind
+    ) -> None:
         self.storage_uri = storage_uri
         self.relative_path = relative_path
         self.kind = kind
@@ -513,19 +561,27 @@ class SandboxPreflight:
 def _test_sandbox_runtime_identity(*, suffix: str = "base") -> dict[str, str]:
     identity = {
         "configured_image_ref": "openzyme-pipeline-sandbox:test",
-        "immutable_image_ref": "sha256:" + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
-        "image_digest": "sha256:" + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
-        "pipeline_sdk_digest": "sha256:" + hashlib.sha256(f"sdk:{suffix}".encode()).hexdigest(),
+        "immutable_image_ref": "sha256:"
+        + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
+        "image_digest": "sha256:"
+        + hashlib.sha256(f"image:{suffix}".encode()).hexdigest(),
+        "pipeline_sdk_digest": "sha256:"
+        + hashlib.sha256(f"sdk:{suffix}".encode()).hexdigest(),
         "sandbox_protocol_version": "test.v1",
     }
-    identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    identity["runtime_identity_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     return identity
 
 
 class FakeHttpResponse:
-    def __init__(self, *, status: int = 200, headers: dict[str, str] | None = None, body: str) -> None:
+    def __init__(
+        self, *, status: int = 200, headers: dict[str, str] | None = None, body: str
+    ) -> None:
         self.status = status
         self.headers = headers or {}
         self._body = body.encode("utf-8")
@@ -552,7 +608,16 @@ class HandlerSandboxRunner:
             _test_sandbox_runtime_identity(),
         )
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
@@ -578,7 +643,9 @@ class DriftingIdentitySandboxRunner(HandlerSandboxRunner):
     def preflight(self) -> SandboxPreflight:
         self.preflight_calls += 1
         suffix = "approved" if self.preflight_calls == 1 else "drifted"
-        return SandboxPreflight(True, runtime_identity=_test_sandbox_runtime_identity(suffix=suffix))
+        return SandboxPreflight(
+            True, runtime_identity=_test_sandbox_runtime_identity(suffix=suffix)
+        )
 
 
 class BioSandboxRunner:
@@ -590,7 +657,16 @@ class BioSandboxRunner:
     def preflight(self) -> SandboxPreflight:
         return SandboxPreflight(True, runtime_identity=_test_sandbox_runtime_identity())
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
@@ -610,11 +686,22 @@ class BioSandboxRunner:
 
 
 class FetchAfterBioToolSandboxRunner(BioSandboxRunner):
-    def __init__(self, operation: tuple[str, dict[str, object]], workspace: dict[str, object]) -> None:
+    def __init__(
+        self, operation: tuple[str, dict[str, object]], workspace: dict[str, object]
+    ) -> None:
         super().__init__((operation,))
         self.workspace = workspace
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
@@ -643,11 +730,24 @@ class FetchAfterBioToolSandboxRunner(BioSandboxRunner):
 
 
 class FetchAfterEachBioToolSandboxRunner(BioSandboxRunner):
-    def __init__(self, operations: tuple[tuple[str, dict[str, object]], ...], workspace: dict[str, object]) -> None:
+    def __init__(
+        self,
+        operations: tuple[tuple[str, dict[str, object]], ...],
+        workspace: dict[str, object],
+    ) -> None:
         super().__init__(operations)
         self.workspace = workspace
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, code, inputs
@@ -661,7 +761,10 @@ class FetchAfterEachBioToolSandboxRunner(BioSandboxRunner):
                     dict(
                         control_handler(
                             "hpc.fetch_outputs",
-                            {"hpc_workspace": self.workspace, "run_id": str(run["run_id"])},
+                            {
+                                "hpc_workspace": self.workspace,
+                                "run_id": str(run["run_id"]),
+                            },
                         )
                     )
                 )
@@ -680,7 +783,16 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
         super().__init__()
         self.stderr_path = stderr_path
 
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
@@ -712,7 +824,16 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
 
 
 class UnplannedHpcSandboxRunner(HandlerSandboxRunner):
-    def run_pipeline(self, *, session_id, invocation_id, code, inputs=(), control_handler=None, expected_runtime_identity=None):  # type: ignore[no-untyped-def]
+    def run_pipeline(
+        self,
+        *,
+        session_id,
+        invocation_id,
+        code,
+        inputs=(),
+        control_handler=None,
+        expected_runtime_identity=None,
+    ):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id, invocation_id, code, inputs
@@ -758,7 +879,9 @@ class FakeVinaPreprocessAdapter:
 
 
 class InjectingCompiler:
-    def compile_request(self, *, handoff, task, resolved_required_artifacts, resolved_context_artifacts):  # type: ignore[no-untyped-def]
+    def compile_request(
+        self, *, handoff, task, resolved_required_artifacts, resolved_context_artifacts
+    ):  # type: ignore[no-untyped-def]
         del handoff, task, resolved_required_artifacts, resolved_context_artifacts
         return {
             "tool_name": "exec.run",
@@ -873,7 +996,11 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             relative_path="input_structure.pdb",
             title="input_structure.pdb",
             description=None,
-            metadata={"source": "seed", "format": "pdb", "content_digest": _content_digest(input_structure)},
+            metadata={
+                "source": "seed",
+                "format": "pdb",
+                "content_digest": _content_digest(input_structure),
+            },
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
@@ -890,7 +1017,11 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             relative_path="ligand.pdbqt",
             title="ligand.pdbqt",
             description=None,
-            metadata={"source": "seed", "format": "pdbqt", "content_digest": _content_digest(ligand_content)},
+            metadata={
+                "source": "seed",
+                "format": "pdbqt",
+                "content_digest": _content_digest(ligand_content),
+            },
             created_at="2026-04-20T12:00:03+00:00",
         )
     )
@@ -935,7 +1066,9 @@ def _save_pipeline_source(
     return artifact_id
 
 
-def _pipeline_source_id(repositories: CoreRepositories, artifact_id: str, code: str) -> str:
+def _pipeline_source_id(
+    repositories: CoreRepositories, artifact_id: str, code: str
+) -> str:
     return _save_pipeline_source(repositories, artifact_id=artifact_id, code=code)
 
 
@@ -948,7 +1081,9 @@ def _executor_step(context: SessionRuntimeContext):
     return router, step_context
 
 
-def _save_hmm_artifact(repositories: CoreRepositories, artifact_id: str = "art_hmm_001") -> str:
+def _save_hmm_artifact(
+    repositories: CoreRepositories, artifact_id: str = "art_hmm_001"
+) -> str:
     content = "HMMER3/f [fixture]\nNAME fixture\n//\n"
     hmm_path = Path(f"/tmp/{artifact_id}.hmm")
     hmm_path.write_text(content, encoding="utf-8")
@@ -965,14 +1100,20 @@ def _save_hmm_artifact(repositories: CoreRepositories, artifact_id: str = "art_h
             relative_path=f"hmms/{artifact_id}.hmm",
             title=f"{artifact_id}.hmm",
             description=None,
-            metadata={"source": "seed", "format": "hmm", "content_digest": _content_digest(content)},
+            metadata={
+                "source": "seed",
+                "format": "hmm",
+                "content_digest": _content_digest(content),
+            },
             created_at="2026-04-20T12:00:04+00:00",
         )
     )
     return artifact_id
 
 
-def _save_fasta_artifact(repositories: CoreRepositories, artifact_id: str = "art_fasta_001") -> str:
+def _save_fasta_artifact(
+    repositories: CoreRepositories, artifact_id: str = "art_fasta_001"
+) -> str:
     content = ">seq1\nMKTAYIAKQRQISFVKSHFSRQ\n>seq2\nMKADKSELVQKAKLAEQAERYD\n"
     fasta_path = Path(f"/tmp/{artifact_id}.fasta")
     fasta_path.write_text(content, encoding="utf-8")
@@ -989,17 +1130,25 @@ def _save_fasta_artifact(repositories: CoreRepositories, artifact_id: str = "art
             relative_path=f"sequences/{artifact_id}.fasta",
             title=f"{artifact_id}.fasta",
             description=None,
-            metadata={"source": "seed", "format": "fasta", "content_digest": _content_digest(content)},
+            metadata={
+                "source": "seed",
+                "format": "fasta",
+                "content_digest": _content_digest(content),
+            },
             created_at="2026-04-20T12:00:04+00:00",
         )
     )
     return artifact_id
 
 
-def _seed_sandbox_adapter_workspace(repositories: CoreRepositories, sandbox_workspace_id: str = "sws_adapter_001") -> str:
+def _seed_sandbox_adapter_workspace(
+    repositories: CoreRepositories, sandbox_workspace_id: str = "sws_adapter_001"
+) -> str:
     source_root = Path("/tmp/art_source_snapshot")
     source_root.mkdir(parents=True, exist_ok=True)
-    (source_root / "pipeline.py").write_text("from openzyme_pipeline import bio_tools\n", encoding="utf-8")
+    (source_root / "pipeline.py").write_text(
+        "from openzyme_pipeline import bio_tools\n", encoding="utf-8"
+    )
     repositories.artifacts.save(
         SessionArtifactRecord(
             artifact_id="art_source_snapshot",
@@ -1084,9 +1233,12 @@ def _seed_sandbox_adapter_run(
         "pipeline_sdk_digest": "sha256:" + hashlib.sha256(b"adapter-sdk").hexdigest(),
         "sandbox_protocol_version": workspace.sandbox_protocol_version,
     }
-    runtime_identity["runtime_identity_digest"] = "sha256:" + hashlib.sha256(
-        json.dumps(runtime_identity, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    runtime_identity["runtime_identity_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(runtime_identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
     repositories.sandbox_runs.save(
         SandboxRunRecord(
             sandbox_run_id=sandbox_run_id,
@@ -1151,10 +1303,14 @@ def test_execution_engine_waits_for_approval_before_submitting() -> None:
 
     assert started.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
     assert started.approval is not None
-    assert repositories.runs.list_by_invocation(session.session_id, "inv_exec_001") == []
+    assert (
+        repositories.runs.list_by_invocation(session.session_id, "inv_exec_001") == []
+    )
 
 
-def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts() -> None:
+def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
@@ -1186,7 +1342,9 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
         )
     )
 
-    resumed = engine.continue_after_approval(invocation_id="inv_exec_001", resolution="Approved for launch.")
+    resumed = engine.continue_after_approval(
+        invocation_id="inv_exec_001", resolution="Approved for launch."
+    )
 
     assert resumed.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert resumed.run is not None
@@ -1201,7 +1359,10 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
     payload = resumed.to_dict()
     assert payload["run"]["summary"] == payload["parsed_result"]["result_summary"]
     assert payload["artifacts"]
-    assert repositories.runs.get_by_invocation(session.session_id, "inv_exec_001").summary is not None
+    assert (
+        repositories.runs.get_by_invocation(session.session_id, "inv_exec_001").summary
+        is not None
+    )
 
 
 def test_execution_engine_resume_keeps_pending_approval_waiting() -> None:
@@ -1229,8 +1390,16 @@ def test_execution_engine_resume_keeps_pending_approval_waiting() -> None:
     assert resumed.approval is not None
     assert resumed.approval.status is ApprovalRequestStatus.PENDING
     assert resumed.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
-    assert repositories.invocations.get("inv_exec_pending_resume").status is EngineInvocationStatus.WAITING_APPROVAL
-    assert repositories.runs.list_by_invocation(session.session_id, "inv_exec_pending_resume") == []
+    assert (
+        repositories.invocations.get("inv_exec_pending_resume").status
+        is EngineInvocationStatus.WAITING_APPROVAL
+    )
+    assert (
+        repositories.runs.list_by_invocation(
+            session.session_id, "inv_exec_pending_resume"
+        )
+        == []
+    )
 
 
 def test_execution_engine_resume_cancels_rejected_approval() -> None:
@@ -1271,7 +1440,12 @@ def test_execution_engine_resume_cancels_rejected_approval() -> None:
     assert resumed.invocation.status is EngineInvocationStatus.CANCELLED
     assert resumed.approval is not None
     assert resumed.approval.status is ApprovalRequestStatus.REJECTED
-    assert repositories.runs.list_by_invocation(session.session_id, "inv_exec_rejected_resume") == []
+    assert (
+        repositories.runs.list_by_invocation(
+            session.session_id, "inv_exec_rejected_resume"
+        )
+        == []
+    )
 
 
 def test_execution_engine_status_polling_finalizes_background_run() -> None:
@@ -1445,7 +1619,9 @@ def test_execution_engine_rejects_compiled_input_local_path_injection() -> None:
         raise AssertionError("unsafe compiled local_path was accepted")
 
 
-def test_execution_engine_reconcile_closes_background_completion_without_protocol_output_writeback() -> None:
+def test_execution_engine_reconcile_closes_background_completion_without_protocol_output_writeback() -> (
+    None
+):
     repositories = _build_repositories()
     session = _seed_session(repositories)
     engine = ExecutionEngine(repositories, BackgroundRunner())
@@ -1578,10 +1754,16 @@ def test_pipeline_start_requires_code_artifact_id_and_rejects_inline_code() -> N
 
     assert missing.invocation.status is EngineInvocationStatus.FAILED
     assert missing.parsed_result is not None
-    assert missing.parsed_result.structured_findings["error"]["error_code"] == "missing_code_artifact_id"
+    assert (
+        missing.parsed_result.structured_findings["error"]["error_code"]
+        == "missing_code_artifact_id"
+    )
     assert inline.invocation.status is EngineInvocationStatus.FAILED
     assert inline.parsed_result is not None
-    assert inline.parsed_result.structured_findings["error"]["error_code"] == "unsupported_inline_pipeline_code"
+    assert (
+        inline.parsed_result.structured_findings["error"]["error_code"]
+        == "unsupported_inline_pipeline_code"
+    )
 
 
 def test_pipeline_start_validates_code_artifact_scope_type_and_digest() -> None:
@@ -1607,7 +1789,10 @@ def test_pipeline_start_validates_code_artifact_scope_type_and_digest() -> None:
             relative_path=artifact.relative_path,
             title=artifact.title,
             description=artifact.description,
-            metadata={**dict(artifact.metadata or {}), "content_digest": "sha256:stale"},
+            metadata={
+                **dict(artifact.metadata or {}),
+                "content_digest": "sha256:stale",
+            },
             created_at=artifact.created_at,
         )
     )
@@ -1652,11 +1837,20 @@ def test_pipeline_start_validates_code_artifact_scope_type_and_digest() -> None:
     )
 
     assert non_code.parsed_result is not None
-    assert non_code.parsed_result.structured_findings["error"]["error_code"] == "invalid_code_artifact"
+    assert (
+        non_code.parsed_result.structured_findings["error"]["error_code"]
+        == "invalid_code_artifact"
+    )
     assert cross_session.parsed_result is not None
-    assert cross_session.parsed_result.structured_findings["error"]["error_code"] == "code_artifact_not_found"
+    assert (
+        cross_session.parsed_result.structured_findings["error"]["error_code"]
+        == "code_artifact_not_found"
+    )
     assert digest_mismatch.parsed_result is not None
-    assert digest_mismatch.parsed_result.structured_findings["error"]["error_code"] == "source_code_digest_mismatch"
+    assert (
+        digest_mismatch.parsed_result.structured_findings["error"]["error_code"]
+        == "source_code_digest_mismatch"
+    )
 
 
 def test_execution_pipeline_start_rejects_duplicate_task_invocation() -> None:
@@ -1752,7 +1946,9 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
         _fpocket_pipeline_code(),
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    engine = ExecutionEngine(
+        repositories, runner, sandbox_runner=HandlerSandboxRunner()
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -1764,7 +1960,9 @@ def test_pipeline_dry_run_returns_plan_without_approval_or_runner_submit() -> No
     )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED, (
-        None if result.parsed_result is None else result.parsed_result.structured_findings
+        None
+        if result.parsed_result is None
+        else result.parsed_result.structured_findings
     )
     assert result.approval is None
     assert runner.payloads == []
@@ -1810,9 +2008,10 @@ def test_pipeline_rejects_runtime_identity_drift_before_sandbox_or_runner() -> N
     error = result.parsed_result.structured_findings["error"]
     assert error["type"] == "sandbox_runtime_identity_drift"
     assert error["stage"] == "sandbox_preflight"
-    assert error["details"]["expected_runtime_identity_digest"] != error["details"][
-        "current_runtime_identity_digest"
-    ]
+    assert (
+        error["details"]["expected_runtime_identity_digest"]
+        != error["details"]["current_runtime_identity_digest"]
+    )
     assert sandbox.calls == 0
     assert runner.payloads == []
 
@@ -1863,7 +2062,9 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
     ]
     assert plan["resource_quota_estimate"]["bio_operation_count"] == 3
     assert plan["resource_quota_estimate"]["provider_requests"] == 3
-    assert all(operation["approval_required"] is True for operation in plan["bio_operations"])
+    assert all(
+        operation["approval_required"] is True for operation in plan["bio_operations"]
+    )
     assert plan["approval_requirements"][0]["kind"] == "provider_operation"
     assert plan["expected_outputs"][0]["path"] == "<output_dir>/provider_request.json"
     uniprot_sequence_output = next(
@@ -1874,7 +2075,10 @@ def test_pipeline_dry_run_lists_bio_operations_and_rejects_direct_network() -> N
     assert uniprot_sequence_output["optional"] is True
     assert rejected.invocation.status is EngineInvocationStatus.FAILED
     assert rejected.parsed_result is not None
-    assert rejected.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_network_call"
+    assert (
+        rejected.parsed_result.structured_findings["error"]["error_code"]
+        == "unsupported_sandbox_network_call"
+    )
 
 
 def test_pipeline_plan_counts_repeated_and_literal_bounded_sdk_calls() -> None:
@@ -1918,7 +2122,9 @@ def test_pipeline_plan_counts_repeated_and_literal_bounded_sdk_calls() -> None:
     assert repeated.parsed_result is not None
     repeated_plan = repeated.parsed_result.structured_findings["plan"]
     assert repeated_plan["bio_operations"][0]["max_calls"] == 2
-    assert repeated_plan["bio_operations"][0]["quota_estimate"]["provider_requests"] == 2
+    assert (
+        repeated_plan["bio_operations"][0]["quota_estimate"]["provider_requests"] == 2
+    )
     assert repeated_plan["resource_quota_estimate"]["bio_operation_count"] == 2
     assert repeated_plan["resource_quota_estimate"]["provider_requests"] == 2
     assert bounded_loop.parsed_result is not None
@@ -1954,7 +2160,9 @@ def test_pipeline_plan_rejects_sdk_calls_without_static_upper_bound(body: str) -
         "from openzyme_pipeline import bio\n" + body,
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    engine = ExecutionEngine(
+        repositories, runner, sandbox_runner=HandlerSandboxRunner()
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -2104,7 +2312,10 @@ def test_pipeline_dry_run_lists_bio_tool_operations_and_rejects_direct_cli() -> 
     ]
     assert plan["resource_quota_estimate"]["bio_tool_operation_count"] == 5
     hmmer_cli_operation = plan["bio_tool_operations"][-1]
-    assert hmmer_cli_operation["route_policy_id"] == "bio_tools.hmmer_search_cli.disabled:v1"
+    assert (
+        hmmer_cli_operation["route_policy_id"]
+        == "bio_tools.hmmer_search_cli.disabled:v1"
+    )
     assert hmmer_cli_operation["selected_backend"] == "disabled"
     assert hmmer_cli_operation["route_status"] == "disabled"
     assert hmmer_cli_operation["expected_outputs"] == []
@@ -2112,13 +2323,21 @@ def test_pipeline_dry_run_lists_bio_tool_operations_and_rejects_direct_cli() -> 
     assert plan["expected_outputs"][0]["path"] == "bio_tools/cdhit/clustered.fasta"
     assert rejected.invocation.status is EngineInvocationStatus.FAILED
     assert rejected.parsed_result is not None
-    assert rejected.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_process_call"
+    assert (
+        rejected.parsed_result.structured_findings["error"]["error_code"]
+        == "unsupported_sandbox_process_call"
+    )
     assert rejected_shell.invocation.status is EngineInvocationStatus.FAILED
     assert rejected_shell.parsed_result is not None
-    assert rejected_shell.parsed_result.structured_findings["error"]["error_code"] == "unsupported_sandbox_process_call"
+    assert (
+        rejected_shell.parsed_result.structured_findings["error"]["error_code"]
+        == "unsupported_sandbox_process_call"
+    )
 
 
-def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_approval() -> None:
+def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_approval() -> (
+    None
+):
     repositories = _build_repositories()
     _seed_session(repositories)
     runner = CapturingSuccessRunner()
@@ -2127,10 +2346,10 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
         runner,
         sandbox_runner=HandlerSandboxRunner(),
     )
-    code = (
-        _fpocket_pipeline_code()
+    code = _fpocket_pipeline_code()
+    code_artifact_id = _pipeline_source_id(
+        repositories, "code_execute_after_dry_run", code
     )
-    code_artifact_id = _pipeline_source_id(repositories, "code_execute_after_dry_run", code)
     inputs = {"artifact_ids": ["art_001"]}
 
     dry_run = engine.start_pipeline(
@@ -2153,7 +2372,10 @@ def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_appr
     assert execute.approval is not None
     assert execute.invocation.approval_id == execute.approval.approval_id
     assert execute.parsed_result is not None
-    assert execute.parsed_result.structured_findings["plan"]["source_code_artifact_id"] == code_artifact_id
+    assert (
+        execute.parsed_result.structured_findings["plan"]["source_code_artifact_id"]
+        == code_artifact_id
+    )
     assert dry_run.invocation.idempotency_key != execute.invocation.idempotency_key
     approvals = repositories.approvals.list_by_session("sess_001")
     assert [approval.approval_id for approval in approvals] == [
@@ -2245,18 +2467,25 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_fetch", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_fetch", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert len(sandbox.results) == 2
     assert sandbox.results[0]["artifact_count"] == 4
-    assert sandbox.results[1]["warnings"][0]["warning_code"] == "partial_accession_missing"
+    assert (
+        sandbox.results[1]["warnings"][0]["warning_code"] == "partial_accession_missing"
+    )
     assert "sequence" not in sandbox.results[0]["artifacts"][0]["metadata"]
-    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_fetch")
+    artifacts = repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_fetch"
+    )
     bio_artifacts = [
         artifact
         for artifact in artifacts
-        if artifact.metadata and artifact.metadata.get("producer") == "host_supervised_bio_provider"
+        if artifact.metadata
+        and artifact.metadata.get("producer") == "host_supervised_bio_provider"
     ]
     assert {artifact.relative_path for artifact in bio_artifacts} == {
         "bio/ncbi/provider_request.json",
@@ -2269,18 +2498,28 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
         "bio/uniprot/provider_parsed/metadata.json",
     }
     fasta_artifact = next(
-        artifact for artifact in bio_artifacts if artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
+        artifact
+        for artifact in bio_artifacts
+        if artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
     )
     assert fasta_artifact.kind is ArtifactKind.SEQUENCE
     assert fasta_artifact.metadata is not None
     assert fasta_artifact.metadata["provider"] == "ncbi"
     assert fasta_artifact.metadata["response_digest"].startswith("sha256:")
     assert fasta_artifact.metadata["source_code_artifact_id"] == code_artifact_id
-    assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">P12345")
-    metadata_artifact = next(
-        artifact for artifact in bio_artifacts if artifact.relative_path == "bio/uniprot/provider_parsed/metadata.json"
+    assert (
+        Path(fasta_artifact.storage_uri)
+        .read_text(encoding="utf-8")
+        .startswith(">P12345")
     )
-    metadata_payload = json.loads(Path(metadata_artifact.storage_uri).read_text(encoding="utf-8"))
+    metadata_artifact = next(
+        artifact
+        for artifact in bio_artifacts
+        if artifact.relative_path == "bio/uniprot/provider_parsed/metadata.json"
+    )
+    metadata_payload = json.loads(
+        Path(metadata_artifact.storage_uri).read_text(encoding="utf-8")
+    )
     assert "sequence" not in metadata_payload["records"][0]
     status = engine.get_pipeline_status(
         session_id="sess_001",
@@ -2290,7 +2529,9 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     assert "P12345" not in str(status.get("sandbox_outcome", {}))
 
 
-def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_path: Path) -> None:
+def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = AgentMember(
@@ -2308,15 +2549,21 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_
     )
     repositories.agents.save(agent)
     workspace_root = tmp_path / "workspaces"
-    workspace = SandboxWorkspaceService(repositories, workspace_root=workspace_root).create_or_get(
+    workspace = SandboxWorkspaceService(
+        repositories, workspace_root=workspace_root
+    ).create_or_get(
         session_id=session.session_id,
         agent_member_id="member_executor",
         focus_task_id="task_001",
         focus_lane_id="lane_001",
     )
-    source_path = workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    source_path = (
+        workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    )
     source_path.write_text("from openzyme_pipeline import bio\n", encoding="utf-8")
-    snapshot = ArtifactBoundaryService(repositories, workspace_root=workspace_root).snapshot_code(
+    snapshot = ArtifactBoundaryService(
+        repositories, workspace_root=workspace_root
+    ).snapshot_code(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         paths=["pipeline.py"],
@@ -2373,16 +2620,22 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_
         sandbox_workspace_root=workspace_root,
     )
 
-    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+    result = engine.execute_sandbox_adapter_operation(
+        operation, {"adapter_params": params}
+    )
 
     adapter_result = result["adapter_result"]
     assert adapter_result["provider_request_id"].startswith("provider_req_")
     assert adapter_result["bounded_summary"]["record_count"] == 1
     artifact_ids = adapter_result["registered_artifact_ids"]
     assert len(artifact_ids) == 4
-    artifacts = [repositories.artifacts.get(artifact_id) for artifact_id in artifact_ids]
+    artifacts = [
+        repositories.artifacts.get(artifact_id) for artifact_id in artifact_ids
+    ]
     assert all(artifact is not None for artifact in artifacts)
-    relative_paths = {artifact.relative_path for artifact in artifacts if artifact is not None}
+    relative_paths = {
+        artifact.relative_path for artifact in artifacts if artifact is not None
+    }
     assert relative_paths == {
         "bio/ncbi/provider_request.json",
         "bio/ncbi/provider_observation.json",
@@ -2392,15 +2645,25 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(tmp_
     fasta_artifact = next(
         artifact
         for artifact in artifacts
-        if artifact is not None and artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
+        if artifact is not None
+        and artifact.relative_path == "bio/ncbi/provider_parsed/proteins.fasta"
     )
     assert fasta_artifact.metadata is not None
     assert fasta_artifact.metadata["controlled_operation_id"] == operation.operation_id
-    assert fasta_artifact.metadata["source_code_artifact_id"] == snapshot.artifact.artifact_id
-    assert Path(fasta_artifact.storage_uri).read_text(encoding="utf-8").startswith(">AAB57849.1")
+    assert (
+        fasta_artifact.metadata["source_code_artifact_id"]
+        == snapshot.artifact.artifact_id
+    )
+    assert (
+        Path(fasta_artifact.storage_uri)
+        .read_text(encoding="utf-8")
+        .startswith(">AAB57849.1")
+    )
 
 
-def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(tmp_path: Path) -> None:
+def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     agent = AgentMember(
@@ -2418,15 +2681,21 @@ def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(tm
     )
     repositories.agents.save(agent)
     workspace_root = tmp_path / "workspaces"
-    workspace = SandboxWorkspaceService(repositories, workspace_root=workspace_root).create_or_get(
+    workspace = SandboxWorkspaceService(
+        repositories, workspace_root=workspace_root
+    ).create_or_get(
         session_id=session.session_id,
         agent_member_id="member_executor",
         focus_task_id="task_001",
         focus_lane_id="lane_001",
     )
-    source_path = workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    source_path = (
+        workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    )
     source_path.write_text("from openzyme_pipeline import rcsb_pdb\n", encoding="utf-8")
-    snapshot = ArtifactBoundaryService(repositories, workspace_root=workspace_root).snapshot_code(
+    snapshot = ArtifactBoundaryService(
+        repositories, workspace_root=workspace_root
+    ).snapshot_code(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         paths=["pipeline.py"],
@@ -2483,7 +2752,9 @@ def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(tm
         sandbox_workspace_root=workspace_root,
     )
 
-    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+    result = engine.execute_sandbox_adapter_operation(
+        operation, {"adapter_params": params}
+    )
 
     adapter_result = result["adapter_result"]
     assert adapter_result["provider_request_id"].startswith("provider_req_")
@@ -2512,7 +2783,9 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
     sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_sandbox_hpc_fasta")
     workspace = _workspace_payload("sandbox_hpc")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     params = {
         "input_fasta": staged_fasta,
         "placement": workspace,
@@ -2550,7 +2823,9 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
         runtime_packaging_id="hpc_apptainer_sif.aox_hmm_2026_05_30",
         toolchain_id="mafft_7.520.hpc_apptainer_sif:v1",
         stage_refs=(staged_fasta,),
-        expected_outputs_summary={"declared_outputs": _bio_tool_outputs("bio_tools.mafft")},
+        expected_outputs_summary={
+            "declared_outputs": _bio_tool_outputs("bio_tools.mafft")
+        },
         resource_estimate={"placement": "hpc", "resource_class": "hpc_batch_small"},
         idempotency_key="bio_tools.mafft:" + _payload_digest(params),
     )
@@ -2561,7 +2836,9 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
     )
     engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
 
-    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+    result = engine.execute_sandbox_adapter_operation(
+        operation, {"adapter_params": params}
+    )
 
     run_handle = result["result_summary"]
     assert run_handle["kind"] == "hpc_run_handle"
@@ -2584,21 +2861,32 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
     assert fetch["kind"] == "hpc_fetch_result"
     assert fetch["registered_artifact_ids"]
     artifacts = repositories.artifacts.list_by_run(str(run_handle["run_id"]))
-    assert {artifact.artifact_id for artifact in artifacts} == set(fetch["registered_artifact_ids"])
-    assert {artifact.relative_path for artifact in artifacts} == {"bio_tools/mafft/alignment.fasta"}
+    assert {artifact.artifact_id for artifact in artifacts} == set(
+        fetch["registered_artifact_ids"]
+    )
+    assert {artifact.relative_path for artifact in artifacts} == {
+        "bio_tools/mafft/alignment.fasta"
+    }
     artifact = artifacts[0]
     assert artifact.metadata is not None
     assert artifact.metadata["source"] == "sandbox_artifact_boundary"
-    assert artifact.metadata["pipeline_invocation_id"] == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
+    assert (
+        artifact.metadata["pipeline_invocation_id"]
+        == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
+    )
     assert artifact.metadata["sdk_method"] == "bio_tools.mafft"
 
 
-def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation() -> None:
+def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation() -> (
+    None
+):
     repositories = _build_repositories()
     _seed_session(repositories)
     sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
     workspace = _workspace_payload("sandbox_fpocket")
-    staged_structure = _stage_payload(repositories, "art_001", workspace, "inputs/structure.pdb")
+    staged_structure = _stage_payload(
+        repositories, "art_001", workspace, "inputs/structure.pdb"
+    )
     params = {
         "structure": staged_structure,
         "placement": workspace,
@@ -2649,7 +2937,9 @@ def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_op
     )
     engine = ExecutionEngine(repositories, runner)
 
-    result = engine.execute_sandbox_adapter_operation(operation, {"adapter_params": params})
+    result = engine.execute_sandbox_adapter_operation(
+        operation, {"adapter_params": params}
+    )
 
     run_handle = result["result_summary"]
     assert run_handle["kind"] == "hpc_run_handle"
@@ -2657,7 +2947,9 @@ def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_op
     assert run_handle["route_policy_id"] == "structure_tools.fpocket.hpc:v1"
     assert run_handle["hpc_workspace_id"] == workspace["hpc_workspace_id"]
     assert run_handle["stage_refs"][0]["artifact_id"] == "art_001"
-    assert run_handle["stage_refs"][0]["artifact_digest"] == _artifact_digest(repositories, "art_001")
+    assert run_handle["stage_refs"][0]["artifact_digest"] == _artifact_digest(
+        repositories, "art_001"
+    )
     assert run_handle["declared_outputs"] == FPOCKET_EXPECTED_OUTPUTS
     assert len(runner.payloads) == 1
     runspec = runner.payloads[0]["runspec"]
@@ -2680,8 +2972,12 @@ def test_pipeline_bio_requires_output_dir_before_approval() -> None:
         "from openzyme_pipeline import bio\n"
         "bio.ncbi_fetch_proteins(accessions=['P12345'])\n",
     )
-    sandbox = BioSandboxRunner((("bio.ncbi_fetch_proteins", {"accessions": ["P12345"], "fields": []}),))
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    sandbox = BioSandboxRunner(
+        (("bio.ncbi_fetch_proteins", {"accessions": ["P12345"], "fields": []}),)
+    )
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -2697,7 +2993,12 @@ def test_pipeline_bio_requires_output_dir_before_approval() -> None:
     error = result.parsed_result.structured_findings["error"]
     assert error["type"] == "provider_output_path_invalid"
     assert repositories.approvals.list_by_session("sess_001") == []
-    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_missing_output_dir") == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_missing_output_dir"
+        )
+        == []
+    )
 
 
 def test_pipeline_bio_product_path_without_provider_does_not_use_fixture() -> None:
@@ -2721,7 +3022,9 @@ def test_pipeline_bio_product_path_without_provider_does_not_use_fixture() -> No
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
@@ -2732,13 +3035,20 @@ def test_pipeline_bio_product_path_without_provider_does_not_use_fixture() -> No
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_no_provider", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_no_provider", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None
     error = result.parsed_result.structured_findings["error"]
     assert error["type"] == "provider_not_configured"
-    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_no_provider") == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_no_provider"
+        )
+        == []
+    )
 
 
 def test_pipeline_bio_approval_and_result_envelopes_keep_s12_field_placement() -> None:
@@ -2787,11 +3097,16 @@ def test_pipeline_bio_approval_and_result_envelopes_keep_s12_field_placement() -
     )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
-    document = repositories.engine_documents.list_by_invocation("sess_001", "inv_pipeline_bio_s12_envelope")[0]
+    document = repositories.engine_documents.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_s12_envelope"
+    )[0]
     envelopes = document.payload["pipeline"]["adapter_approval_envelopes"]
     assert len(envelopes) == 1
     approval_envelope = next(iter(envelopes.values()))
-    assert approval_envelope["adapter_envelope_schema_version"] == "s12.adapter_envelope.v1"
+    assert (
+        approval_envelope["adapter_envelope_schema_version"]
+        == "s12.adapter_envelope.v1"
+    )
     assert approval_envelope["sdk_module"] == "bio"
     assert approval_envelope["function_name"] == "ncbi_fetch_proteins"
     assert approval_envelope["route_policy_id"] == "bio.ncbi_fetch_proteins.provider:v1"
@@ -2802,7 +3117,10 @@ def test_pipeline_bio_approval_and_result_envelopes_keep_s12_field_placement() -
         "output_dir": "/workspace/output/bio/ncbi-envelope"
     }
     assert approval_envelope["approval_requirement"] == {"required": True}
-    assert approval_envelope["expected_outputs"][0]["path"] == "<output_dir>/provider_request.json"
+    assert (
+        approval_envelope["expected_outputs"][0]["path"]
+        == "<output_dir>/provider_request.json"
+    )
     assert "params_digest" in approval_envelope
     assert approval_envelope["approval_source"] == "execution_pipeline_plan"
     assert approval_envelope["approved_plan_digest"]
@@ -2814,11 +3132,14 @@ def test_pipeline_bio_approval_and_result_envelopes_keep_s12_field_placement() -
     result_envelope = payload["adapter_result_envelope"]
     assert "transcript_manifest" not in result_envelope
     assert "transcript_manifest" in result_envelope["bounded_summary"]
-    assert result_envelope["bounded_summary"]["transcript_manifest"]["route_policy_id"] == (
-        "bio.ncbi_fetch_proteins.provider:v1"
-    )
+    assert result_envelope["bounded_summary"]["transcript_manifest"][
+        "route_policy_id"
+    ] == ("bio.ncbi_fetch_proteins.provider:v1")
     assert result_envelope["provider_request_id"]
-    assert result_envelope["registered_artifact_ids"] == result_envelope["output_artifact_ids"]
+    assert (
+        result_envelope["registered_artifact_ids"]
+        == result_envelope["output_artifact_ids"]
+    )
 
 
 def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
@@ -2830,7 +3151,10 @@ def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
                 operation="bio.ncbi_fetch_proteins",
                 summary={"provider": "ncbi", "record_count": 1},
                 provider_observation={
-                    "headers": {"authorization": "Bearer secret-token", "x-request-id": "req-1"},
+                    "headers": {
+                        "authorization": "Bearer secret-token",
+                        "x-request-id": "req-1",
+                    },
                     "host_path": "/tmp/private/cache",
                 },
                 artifacts=(
@@ -2846,7 +3170,11 @@ def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
                             }
                         ),
                         format="json",
-                        metadata={"format": "json", "provider": "ncbi", "retrieved_at": retrieved_at},
+                        metadata={
+                            "format": "json",
+                            "provider": "ncbi",
+                            "retrieved_at": retrieved_at,
+                        },
                     ),
                 ),
                 api_version="test",
@@ -2888,17 +3216,23 @@ def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_sanitize", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_sanitize", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     raw_artifact = next(
         artifact
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_sanitize")
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_sanitize"
+        )
         if artifact.relative_path == "bio/sanitize/provider_raw/provider.json"
     )
     observation = next(
         artifact
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_sanitize")
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_sanitize"
+        )
         if artifact.relative_path == "bio/sanitize/provider_observation.json"
     )
     raw_text = Path(raw_artifact.storage_uri).read_text(encoding="utf-8")
@@ -2908,6 +3242,74 @@ def test_pipeline_bio_sanitizes_provider_transcript_outputs() -> None:
     assert "/tmp/private" not in raw_text
     assert "/tmp/private" not in observation_text
     assert "req-1" in observation_text
+
+
+def test_pipeline_bio_preserves_validated_raw_provider_bytes() -> None:
+    response_body = ">P12345 exact provider bytes\nMSEQUENCE\n"
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ncbi_email="operator@example.test"),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=response_body,
+            headers={"x-request-id": "ncbi-exact-1"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_bio_raw_closure",
+        "from openzyme_pipeline import bio\n"
+        "bio.ncbi_fetch_proteins(accessions=['P12345'], output_dir='/workspace/output/bio/raw-closure')\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio.ncbi_fetch_proteins",
+                {
+                    "accessions": ["P12345"],
+                    "fields": [],
+                    "output_dir": "/workspace/output/bio/raw-closure",
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=sandbox,
+        bio_adapter=adapter,
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_bio_raw_closure",
+        code_artifact_id=code_artifact_id,
+        inputs={"approval_policy": "single_plan"},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_raw_closure",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
+    raw_artifact = next(
+        artifact
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_raw_closure"
+        )
+        if artifact.relative_path
+        == "bio/raw-closure/provider_raw/ncbi_efetch.response.json"
+    )
+    envelope = json.loads(Path(raw_artifact.storage_uri).read_text(encoding="utf-8"))
+    response = envelope["responses"][0]
+    decoded = base64.b64decode(response["body_base64"], validate=True)
+    assert decoded == response_body.encode("utf-8")
+    assert response["body_digest"] == _content_digest(response_body)
+    assert response["size_bytes"] == len(decoded)
 
 
 def test_provider_http_bio_adapter_ncbi_fetches_fasta_with_identity() -> None:
@@ -2937,7 +3339,7 @@ def test_provider_http_bio_adapter_ncbi_fetches_fasta_with_identity() -> None:
     assert "email=operator%40example.test" in calls[0][0]
     assert result.summary["record_count"] == 1
     assert {artifact.relative_path for artifact in result.artifacts} == {
-        "provider_raw/ncbi_efetch.fasta",
+        "provider_raw/ncbi_efetch.response.json",
         "provider_parsed/proteins.fasta",
         "provider_parsed/proteins.metadata.json",
     }
@@ -2947,10 +3349,12 @@ def test_provider_http_bio_adapter_ncbi_fetches_fasta_with_identity() -> None:
     assert "authorization" not in headers
 
 
-def test_provider_http_bio_adapter_uniprot_handles_empty_results_warning() -> None:
+def test_provider_http_bio_adapter_uniprot_empty_results_fail_closed() -> None:
     def urlopen(request, timeout):  # type: ignore[no-untyped-def]
         del request, timeout
-        return FakeHttpResponse(headers={"x-uniprot-release": "2026_01"}, body='{"results":[]}')
+        return FakeHttpResponse(
+            headers={"x-uniprot-release": "2026_01"}, body='{"results":[]}'
+        )
 
     adapter = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(),
@@ -2958,19 +3362,16 @@ def test_provider_http_bio_adapter_uniprot_handles_empty_results_warning() -> No
         sleep=lambda _seconds: None,
     )
 
-    result = adapter.uniprot_fetch(
-        accessions=("Q8XYZ1",),
-        fields=("length", "taxonomy"),
-        batch_size=50,
-        retrieved_at="2026-05-30T00:00:00+00:00",
-    )
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("Q8XYZ1",),
+            fields=("length", "taxonomy"),
+            batch_size=50,
+            retrieved_at="2026-05-30T00:00:00+00:00",
+        )
 
-    assert result.summary["record_count"] == 0
-    assert result.warnings[0]["warning_code"] == "empty_results"
-    assert {artifact.relative_path for artifact in result.artifacts} == {
-        "provider_raw/pages.json",
-        "provider_parsed/metadata.json",
-    }
+    assert exc_info.value.error_type == "provider_empty_result"
+    assert exc_info.value.retryable is False
 
 
 def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
@@ -2990,11 +3391,15 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
         calls.append(url)
         if request.get_method() == "POST":
             form_bodies.append(request.data)
-            return FakeHttpResponse(body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}')
+            return FakeHttpResponse(
+                body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}'
+            )
         assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
         result_polls += 1
         if result_polls == 1:
-            return FakeHttpResponse(body='{"status":"STARTED","result":null,"page_count":null}')
+            return FakeHttpResponse(
+                body='{"status":"STARTED","result":null,"page_count":null}'
+            )
         return FakeHttpResponse(
             body=json.dumps(
                 {
@@ -3006,17 +3411,24 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
                         "hits": [
                             {
                                 "name": "hit1",
-                                "acc": "HIT001",
+                                "acc": None,
                                 "evalue": 1e-42,
                                 "score": 1834.7,
+                                "metadata": {
+                                    "uniprot_accession": "P12345",
+                                    "accession": "P12345",
+                                },
                             },
                             {
                                 "name": "hit2",
                                 "acc": None,
                                 "evalue": 0.0,
                                 "score": 3153.7,
-                                "metadata": {"uniprot_accession": "A0A_TEST"},
-                            }
+                                "metadata": {
+                                    "uniprot_accession": "Q8XYZ1",
+                                    "accession": "Q8XYZ1",
+                                },
+                            },
                         ]
                     },
                 }
@@ -3036,18 +3448,27 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
         retrieved_at="2026-05-30T00:00:00+00:00",
     )
 
-    assert any("/search/hmmsearch?" in url or url.endswith("/search/hmmsearch") for url in calls)
+    assert any(
+        "/search/hmmsearch?" in url or url.endswith("/search/hmmsearch")
+        for url in calls
+    )
     assert result_polls == 2
     assert form_bodies
     submit_payload = json.loads(form_bodies[0].decode("utf-8"))
     assert submit_payload["database"] == "refprot"
     assert submit_payload["input"].startswith("HMMER3/f")
-    assert submit_payload["E"] == "1e-20"
+    assert submit_payload["E"] == 1e-20
+    assert submit_payload["email_address"] == "operator@example.test"
+    assert "email" not in submit_payload
     assert result.summary["hit_count"] == 2
     assert result.summary["provider_job_id"] == "fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"
-    parsed = next(artifact for artifact in result.artifacts if artifact.relative_path == "provider_parsed/parsed_hits.csv")
-    assert "hit1,HIT001,1e-42,1834.7" in parsed.content
-    assert "hit2,A0A_TEST,0.0,3153.7" in parsed.content
+    parsed = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.relative_path == "provider_parsed/parsed_hits.csv"
+    )
+    assert "hit1,P12345,1e-42,1834.7" in parsed.content
+    assert "hit2,Q8XYZ1,0.0,3153.7" in parsed.content
 
 
 def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
@@ -3062,7 +3483,9 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
         url = request.full_url
         calls.append(url)
         if request.get_method() == "POST":
-            return FakeHttpResponse(body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}')
+            return FakeHttpResponse(
+                body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}'
+            )
         assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
         return FakeHttpResponse(
             body=json.dumps(
@@ -3072,9 +3495,27 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
                     "page_count": 4,
                     "result": {
                         "hits": [
-                            {"name": "hit1", "acc": "HIT001", "evalue": 1e-42, "score": 1834.7},
-                            {"name": "hit2", "acc": "HIT002", "evalue": 1e-30, "score": 1200.0},
-                            {"name": "hit3", "acc": "HIT003", "evalue": 1e-10, "score": 300.0},
+                            {
+                                "name": "hit1",
+                                "acc": None,
+                                "evalue": 1e-42,
+                                "score": 1834.7,
+                                "metadata": {"uniprot_accession": "P12345"},
+                            },
+                            {
+                                "name": "hit2",
+                                "acc": None,
+                                "evalue": 1e-30,
+                                "score": 1200.0,
+                                "metadata": {"uniprot_accession": "Q8XYZ1"},
+                            },
+                            {
+                                "name": "hit3",
+                                "acc": None,
+                                "evalue": 1e-10,
+                                "score": 300.0,
+                                "metadata": {"uniprot_accession": "A0A0A0"},
+                            },
                         ]
                     },
                 }
@@ -3099,10 +3540,16 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
     assert result.summary["pagination"]["truncated"] is True
     assert result.summary["pagination"]["max_hits"] == 2
     assert result.summary["pagination"]["page_size"] == 2
-    assert any(item["warning_code"] == "provider_result_truncated" for item in result.warnings)
-    parsed = next(artifact for artifact in result.artifacts if artifact.relative_path == "provider_parsed/parsed_hits.csv")
-    assert "hit1,HIT001,1e-42,1834.7" in parsed.content
-    assert "hit2,HIT002,1e-30,1200.0" in parsed.content
+    assert any(
+        item["warning_code"] == "provider_result_truncated" for item in result.warnings
+    )
+    parsed = next(
+        artifact
+        for artifact in result.artifacts
+        if artifact.relative_path == "provider_parsed/parsed_hits.csv"
+    )
+    assert "hit1,P12345,1e-42,1834.7" in parsed.content
+    assert "hit2,Q8XYZ1,1e-30,1200.0" in parsed.content
     assert "hit3" not in parsed.content
 
 
@@ -3115,7 +3562,7 @@ def test_provider_http_adapter_retries_remote_disconnect() -> None:
         calls += 1
         if calls == 1:
             raise http_client.RemoteDisconnected("remote closed")
-        return FakeHttpResponse(body=">seq\nMSEQ\n")
+        return FakeHttpResponse(body=">NP_001230.1\nMSEQ\n")
 
     adapter = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(ncbi_email="operator@example.test"),
@@ -3173,16 +3620,24 @@ def test_pipeline_bio_hmmer_search_persists_raw_and_parsed_hits() -> None:
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_hmmer", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_hmmer", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert sandbox.results[0]["summary"]["hit_count"] == 1
-    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_hmmer")
+    artifacts = repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_hmmer"
+    )
     paths = {artifact.relative_path for artifact in artifacts}
     assert "bio/hmmer/provider_raw/raw_hits.json" in paths
     assert "bio/hmmer/provider_parsed/parsed_hits.csv" in paths
     assert "bio/hmmer/provider_observation.json" in paths
-    parsed = next(artifact for artifact in artifacts if artifact.relative_path == "bio/hmmer/provider_parsed/parsed_hits.csv")
+    parsed = next(
+        artifact
+        for artifact in artifacts
+        if artifact.relative_path == "bio/hmmer/provider_parsed/parsed_hits.csv"
+    )
     assert parsed.metadata is not None
     assert parsed.metadata["provider"] == "ebi_hmmer"
     assert parsed.metadata["query_hmm_artifact_id"] == hmm_artifact_id
@@ -3229,17 +3684,24 @@ def test_pipeline_bio_hmmer_empty_results_returns_warning() -> None:
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_empty", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_empty", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     assert sandbox.results[0]["summary"]["hit_count"] == 0
     assert sandbox.results[0]["warnings"][0]["warning_code"] == "empty_results"
     parsed = next(
         artifact
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_empty")
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_empty"
+        )
         if artifact.relative_path == "bio/hmmer-empty/provider_parsed/parsed_hits.csv"
     )
-    assert Path(parsed.storage_uri).read_text(encoding="utf-8") == "target,accession,evalue,score\n"
+    assert (
+        Path(parsed.storage_uri).read_text(encoding="utf-8")
+        == "target,accession,evalue,score\n"
+    )
 
 
 def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
@@ -3282,7 +3744,9 @@ def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id="inv_pipeline_bio_timeout", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_bio_timeout", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None
@@ -3291,8 +3755,12 @@ def test_pipeline_bio_provider_timeout_is_structured_failure() -> None:
     assert error["stage"] == "provider_request"
     assert error["retryable"] is True
     assert error["details"]["provider"] == "ebi_hmmer"
-    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_timeout")
-    assert "bio/hmmer-timeout/provider_error.json" in {artifact.relative_path for artifact in artifacts}
+    artifacts = repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_timeout"
+    )
+    assert "bio/hmmer-timeout/provider_error.json" in {
+        artifact.relative_path for artifact in artifacts
+    }
 
 
 @pytest.mark.parametrize(
@@ -3347,7 +3815,9 @@ def test_pipeline_bio_schema_and_pagination_failures_are_structured(
     )
     assert first.approval is not None
     _approve_request(repositories, first.approval)
-    result = engine.continue_after_approval(invocation_id=f"inv_pipeline_bio_{simulation}", resolution="approved")
+    result = engine.continue_after_approval(
+        invocation_id=f"inv_pipeline_bio_{simulation}", resolution="approved"
+    )
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None
@@ -3397,9 +3867,15 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
     fasta_artifact_id = _save_fasta_artifact(repositories)
     hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_tools")
     workspace = _workspace_payload()
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
-    staged_alignment = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/alignment.fasta")
-    staged_hmm = _stage_payload(repositories, hmm_artifact_id, workspace, "inputs/model.hmm")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
+    staged_alignment = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/alignment.fasta"
+    )
+    staged_hmm = _stage_payload(
+        repositories, hmm_artifact_id, workspace, "inputs/model.hmm"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_bio_tools",
@@ -3410,25 +3886,47 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
         "cdhit = bio_tools.cdhit(input_fasta=fasta, placement=ws, identity=0.9, expected_outputs=[{'path': 'bio_tools/cdhit/clustered.fasta', 'kind': 'sequence'}])\n"
         "bio_tools.mafft(input_fasta=fasta, placement=ws, expected_outputs=[{'path': 'bio_tools/mafft/alignment.fasta', 'kind': 'sequence'}])\n"
         "bio_tools.hmmbuild(alignment=fasta, placement=ws, expected_outputs=[{'path': 'bio_tools/hmmbuild/model.hmm', 'kind': 'result'}])\n"
-        "bio_tools.hmmalign(hmm=hmm, fasta=fasta, placement=ws, expected_outputs=[{'path': 'bio_tools/hmmalign/aligned.fasta', 'kind': 'sequence'}])\n"
+        "bio_tools.hmmalign(hmm=hmm, fasta=fasta, placement=ws, expected_outputs=[{'path': 'bio_tools/hmmalign/aligned.fasta', 'kind': 'sequence'}])\n",
     )
     sandbox = FetchAfterEachBioToolSandboxRunner(
         (
             (
                 "bio_tools.cdhit",
-                {"input_fasta": staged_fasta, "placement": workspace, "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"), "identity": 0.9, "mode": "protein"},
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                    "identity": 0.9,
+                    "mode": "protein",
+                },
             ),
             (
                 "bio_tools.mafft",
-                {"input_fasta": staged_fasta, "placement": workspace, "expected_outputs": _bio_tool_outputs("bio_tools.mafft"), "params": {}},
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+                    "params": {},
+                },
             ),
             (
                 "bio_tools.hmmbuild",
-                {"alignment": staged_alignment, "placement": workspace, "expected_outputs": _bio_tool_outputs("bio_tools.hmmbuild"), "params": {}},
+                {
+                    "alignment": staged_alignment,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.hmmbuild"),
+                    "params": {},
+                },
             ),
             (
                 "bio_tools.hmmalign",
-                {"hmm": staged_hmm, "fasta": staged_fasta, "placement": workspace, "expected_outputs": _bio_tool_outputs("bio_tools.hmmalign"), "params": {}},
+                {
+                    "hmm": staged_hmm,
+                    "fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.hmmalign"),
+                    "params": {},
+                },
             ),
         ),
         workspace,
@@ -3471,9 +3969,15 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
         "bio_tools.hmmbuild",
         "bio_tools.hmmalign",
     ]
-    assert dict(runner.payloads[0]["runspec"])["inputs"][0]["remote_path"] == "input.fasta"
-    assert "storage_uri" not in str(runner.payloads[0]["runspec"]["metadata"].get("tool_inputs", {}))
-    document = repositories.engine_documents.list_by_invocation("sess_001", "inv_pipeline_bio_tools")[0]
+    assert (
+        dict(runner.payloads[0]["runspec"])["inputs"][0]["remote_path"] == "input.fasta"
+    )
+    assert "storage_uri" not in str(
+        runner.payloads[0]["runspec"]["metadata"].get("tool_inputs", {})
+    )
+    document = repositories.engine_documents.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_tools"
+    )[0]
     envelopes = document.payload["pipeline"]["adapter_approval_envelopes"]
     assert len(envelopes) == 4
     cdhit_envelope = next(
@@ -3483,7 +3987,9 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
     )
     assert cdhit_envelope["route_policy_id"] == "bio_tools.cdhit.hpc:v1"
     assert cdhit_envelope["selected_backend"] == "hpc"
-    assert cdhit_envelope["runtime_packaging_id"] == "hpc_apptainer_sif.aox_hmm_2026_05_30"
+    assert (
+        cdhit_envelope["runtime_packaging_id"] == "hpc_apptainer_sif.aox_hmm_2026_05_30"
+    )
     assert cdhit_envelope["toolchain_id"] == "cdhit_4.8.1.hpc_apptainer_sif:v1"
     assert cdhit_envelope["hpc_workspace_id"] == workspace["hpc_workspace_id"]
     assert cdhit_envelope["planned_fetch_intent"] is True
@@ -3493,7 +3999,9 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
     assert sandbox.results[1]["kind"] == "hpc_fetch_result"
     assert "artifact_ids" not in sandbox.results[0]
     assert "artifact_count" not in sandbox.results[0]
-    artifacts = repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_tools")
+    artifacts = repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_pipeline_bio_tools"
+    )
     paths = {artifact.relative_path for artifact in artifacts}
     assert {
         "bio_tools/cdhit/clustered.fasta",
@@ -3502,13 +4010,23 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
         "bio_tools/hmmbuild/model.hmm",
         "bio_tools/hmmalign/aligned.fasta",
     }.issubset(paths)
-    clustered = next(artifact for artifact in artifacts if artifact.relative_path == "bio_tools/cdhit/clustered.fasta")
+    clustered = next(
+        artifact
+        for artifact in artifacts
+        if artifact.relative_path == "bio_tools/cdhit/clustered.fasta"
+    )
     assert clustered.metadata is not None
     assert clustered.metadata["source"] == "sandbox_artifact_boundary"
     assert clustered.metadata["catalog_tool_id"] == "bio_tools.cdhit"
-    assert clustered.metadata["tool_inputs"]["route_policy_id"] == "bio_tools.cdhit.hpc:v1"
+    assert (
+        clustered.metadata["tool_inputs"]["route_policy_id"] == "bio_tools.cdhit.hpc:v1"
+    )
     assert clustered.metadata["source_code_artifact_id"] == code_artifact_id
-    membership = next(artifact for artifact in artifacts if artifact.relative_path == "bio_tools/cdhit/clusters.csv")
+    membership = next(
+        artifact
+        for artifact in artifacts
+        if artifact.relative_path == "bio_tools/cdhit/clusters.csv"
+    )
     assert membership.metadata is not None
     assert membership.metadata["membership_schema_id"] == "cdhit_cluster_membership@1"
     assert membership.metadata["membership_columns"] == [
@@ -3521,8 +4039,7 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
     ]
     assert membership.metadata["row_semantics"] == "one_member_per_row"
     assert all(
-        Path(artifact.storage_uri).is_relative_to(blob_root)
-        for artifact in artifacts
+        Path(artifact.storage_uri).is_relative_to(blob_root) for artifact in artifacts
     )
     assert any(blob_root.rglob("*"))
     assert any(sandbox_root.rglob("*"))
@@ -3534,8 +4051,12 @@ def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_fasta_fail")
     hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_fail")
     workspace = _workspace_payload("aox_fail")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
-    staged_invalid_fasta = _stage_payload(repositories, "art_001", workspace, "inputs/not_fasta.pdb")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
+    staged_invalid_fasta = _stage_payload(
+        repositories, "art_001", workspace, "inputs/not_fasta.pdb"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_bio_tools_failure",
@@ -3544,15 +4065,17 @@ def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -
     )
     failed_runner = CapturingFailedRunner()
     sandbox = BioSandboxRunner(
-        ((
-            "bio_tools.mafft",
-            {
-                "input_fasta": staged_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
-                "params": {},
-            },
-        ),)
+        (
+            (
+                "bio_tools.mafft",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+                    "params": {},
+                },
+            ),
+        )
     )
     engine = ExecutionEngine(repositories, failed_runner, sandbox_runner=sandbox)
     first = engine.start_pipeline(
@@ -3578,19 +4101,23 @@ def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -
     assert runner_error["hpc_failure"]["error_code"] == "APPTAINER_MISSING"
 
     invalid_sandbox = BioSandboxRunner(
-        ((
-            "bio_tools.cdhit",
-            {
-                "input_fasta": staged_invalid_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
-                "identity": 0.9,
-                "mode": "protein",
-            },
-        ),)
+        (
+            (
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": staged_invalid_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                    "identity": 0.9,
+                    "mode": "protein",
+                },
+            ),
+        )
     )
     invalid_runner = CapturingSuccessRunner()
-    invalid_engine = ExecutionEngine(repositories, invalid_runner, sandbox_runner=invalid_sandbox)
+    invalid_engine = ExecutionEngine(
+        repositories, invalid_runner, sandbox_runner=invalid_sandbox
+    )
     invalid = invalid_engine.start_pipeline(
         session_id="sess_001",
         task_id="task_001",
@@ -3607,12 +4134,16 @@ def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -
     assert invalid_runner.payloads == []
 
 
-def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact() -> None:
+def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact() -> (
+    None
+):
     repositories = _build_repositories()
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_fasta_missing_output")
     workspace = _workspace_payload("aox_missing_output")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_bio_tools_missing_output",
@@ -3620,16 +4151,18 @@ def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact
         "# Runtime sandbox fixture supplies placement-aware cdhit.\n",
     )
     sandbox = FetchAfterEachBioToolSandboxRunner(
-        ((
-            "bio_tools.cdhit",
-            {
-                "input_fasta": staged_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
-                "identity": 0.9,
-                "mode": "protein",
-            },
-        ),),
+        (
+            (
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                    "identity": 0.9,
+                    "mode": "protein",
+                },
+            ),
+        ),
         workspace,
     )
     runner = MissingDeclaredOutputRunner()
@@ -3656,7 +4189,12 @@ def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact
     assert error["type"] == "declared_output_missing"
     assert error["stage"] == "bio_tools_output_validation"
     assert error["details"]["missing_outputs"] == ["bio_tools/cdhit/clusters.csv"]
-    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_tools_missing_output") == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_tools_missing_output"
+        )
+        == []
+    )
 
 
 @pytest.mark.parametrize(
@@ -3667,8 +4205,7 @@ def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact
             "schema_mismatch",
         ),
         (
-            f"{CDHIT_MEMBERSHIP_HEADER}\n"
-            "cluster_0,seq1,seq1,true,1.000000,22\n",
+            f"{CDHIT_MEMBERSHIP_HEADER}\ncluster_0,seq1,seq1,true,1.000000,22\n",
             "membership_input_mismatch",
         ),
         (
@@ -3687,7 +4224,9 @@ def test_pipeline_cdhit_membership_fails_closed_before_output_registration(
 ) -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
-    fasta_artifact_id = _save_fasta_artifact(repositories, f"art_cdhit_{expected_reason}")
+    fasta_artifact_id = _save_fasta_artifact(
+        repositories, f"art_cdhit_{expected_reason}"
+    )
     workspace = _workspace_payload(f"cdhit_{expected_reason}")
     staged_fasta = _stage_payload(
         repositories,
@@ -3702,16 +4241,18 @@ def test_pipeline_cdhit_membership_fails_closed_before_output_registration(
         "# Runtime sandbox fixture supplies placement-aware cdhit.\n",
     )
     sandbox = FetchAfterEachBioToolSandboxRunner(
-        ((
-            "bio_tools.cdhit",
-            {
-                "input_fasta": staged_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
-                "identity": 0.9,
-                "mode": "protein",
-            },
-        ),),
+        (
+            (
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                    "identity": 0.9,
+                    "mode": "protein",
+                },
+            ),
+        ),
         workspace,
     )
     runner = CdhitMembershipOutputRunner(membership_content)
@@ -3741,7 +4282,9 @@ def test_pipeline_cdhit_membership_fails_closed_before_output_registration(
     assert error["details"]["reason"] == expected_reason
     output_paths = {
         artifact.relative_path
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", invocation_id)
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", invocation_id
+        )
     }
     assert "bio_tools/cdhit/clustered.fasta" not in output_paths
     assert "bio_tools/cdhit/clusters.csv" not in output_paths
@@ -3752,7 +4295,9 @@ def test_pipeline_bio_tools_accepts_hpc_runner_artifact_refs_without_metadata() 
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_fasta_adapter_shape")
     workspace = _workspace_payload("aox_adapter_shape")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_bio_tools_adapter_shape",
@@ -3760,19 +4305,23 @@ def test_pipeline_bio_tools_accepts_hpc_runner_artifact_refs_without_metadata() 
         "# Runtime sandbox fixture supplies placement-aware cdhit.\n",
     )
     sandbox = FetchAfterEachBioToolSandboxRunner(
-        ((
-            "bio_tools.cdhit",
-            {
-                "input_fasta": staged_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
-                "identity": 0.9,
-                "mode": "protein",
-            },
-        ),),
+        (
+            (
+                "bio_tools.cdhit",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.cdhit"),
+                    "identity": 0.9,
+                    "mode": "protein",
+                },
+            ),
+        ),
         workspace,
     )
-    engine = ExecutionEngine(repositories, AdapterShapeSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, AdapterShapeSuccessRunner(), sandbox_runner=sandbox
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
@@ -3792,9 +4341,13 @@ def test_pipeline_bio_tools_accepts_hpc_runner_artifact_refs_without_metadata() 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED
     paths = {
         artifact.relative_path
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_tools_adapter_shape")
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_tools_adapter_shape"
+        )
     }
-    assert {"bio_tools/cdhit/clustered.fasta", "bio_tools/cdhit/clusters.csv"}.issubset(paths)
+    assert {"bio_tools/cdhit/clustered.fasta", "bio_tools/cdhit/clusters.csv"}.issubset(
+        paths
+    )
 
 
 def test_pipeline_bio_tools_hmmer_search_cli_is_disabled_in_s14() -> None:
@@ -3803,8 +4356,12 @@ def test_pipeline_bio_tools_hmmer_search_cli_is_disabled_in_s14() -> None:
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_fasta_disabled")
     hmm_artifact_id = _save_hmm_artifact(repositories, "art_hmm_disabled")
     workspace = _workspace_payload("aox_disabled")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
-    staged_hmm = _stage_payload(repositories, hmm_artifact_id, workspace, "inputs/model.hmm")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
+    staged_hmm = _stage_payload(
+        repositories, hmm_artifact_id, workspace, "inputs/model.hmm"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_bio_tools_disabled",
@@ -3812,18 +4369,22 @@ def test_pipeline_bio_tools_hmmer_search_cli_is_disabled_in_s14() -> None:
         "# Runtime sandbox fixture supplies placement-aware hmmer_search_cli.\n",
     )
     sandbox = BioSandboxRunner(
-        ((
-            "bio_tools.hmmer_search_cli",
-            {
-                "hmm": staged_hmm,
-                "target_fasta": staged_fasta,
-                "placement": workspace,
-                "expected_outputs": _bio_tool_outputs("bio_tools.hmmer_search_cli"),
-                "params": {"evalue": "1e-20"},
-            },
-        ),),
+        (
+            (
+                "bio_tools.hmmer_search_cli",
+                {
+                    "hmm": staged_hmm,
+                    "target_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.hmmer_search_cli"),
+                    "params": {"evalue": "1e-20"},
+                },
+            ),
+        ),
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -3840,7 +4401,12 @@ def test_pipeline_bio_tools_hmmer_search_cli_is_disabled_in_s14() -> None:
     assert error["type"] == "unsupported_in_s14"
     assert error["stage"] == "bio_tools_route_policy_validation"
     assert error["retryable"] is False
-    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_bio_tools_disabled") == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_bio_tools_disabled"
+        )
+        == []
+    )
 
 
 @pytest.mark.integration
@@ -3856,11 +4422,18 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
     if reason := live_hpc_skip_reason(settings):
         pytest.skip(reason)
 
-    workspace_root = Path("/tmp") / f"s14bio_{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]}"
-    sandbox = PodmanPipelineSandboxRunner(timeout_seconds=900, workspace_root=workspace_root)
+    workspace_root = (
+        Path("/tmp")
+        / f"s14bio_{hashlib.sha256(str(tmp_path).encode()).hexdigest()[:8]}"
+    )
+    sandbox = PodmanPipelineSandboxRunner(
+        timeout_seconds=900, workspace_root=workspace_root
+    )
     preflight = sandbox.preflight()
     if not preflight.ok:
-        pytest.skip(f"S14 product-route live HPC smoke requires pipeline sandbox: {preflight.message}")
+        pytest.skip(
+            f"S14 product-route live HPC smoke requires pipeline sandbox: {preflight.message}"
+        )
 
     repository_provider = SQLiteRepositoryProvider(
         str(tmp_path / "s14-live-control-plane.sqlite3")
@@ -3883,8 +4456,14 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
         / "aox_hmm"
     )
     fixture_artifacts = {
-        "art_s14_live_sequences": (fixture_root / "input_sequences.fasta", "sequences/input_sequences.fasta"),
-        "art_s14_live_targets": (fixture_root / "search_targets.fasta", "sequences/search_targets.fasta"),
+        "art_s14_live_sequences": (
+            fixture_root / "input_sequences.fasta",
+            "sequences/input_sequences.fasta",
+        ),
+        "art_s14_live_targets": (
+            fixture_root / "search_targets.fasta",
+            "sequences/search_targets.fasta",
+        ),
     }
     for artifact_id, (fixture_path, relative_path) in fixture_artifacts.items():
         content = fixture_path.read_text(encoding="utf-8")
@@ -3901,7 +4480,11 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
                 relative_path=relative_path,
                 title=fixture_path.name,
                 description="S14 committed AOX/HMM smoke fixture.",
-                metadata={"source": "s14_live_fixture", "format": "fasta", "content_digest": _content_digest(content)},
+                metadata={
+                    "source": "s14_live_fixture",
+                    "format": "fasta",
+                    "content_digest": _content_digest(content),
+                },
                 created_at="2026-05-30T00:00:00+00:00",
             )
         )
@@ -3974,11 +4557,15 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
     )
 
     assert result.invocation.status is EngineInvocationStatus.SUCCEEDED, (
-        None if result.parsed_result is None else result.parsed_result.structured_findings
+        None
+        if result.parsed_result is None
+        else result.parsed_result.structured_findings
     )
     paths = {
         artifact.relative_path
-        for artifact in repositories.artifacts.list_by_invocation("sess_001", "inv_s14_bio_tools_live_hpc")
+        for artifact in repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_s14_bio_tools_live_hpc"
+        )
     }
     assert {
         "bio_tools/cdhit/clustered.fasta",
@@ -3987,7 +4574,9 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
         "bio_tools/hmmbuild/model.hmm",
         "bio_tools/hmmalign/aligned.fasta",
     }.issubset(paths)
-    document = repositories.engine_documents.list_by_invocation("sess_001", "inv_s14_bio_tools_live_hpc")[0]
+    document = repositories.engine_documents.list_by_invocation(
+        "sess_001", "inv_s14_bio_tools_live_hpc"
+    )[0]
     envelopes = document.payload["pipeline"]["adapter_approval_envelopes"]
     assert {
         envelope["sdk_module"] + "." + envelope["function_name"]
@@ -3999,13 +4588,18 @@ def test_s14_bio_tools_product_route_live_hpc_smoke(tmp_path: Path) -> None:
         "bio_tools.hmmalign",
     }
     assert all(envelope["selected_backend"] == "hpc" for envelope in envelopes.values())
-    assert all(envelope["approval_source"] == "execution_pipeline_plan" for envelope in envelopes.values())
+    assert all(
+        envelope["approval_source"] == "execution_pipeline_plan"
+        for envelope in envelopes.values()
+    )
 
 
 def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=HandlerSandboxRunner())
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=HandlerSandboxRunner()
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_missing_inputs",
@@ -4022,7 +4616,10 @@ def test_pipeline_rejects_literal_artifact_get_ids_missing_from_inputs() -> None
 
     assert result.invocation.status is EngineInvocationStatus.FAILED
     assert result.parsed_result is not None
-    assert result.parsed_result.structured_findings["error"]["error_code"] == "missing_pipeline_artifact_inputs"
+    assert (
+        result.parsed_result.structured_findings["error"]["error_code"]
+        == "missing_pipeline_artifact_inputs"
+    )
     assert "art_001" in result.parsed_result.structured_findings["error"]["hint"]
 
 
@@ -4073,7 +4670,9 @@ def test_pipeline_fetch_outputs_rejects_register_parameter() -> None:
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -4134,7 +4733,9 @@ def test_pipeline_stage_artifact_requires_s08_sealed_digest() -> None:
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -4203,7 +4804,9 @@ def test_pipeline_stage_artifact_accepts_rcsb_downloaded_sealed_artifact() -> No
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -4223,7 +4826,9 @@ def test_pipeline_stage_ref_digest_mismatch_is_rejected() -> None:
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_stage_digest_mismatch")
     workspace = _workspace_payload("digest_mismatch")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     staged_fasta["artifact_digest"] = "sha256:wrong"
     code_artifact_id = _pipeline_source_id(
         repositories,
@@ -4245,7 +4850,9 @@ def test_pipeline_stage_ref_digest_mismatch_is_rejected() -> None:
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     result = engine.start_pipeline(
         session_id="sess_001",
@@ -4267,7 +4874,9 @@ def test_pipeline_hpc_domain_operation_does_not_eager_persist_artifacts() -> Non
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_no_eager_fasta")
     workspace = _workspace_payload("no_eager")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_no_eager_persist",
@@ -4288,7 +4897,9 @@ def test_pipeline_hpc_domain_operation_does_not_eager_persist_artifacts() -> Non
             ),
         )
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
@@ -4309,15 +4920,24 @@ def test_pipeline_hpc_domain_operation_does_not_eager_persist_artifacts() -> Non
     assert sandbox.results[0]["kind"] == "hpc_run_handle"
     assert "artifact_ids" not in sandbox.results[0]
     assert "artifact_count" not in sandbox.results[0]
-    assert repositories.artifacts.list_by_invocation("sess_001", "inv_pipeline_no_eager_persist") == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_no_eager_persist"
+        )
+        == []
+    )
 
 
-def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boundary() -> None:
+def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boundary() -> (
+    None
+):
     repositories = _build_repositories()
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_fetch_boundary_fasta")
     workspace = _workspace_payload("fetch_boundary")
-    staged_fasta = _stage_payload(repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta")
+    staged_fasta = _stage_payload(
+        repositories, fasta_artifact_id, workspace, "inputs/sequences.fasta"
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_fetch_boundary",
@@ -4335,7 +4955,9 @@ def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boun
         },
     )
     sandbox = FetchAfterBioToolSandboxRunner(operation, workspace)
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox)
+    engine = ExecutionEngine(
+        repositories, ImmediateSuccessRunner(), sandbox_runner=sandbox
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
@@ -4359,7 +4981,9 @@ def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boun
     assert fetch["kind"] == "hpc_fetch_result"
     assert fetch["registered_artifact_ids"]
     artifacts = repositories.artifacts.list_by_run(str(run["run_id"]))
-    assert {artifact.artifact_id for artifact in artifacts} == set(fetch["registered_artifact_ids"])
+    assert {artifact.artifact_id for artifact in artifacts} == set(
+        fetch["registered_artifact_ids"]
+    )
     assert {artifact.relative_path for artifact in artifacts} == {
         "bio_tools/cdhit/clustered.fasta",
         "bio_tools/cdhit/clusters.csv",
@@ -4372,7 +4996,9 @@ def test_pipeline_fetch_outputs_registers_declared_outputs_through_artifact_boun
         assert artifact.metadata["content_digest"].startswith("sha256:")
 
 
-def test_pipeline_fpocket_missing_declared_output_fails_closed_without_synthetic_artifact() -> None:
+def test_pipeline_fpocket_missing_declared_output_fails_closed_without_synthetic_artifact() -> (
+    None
+):
     repositories = _build_repositories()
     _seed_session(repositories)
     runner = MissingAllDeclaredOutputsRunner()
@@ -4405,9 +5031,12 @@ def test_pipeline_fpocket_missing_declared_output_fails_closed_without_synthetic
     assert error["type"] == "declared_output_missing"
     assert error["stage"] == "hpc_output_validation"
     assert error["details"]["missing_outputs"] == ["target_out"]
-    assert repositories.artifacts.list_by_invocation(
-        "sess_001", "inv_pipeline_fpocket_missing_output"
-    ) == []
+    assert (
+        repositories.artifacts.list_by_invocation(
+            "sess_001", "inv_pipeline_fpocket_missing_output"
+        )
+        == []
+    )
     assert not any(
         bool((artifact.metadata or {}).get("synthetic_source"))
         for artifact in repositories.artifacts.list_by_session("sess_001")
@@ -4418,7 +5047,9 @@ def test_pipeline_explicit_non_cutover_fixture_marks_placeholder_ineligible() ->
     repositories = _build_repositories()
     _seed_session(repositories)
     runner = ExplicitNonCutoverFixtureRunner()
-    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    engine = ExecutionEngine(
+        repositories, runner, sandbox_runner=HandlerSandboxRunner()
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_fpocket_fixture_placeholder",
@@ -4471,12 +5102,18 @@ def test_pipeline_rejects_toy_pdb_before_fpocket_approval() -> None:
             relative_path="toy_structure.pdb",
             title="toy_structure.pdb",
             description=artifact.description,
-            metadata={"source": "toy", "format": "pdb", "content_digest": _content_digest(toy_content)},
+            metadata={
+                "source": "toy",
+                "format": "pdb",
+                "content_digest": _content_digest(toy_content),
+            },
             created_at=artifact.created_at,
         )
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner, sandbox_runner=HandlerSandboxRunner())
+    engine = ExecutionEngine(
+        repositories, runner, sandbox_runner=HandlerSandboxRunner()
+    )
     code_artifact_id = _pipeline_source_id(
         repositories,
         "code_invalid_fpocket",
@@ -4542,8 +5179,12 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
         )
     )
 
-    resumed = engine.continue_after_approval(invocation_id="inv_pipeline_approval", resolution="approved")
-    repeated = engine.continue_after_approval(invocation_id="inv_pipeline_approval", resolution="approved")
+    resumed = engine.continue_after_approval(
+        invocation_id="inv_pipeline_approval", resolution="approved"
+    )
+    repeated = engine.continue_after_approval(
+        invocation_id="inv_pipeline_approval", resolution="approved"
+    )
     status = engine.get_pipeline_status(
         session_id="sess_001",
         invocation_id="inv_pipeline_approval",
@@ -4569,19 +5210,23 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     provenance_artifact = next(
         artifact
         for artifact in resumed.artifacts
-        if artifact.metadata and artifact.metadata.get("source_code_artifact_id") == code_artifact_id
+        if artifact.metadata
+        and artifact.metadata.get("source_code_artifact_id") == code_artifact_id
     )
     assert provenance_artifact.metadata is not None
     assert provenance_artifact.metadata["source_code_digest"]
     assert provenance_artifact.metadata["source_code_version"] == 1
-    assert provenance_artifact.metadata["sandbox_runtime_identity_digest"] == (
-        _test_sandbox_runtime_identity()["runtime_identity_digest"]
+    assert (
+        provenance_artifact.metadata["sandbox_runtime_identity_digest"]
+        == (_test_sandbox_runtime_identity()["runtime_identity_digest"])
     )
-    assert provenance_artifact.metadata["sandbox_image_digest"] == (
-        _test_sandbox_runtime_identity()["image_digest"]
+    assert (
+        provenance_artifact.metadata["sandbox_image_digest"]
+        == (_test_sandbox_runtime_identity()["image_digest"])
     )
-    assert provenance_artifact.metadata["pipeline_sdk_digest"] == (
-        _test_sandbox_runtime_identity()["pipeline_sdk_digest"]
+    assert (
+        provenance_artifact.metadata["pipeline_sdk_digest"]
+        == (_test_sandbox_runtime_identity()["pipeline_sdk_digest"])
     )
     public_status = str(status)
     assert "storage_uri" not in public_status
@@ -4591,15 +5236,18 @@ def test_pipeline_hpc_operation_waits_for_approval_then_resumes_once() -> None:
     assert "storage_uri" not in str(resumed.parsed_result.structured_findings)
     assert len(runner.payloads) == 1
     runtime_metadata = dict(dict(runner.payloads[0]["runspec"])["metadata"])
-    assert runtime_metadata["sandbox_runtime_identity_digest"] == _test_sandbox_runtime_identity()[
-        "runtime_identity_digest"
-    ]
-    assert runtime_metadata["sandbox_image_digest"] == _test_sandbox_runtime_identity()[
-        "image_digest"
-    ]
-    assert runtime_metadata["pipeline_sdk_digest"] == _test_sandbox_runtime_identity()[
-        "pipeline_sdk_digest"
-    ]
+    assert (
+        runtime_metadata["sandbox_runtime_identity_digest"]
+        == _test_sandbox_runtime_identity()["runtime_identity_digest"]
+    )
+    assert (
+        runtime_metadata["sandbox_image_digest"]
+        == _test_sandbox_runtime_identity()["image_digest"]
+    )
+    assert (
+        runtime_metadata["pipeline_sdk_digest"]
+        == _test_sandbox_runtime_identity()["pipeline_sdk_digest"]
+    )
     assert sandbox.calls == 1
 
 
@@ -4639,7 +5287,9 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
         )
     )
 
-    resumed = engine.continue_after_approval(invocation_id="inv_pipeline_hpc_failed", resolution="approved")
+    resumed = engine.continue_after_approval(
+        invocation_id="inv_pipeline_hpc_failed", resolution="approved"
+    )
     status = engine.get_pipeline_status(
         session_id="sess_001",
         invocation_id="inv_pipeline_hpc_failed",
@@ -4653,7 +5303,9 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
     assert error["hpc_failure"]["stderr_excerpt"] == "apptainer: command not found"
 
 
-def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(tmp_path: Path) -> None:
+def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
     runner = CapturingTimeoutRunner()
@@ -4689,7 +5341,9 @@ def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(tmp_path: 
         )
     )
 
-    engine.continue_after_approval(invocation_id="inv_pipeline_hpc_timeout", resolution="approved")
+    engine.continue_after_approval(
+        invocation_id="inv_pipeline_hpc_timeout", resolution="approved"
+    )
     status = engine.get_pipeline_status(
         session_id="sess_001",
         invocation_id="inv_pipeline_hpc_timeout",
@@ -4737,7 +5391,9 @@ def test_pipeline_runtime_unplanned_hpc_operation_requests_secondary_approval() 
         )
     )
 
-    resumed = engine.continue_after_approval(invocation_id="inv_pipeline_unplanned", resolution="approved")
+    resumed = engine.continue_after_approval(
+        invocation_id="inv_pipeline_unplanned", resolution="approved"
+    )
 
     assert resumed.invocation.status is EngineInvocationStatus.WAITING_APPROVAL
     assert resumed.approval is not None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .client import call
@@ -13,13 +14,45 @@ _ROUTE_POLICY_IDS = {
     "hmmer_search": "bio.hmmer_search.provider:v1",
 }
 
+_SHA256_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _validated_provider_input_refs(
+    input_refs: list[dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    refs = [dict(item) for item in input_refs or []]
+    artifact_ids: list[str] = []
+    artifact_digests: list[str] = []
+    for item in refs:
+        artifact_id = item.get("artifact_id")
+        content_digest = item.get("content_digest")
+        if (
+            not isinstance(artifact_id, str)
+            or not artifact_id
+            or artifact_id != artifact_id.strip()
+        ):
+            raise ValueError(
+                "provider input refs require a non-empty canonical artifact_id"
+            )
+        if not isinstance(content_digest, str) or not _SHA256_DIGEST_PATTERN.fullmatch(
+            content_digest
+        ):
+            raise ValueError(
+                "provider input refs require content_digest as sha256:<64 lowercase hex>"
+            )
+        artifact_ids.append(artifact_id)
+        artifact_digests.append(content_digest)
+    return refs, artifact_ids, artifact_digests
+
 
 def _provider_operation(
     *,
     function_name: str,
     params: dict[str, Any],
     output_dir: str,
+    input_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    refs, artifact_ids, artifact_digests = _validated_provider_input_refs(input_refs)
     return dict(
         controlled_operation(
             sdk_module="bio",
@@ -28,6 +61,9 @@ def _provider_operation(
             params=params,
             expected_outputs={"output_dir": output_dir},
             resource_estimate={"network_io": True},
+            input_artifact_ids=artifact_ids,
+            input_artifact_digests=artifact_digests,
+            stage_refs=refs,
         )
     )
 
@@ -63,11 +99,17 @@ def uniprot_fetch(
     output_dir: str,
     fields: list[str] | None = None,
     batch_size: int | None = None,
+    source_sequence_identities: dict[str, dict[str, str]] | None = None,
+    sequence_mismatch_choices: dict[str, str] | None = None,
+    source_hit_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     params = {
         "accessions": list(accessions),
         "fields": list(fields or []),
         "batch_size": batch_size,
+        "source_sequence_identities": dict(source_sequence_identities or {}),
+        "sequence_mismatch_choices": dict(sequence_mismatch_choices or {}),
+        "source_hit_artifact": dict(source_hit_artifact or {}),
         "output_dir": output_dir,
     }
     if supervised_sandbox_mode():
@@ -75,6 +117,9 @@ def uniprot_fetch(
             function_name="uniprot_fetch",
             params=params,
             output_dir=output_dir,
+            input_refs=[]
+            if source_hit_artifact is None
+            else [dict(source_hit_artifact)],
         )
     return dict(
         call(
@@ -87,12 +132,14 @@ def uniprot_fetch(
 def hmmer_search(
     *,
     hmm_artifact_id: str,
+    hmm_artifact_digest: str | None = None,
     database: str,
     output_dir: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "hmm_artifact_id": hmm_artifact_id,
+        "hmm_artifact_digest": hmm_artifact_digest,
         "database": database,
         "params": dict(params or {}),
         "output_dir": output_dir,
@@ -102,6 +149,12 @@ def hmmer_search(
             function_name="hmmer_search",
             params=payload,
             output_dir=output_dir,
+            input_refs=[
+                {
+                    "artifact_id": hmm_artifact_id,
+                    "content_digest": hmm_artifact_digest,
+                }
+            ],
         )
     return dict(
         call(

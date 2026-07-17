@@ -1,0 +1,21 @@
+{
+  "status": "SUCCESS",
+  "result": {
+    "stats": {
+      "elapsed": 0.321,
+      "nhits": 1,
+      "provider_extension": "allowed"
+    },
+    "hits": [
+      {
+        "acc": "P12345",
+        "name": "AOX_EXAMPLE",
+        "evalue": 1e-42,
+        "score": 1834.7,
+        "provider_extension": {
+          "domain_count": 2
+        }
+      }
+    ]
+  }
+}
