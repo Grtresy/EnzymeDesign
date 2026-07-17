@@ -566,6 +566,7 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             description=(
                 "Delegate a concrete task to one internal teammate agent by queuing a runtime wakeup. "
                 "agent_role selects capability; omit agent_ref to create a new teammate, or use agent_ref only for an existing canonical agent by id, handle, or nickname. "
+                "workflow_refs is opt-in: omit it or pass [] for no workflow binding; otherwise pass an explicit subset of the caller's authorized workflow refs. "
                 f"Valid teammate roles are {', '.join(TEAMMATE_ROLE_NAMES)}."
             ),
             input_schema={
@@ -576,6 +577,10 @@ def builtin_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "agent_ref": {"type": "string"},
                     "instructions": {"type": "string"},
                     "correlation_id": {"type": "string"},
+                    "workflow_refs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["task_id", "agent_role"],
                 "additionalProperties": False,

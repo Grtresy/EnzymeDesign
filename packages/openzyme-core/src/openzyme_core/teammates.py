@@ -549,6 +549,42 @@ def teammate_tool_descriptors(
     return (*shared, *tuple(role_specific))
 
 
+def validate_teammate_workflow_requirements(
+    context: SessionRuntimeContext,
+    *,
+    role: str,
+    workflow_refs: tuple[str, ...],
+) -> tuple[Any, ...]:
+    """Resolve workflow refs and prove the target teammate can satisfy them."""
+    descriptors = teammate_tool_descriptors(
+        role=role,
+        research_adapter=context.research_adapter,
+    )
+    if role == "executor":
+        descriptors = (
+            *descriptors,
+            *engine_tool_descriptors(context.engine_registry),
+        )
+    available_capabilities = {f"role:{role}"}
+    if context.engine_registry is not None:
+        for engine_descriptor in context.engine_registry.list_descriptors():
+            available_capabilities.add(f"engine:{engine_descriptor.engine_name}")
+            available_capabilities.add(f"engine:{engine_descriptor.capability_key}")
+    available_tools = {descriptor.tool_name for descriptor in descriptors}
+    skill_registry = context.skill_registry or SkillRegistry()
+    packs = tuple(
+        skill_registry.load_workflow_pack(workflow_ref)
+        for workflow_ref in workflow_refs
+    )
+    for pack in packs:
+        validate_workflow_requirements(
+            pack,
+            available_tools=available_tools,
+            available_capabilities=available_capabilities,
+        )
+    return packs
+
+
 def build_teammate_registry(
     *,
     agent_id: str | None = None,
@@ -861,25 +897,11 @@ class TeammateConversationDriver(HarnessDriver):
             key for key in context.active_skill_keys if is_workflow_ref(key)
         )
         if workflow_refs:
-            skill_registry = context.skill_registry or SkillRegistry()
-            available_capabilities = {f"role:{self.role}"}
-            if context.engine_registry is not None:
-                for engine_descriptor in context.engine_registry.list_descriptors():
-                    available_capabilities.add(
-                        f"engine:{engine_descriptor.engine_name}"
-                    )
-                    available_capabilities.add(
-                        f"engine:{engine_descriptor.capability_key}"
-                    )
-            available_tools = {
-                descriptor.tool_name for descriptor in descriptors
-            }
-            for workflow_ref in workflow_refs:
-                validate_workflow_requirements(
-                    skill_registry.load_workflow_pack(workflow_ref),
-                    available_tools=available_tools,
-                    available_capabilities=available_capabilities,
-                )
+            validate_teammate_workflow_requirements(
+                context,
+                role=self.role,
+                workflow_refs=workflow_refs,
+            )
         router = context.tool_registry.to_tool_router(
             context,
             descriptors=descriptors,
@@ -1186,12 +1208,6 @@ def run_teammate_loop(
         task_id=task_id,
         correlation_id=correlation_id,
     )
-    if not workflow_refs and parent_context.restore_focus.task_id == task_id:
-        workflow_refs = tuple(
-            key
-            for key in parent_context.active_skill_keys
-            if is_workflow_ref(key)
-        )
     registry = build_teammate_registry(
         agent_id=agent_id,
         engine_registry=parent_context.engine_registry,

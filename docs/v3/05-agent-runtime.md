@@ -187,6 +187,8 @@ Teammates also carry human-facing identity fields:
 
 `task.delegate` owns teammate creation and existing-teammate selection. `agent_role` selects capability. Optional `agent_ref` may point at an existing canonical `agent_id`, `@handle`, nickname, or display name. Generated nicknames/handles must avoid collisions across sessions in the same project/root session and add a suffix when a role pool is exhausted.
 
+Workflow knowledge binding is explicit per delegation：`workflow_refs` may contain only a duplicate-free subset of the caller's currently authorized full workflow selection refs. Omitting the field or passing `[]` means no workflow binding; teammate restore must not inherit parent-focus workflow refs implicitly. Before teammate creation or task claim, runtime resolves the exact manifest snapshot and validates target role, tool and engine requirements. Unauthorized, duplicate, drifted or incompatible refs return structured LLM-readable errors without agent/task/inbox/signal side effects. The persisted delegation payload contains only the selected refs and exact safe manifest snapshots, and teammate restore validates drift again. This exposes real constraints while leaving the agent free to choose which compatible pack, if any, applies to the delegated work.
+
 Delivery success semantics:
 
 - non-agent recipient: persisted message is `ok=true/status=delivered`

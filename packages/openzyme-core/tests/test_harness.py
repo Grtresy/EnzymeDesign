@@ -1961,6 +1961,8 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
         description="Use the structured workflow binding.",
         kind="execution",
     )
+    engine_registry = EngineRegistry()
+    engine_registry.register(FakeExecutionPipelineEngine(repositories))
 
     class DelegateWorkflowDriver:
         def plan(
@@ -1980,6 +1982,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
                                 "task_id": "task_workflow",
                                 "agent_role": "executor",
                                 "instructions": "Execute the selected workflow.",
+                                "workflow_refs": [workflow_ref],
                             },
                         ),
                     )
@@ -1996,6 +1999,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
             ),
         ),
         driver=DelegateWorkflowDriver(),
+        engine_registry=engine_registry,
     )
 
     assert delegated.status is HarnessStatus.COMPLETED
@@ -2009,9 +2013,7 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
         str(delegation_message.payload_ref)
     ).payload
     assert payload["workflow_refs"] == [workflow_ref]
-    assert payload["workflow_manifests"][0]["content_sha256"] == (
-        workflow.content_sha256
-    )
+    assert payload["workflow_manifests"] == [workflow.to_dict()]
     assert not str(payload["workflow_manifests"][0]["manifest_path"]).startswith(
         "/"
     )
@@ -2035,8 +2037,6 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
             return authoritative_registry.resolve(selection_ref)
 
     tracking_registry = TrackingWorkflowRegistry()
-    engine_registry = EngineRegistry()
-    engine_registry.register(FakeExecutionPipelineEngine(repositories))
     parent_context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
@@ -2069,6 +2069,307 @@ def test_explicit_workflow_selection_propagates_through_delegation_to_teammate()
     assert f"content_sha256: {workflow.content_sha256}" in prompt
     assert "scientific_prerequisite_missing" in prompt
     assert tracking_registry.resolved_refs == [workflow_ref]
+
+
+@pytest.mark.parametrize(
+    ("role", "kind", "explicit_empty"),
+    (
+        pytest.param("researcher", "research", False, id="omitted-researcher"),
+        pytest.param("reporter", "reporting", True, id="empty-reporter"),
+    ),
+)
+def test_delegate_without_workflow_binding_does_not_inherit_parent_focus(
+    role: str,
+    kind: str,
+    explicit_empty: bool,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    task_id = f"task_{role}_without_workflow"
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id=task_id,
+        subject=f"Delegate {role} without a workflow binding",
+        description="The parent focus must not be inherited.",
+        kind=kind,
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(
+            task_id=task_id,
+            skill_keys=(workflow_ref,),
+        ),
+        active_skill_keys=(workflow_ref,),
+        skill_registry=SkillRegistry(),
+    )
+    arguments: dict[str, object] = {
+        "task_id": task_id,
+        "agent_role": role,
+        "correlation_id": f"corr_{role}_without_workflow",
+    }
+    if explicit_empty:
+        arguments["workflow_refs"] = []
+
+    delegated = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id=f"call_{role}_without_workflow",
+            tool_name="task.delegate",
+            arguments=arguments,
+        ),
+    )
+
+    assert delegated.ok is True
+    delegation_message = next(
+        message
+        for message in repositories.inbox.list_by_session(session.session_id)
+        if message.correlation_id == f"corr_{role}_without_workflow"
+    )
+    payload = repositories.engine_documents.get(
+        str(delegation_message.payload_ref)
+    ).payload
+    assert payload["workflow_refs"] == []
+    assert payload["workflow_manifests"] == []
+
+    model_factory = FakeModelFactory(
+        {"content": f"{role} continued without a workflow pack.", "tool_calls": []}
+    )
+    parent_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=ToolRegistry(),
+        restore_focus=RestoreFocus(
+            task_id=task_id,
+            skill_keys=(workflow_ref,),
+        ),
+        active_skill_keys=(workflow_ref,),
+        model_factory=model_factory,
+        skill_registry=SkillRegistry(),
+    )
+
+    teammate_result = run_teammate_loop(
+        parent_context,
+        agent_id=str(delegated.details["agent_id"]),
+        role=role,
+        task_id=task_id,
+        lane_id=None,
+        correlation_id=f"corr_{role}_without_workflow",
+        instructions="Continue without a workflow binding.",
+        max_steps=1,
+    )
+
+    assert teammate_result.status is HarnessStatus.COMPLETED
+    prompt = str(
+        model_factory.invokers[f"v3_teammate_loop:{role}"].calls[0]["system_prompt"]
+    )
+    assert "# Explicitly selected workflow knowledge pack" not in prompt
+
+
+def test_delegate_rejects_duplicate_workflow_refs_before_side_effects() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_duplicate_workflow_refs",
+        subject="Reject duplicate workflow refs",
+        description="Duplicate refs must fail before assignment.",
+        kind="execution",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(workflow_ref,),
+        skill_registry=SkillRegistry(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_duplicate_workflow_refs",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_duplicate_workflow_refs",
+                "agent_role": "executor",
+                "workflow_refs": [workflow_ref, workflow_ref],
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "workflow_refs_duplicate"
+    assert repositories.tasks.get("task_duplicate_workflow_refs").assigned_ref is None
+    assert repositories.agents.list_by_session(session.session_id) == []
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+
+def test_delegate_rejects_unauthorized_workflow_ref_before_side_effects() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_unauthorized_workflow_ref",
+        subject="Reject unauthorized workflow ref",
+        description="Unauthorized refs must fail before assignment.",
+        kind="execution",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        skill_registry=SkillRegistry(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_unauthorized_workflow_ref",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_unauthorized_workflow_ref",
+                "agent_role": "executor",
+                "workflow_refs": [workflow_ref],
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "workflow_ref_not_authorized"
+    assert result.details["unauthorized_workflow_refs"] == [workflow_ref]
+    assert repositories.tasks.get("task_unauthorized_workflow_ref").assigned_ref is None
+    assert repositories.agents.list_by_session(session.session_id) == []
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+
+def test_delegate_rejects_role_incompatible_workflow_before_claim() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_researcher_incompatible_workflow",
+        subject="Reject executor workflow for researcher",
+        description="Role-incompatible workflow refs must fail before assignment.",
+        kind="research",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(workflow_ref,),
+        skill_registry=SkillRegistry(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_researcher_incompatible_workflow",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_researcher_incompatible_workflow",
+                "agent_role": "researcher",
+                "workflow_refs": [workflow_ref],
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "workflow_role_incompatible"
+    assert "role:executor" in str(result.details["reason"])
+    task = repositories.tasks.get("task_researcher_incompatible_workflow")
+    assert task.assigned_ref is None
+    assert repositories.agents.list_by_session(session.session_id) == []
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
+
+
+def test_delegate_rejects_drifted_workflow_ref_before_claim() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    drifted_ref = f"{workflow_ref.rsplit(':', maxsplit=1)[0]}:{'0' * 64}"
+    TaskBoardService(repositories).create_task(
+        session_id=session.session_id,
+        task_id="task_drifted_workflow_ref",
+        subject="Reject drifted workflow ref",
+        description="Digest drift must fail before assignment.",
+        kind="execution",
+    )
+    registry = ToolRegistry()
+    register_subagent_tools(registry)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(),
+        active_skill_keys=(drifted_ref,),
+        skill_registry=SkillRegistry(),
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_drifted_workflow_ref",
+            tool_name="task.delegate",
+            arguments={
+                "task_id": "task_drifted_workflow_ref",
+                "agent_role": "executor",
+                "workflow_refs": [drifted_ref],
+            },
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "workflow_manifest_drift"
+    assert "digest drift" in str(result.details["reason"])
+    assert repositories.tasks.get("task_drifted_workflow_ref").assigned_ref is None
+    assert repositories.agents.list_by_session(session.session_id) == []
+    assert repositories.inbox.list_by_session(session.session_id) == []
+    assert repositories.runtime_signals.list_by_session(session.session_id) == []
 
 
 def test_model_cannot_activate_workflow_through_skill_load() -> None:
@@ -3429,6 +3730,11 @@ def test_top_level_delegate_tool_documents_real_teammate_roles() -> None:
         "reporter",
     ]
     assert delegate.input_schema["required"] == ["task_id", "agent_role"]
+    assert delegate.input_schema["properties"]["workflow_refs"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert "omit it or pass [] for no workflow binding" in delegate.description
     assert "fpocket" not in delegate.description
     assert "AutoDock" not in delegate.description
     assert "AlphaFold" not in delegate.description

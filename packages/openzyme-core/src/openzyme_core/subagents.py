@@ -46,6 +46,36 @@ def _protocol_service(context: SessionRuntimeContext) -> ProtocolService:
     )
 
 
+def _workflow_selection_error(
+    invocation: ToolInvocation,
+    task: Task,
+    *,
+    error_code: str,
+    summary: str,
+    hint: str,
+    details: dict[str, object],
+) -> ToolResult:
+    payload = {
+        "task_id": task.task_id,
+        "status": "workflow_selection_rejected",
+        "error_code": error_code,
+        **details,
+    }
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(payload, sort_keys=True),
+        task_id=task.task_id,
+        lane_id=task.lane_id,
+        status="workflow_selection_rejected",
+        summary=summary,
+        error_code=error_code,
+        hint=hint,
+        details=details,
+    )
+
+
 def register_subagent_tools(registry: ToolRegistry) -> None:
     def delegate_task_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         arguments = invocation.arguments
@@ -161,6 +191,114 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
                 hint="Only TODO, unassigned, unblocked tasks can be delegated.",
                 details={"task_status": task.status.value},
             )
+        raw_workflow_refs = arguments.get("workflow_refs")
+        if raw_workflow_refs is None:
+            workflow_refs: tuple[str, ...] = ()
+        elif not isinstance(raw_workflow_refs, list) or not all(
+            isinstance(item, str) and is_workflow_ref(item)
+            for item in raw_workflow_refs
+        ):
+            return _workflow_selection_error(
+                invocation,
+                task,
+                error_code="workflow_refs_invalid",
+                summary=(
+                    "task.delegate workflow_refs must be an array of exact "
+                    "authorized workflow references."
+                ),
+                hint=(
+                    "Omit workflow_refs or pass [] for no binding; otherwise pass "
+                    "exact workflow refs from the current explicit focus."
+                ),
+                details={"workflow_refs": raw_workflow_refs},
+            )
+        else:
+            workflow_refs = tuple(raw_workflow_refs)
+        if len(workflow_refs) != len(set(workflow_refs)):
+            return _workflow_selection_error(
+                invocation,
+                task,
+                error_code="workflow_refs_duplicate",
+                summary="task.delegate workflow_refs contain duplicates.",
+                hint="Pass each explicitly selected workflow reference at most once.",
+                details={"workflow_refs": list(workflow_refs)},
+            )
+        authorized_workflow_refs = tuple(
+            key for key in context.active_skill_keys if is_workflow_ref(key)
+        )
+        unauthorized_workflow_refs = tuple(
+            ref for ref in workflow_refs if ref not in authorized_workflow_refs
+        )
+        if unauthorized_workflow_refs:
+            return _workflow_selection_error(
+                invocation,
+                task,
+                error_code="workflow_ref_not_authorized",
+                summary=(
+                    "task.delegate can bind only an explicit subset of the "
+                    "caller's authorized workflow refs."
+                ),
+                hint=(
+                    "Use a workflow ref from the current explicit focus, or omit "
+                    "workflow_refs to delegate without a workflow binding."
+                ),
+                details={
+                    "workflow_refs": list(workflow_refs),
+                    "unauthorized_workflow_refs": list(unauthorized_workflow_refs),
+                    "authorized_workflow_refs": list(authorized_workflow_refs),
+                },
+            )
+        workflow_manifests: list[dict[str, object]] = []
+        if workflow_refs:
+            from .teammates import validate_teammate_workflow_requirements
+
+            try:
+                workflow_packs = validate_teammate_workflow_requirements(
+                    context,
+                    role=agent_role,
+                    workflow_refs=workflow_refs,
+                )
+            except (KeyError, ValueError) as exc:
+                reason = str(exc)
+                if "digest drift" in reason:
+                    error_code = "workflow_manifest_drift"
+                    summary = (
+                        "The selected workflow manifest or knowledge digest drifted."
+                    )
+                    hint = (
+                        "Re-select the current versioned workflow ref before "
+                        "delegating this task."
+                    )
+                elif "workflow requirements unavailable" in reason:
+                    error_code = "workflow_role_incompatible"
+                    summary = (
+                        f"The selected workflow cannot run on teammate role "
+                        f"{agent_role!r}."
+                    )
+                    hint = (
+                        "Choose a compatible teammate role/tool surface, or "
+                        "delegate without this workflow binding."
+                    )
+                else:
+                    error_code = "workflow_binding_invalid"
+                    summary = "The selected workflow binding could not be resolved."
+                    hint = (
+                        "Re-select a registered versioned workflow ref, then retry "
+                        "the delegation."
+                    )
+                return _workflow_selection_error(
+                    invocation,
+                    task,
+                    error_code=error_code,
+                    summary=summary,
+                    hint=hint,
+                    details={
+                        "workflow_refs": list(workflow_refs),
+                        "agent_role": agent_role,
+                        "reason": reason,
+                    },
+                )
+            workflow_manifests = [pack.manifest.to_dict() for pack in workflow_packs]
         if "agent_id" in arguments:
             return ToolResult(
                 call_id=invocation.call_id,
@@ -283,20 +421,6 @@ def register_subagent_tools(registry: ToolRegistry) -> None:
         instructions = str(
             arguments.get("instructions") or task.description or task.subject
         )
-        workflow_refs = tuple(
-            key for key in context.active_skill_keys if is_workflow_ref(key)
-        )
-        workflow_manifests: list[dict[str, object]] = []
-        if workflow_refs:
-            if context.skill_registry is None:
-                raise ValueError(
-                    "structured workflow selection requires a workflow-aware registry"
-                )
-            workflow_manifests = [
-                context.skill_registry.load_workflow_pack(workflow_ref)
-                .manifest.to_dict()
-                for workflow_ref in workflow_refs
-            ]
         protocol = _protocol_service(context)
         payload_ref = protocol.persist_payload(
             session_id=task.session_id,

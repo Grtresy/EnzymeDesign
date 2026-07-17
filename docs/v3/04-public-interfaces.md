@@ -101,6 +101,8 @@ approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提�
 
 这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；recipient turn 由 scheduler claim signal 后启动。配置化 Host 默认由 background runtime worker 推进 claim，debug/manual 场景也只能通过同一 scheduler claim path 推进。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 agent team 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
 
+`task.delegate(task_id, agent_role, agent_ref?, instructions?, correlation_id?, workflow_refs?)` 的 `workflow_refs` 是 opt-in binding。它只能选择当前 step 已授权 workflow refs 的子集；省略或空数组都表示不绑定，不能隐式继承 master 的全部 focus。role/tool/engine requirement 与 manifest digest 在 task claim 前校验，失败不产生 teammate、assignment、delegation message 或 wakeup。该参数是 agent 选择工作知识的结构化边界，不是 harness 自动匹配领域关键词或固定编排步骤的入口。
+
 默认内部只读文档工具还应包括：
 
 - `docs.search`

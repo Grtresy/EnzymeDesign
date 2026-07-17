@@ -8,10 +8,10 @@
 
 ## 2. Harness workflow-selection friction
 
-- [ ] 2.1 Add explicit `workflow_refs` subset selection to `task.delegate`, validate authorization and target-role requirements before claim, and persist the exact manifest snapshots.
-- [ ] 2.2 Remove implicit parent-focus workflow inheritance so omitted/empty refs mean no binding; return LLM-readable errors for unauthorized, duplicate, drifted, or incompatible refs.
-- [ ] 2.3 Add harness/protocol tests for executor-only binding, researcher/reporter no-binding, explicit empty selection, role mismatch, manifest drift, and durable replay.
-- [ ] 2.4 Document the corrected delegation contract in `docs/v3/` and, for every newly found large harness issue, create one detailed `docs/v3/architecture-proposals/` document without implementing that proposal.
+- [x] 2.1 Add explicit `workflow_refs` subset selection to `task.delegate`, validate authorization and target-role requirements before claim, and persist the exact manifest snapshots.
+- [x] 2.2 Remove implicit parent-focus workflow inheritance so omitted/empty refs mean no binding; return LLM-readable errors for unauthorized, duplicate, drifted, or incompatible refs.
+- [x] 2.3 Add harness/protocol tests for executor-only binding, researcher/reporter no-binding, explicit empty selection, role mismatch, manifest drift, and durable replay.
+- [x] 2.4 Document the corrected delegation contract in `docs/v3/` and, for every newly found large harness issue, create one detailed `docs/v3/architecture-proposals/` document without implementing that proposal.
 
 ## 3. Literature provider quorum
 
