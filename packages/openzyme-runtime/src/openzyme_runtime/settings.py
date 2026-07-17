@@ -313,6 +313,12 @@ class ResearchSettings:
     mcp_enabled: bool
     mcp_tool_allowlist: tuple[str, ...] = ()
     tavily_timeout_seconds: float = 30.0
+    pubmed_email: str | None = None
+    pubmed_tool: str = "openzyme"
+    pubmed_api_key: str | None = None
+    semantic_scholar_api_key: str | None = None
+    provider_timeout_seconds: float = 30.0
+    provider_max_attempts: int = 3
 
     @property
     def tavily_enabled(self) -> bool:
@@ -338,6 +344,27 @@ class ResearchSettings:
             tavily_timeout_seconds=_parse_float(
                 os.getenv("OPENZYME_TAVILY_TIMEOUT_SECONDS"),
                 30.0,
+            ),
+            pubmed_email=(
+                os.getenv("OPENZYME_NCBI_EMAIL") or os.getenv("NCBI_EMAIL")
+            ),
+            pubmed_tool=(
+                os.getenv("OPENZYME_NCBI_TOOL")
+                or os.getenv("NCBI_TOOL")
+                or "openzyme"
+            ),
+            pubmed_api_key=(
+                os.getenv("OPENZYME_NCBI_API_KEY")
+                or os.getenv("NCBI_API_KEY")
+            ),
+            semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY"),
+            provider_timeout_seconds=_parse_float(
+                os.getenv("OPENZYME_RESEARCH_PROVIDER_TIMEOUT_SECONDS"),
+                30.0,
+            ),
+            provider_max_attempts=_parse_int(
+                os.getenv("OPENZYME_RESEARCH_PROVIDER_MAX_ATTEMPTS"),
+                3,
             ),
         )
 

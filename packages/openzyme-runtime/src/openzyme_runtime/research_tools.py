@@ -12,8 +12,12 @@ from pydantic import Field
 from openzyme_research import ResearchAdapter
 from openzyme_research import ResearchUnit
 from openzyme_research import BioResearchService
+from openzyme_research import ProviderCallResult
+from openzyme_research import ProviderOutcome
+from openzyme_research import ProviderRequestError
 from openzyme_research import ResearchObservation
 from openzyme_research import asset_manifest
+from openzyme_research import evaluate_literature_quorum
 from openzyme_research import literature_hits_to_findings
 from openzyme_research import structure_hits_to_findings
 
@@ -87,6 +91,128 @@ def _tool_result(
     payload = observation.to_dict()
     return ResearchToolResult(
         tool_name=tool_name, summary=payload["summary"], payload=payload
+    )
+
+
+def _literature_observation(
+    service: BioResearchService,
+    *,
+    provider: str,
+    query: str,
+    limit: int,
+) -> ResearchObservation:
+    result_method = getattr(
+        service,
+        (
+            "search_pubmed_result"
+            if provider == "pubmed"
+            else "search_semantic_scholar_result"
+        ),
+        None,
+    )
+    try:
+        if callable(result_method):
+            provider_result = result_method(query=query, limit=limit)
+        elif provider == "pubmed":
+            provider_result = service.search_pubmed(query=query, limit=limit)
+        else:
+            provider_result = service.search_semantic_scholar(
+                query=query, limit=limit
+            )
+    except ProviderRequestError as exc:
+        failure = exc.result.failure
+        assert failure is not None
+        return ResearchObservation(
+            status="failed",
+            summary=failure.message,
+            unresolved_gaps=(failure.message,),
+            provider=provider,
+            raw_ref={"provider_call": exc.result.to_summary_dict()},
+        )
+    except Exception as exc:  # provider SDKs can raise non-standard transport errors
+        summary = f"{provider} provider call failed before returning a typed outcome"
+        return ResearchObservation(
+            status="failed",
+            summary=summary,
+            unresolved_gaps=(summary,),
+            provider=provider,
+            raw_ref={
+                "provider": provider,
+                "outcome": "failed",
+                "error_code": "provider_unavailable",
+                "typed_provider_outcome": False,
+                "exception_type": exc.__class__.__name__,
+            },
+        )
+
+    if isinstance(provider_result, ProviderCallResult):
+        hits = provider_result.items
+        outcome = provider_result.outcome
+        provider_call = provider_result.to_summary_dict()
+        quorum = evaluate_literature_quorum(
+            pubmed=provider_result if provider == "pubmed" else None,
+            semantic_scholar=(
+                provider_result if provider == "semantic_scholar" else None
+            ),
+        )
+    else:
+        hits = tuple(provider_result)
+        outcome = ProviderOutcome.COMPLETED if hits else ProviderOutcome.EMPTY
+        provider_call = {
+            "provider": provider,
+            "outcome": outcome.value,
+            "typed_provider_outcome": False,
+            "cutover_eligible": False,
+        }
+        quorum = None
+    required_pubmed_failed = (
+        provider == "pubmed"
+        and (quorum is None or not quorum.cutover_eligible)
+    )
+    if outcome is ProviderOutcome.FAILED or required_pubmed_failed:
+        status = "failed"
+    elif outcome is ProviderOutcome.DEGRADED:
+        status = "partial"
+    else:
+        status = "completed"
+    gaps: tuple[str, ...] = ()
+    if outcome is ProviderOutcome.FAILED:
+        failure = (
+            provider_result.failure
+            if isinstance(provider_result, ProviderCallResult)
+            else None
+        )
+        message = (
+            f"{provider} provider failed"
+            if failure is None
+            else failure.message
+        )
+        gaps = (message,)
+    elif required_pubmed_failed:
+        gaps = (
+            f"required PubMed evidence was not accepted for query: {query}",
+        )
+    elif outcome is ProviderOutcome.EMPTY:
+        gaps = (f"{provider} returned no records for query: {query}",)
+    elif outcome is ProviderOutcome.DEGRADED:
+        gaps = (f"{provider} enrichment is degraded for query: {query}",)
+    return ResearchObservation(
+        status=status,
+        summary=f"Collected {len(hits)} {provider} hits for {query}.",
+        findings=(
+            ()
+            if required_pubmed_failed
+            else tuple(literature_hits_to_findings(hits, query=query))
+        ),
+        unresolved_gaps=gaps,
+        provider=provider,
+        raw_ref={
+            "query": query,
+            "provider_call": provider_call,
+            "call_local_literature_quorum": (
+                None if quorum is None else quorum.to_dict()
+            ),
+        },
     )
 
 
@@ -226,13 +352,13 @@ class PubMedSearchTool:
         self, *, args: dict[str, object], context: ResearchToolContext
     ) -> ResearchToolResult:
         payload = ProviderSearchArgs.model_validate(args)
-        hits = self.service.search_pubmed(query=payload.query, limit=payload.limit)
         return _tool_result(
             self.name,
-            ResearchObservation.completed(
-                summary=f"Collected {len(hits)} PubMed hits for {payload.query}.",
-                findings=tuple(literature_hits_to_findings(hits, query=payload.query)),
+            _literature_observation(
+                self.service,
                 provider="pubmed",
+                query=payload.query,
+                limit=payload.limit,
             ),
         )
 
@@ -250,15 +376,13 @@ class SemanticScholarSearchTool:
         self, *, args: dict[str, object], context: ResearchToolContext
     ) -> ResearchToolResult:
         payload = ProviderSearchArgs.model_validate(args)
-        hits = self.service.search_semantic_scholar(
-            query=payload.query, limit=payload.limit
-        )
         return _tool_result(
             self.name,
-            ResearchObservation.completed(
-                summary=f"Collected {len(hits)} Semantic Scholar hits for {payload.query}.",
-                findings=tuple(literature_hits_to_findings(hits, query=payload.query)),
+            _literature_observation(
+                self.service,
                 provider="semantic_scholar",
+                query=payload.query,
+                limit=payload.limit,
             ),
         )
 

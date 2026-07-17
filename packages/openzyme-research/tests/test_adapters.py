@@ -1,3 +1,8 @@
+from io import BytesIO
+from urllib.error import HTTPError
+
+from openzyme_research import BoundedCallableClient
+from openzyme_research import ProviderOutcome
 from openzyme_research import ResearchUnit
 from openzyme_research import TavilyResearchAdapter
 
@@ -82,6 +87,69 @@ def test_tavily_adapter_reports_failed_fetch_results() -> None:
         response=adapter.fetch_url(url="https://example.org/missing"),
     )
 
-    assert result.status == "failed"
+    assert result.status == "partial"
+    assert result.provider_outcome == "degraded"
     assert result.findings == ()
-    assert "https://example.org/missing" in result.unresolved_gaps[0]
+    assert "https://example.org/missing" not in result.unresolved_gaps[0]
+    assert result.provider_call["failure"]["error_code"] == "provider_empty"
+
+
+def test_tavily_rate_limit_is_bounded_and_persisted_as_degraded() -> None:
+    calls = 0
+
+    def fake_search(**_: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        raise HTTPError(
+            "https://api.tavily.com/search?api_key=secret",
+            429,
+            "rate limited",
+            {"Retry-After": "0"},
+            BytesIO(),
+        )
+
+    adapter = TavilyResearchAdapter(
+        search_callable=fake_search,
+        callable_client=BoundedCallableClient(
+            sleeper=lambda delay: None,
+            max_attempts=2,
+        ),
+    )
+
+    result = adapter.web_search_result(query="alternative oxidase")
+
+    assert calls == 2
+    assert result.outcome is ProviderOutcome.DEGRADED
+    assert result.failure is not None
+    assert result.failure.error_code == "provider_rate_limited"
+    assert result.provenance.attempt_count == 2
+    assert "secret" not in str(result.to_dict())
+
+
+def test_tavily_private_source_is_not_projected_or_replaced() -> None:
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {
+            "results": [
+                {
+                    "title": "Private source",
+                    "url": "http://127.0.0.1/private?token=secret",
+                    "content": "internal",
+                }
+            ]
+        }
+    )
+
+    result = adapter.conduct(
+        session_id="sess_001",
+        research_brief="AOX",
+        unit=ResearchUnit(
+            unit_id="unit_private",
+            topic="AOX",
+            query="alternative oxidase",
+        ),
+    )
+
+    assert result.status == "partial"
+    assert result.findings == ()
+    assert "127.0.0.1" not in str(result.to_dict())
+    assert "secret" not in str(result.to_dict())

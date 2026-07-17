@@ -5,10 +5,11 @@ import threading
 import time
 from urllib.error import HTTPError
 
-import pytest
-
 from openzyme_research import DeterministicBioResearchService
+from openzyme_research import ProviderAttempt
+from openzyme_research import ProviderProvenance
 from openzyme_research import TavilyResearchAdapter
+from openzyme_research import failed_result
 from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime.research_tools import DefaultResearchToolProvider
@@ -49,7 +50,11 @@ def test_bio_research_search_tools_return_research_observation_payloads() -> Non
         "raw_ref",
     }
     assert result.payload["provider"] == "pubmed"
-    assert result.payload["findings"][0]["sources"][0]["kind"] == "paper"
+    assert result.payload["status"] == "failed"
+    assert result.payload["raw_ref"]["call_local_literature_quorum"][
+        "cutover_eligible"
+    ] is False
+    assert result.payload["findings"] == []
     assert result.payload["artifacts"] == []
 
 
@@ -212,7 +217,7 @@ def test_default_research_tool_provider_limits_web_and_bio_provider_calls() -> N
     assert observed_max <= 3
 
 
-def test_bio_provider_http_failure_propagates_to_live_gate() -> None:
+def test_bio_provider_http_failure_returns_explicit_failed_observation() -> None:
     class RateLimitedBioService:
         def search_semantic_scholar(self, *, query: str, limit: int):
             del query, limit
@@ -229,8 +234,67 @@ def test_bio_provider_http_failure_propagates_to_live_gate() -> None:
         for tool in build_bio_research_tools(RateLimitedBioService())  # type: ignore[arg-type]
     }
 
-    with pytest.raises(HTTPError):
-        tools["semantic_scholar.search"].invoke(
-            args={"query": "enzyme engineering", "limit": 1},
-            context=_context(),
-        )
+    result = tools["semantic_scholar.search"].invoke(
+        args={"query": "enzyme engineering", "limit": 1},
+        context=_context(),
+    )
+
+    assert result.payload["status"] == "failed"
+    assert result.payload["provider"] == "semantic_scholar"
+    assert result.payload["findings"] == []
+    assert result.payload["raw_ref"] == {
+        "provider": "semantic_scholar",
+        "outcome": "failed",
+        "error_code": "provider_unavailable",
+        "typed_provider_outcome": False,
+        "exception_type": "HTTPError",
+    }
+
+
+def test_typed_failed_provider_result_is_not_reported_completed() -> None:
+    class TypedFailedBioService(DeterministicBioResearchService):
+        def search_pubmed_result(self, *, query: str, limit: int):
+            del query, limit
+            timestamp = "2026-07-17T00:00:00+00:00"
+            return failed_result(
+                provenance=ProviderProvenance(
+                    provider="pubmed",
+                    operation="literature.search",
+                    endpoint_id="pubmed.esearch:v1",
+                    request_digest="sha256:" + "1" * 64,
+                    retrieved_at=timestamp,
+                    attempt_count=1,
+                    attempts=(
+                        ProviderAttempt(
+                            attempt=1,
+                            started_at=timestamp,
+                            finished_at=timestamp,
+                            outcome="failed",
+                            status_code=503,
+                            error_code="provider_unavailable",
+                        ),
+                    ),
+                    response_status=503,
+                ),
+                error_code="provider_unavailable",
+                message="pubmed is unavailable",
+                retryable=True,
+                status_code=503,
+            )
+
+    tools = {
+        tool.name: tool
+        for tool in build_bio_research_tools(TypedFailedBioService())
+    }
+
+    result = tools["pubmed.search"].invoke(
+        args={"query": "alternative oxidase", "limit": 1},
+        context=_context(),
+    )
+
+    assert result.payload["status"] == "failed"
+    assert result.payload["findings"] == []
+    assert result.payload["raw_ref"]["provider_call"]["outcome"] == "failed"
+    assert result.payload["raw_ref"]["call_local_literature_quorum"][
+        "cutover_eligible"
+    ] is False

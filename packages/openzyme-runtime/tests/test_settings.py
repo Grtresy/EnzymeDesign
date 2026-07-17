@@ -51,6 +51,15 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
         "OPENZYME_LLM_V3_HARNESS_LOOP_MAX_RETRIES",
         "OPENZYME_RESEARCH_MAX_UNITS",
         "OPENZYME_TAVILY_TIMEOUT_SECONDS",
+        "OPENZYME_NCBI_EMAIL",
+        "NCBI_EMAIL",
+        "OPENZYME_NCBI_TOOL",
+        "NCBI_TOOL",
+        "OPENZYME_NCBI_API_KEY",
+        "NCBI_API_KEY",
+        "SEMANTIC_SCHOLAR_API_KEY",
+        "OPENZYME_RESEARCH_PROVIDER_TIMEOUT_SECONDS",
+        "OPENZYME_RESEARCH_PROVIDER_MAX_ATTEMPTS",
         "OPENZYME_HOST_BASE_URL",
         "OPENZYME_HOST_AUTH_TOKEN",
         "OPENZYME_HOST_DEPLOYMENT_PROFILE",
@@ -128,6 +137,12 @@ def test_settings_use_defaults_when_env_missing(monkeypatch) -> None:
     assert settings.llm.tokenizer_enabled is False
     assert settings.research.max_units == 3
     assert settings.research.tavily_timeout_seconds == 30.0
+    assert settings.research.pubmed_email is None
+    assert settings.research.pubmed_tool == "openzyme"
+    assert settings.research.pubmed_api_key is None
+    assert settings.research.semantic_scholar_api_key is None
+    assert settings.research.provider_timeout_seconds == 30.0
+    assert settings.research.provider_max_attempts == 3
     assert settings.host_cli.base_url == DEFAULT_HOST_BASE_URL
     assert settings.limits.provider_limits == DEFAULT_PROVIDER_LIMITS
     assert settings.host_api.bind_host == DEFAULT_HOST_API_BIND_HOST
@@ -196,6 +211,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("OPENZYME_TAVILY_MAX_RESULTS", "9")
     monkeypatch.setenv("OPENZYME_TAVILY_TOPIC", "news")
     monkeypatch.setenv("OPENZYME_TAVILY_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("OPENZYME_NCBI_EMAIL", "ncbi@example.org")
+    monkeypatch.setenv("OPENZYME_NCBI_TOOL", "openzyme-aox")
+    monkeypatch.setenv("OPENZYME_NCBI_API_KEY", "ncbi-secret")
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_API_KEY", "s2-secret")
+    monkeypatch.setenv("OPENZYME_RESEARCH_PROVIDER_TIMEOUT_SECONDS", "8.5")
+    monkeypatch.setenv("OPENZYME_RESEARCH_PROVIDER_MAX_ATTEMPTS", "2")
     monkeypatch.setenv("OPENZYME_HOST_BASE_URL", "http://localhost:9999")
     monkeypatch.setenv("OPENZYME_PROJECT_ID", "proj_test")
     monkeypatch.setenv("OPENZYME_EPISODE_ID", "ep_test")
@@ -271,6 +292,12 @@ def test_settings_honor_env_overrides(monkeypatch) -> None:
     assert settings.research.tavily_max_results == 9
     assert settings.research.tavily_topic == "news"
     assert settings.research.tavily_timeout_seconds == 12.5
+    assert settings.research.pubmed_email == "ncbi@example.org"
+    assert settings.research.pubmed_tool == "openzyme-aox"
+    assert settings.research.pubmed_api_key == "ncbi-secret"
+    assert settings.research.semantic_scholar_api_key == "s2-secret"
+    assert settings.research.provider_timeout_seconds == 8.5
+    assert settings.research.provider_max_attempts == 2
     assert settings.host_cli.base_url == "http://localhost:9999"
     assert settings.host_cli.project_id == "proj_test"
     assert settings.host_cli.output_format == "json"
