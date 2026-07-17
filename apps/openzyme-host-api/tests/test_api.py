@@ -362,6 +362,31 @@ def test_v3_execution_callback_scope_inherits_runtime_fence(
                 pass
 
 
+def test_v3_execution_engine_uses_configured_blank_world_roots(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "control-plane.sqlite3"))
+    sandbox_root = tmp_path / "sandboxes"
+    blob_root = tmp_path / "blobs"
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        v3_repository_provider=provider,
+        v3_sandbox_workspace_root=sandbox_root,
+        v3_artifact_blob_root=blob_root,
+    )
+
+    with provider.connection_scope() as owner:
+        execution_engine = dependencies.build_v3_engine_registry(
+            owner.repositories
+        ).require("execution")
+
+    assert execution_engine.sandbox_workspace_root == sandbox_root
+    assert execution_engine.artifact_blob_root == blob_root
+
+
 def test_v3_timed_out_callback_cannot_apply_late_business_effect(
     monkeypatch,
     tmp_path: Path,

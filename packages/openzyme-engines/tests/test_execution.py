@@ -3389,7 +3389,9 @@ def test_deterministic_cdhit_adapter_emits_canonical_non_cutover_membership() ->
     assert result.summary["cutover_eligible"] is False
 
 
-def test_pipeline_bio_tools_persist_declared_outputs_with_provenance() -> None:
+def test_pipeline_bio_tools_persist_declared_outputs_with_provenance(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
     fasta_artifact_id = _save_fasta_artifact(repositories)
@@ -3432,7 +3434,15 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance() -> None:
         workspace,
     )
     runner = CapturingSuccessRunner()
-    engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    sandbox_root = tmp_path / "blank-sandboxes"
+    blob_root = tmp_path / "blank-blobs"
+    engine = ExecutionEngine(
+        repositories,
+        runner,
+        sandbox_runner=sandbox,
+        sandbox_workspace_root=sandbox_root,
+        artifact_blob_root=blob_root,
+    )
 
     first = engine.start_pipeline(
         session_id="sess_001",
@@ -3510,6 +3520,12 @@ def test_pipeline_bio_tools_persist_declared_outputs_with_provenance() -> None:
         "member_length",
     ]
     assert membership.metadata["row_semantics"] == "one_member_per_row"
+    assert all(
+        Path(artifact.storage_uri).is_relative_to(blob_root)
+        for artifact in artifacts
+    )
+    assert any(blob_root.rglob("*"))
+    assert any(sandbox_root.rglob("*"))
 
 
 def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -> None:

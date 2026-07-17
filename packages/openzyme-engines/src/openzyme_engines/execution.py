@@ -2959,6 +2959,7 @@ class ExecutionEngine:
     sandbox_runner: Any | None = None
     allow_bio_fixture_adapter: bool = False
     sandbox_workspace_root: Path | None = None
+    artifact_blob_root: Path | None = None
     repository_scope_factory: Any | None = None
 
     @property
@@ -5069,7 +5070,11 @@ class ExecutionEngine:
                 last_attached_at=now,
             )
             self.repositories.sandbox_workspaces.save(workspace)
-        boundary = ArtifactBoundaryService(self.repositories, workspace_root=workspace_root)
+        boundary = ArtifactBoundaryService(
+            self.repositories,
+            workspace_root=workspace_root,
+            blob_store_root=self.artifact_blob_root,
+        )
         workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id) or workspace
         if not workspace.source_code_artifact_ids:
             source = self._reload_pipeline_source(invocation, pipeline)
@@ -8444,7 +8449,10 @@ class ExecutionEngine:
         persisted: list[SessionArtifactRecord] = []
         boundary = self._ensure_pipeline_artifact_boundary_workspace(invocation)
         sandbox_workspace_id = self._pipeline_sandbox_workspace_id(invocation)
-        workspace_root = Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        workspace_root = (
+            self.sandbox_workspace_root
+            or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
+        )
         output_root = workspace_root / sandbox_workspace_id / "output" / output_dir_relative
         for draft in drafts:
             relative = PurePosixPath(draft.relative_path)
@@ -8537,7 +8545,11 @@ class ExecutionEngine:
         persisted: list[SessionArtifactRecord] = []
         workspace_root = self.sandbox_workspace_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         output_root = workspace_root / operation.sandbox_workspace_id / "output" / output_dir_relative
-        boundary = ArtifactBoundaryService(self.repositories, workspace_root=workspace_root)
+        boundary = ArtifactBoundaryService(
+            self.repositories,
+            workspace_root=workspace_root,
+            blob_store_root=self.artifact_blob_root,
+        )
         for draft in drafts:
             relative = PurePosixPath(draft.relative_path)
             relative_path = relative.as_posix()

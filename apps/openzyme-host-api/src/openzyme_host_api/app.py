@@ -415,6 +415,8 @@ class HostApiDependencies:
     v3_pipeline_sandbox_runner: Any | None = None
     v3_bio_adapter: Any | None = None
     v3_allow_bio_fixture_adapter: bool = False
+    v3_sandbox_workspace_root: Path | None = None
+    v3_artifact_blob_root: Path | None = None
     _owned_v3_temp_directory: tempfile.TemporaryDirectory[str] | None = field(
         default=None,
         init=False,
@@ -545,6 +547,8 @@ class HostApiDependencies:
                 allow_bio_fixture_adapter=self.v3_allow_bio_fixture_adapter,
                 sandbox_runner=self.v3_pipeline_sandbox_runner
                 or PodmanPipelineSandboxRunner(),
+                sandbox_workspace_root=self.v3_sandbox_workspace_root,
+                artifact_blob_root=self.v3_artifact_blob_root,
                 repository_scope_factory=runtime_repository_scope,
             ),
         )
