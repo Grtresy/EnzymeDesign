@@ -1,0 +1,90 @@
+{
+  "fixture_id": "aox_motif_rule_score_v1_reference_column_projection",
+  "derivation": {
+    "method": "Retain exactly the alignment columns occupied by the ungapped AAB57849.1 reference and preserve the observed residues for three authorized reference rows.",
+    "source_alignment_digest": "sha256:993ee2b3175abb68d2e1a4aad56edce1c3d33a19b07a600912fe6844e6484bfa",
+    "source_records": {
+      "AAB57849.1": "AAB57849.1 alcohol oxidase [Komagataella pastoris]",
+      "K3VE05_FUSPC": "tr|K3VE05|K3VE05_FUSPC",
+      "pdb|9AVH|A": "pdb|9AVH|A Chain A, Aryl Alcohol Oxidase"
+    }
+  },
+  "expected": {
+    "alignment_digest": "sha256:da5a3f49f3a03b985d143f262eb30b0967a50bbdf12cbe82d0eff0826afd0b9b",
+    "alignment_width": 663,
+    "canonical_csv_digest": "sha256:4904c94f320674e7af61c8b7592ed34d3f6f7d0bfb7d942ae3ceafd867377df2",
+    "contract_digest": "sha256:7f79044132e0f45afa5cb47776ad9c3bc10cea25c7c6de1007e50325ea49a086",
+    "contract_id": "aox_motif_rule_score@1",
+    "implementation_digest": "sha256:0eb1c4a28160389b805d3b9a28b9d664cad532082a08df206e12ee5d09c9d0f7",
+    "input_digest": "sha256:f8fd28b9c1e6f7963a9ae4deb488b79ad1bbd00c3d3630e194f058f72be9ae29",
+    "reference_sequence_digest": "sha256:fbaeadaa0f7fc110bc024ee8dbe9608b3f5cf055a1099e003518ead9a053ce7f",
+    "rows": [
+      {
+        "aligned_sequence_digest": "sha256:fbaeadaa0f7fc110bc024ee8dbe9608b3f5cf055a1099e003518ead9a053ce7f",
+        "motif_rule_score": "33.6",
+        "motif_rule_score_tenths": 336,
+        "passes_motif_rule": true,
+        "residues": {
+          "13": "G",
+          "15": "G",
+          "18": "G",
+          "98": "F",
+          "417": "F",
+          "566": "W",
+          "567": "H",
+          "616": "N",
+          "660": "L",
+          "661": "A",
+          "662": "R",
+          "663": "F"
+        },
+        "sequence_digest": "sha256:fbaeadaa0f7fc110bc024ee8dbe9608b3f5cf055a1099e003518ead9a053ce7f",
+        "sequence_id": "AAB57849.1"
+      },
+      {
+        "aligned_sequence_digest": "sha256:658e896bb1fd6b3fd15981538290fae3955ac1330db2beec954217d460d436a0",
+        "motif_rule_score": "34.0",
+        "motif_rule_score_tenths": 340,
+        "passes_motif_rule": true,
+        "residues": {
+          "13": "G",
+          "15": "G",
+          "18": "G",
+          "98": "F",
+          "417": "F",
+          "566": "W",
+          "567": "H",
+          "616": "N",
+          "660": "-",
+          "661": "-",
+          "662": "-",
+          "663": "-"
+        },
+        "sequence_digest": "sha256:69028f67aba2f04ea3e22773f0ec001626348e8f66078d137ee16bd30220ca29",
+        "sequence_id": "K3VE05_FUSPC"
+      },
+      {
+        "aligned_sequence_digest": "sha256:33c4c5874bb1eea3b28d5343f6fa7dd30c46933c6558bf16205ab76e08627aa1",
+        "motif_rule_score": "32.0",
+        "motif_rule_score_tenths": 320,
+        "passes_motif_rule": false,
+        "residues": {
+          "13": "G",
+          "15": "G",
+          "18": "G",
+          "98": "F",
+          "417": "V",
+          "566": "W",
+          "567": "H",
+          "616": "H",
+          "660": "-",
+          "661": "-",
+          "662": "-",
+          "663": "-"
+        },
+        "sequence_digest": "sha256:0e8a7a56974de679ab224b54f7a19bf95c9b9d843c2f3547d589cd6426c6c1a1",
+        "sequence_id": "pdb|9AVH|A"
+      }
+    ]
+  }
+}

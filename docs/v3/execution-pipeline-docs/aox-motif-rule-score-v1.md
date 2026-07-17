@@ -74,6 +74,16 @@ Tracked golden 从授权 alignment 中只提取三行，并删除三行均为 ga
 
 提取后的 alignment 必须由测试固定 byte digest；正式 canonical golden vector 使用产品字段重新计算 digest，不能把旧 `pass_rule` 字段结构的 digest 冒充 contract digest。相同分数按 `sequence_id ASC` 稳定排序。
 
+当前 tracked 实现身份为：
+
+- implementation digest：`sha256:0eb1c4a28160389b805d3b9a28b9d664cad532082a08df206e12ee5d09c9d0f7`
+- contract digest：`sha256:7f79044132e0f45afa5cb47776ad9c3bc10cea25c7c6de1007e50325ea49a086`
+- golden input bytes：`sha256:f8fd28b9c1e6f7963a9ae4deb488b79ad1bbd00c3d3630e194f058f72be9ae29`
+- golden normalized alignment：`sha256:da5a3f49f3a03b985d143f262eb30b0967a50bbdf12cbe82d0eff0826afd0b9b`
+- golden canonical CSV：`sha256:4904c94f320674e7af61c8b7592ed34d3f6f7d0bfb7d942ae3ceafd867377df2`
+
+implementation digest 会随 scorer 源码变化；任何有意修改都必须同时 bump contract 或重新 pin workflow/golden，未同步的 drift 必须在运行前失败。
+
 ## Fail-closed 条件
 
 下列情况不得注册 cutover-eligible scored/candidate artifact：contract、implementation 或 golden digest 漂移；reference 缺失/重复/截断；alignment 不等宽或不可解析；规则列不可映射；filtered hit 和 alignment 身份集合不闭合；sequence digest 不一致；legacy-only schema；任何 row 的 residue、score 或 pass 无法重算；candidate/count/FASTA 不一致；CD-HIT 输入不是 candidate artifact；cluster membership 或 graph edge 无法由真实输出重建。

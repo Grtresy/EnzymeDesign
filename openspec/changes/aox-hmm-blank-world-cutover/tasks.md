@@ -1,8 +1,8 @@
 ## 1. Reference and contract baseline
 
 - [x] 1.1 Record the authorized notebook/runner hashes, formula-derived golden rows, corrected integer-tenths boundary, and historical-output caveats without copying reference outputs into live roots.
-- [ ] 1.2 Implement the dependency-free `aox_motif_rule_score@1` contract, digest identities, aligned FASTA parser, exact coordinate mapping, scoring, and canonical row serialization in `openzyme_pipeline`.
-- [ ] 1.3 Add minimal immutable golden fixtures and focused tests for exact score/pass/order plus missing, duplicate, truncated, unequal-width, digest-drift, and legacy-schema failures.
+- [x] 1.2 Implement the dependency-free `aox_motif_rule_score@1` contract, digest identities, aligned FASTA parser, exact coordinate mapping, scoring, and canonical row serialization in `openzyme_pipeline`.
+- [x] 1.3 Add minimal immutable golden fixtures and focused tests for exact score/pass/order plus missing, duplicate, truncated, unequal-width, digest-drift, and legacy-schema failures.
 - [ ] 1.4 Add a versioned real-sequence similarity calculation and parsers that bind graph nodes/edges to actual sequence and CD-HIT identities, including schema-valid empty output.
 - [ ] 1.5 Replace AOX validators and execution summary fields with the canonical motif contract and reject `activity_score`, `seq_score`, `pass_rule`, constant graph data, and synthetic sequences as cutover evidence.
 
