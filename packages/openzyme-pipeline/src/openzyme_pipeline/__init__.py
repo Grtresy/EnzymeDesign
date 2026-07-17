@@ -1,5 +1,8 @@
 from . import artifacts
+from . import aox_hmmer
 from . import aox_motif
+from . import aox_reference
+from . import aox_sequence_join
 from . import aox_similarity
 from . import bio
 from . import bio_tools
@@ -11,7 +14,10 @@ from . import run
 from . import structure_tools
 
 __all__ = [
+    "aox_hmmer",
     "aox_motif",
+    "aox_reference",
+    "aox_sequence_join",
     "aox_similarity",
     "artifacts",
     "bio",
