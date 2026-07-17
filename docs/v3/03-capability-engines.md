@@ -93,6 +93,8 @@ V3 deep research 默认面向 enzyme design 接入一组受控 bio provider base
 
 provider adapter 的统一边界应是轻量 `ResearchObservation`，而不是 provider-specific raw response。
 
+literature adapter 的内部返回先使用 `ProviderCallResult`：outcome 固定为 `completed | empty | degraded | failed`，provenance 至少包含 safe request digest、endpoint identity、bounded attempts、`Retry-After`、retrieval time、response digest/status 和 allowlisted headers。PubMed 是 AOX/HMM required evidence；Semantic Scholar/Tavily 是 enrichment，rate limit、retry exhaustion、absence、schema drift 或 empty 归一化为 explicit degradation，禁止 fallback 到 deterministic/synthetic result。required/enrichment 的最终 quorum 由显式 evidence contract 汇总，provider adapter 不替 agent 改 query 或选替代证据。
+
 概念形状：
 
 - `status`：`completed` / `partial` / `failed`
@@ -110,6 +112,8 @@ provider adapter 的统一边界应是轻量 `ResearchObservation`，而不是 p
 - `deep_research` 内部 tool loop 使用 `ResearchObservation` 作为 `ResearchToolResult.payload`
 - `research teammate` direct provider actions 使用同一 `ResearchObservation` JSON 作为 `ToolResult.content`
 - provider raw response 只作为调试数据通过 `raw_ref` 或 engine document 追踪，不作为 canonical evidence schema
+- direct literature tool 必须在 provider I/O 前建立 `research_tool` invocation，并在所有 outcome（包括 typed `failed`、required PubMed `empty` 与 evidence sealing 失败）终结同一 invocation；安全 citation evidence 通过 artifact boundary external ingress 写入 Host 注入的 attempt-scoped Blob root，不能把 mutable `/tmp` 文件配上 digest metadata 冒充 sealed artifact
+- provider evidence artifact 只保存 allowlisted citation/provenance 与 call-local quorum；PMID/DOI/title/authors/venue/date、不可逆 NCBI identity digest 与 request/response digest 同步进入 canonical evidence/source ref，credential、private URL/query/header 与 Host path 不进入 engine document 或 public projection。required PubMed 只有真实 provider、schema-valid PMID、完整 provenance、非 fixture citation 全部成立时才可标为 accepted
 
 ### 2.6 V3 外部接口
 
@@ -184,7 +188,7 @@ deep research 对 harness 至少提供：
 - 本地 sandbox workspace 与 HPC placement workspace 是两个独立工作面；文件流必须通过显式 `stage_artifact` / `fetch_outputs` 或等价 Host-supervised declarations 表达，scheduler 不得把本地执行和 HPC 执行自动重写成不同后端
 - 多输入工具必须通过多个 `RunSpec.inputs` 明确 staging，例如 Vina 的 receptor 与 ligand
 - 远端结果只有在 `expected_outputs` 中声明且 runner 返回可读内容后才会被下载并登记为 artifact；Host 不得为 missing output 或 failed run 合成占位产物。显式 `fixture_non_cutover` / `simulation_non_cutover` 测试 outcome 可生成带 `synthetic_source=true`、`cutover_eligible=false` 的 fixture placeholder，但不能进入产品/cutover 证据
-- configured foundation 缺真实 execution backend 时使用显式 unavailable adapter，缺 Tavily 时不注册 web research provider，缺 bio service 时不注册 bio research tools；任何位置都不得自动回退 deterministic adapter。deterministic foundation 仅供显式 fixture eval，Web UI 本地 server 也必须通过 `--fixture-non-cutover` 才能选择，且其 outcome 全链路保持 non-cutover 标记
+- configured foundation 缺真实 execution backend 时使用显式 unavailable adapter；缺 Tavily 时只不注册 `web.search/web.fetch`，PubMed/Semantic Scholar direct tools 仍独立装配；缺 bio service 时才不注册 bio research tools。任何位置都不得自动回退 deterministic adapter。deterministic foundation 仅供显式 fixture eval，Web UI 本地 server 也必须通过 `--fixture-non-cutover` 才能选择，且其 outcome 全链路保持 non-cutover 标记
 - output artifact 必须保留相对路径层级，不能只保留 basename
 
 ### 3.1 Execution Pipeline Sandbox
@@ -239,6 +243,7 @@ Host supervisor 负责：
 - 把每个外部 backend/tool adapter 调用转换为 `packages/openzyme-tools` 的 tool contract compiler 输入；`hpc` 是稳定 executor-facing placement / remote workspace / declarative stage-fetch namespace，领域工具通过 `bio_tools` / `structure_tools` / `docking` 表达；公开 SDK/docs/examples/prompt 不暴露旧 runner-backed shorthand，Host 不提供兼容 stub
 - 由 Host API composition root 实例化 `apps/mcp-hpc-runner` server 并注入 `packages/openzyme-execution` adapter；package adapter 只规范化 runner boundary 调用和输出，不直接依赖 app
 - 记录 `sandbox_workspace_id`、pipeline code digest、immutable image digest、Pipeline SDK digest、`runtime_identity_digest`、SDK operation log、provider request summary、tool command template/sanitized args、RunSpec、run id、artifact lineage 与 provenance；approval 按包含 runtime identity 的完整 plan/operation digest 复用，任一 digest 漂移必须重新审批或失败。persistent `sandbox.exec` 将 runtime identity 持久化到 `SandboxRun.compatibility`，其 Host adapter operation 必须从原始 run 继承 identity，不得从 workspace/tag 猜测；bio output artifact 必须记录 provider、query/accession/database、request window、pagination cursor、response digest、retrieved_at、tool/API version；bio_tools output artifact 必须记录 toolchain id、runtime packaging id、tool name/version、input artifact ids、parameter digest、resource estimate 与 output validation 结果
+- Host composition 必须能为一次 blank-world attempt 显式注入独立的 `sandbox_workspace_root` 与 `artifact_blob_root`；ExecutionEngine 的 pipeline、provider callback、HPC fetch 和 source snapshot 必须一致使用这两个 root，不得在局部路径静默回落到共享 `/tmp`。root identity 属于 operator/private launch state，public evidence 只记录无路径 digest 和 preflight emptiness proof
 - Provider cache 只能作为 Host-private optimization；cache key/digest 可进入 provenance，但不能作为 live cutover passed 证据。AOX/HMM live cutover 必须生成 sealed evidence bundle。
 
 ### 3.2 Pipeline SDK Docs

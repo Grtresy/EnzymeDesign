@@ -1,163 +1,132 @@
-# Session 15：AOX/HMM Cutover Live E2E
+# Session 15：AOX/HMM Cutover Live E2E（历史 non-cutover 记录）
 
-## 目标
+## 当前结论
 
-完成 persistent sandbox 模型下的 AOX/HMM 真实 cutover 验收：产品默认路径不得 fallback 到 deterministic bio/bio_tools adapter；live AOX/HMM E2E 必须从用户 prompt 进入，经过 master、executor、approval、scheduler、persistent sandbox、Host supervisor、artifact catalog 和 final answer。
+2026-05-31 记录的 S15 `passed` 已撤销为 local Live cutover 证据。它证明了当时的 persistent sandbox、approval bridge、Host-supervised provider/HPC 路由与 artifact 登记控制流，但使用旧评分字段、常量 candidate/cluster/edge、合成序列和只检查表头的 validator，不能重算科学结论。
 
-## 当前缺口
+因此：
 
-- fixture prompt E2E 可以证明控制流，但不能证明真实 provider/toolchain/HPC cutover。
-- 旧一次性 pipeline gate 无法证明 persistent sandbox workspace、source snapshot、file/command runtime 和 external bridge 的完整路径。
-- live prerequisite 缺失必须报告 `prerequisite_missing`，不能计为 passed。
+- 历史 S15 workspace、operation、artifact 和 inline digest 只是迁移审计线索，不得复制进新 live roots；
+- `AoxHmmFixtureSandboxRunner`、`DeterministicBioDatabaseAdapter`、seeded state 和 deterministic/fixture artifact 一律是 `fixture_non_cutover`；
+- `live_e2e` marker 只证明显式配置的外部依赖路径，不单独等于可封存的一消息完整报告证明；
+- `seeded_live_smoke` 只是辅助回归，不是 cutover proof；
+- 当前 local Live cutover 保持 **NO-GO**，直到同一 commit/config identity 下的两次独立正向 blank-world E2E 和一次受控 fail-closed 故障验证全部封存并通过离线复核。
 
-## 当前实现债 / Cutover Blockers
+现行运营者/证据合同见 [../aox-hmm-blank-world-cutover.md](../aox-hmm-blank-world-cutover.md)，领域 SOP 见 [../execution-pipeline-docs/aox-hmm-live.md](../execution-pipeline-docs/aox-hmm-live.md)。本文保留 S15 命名，用于解释历史证据为何不再可用以及当前的替代验收面。
 
-当前 AOX/HMM eval 和 live wrapper 仍保留旧的 fixture / deterministic 证明路径。S15 实现前必须把这些路径从 live passed 证明中移除或改造成明确 fixture scenario：
+## 现行 product-path 边界
 
-- `AoxHmmFixtureSandboxRunner` 只能用于 fixture/unit/eval fixture dependency injection，不能进入 S15 live scenario。
-- `DeterministicBioDatabaseAdapter` 和 `v3_allow_bio_fixture_adapter=True` 只能用于 fixture scenario；产品默认路径缺真实 provider adapter/config 时必须结构化失败。
-- `run_v3_live_evals()` 默认仍是通用 V3 live task-plan smoke，不能计为 AOX/HMM live cutover proof；S15 live gate 必须通过显式 `v3_aox_hmm_cutover_live_e2e` scenario 运行。
-- 旧 AOX/HMM eval required paths 例如 `aox_hmm/filtered.fasta`、`aox_hmm/filtered.csv`、`aox_hmm/scoring.csv`、`aox_hmm/candidates.fasta`、`aox_hmm/candidates.csv` 和 `aox_hmm/candidate_cdhit85.fasta` 必须迁移到本文件的 fixed deliverable contract；旧名不能作为 compatibility passed 条件。
-- 任何仍通过手工构造 execution invocation、dry-run plan、approval、artifact 或 deterministic output 让 AOX/HMM scenario 变绿的路径，都只能标记为 fixture/control-flow coverage，不能标记为 S15 passed。
-- persistent sandbox 内的公开 `openzyme_pipeline` SDK 必须走 Host supervisor 可审计路径：`bio.*` / `bio_tools.*` 在 `sandbox.exec` 中不得直接调用旧 control method 名称导致 `sandbox_transport_method_forbidden`；`artifacts.*` 和 `hpc.workspace` / `hpc.stage_artifact` / `hpc.fetch_outputs` 必须有 control socket 覆盖或结构化 fail-closed。仅完成 approval bridge、但没有真实 provider/HPC adapter result 的 operation，approve 后必须以 `adapter_execution_unavailable` 失败；仅有 approval/operation 但缺 `backend_run_id`、adapter result 和 registered final artifacts 的 live evidence 必须返回 `live_evidence_incomplete`，不能计为 S15 passed。
+正向 attempt 只允许从一次
+`POST /v3/sessions/{session_id}/messages` 进入。之后只使用 public message/runtime drain/approval/workspace/events/report API 推进，不直接调 repository/service 写入真状态：
 
-## 当前审查结论（2026-05-31）
+1. master 显式创建并委派 researcher、executor 和 reporter task；
+2. `task.delegate(..., workflow_refs=[<exact aox-hmm-live ref>])` 只把 AOX workflow pack 绑定给 executor，通过受权子集、role/tool/capability 和 manifest snapshot 验证；省略或 `[]` 就是不绑定，不从 master focus 或关键词隐式继承；
+3. researcher 产生真实 PubMed/PMID 必需证据，Semantic Scholar/Tavily 只作 enrichment；
+4. executor 在 persistent sandbox 中 author source，Host 封存 source snapshot，`sandbox.exec` 通过 `openzyme_pipeline` SDK 请求 provider/HPC；
+5. canonical approval 必须续接同一 `operation_id` / `operation_digest`，不得唤醒 agent 后重开替代 operation；
+6. artifact catalog 登记当前运行的 normalized sealed outputs 和 lineage；
+7. 三个 teammate 分别显式写入 task 业务终态，reporter 通过 `report.publish` 发布报告，master 产生非空 final response。
 
-- S15 的本地实现 blocker 已从外部 prerequisite 推进到真实 live product path：persistent sandbox control socket 已覆盖 `artifacts.*`、`hpc.workspace`、`hpc.stage_artifact`、`hpc.fetch_outputs`；S12 public `bio.*` / `bio_tools.*` approve 后走 Host adapter executor，缺 executor 时仍结构化 fail-closed。
-- `bio_tools.*` 在 supervised sandbox mode 下返回可链式传给 `ws.fetch_outputs(run)` 的 Host-supervised HPC run handle；`hpc.fetch_outputs` 通过 Host fetch executor 登记 declared outputs，并把 `fetch_refs` / `registered_artifact_ids` 回写到同一个 S12 `ControlledOperation`。
-- live AOX/HMM scenario 已加硬 guard：`scenario_class="live"` 时禁止 fixture dependency injection，避免 `AoxHmmFixtureSandboxRunner` / deterministic adapter 误进入 live passed 路径。
-- fixed deliverable validator 已覆盖 fixed thresholds、`refprot`、13 accession metadata、空 `target.fasta` warning、`AOX_ref.hmm` provenance、`scored_ref_plus_hits.csv` bounded-score columns 和 normalized final path 列表；旧路径仍不能作为 pass contract。
-- background runtime 已修复 live 场景中的 event loop 阻塞风险：长 LLM/agent step 通过 worker thread 推进，避免 `/workspace`、`/events` 和 `/debug/v3-runtime` 在 Web UI 手测时被同一事件循环长时间堵住。
-- master prompt 和 `task.delegate` 写路径已补强 AOX/HMM execution contract：AOX/HMM、HMM、`refprot` 或 sequence-mining execution task 委派给 executor 时，delegation payload 会强制要求读取 `docs.read doc_id="aox-hmm-live"`，使用 persistent sandbox + Host-supervised SDK，并禁止 ClustalW/MUSCLE、direct MAFFT/CD-HIT/HMMER binaries、direct provider files、pseudo computation、synthetic hits 和 dependency installs。
-- 已通过本地门禁：focused sandbox/runtime 与 execution tests、V3 API focused tests、repository/projection focused tests、provider/HPC focused tests、delegation focused tests、`git diff --check`，以及 background runtime non-blocking focused regression。非 live 门禁只能证明实现路径和前端构建可用，不能替代真实 AOX/HMM live cutover proof。
-- 当前 `uv run python -m openzyme_host_api.evals --live --scenario v3_aox_hmm_cutover_live_e2e` 已通过真实 S15 live AOX/HMM cutover gate：`scenario_id="v3_aox_hmm_cutover_live_e2e"`、`status="passed"`、`live_cutover_eligible=True`，并在 eval result 中返回 sealed inline evidence payload 与 `evidence_bundle_digest`。
-- 本次 passed evidence 覆盖完整 product path：单一用户 prompt、master `task.delegate` 到 executor、persistent sandbox workspace `sw_37166764122b691b7afb5ba6`、source snapshot `art_4881f9b0f879` / source digest `sha256:96ca9f136ccb00362724c5f997146cfada60644a918a4d2eb02a3abe79188eb4`、sandbox run `srun_de41e91a41d8`、9 个 canonical SDK approval、9 个 completed controlled operations、provider/HPC route policies、registered artifacts 和 final answer digest。
-- 本次 passed evidence 注册了全部 11 个 fixed deliverables：`aox_hmm/AOX_ref21.fasta`、`aox_hmm/target.fasta`、`aox_hmm/AOX_ref.hmm`、`aox_hmm/hits_raw.csv`、`aox_hmm/hits_len650_700_200.csv`、`aox_hmm/scored_ref_plus_hits.csv`、`aox_hmm/AOX_candidates.fasta`、`aox_hmm/AOX_candidates_cdhit85.fasta`、`aox_hmm/nodes.csv`、`aox_hmm/edges_similarity.csv`、`aox_hmm/execution_summary.json`；`final_output_validation`、`live_product_path_validation` 和 `evidence_bundle_validation` 均为 passed。
-- 本次 live route evidence 覆盖 `bio.ncbi_fetch_proteins.provider:v1`、`bio.uniprot_fetch.provider:v1`、`bio.hmmer_search.provider:v1`、`bio_tools.cdhit.hpc:v1`、`bio_tools.mafft.hpc:v1`、`bio_tools.hmmbuild.hpc:v1`、`bio_tools.hmmalign.hpc:v1`；`bio_tools.hmmer_search_cli` 保持 `disabled/unsupported_in_s14`，不作为当前主路 passed 条件。
-- 可以进入 Web UI 开发者手动测试准备阶段。手动测试仍必须验证同一 canonical approval card 在浏览器中可见、approve 后恢复同一个 blocked SDK operation，并确认 `/workspace`、`/events?replay=1`、`/debug/v3-runtime` 与 evidence bundle 一致；不得把本次自动 live pass 当成人工 approval UI 已验证。
+Runtime idle、max steps、tool success、protocol message 或 capability terminal 都不代表 task completed。缺真实 provider/backend、runner output、approval continuation、artifact closure 或 published report 时必须显式失败，不用 Host-local binary、deterministic adapter、cached payload 或 synthetic output fallback。
 
-## 实施范围
+## 纠正后的科学数据链
 
-- 产品默认 `ExecutionEngine` 缺少真实 provider/tool backend 时必须结构化失败，不得创建 synthetic FASTA、fixture HMM 或 synthetic hits。
-- fixture adapter 只能通过 unit/eval fixture dependency injection 出现。
-- live AOX/HMM E2E 必须从固定用户 prompt 进入：
-  - `POST /v3/sessions/{session_id}/messages`
-  - master task decomposition
-  - `task.delegate` 给 executor
-  - executor 使用 persistent sandbox 创建/修改脚本
-  - Host snapshot execution source 为 CODE artifact
-  - `sandbox.exec` 运行脚本
-  - SDK operation 触发 Host approval 并在 Web UI 阻塞等待
-  - approve 后 Host 恢复同一个 SDK operation；reject 时 sandbox 代码收到结构化异常
-  - scheduler 只负责唤醒 executor 消费运行结果或失败证据
-  - sandbox 通过 SDK 请求真实 Host-supervised provider 和 Host-supervised HPC backend
-  - artifact catalog 登记结果和 provenance
-  - executor 显式 `task.update`
-  - master 生成 final answer
-- live prerequisite 检查的主路硬门槛覆盖 NCBI、UniProt、EBI HMMER REST `refprot`、S14 已启用的 MAFFT / CD-HIT / `hmmbuild` / `hmmalign` HPC route、HPC runner、staging/fetch 和 output validation。
-- Host-local Apptainer / SIF、Host-local HMMER observation 或 sandbox 内 binary 只能作为非 route 诊断背景，不能进入 S15 passed 条件，也不能作为缺失 provider/HPC prerequisite 的 fallback。
-- HMM search 主路固定为 `bio.hmmer_search(..., database="refprot")` 的 Host-supervised EBI HMMER REST provider path。`bio_tools.hmmer_search_cli` 可以产生补充 toolchain evidence，但不能替代 S15 的 EBI REST 主路；其 production target database 缺失不阻塞当前 S15 主场景 passed。若后续显式启用 offline/HPC HMM search 子场景，该子场景必须单独报告 `prerequisite_missing` 或 passed evidence。
-- S15 fixed prompt 必须包含 13 个 AOX accession、`refprot` HMM search、长度过滤 `650-700`、HMM score `>200`、参考坐标序列 `AAB57849.1`、activity score threshold `33.6` 和 similarity threshold `0.85`。
-- live run 可以产生额外 raw/provider/tool artifacts，artifact ids 不要求一致；但必须通过规范化导出层登记下方固定最终 deliverable relative paths 和 schema。
+### Exact-14 NCBI 与参考身份拆分
 
-## Fixed AOX/HMM Deliverable Contract
+一次正式 NCBI protein fetch 必须请求 exact 14：
 
-这一节是 AOX/HMM recipe / eval 的验收面，不是 harness 运行时 schema。最终 deliverable 必须登记在 `aox_hmm/` 下，使用 notebook 基名。S13 provider transcript / raw hits、S14 tool raw outputs / logs 和 sandbox 中间 artifacts 只是诊断或规范化输入；它们不能替代最终交付面。executor pipeline 必须汇总真实 provider / tool observations，在 sandbox 中生成下列 normalized outputs，并通过 S08 artifact boundary / `artifacts.register(...)` 登记。验收只把下列路径作为稳定用户交付面；artifact catalog / harness 不理解 AOX/HMM 专用字段或阈值。
+- 13 个 HMM-model reference：`AAC72747.1`、`KDQ24956.1`、`9AVH_A`、`XP_014653549.1`、`KIS68002.1`、`XP_003660923.1`、`AMW87253.1`、`AFP17823.1`、`WP_190019735.1`、`WP_138089821.1`、`WP_176407597.1`、`CAQ19343.1`、`CAQ19344.1`；
+- 1 个坐标 reference：`AAB57849.1`。
 
-| relative_path | kind/format | required columns / summary fields |
-| --- | --- | --- |
-| `aox_hmm/AOX_ref21.fasta` | sequence / fasta | 13 个输入 accession 对应的 reference FASTA，metadata 记录 accession count 和 provider request ids。 |
-| `aox_hmm/target.fasta` | sequence / fasta | EBI/refprot search 或后续 fetch 得到的 candidate target sequences；允许为空时必须有 structured empty-result warning。 |
-| `aox_hmm/AOX_ref.hmm` | result / hmm | HMMER HMM format marker。 |
-| `aox_hmm/hits_raw.csv` | result / csv | `target`, `uniprot_accession`, `hmm_score`, `evalue`, `length`。 |
-| `aox_hmm/hits_len650_700_200.csv` | result / csv | `target`, `uniprot_accession`, `hmm_score`, `evalue`, `length`, `sequence`。 |
-| `aox_hmm/scored_ref_plus_hits.csv` | result / csv | `id`, `seq_score`, `pass_rule` plus bounded rule-score columns. |
-| `aox_hmm/AOX_candidates.fasta` | sequence / fasta | Candidates with `seq_score >= 33.6` after length/HMM filtering. |
-| `aox_hmm/AOX_candidates_cdhit85.fasta` | sequence / fasta | CD-HIT 85 percent deduplicated candidates. |
-| `aox_hmm/nodes.csv` | result / csv | `node_id`, `label`, `score`, `cluster_id`. |
-| `aox_hmm/edges_similarity.csv` | result / csv | `source`, `target`, `similarity`. |
-| `aox_hmm/execution_summary.json` | result / json | `accession_count`, `candidate_count`, `length_filter`, `hmm_score_threshold`, `activity_score_threshold`, `similarity_threshold`, `hmmer_database`, `provider_status`, `tool_status`, `warning_count`, `artifact_ids`. |
+provider aggregate 上的 missing/extra/duplicate/mismatch 全部 fail closed；`9AVH_A` 以固定 NCBI PDB chain 规则解析，不改写 requested identity。三个独立计算合同处理该封存 aggregate：
 
-### Minimum Final-output Validators
+- `aox_hmm_reference_set_selection@1` 生成 exact-13 `AOX_ref21.fasta`，它是唯一可进入 MAFFT/hmmbuild 的 model reference input；
+- `aox_reference_selection@1` 生成 AAB-only `AOX_coordinate_reference_AAB57849.1.fasta`；
+- `aox_scoring_input_assembly@1` 把 AAB 放在首位，再按 target id 字典序追加 post-UniProt target，生成 `AOX_scoring_input.fasta`。
 
-- 每个 fixed `aox_hmm/*` relative path 都必须在当前 live run 的 artifact catalog 中存在为 registered artifact；只出现在 sandbox working copy、provider transcript、tool raw output 或 runner logs 中不算通过。
-- FASTA deliverables 必须是可解析 FASTA。`aox_hmm/target.fasta` 允许为空；recipe/eval 可以检查 agent 是否基于 artifact 内容与 execution summary 正确解释空结果或 fallback，但 harness 不硬编码 AOX/HMM warning 字段，也不替 agent 生成领域解释。
-- `aox_hmm/AOX_ref.hmm` 必须包含 HMMER3 profile marker，且 source provenance 能回链到 13 个 fixed AOX accession 的 reference FASTA、MAFFT alignment 和 `hmmbuild` operation。
-- CSV deliverables 必须包含表中 required columns；额外列允许存在，但不能替代 required columns。`scored_ref_plus_hits.csv` 的 bounded rule-score columns 必须来自固定 reference coordinate `AAB57849.1` 和 activity score threshold `33.6` 的可审计计算摘要。
-- `aox_hmm/execution_summary.json` 是 AOX/HMM pipeline 自己的任务产物；recipe/eval 可以要求它包含表中字段，并记录 `hmmer_database="refprot"`、阈值、candidate count、provider/tool status、warning count、registered artifact ids 和 normalized final deliverable paths。Harness 只负责执行、注册、读取和投影该 artifact。
-- artifact ids 是 run-specific 证据，不能成为 deliverable identity；验收以 normalized `relative_path`、kind/format 和 schema 为准。
+`AAB57849.1` 不得进入 13-reference HMM training；13-reference model FASTA 也不得冒充 motif 坐标 reference。
 
-## 接口变化
+### HMMER → UniProt → identity-preserving join
 
-- live result 状态固定区分：
-  - `passed`
-  - `failed`
-  - `prerequisite_missing`
-- live summary 只暴露 provider/tool/backend prerequisite 状态、selected backend、route reason、artifact count、通用错误摘要、`sandbox_workspace_id` 和 final answer availability；领域 warning 由 recipe/eval 或 agent 通过 artifact 内容解释。
-- source execution evidence 回链到 `sandbox_workspace_id`、source snapshot artifact id、source digest、SDK call trace、output artifacts 和 final answer。
+EBI HMMER REST 固定使用 `refprot`。其 provider parsed artifact 保留 exact 11 columns：`target`、`accession`、`evalue`、`score`、`page`、`hit_index`、`evalue_numeric`、`score_numeric`、`raw_page_digest`、`raw_hit_digest`、`parsed_row_digest`。
 
-## Resource Identity / Lifecycle
+`hmmer_score_filtered_accessions@1` 只保留 score 严格 `>200` 的 canonical UniProt accession；其七列 output artifact 和 exact non-empty accession set 是 `bio.uniprot_fetch` 的唯一允许输入。HMMER 的记录不提供下游 sequence/length 真值。
 
-本 session 锁定 S15-specific live evidence payload，而不是新增 control-plane 顶层真状态。live cutover passed 必须来自当前真实运行证据，不能来自 fixture、seeded smoke、test collection 或旧 Session 06 evidence。
+UniProt 保留 primary accession、reviewed status、release/version、retrieved time、raw response/record/sequence digest 和 append-only cross-source mapping。`aox_sequence_length_join@1` 按 identity 严格连接 HMMER accession 与 UniProt record，用 UniProt sequence 实际长度应用 inclusive `650..700` 过滤，产生 `target.fasta` 和 `hits_len650_700_200.csv`。两源 sequence bytes 不一致时保留双方 digest 并要求显式 selection，不静默 overwrite。
 
-- `PrerequisiteReport` payload
-  - identity：`prerequisite_report_digest` 由当前 prerequisite payload 计算。
-  - owner：S15 live eval harness/provider/tool/backend probe 创建。
-  - lifecycle：只反映当前真实检查；Session 06 evidence 可作为参考 ref，但不能替代当前 passed 证据。
-  - persistence：不写入 core/domain repository；作为 eval result 的 inline payload 返回。
-- `EvidenceBundle` payload
-  - identity：`evidence_bundle_digest` 由 sealed evidence payload 计算。
-  - owner：S15 live eval harness 聚合，artifact catalog 和 event log 提供证据来源。
-  - lifecycle：run 结束时在 eval result 中 sealed；rerun 产生新的 payload/digest。
-  - content：fixed prompt、session id、sandbox workspace id、sandbox image digest、adapter schema version、route policy id、toolchain ids、provider config digests、approval ids、source snapshot digest、SDK operation trace、backend run ids、registered artifact ids、normalized final deliverable paths、通用 error summary、final answer digest。
-  - privacy：只保存 safe refs/digests/summaries，不保存 provider credentials、Host paths、remote paths、runner config 或 full private logs。
-- `safe_summary`
-  - identity：与当前 eval result 绑定，不单独建表。
-  - lifecycle：随 scenario result 返回，用于人工审查和可选 trace upload。
+### Scoring 与结果分支
 
-固定错误码/状态：
+非空 target 时 HMMalign 同时消费真实 `AOX_ref.hmm` 和 `AOX_scoring_input.fasta`，产生 `AOX_scoring_alignment.fasta`。`aox_motif_rule_score@1` 在 AAB 的 one-based ungapped coordinate 上使用 exact integer tenths，threshold 是 `336`，`33.6` 只是展示值；它是 reference-coordinate heuristic，不是实验活性预测。旧 `activity_score`、`seq_score`、`pass_rule` 无 alias，直接使 attempt 失效。
 
-- `live_fixture_forbidden`
-- `live_prerequisite_missing`
-- `live_evidence_incomplete`
-- `live_artifact_missing`
-- `live_final_answer_missing`
+offline verifier 从封存 bytes 推导分支，而不信任 execution summary 或 agent 自报：
 
-## Approval Evidence
+| branch | stable reason | formal omission |
+|---|---|---|
+| `hmmer_upstream_empty` | `no_hmmer_hits` / `no_filtered_hmmer_accessions` | UniProt、HMMalign、CD-HIT |
+| `length_filter_empty` | `no_candidates_after_length_filter` | HMMalign、CD-HIT |
+| `motif_filter_empty` | `no_candidates_after_motif_filter` | CD-HIT |
+| `nonempty` | n/a | 无 |
 
-- 自动 live gate 必须通过 canonical approval resolve API approve pending SDK operation，不能预先注入 approved state、绕过 approval service 或让 executor 自己调用 resume。
-- pending approval 必须绑定 `operation_id`、完整 `operation_digest`、`sandbox_workspace_id`、`source_snapshot_artifact_id`、selected backend、route policy id、expected outputs 和 resource summary。
-- approve 后 evidence bundle 中必须能看到同一个 `operation_id` / `operation_digest` 从 `waiting_approval` 继续到 completed 或 structured failure；digest 漂移必须产生新 approval 或 `operation_drift_detected`，不能复用旧 approval。
-- reject 演示必须证明 sandbox SDK 收到结构化 approval rejection，`sandbox.exec` 返回失败证据，executor 只能在后续 agent turn 修改 workspace 或参数后重新运行。
-- 人工 Web UI 演示必须使用同一 canonical approval card；点击 approve 后恢复同一个 blocked SDK operation，而不是唤醒 agent 后重开一个替代 operation。
+upstream empty 的 `provider_upstream_empty_receipt@1` 必须绑定 HMMER score-filter trigger artifact、derivation operation、reason 和 `provider_io_performed=false`，不得伪造 UniProt invocation/operation/request/response digest。target 为空时不伪造 HMMalign；`aox_reference_only_scoring_alignment@1` 把已验证的 AAB-only scoring input 物化为 scoring alignment。motif 为空时不伪造 CD-HIT representative。独立 probe 可以证明未到达 capability 健康，但不能给正式图补数据。
 
-## 推荐实施顺序
+## Fixed normalized deliverables
 
-这一段是 S15 动工顺序，不是当前完成状态。每一步先补 focused failing test 或 schema assertion，再改实现；只在前一步验收通过后进入下一步。
+正向 attempt 至少登记以下当前运行产生的 normalized sealed artifacts；provider raw/transcript、HPC logs 和其他中间 artifact 可额外存在，但不能替代这些路径：
 
-1. Guardrail tests first：覆盖 fixture/deterministic/Host-local/sandbox binary fallback forbidden、旧 AOX/HMM eval artifact paths 不计 passed、raw provider/tool artifacts 不能替代 fixed `aox_hmm/*` outputs、S06 evidence / seeded smoke / test collection 不能作为 live cutover proof。
-2. Live evidence payload：建立或收紧 S15 inline `PrerequisiteReport` / sealed `EvidenceBundle` result payload，至少能返回 fixed prompt、config snapshot digest、route policy id、provider/toolchain digests、approval ids、operation trace、registered artifact ids、normalized final paths 和 final answer digest；不新增 core/domain 顶层表。
-3. Live AOX/HMM harness：把 AOX/HMM live gate 接到真实 product path，从 `POST /v3/sessions/{session_id}/messages` 进入，不注入 `AoxHmmFixtureSandboxRunner`、`DeterministicBioDatabaseAdapter` 或 fixture adapter allowance；fixture scenario 必须显式命名并从 live passed 统计中排除。
-4. Current prerequisite report：运行当前真实 prerequisite 检查并作为 eval result payload 返回，主路只把 NCBI、UniProt、EBI HMMER REST `refprot`、S14 enabled HPC bio tools、runner/staging/fetch/output validation 作为 passed gate；disabled/optional `bio_tools.hmmer_search_cli` production database 单独报告，不阻塞主场景。
-5. Fixed prompt and eval migration：更新 AOX/HMM live prompt、scenario id、required artifact list 和 result summary，使其使用本文件 fixed deliverable contract；旧 `filtered/scoring/candidates/candidate_cdhit85` 路径只允许作为 migration debt 或 fixture output。
-6. Normalized export and validators：executor pipeline 汇总 S13/S14 raw artifacts 后，通过 `artifacts.register(...)` 登记 fixed `aox_hmm/*` outputs；实现本文件 minimum final-output validators 和 `live_artifact_missing` / `live_evidence_incomplete` failure mapping。
-7. Approval verification：自动 live gate 使用 canonical approval resolve API approve pending operation，并记录同一 `operation_id` / `operation_digest` 的 continuation；人工 Web UI 演示单独验证同一 approval card 可以恢复同一 blocked SDK operation。
-8. Readiness review：检查 final answer、task board、delegation、inbox/events、runtime drain、workspace artifacts、inline evidence bundle 和 safe projections；缺 fixed prompt、config snapshot、image digest、route policy id、toolchain/provider digests、operation trace、artifact ids 或 final answer digest 时不能标记 passed。
+| relative path | contract |
+|---|---|
+| `aox_hmm/AOX_ref21.fasta` | exact-13 `aox_hmm_reference_set_selection@1` output |
+| `aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta` | AAB-only `aox_reference_selection@1` output |
+| `aox_hmm/AOX_scoring_input.fasta` | AAB-first `aox_scoring_input_assembly@1` output |
+| `aox_hmm/target.fasta` | post-UniProt length-joined target; may be empty |
+| `aox_hmm/AOX_ref.hmm` | HMMER3 profile built only from the exact-13 model references |
+| `aox_hmm/hits_raw.csv` | exact 11-column sealed EBI parsed bytes |
+| `aox_hmm/hmmer_score_filtered_accessions.csv` | exact seven-column score-`>200` result |
+| `aox_hmm/hits_len650_700_200.csv` | canonical `aox_sequence_length_join@1` result |
+| `aox_hmm/AOX_scoring_alignment.fasta` | HMMalign output or verified AAB-only empty-target materialization |
+| `aox_hmm/scored_ref_plus_hits.csv` | exact canonical `aox_motif_rule_score@1` rows |
+| `aox_hmm/AOX_candidates.fasta` | real target rows with `passes_motif_rule=true` |
+| `aox_hmm/AOX_candidates_cdhit85.fasta` | real CD-HIT representatives; empty when branch omits CD-HIT |
+| `aox_hmm/AOX_candidates_cdhit85.clusters.csv` | one member per row under `cdhit_cluster_membership@1` |
+| `aox_hmm/nodes.csv` | canonical real-sequence graph nodes |
+| `aox_hmm/edges_similarity.csv` | recomputable real-sequence graph edges |
+| `aox_hmm/similarity_graph_manifest.json` | candidate/membership/node/edge digest closure |
+| `aox_hmm/execution_summary.json` | counts, identities, branch, omissions, warning/empty status and artifact ids |
 
-## 测试/验收
+`execution_summary.json` 必须带 HMMER filter、sequence join、两个 reference selection、scoring-input assembly、motif、membership 和 similarity 的 contract/implementation/input/output digest，各阶段真实 count，`scientific_branch`、`omitted_operation_roles`、`upstream_empty_skip_receipt_digest`、provider/tool status 和 normalized path list。verifier 重算这些字段；summary 本身不是 branch 真值。
 
-- fixture scenario 名称、trace 和 summary 必须标记 `fixture`；fixture 不计入 live cutover passed。
-- live scenario 不注入 deterministic adapters，不绕过 persistent sandbox source execution，不使用 Host-local、sandbox binary 或 sibling backend 替代缺失的 provider/HPC prerequisite。
-- live E2E 必须产出 fixed deliverable contract 中列出的 `aox_hmm/*` artifacts；raw provider/tool artifacts 可以额外存在，但不能替代这些 normalized outputs。只存在 raw provider/tool artifacts 而缺 fixed `aox_hmm/*` normalized outputs 时返回 `live_artifact_missing`。
-- live AOX/HMM eval 必须使用本文件 fixed deliverable paths；旧 `filtered/scoring/candidates/candidate_cdhit85` 路径不能作为 S15 pass contract。
-- final answer 由 master / executor agent 根据任务、artifact 和 protocol thread 自行生成；recipe/eval 可以检查它是否充分解释候选数量、过滤阈值、provider/tool/backend 摘要、重要结果条件和关键 artifact ids，但 harness 不硬编码 AOX/HMM 专用措辞。
-- 主路 prerequisite 缺失只返回 `prerequisite_missing`，不能标记 passed。disabled / optional offline-HPC `bio_tools.hmmer_search_cli` production database 缺失不影响当前 EBI REST 主场景 passed；若该 route 被显式纳入 live scenario，则必须单独 `prerequisite_missing`。
-- passed S15 live result 必须有 sealed inline evidence payload 和 `evidence_bundle_digest`；bundle 缺 fixed prompt、config snapshot、image digest、route policy id、toolchain/provider digests、operation trace、artifact ids 或 final answer digest 时返回 `live_evidence_incomplete`。
-- approval 验收分两条：自动 live gate 必须通过正常 approval resolve API approve pending operation；人工 Web UI 演示必须证明同一 approval card 可以由用户点击 approve 后继续同一 SDK operation。两条都不能绕过 canonical approval service。
+schema-valid empty 分支保留 AAB scoring row，candidate/representative FASTA 为空，membership/nodes/edges 只有 canonical header，graph manifest 和 summary 保留稳定 empty reason。不得生成假 row 来避免空表。
+
+## Known-positive probe 边界
+
+产品 collector 与 offline verifier 已实现 `aox_known_positive_probe@2`，其 `probe_id="independent_globin_provider_hpc_probe"`。这只证明 attestation contract 已存在，不声称已有真实 `@2` pass；AAB-only + MAFFT 的 `@1` 证据不足且不被当前 verifier 接受。
+
+`@2` 使用 NCBI `NP_000509.1` / `NP_000549.1`、UniProt `P68871` / `P69905`，并只有六个隔离的 controlled operations：NCBI fetch、UniProt fetch、MAFFT、hmmbuild、protein CD-HIT identity `1.0`、一次同时消费真实 HMM 与 clustered UniProt FASTA 的 HMMalign。它只用一个独立 task/workspace/sandbox/source snapshot，provider response digest 从 raw HTTP body 计算。形式路径必然到达 EBI HMMER，所以 probe 不重复该 provider。
+
+probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal roles、report claim 或 AOX outcome。在真实 run 产生该已实现 schema 并通过当前 offline verifier 前，probe 仍是 NO-GO blocker，不能用代码存在或文档自报代替 live 证据。
+
+## Blank-world campaign 验收
+
+每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 100M 账本，不在 campaign 初始化时重置。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
+
+GO 只由顺序固定的三次 campaign 聚合得出：
+
+1. positive 1：全新 roots，published report，offline verification passed；
+2. positive 2：不同 roots 且 task/operation/invocation/job 证据独立，但 commit/config/workflow/scoring/image/SDK identity 与 positive 1 完全相同；
+3. fault：`sealed_provider_artifact_byte_flip@1` 确实到达必需 provider artifact seam，产生 `artifact_content_digest_mismatch`，不得存在 cutover-eligible report 或 success bundle。
+
+至少一个 positive attempt 使用 Chrome 解决 canonical approval card，并证明同一 operation 续接、workspace/events/report/evidence 一致且 browser console 无 application error。任一必需 quorum、digest、分支 closure、published report、offline verification、Chrome proof 或 MICU ledger 条件失败，campaign 只能产生最小 evidence-backed **NO-GO** blocker。
+
+## 当前实施状态的表述规则
+
+- focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；
+- provider/HPC/Chrome preflight 是当前外部状态证据，不得用旧日志或本地 fixture 替代；
+- 实现中尚未被当前 validator 实际接受的 schema/contract 只能写为 target/pending，不能因为文档已定义而声称 completed；
+- 直到两个 positive bundle、一个 fault bundle 和 sealed campaign decision 真实存在，所有文档、UI 和交付结论保持 **NO-GO**。
 
 ## 明确不做什么
 
-- 不直接运行 `reference/enz_miner_hmm_aox.ipynb`。
-- 不把 Session 06 evidence、seeded smoke、test collection 或 fixture success 当成 live cutover proof。
-- 不通过手工构造 invocation/run/approval/artifact 绕过用户 prompt、master、executor、approval、scheduler 或 artifact catalog。
-- 不把 Host-local Apptainer/SIF、sandbox binary、raw provider/tool artifacts 或 optional `bio_tools.hmmer_search_cli` evidence 当成当前 S15 主路 cutover proof。
+- 不直接运行或复制 `reference/enz_miner_hmm_aox.ipynb` 产物；只用它审计公式、reference identity 和最小 golden。
+- 不把 Host-local Apptainer/SIF、sandbox binary、raw provider/tool artifact、optional `bio_tools.hmmer_search_cli` 或 seeded smoke 当作 EBI REST + Host-supervised HPC 主路 cutover proof。
+- 不手工构造 task、invocation、run、approval、artifact、report 或 evidence 来跳过用户消息、agent team、scheduler/runtime drain、approval 或 artifact boundary。
+- 不为了让结果非空而重试成无界循环、替换 provider、放宽阈值、复制 HMM/motif score、伪造 candidate/cluster/edge，或把 probe 数据注入正式结果。

@@ -163,6 +163,8 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 
 这些 direct provider tools 的返回内容应统一为 `ResearchObservation` JSON，而不是暴露各 provider 的原始 response shape。
 
+其中 `pubmed.search` 为 AOX/HMM required literature provider；`semantic_scholar.search` 与配置后出现的 `web.search/web.fetch` 为 enrichment。provider envelope 的 outcome 保留 `completed/empty/degraded/failed`，enrichment degradation 使用 `ok=true + ResearchObservation.status=partial` 告知 agent“主路径可继续但必须披露缺口”；required PubMed failure、empty、fixture 或 schema-invalid citation 都使用 `ok=false + ResearchObservation.status=failed`，同时封存原始 typed outcome 与 call-local quorum，不能把“网络调用正常结束”误写成“科学证据可用”。任何路径都不得为获得非空 findings 生成 fixture/synthetic hit。
+
 在 executor sandbox SDK 中，`rcsb_pdb.download_structure` 不是 direct control-socket tool，而是 `rcsb_pdb.download_structure.provider:v1` 受控 provider operation：sandbox 提交 typed params，Host supervisor 负责真实 RCSB 下载、输出校验、artifact boundary 登记和 `content_digest` / `sealed_digest` / provenance manifest 返回。
 
 最低语义：
@@ -173,6 +175,9 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - 只有真实下载或生成的文件资产才进入 `artifacts`
 - provider direct download 产物进入 control plane 时默认是 sealed artifact：artifact metadata 必须记录基于实际 bytes 的 SHA-256 `content_digest` / `sealed_digest`、`provider`、`external_id`、`source_locator`、`format`、`retrieved_at` 和结构化 `provenance`；后续 `hpc.stage_artifact` 只消费这些 catalog digest 与 session 授权，不负责判断 PDB/FASTA 是否满足某个 execution tool 的输入质量
 - raw provider payload 默认不进入长期 LLM restore context；需要调试时使用 `raw_ref` 或 engine document 追踪
+- direct provider invocation 在网络 I/O 前可见为 `RUNNING`，随后在每个 outcome 变为 terminal；同一 call 不得因 retry、degradation 或 sealing 恢复创建替代 invocation
+- literature evidence artifact 使用 `provider_literature_evidence@1`（Tavily 使用对应 safe web evidence schema），只封存 citation/source metadata、typed failure、attempt/provenance、call-local quorum 与 digest；artifact 必须写入当前 session/attempt 注入的 sealed Blob root，而不是指向 mutable `/tmp` 下载文件或共享进程级默认目录
+- PubMed provenance 使用不可逆 `identity_digest` 绑定实际 NCBI tool、email 与可选 API-key identity；raw email、API key 和带 credential 的请求 URL 不进入 engine document、artifact payload 或 public projection
 
 说明：
 
@@ -255,6 +260,8 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `capabilities.execution[]` 默认承载每个 execution pipeline invocation 的 `pipeline_invocation_id`、`code_digest`、`sandbox_status`、`hpc_run_ids`、`tool_contract`、`input_artifact_ids`、`preprocess_artifact_ids`、`output_artifact_ids` 与 terminal summary
 - execution pipeline 的 public read model 不暴露 Host repo path、sandbox host path、`storage_uri`、pipeline source code、SSH/Slurm config 或 runner credentials
 - direct provider search 产出的 normalized findings 后续也应能进入同一 canonical research evidence / source ref 读模型；不应只作为一次性 tool message 存在
+- paper source ref 的稳定 bibliographic/provenance 字段包括 provider、external id、PMID、provider-supplied DOI、authors、venue、publication date、retrieved_at、request/response digest、safe provider provenance 和 evidence artifact id；缺 DOI 时保留空值，禁止推断
+- workspace/capability projection 对 source ref 和 provider artifact 二次执行 safe projection；不返回 credential、private URL/query/header、unlicensed全文、`storage_uri` 或 Host/runner path
 - `source_refs` 与 `artifacts` 是并列的 canonical workspace 信息：前者回答“证据来自哪里”，后者回答“哪些文件资产可被后续 agent / UI 读取”
 
 ## 4. CLI 语义

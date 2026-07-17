@@ -16,14 +16,22 @@ A positive attempt SHALL begin with one user message through `POST /v3/sessions/
 
 #### Scenario: Complete the AOX/HMM product path
 - **WHEN** required prerequisites and real operations succeed
-- **THEN** the workspace proves researcher, executor, and reporter participation; required literature; all required controlled operations; explicit task finishes; normalized sealed artifacts; a published report; and a final master response
+- **THEN** the workspace proves researcher, executor, and reporter participation; required literature; every operation required by the artifact-derived formal branch plus isolated full-capability probe coverage; explicit task finishes; normalized sealed artifacts; a published report; and a final master response
 
 #### Scenario: Reject seeded success
 - **WHEN** a test manually seeds tasks, approvals, runs, artifacts, reports, deterministic adapters, notebook output, or fixture scientific records
 - **THEN** the attempt is marked fixture/non-cutover and cannot count toward the campaign
 
 ### Requirement: Known-positive and empty-result separation
-The campaign SHALL run a bounded known-positive provider/toolchain probe independently from the formal scientific result. A real no-hit or no-candidate outcome MAY complete as a trustworthy empty-result report but MUST NOT be described as candidate discovery, and probe data MUST NOT be inserted into formal result artifacts.
+The campaign SHALL use `aox_known_positive_probe@2` / `probe_id="independent_globin_provider_hpc_probe"` independently from the formal scientific result. The probe SHALL use NCBI `NP_000509.1` and `NP_000549.1`, UniProt `P68871` and `P69905`, and exactly six isolated controlled operations: the two provider fetches plus MAFFT, hmmbuild, protein CD-HIT at identity `1.0`, and HMMalign consuming the real probe HMM and clustered UniProt FASTA. A real no-hit or no-candidate outcome MAY complete as a trustworthy empty-result report but MUST NOT be described as candidate discovery, and probe data MUST NOT be inserted into formal result artifacts.
+
+#### Scenario: Verify the v2 probe
+- **WHEN** a positive attempt presents a known-positive attestation
+- **THEN** the verifier confirms the exact schema/probe id, raw provider response-body digests, one isolated task/workspace/sandbox/source snapshot, the exact six operation/artifact edges, and complete identity disjointness from the formal graph
+
+#### Scenario: Reject a legacy or polluted probe
+- **WHEN** the probe uses the AAB-only `@1` chain, omits a v2 operation, reuses a formal identity, or contributes bytes/claims to the formal result
+- **THEN** the attempt is not cutover eligible even if every reached formal artifact validates
 
 #### Scenario: Formal result is empty with healthy dependencies
 - **WHEN** the known-positive probe succeeds but the formal current-data workflow yields no candidates
@@ -32,6 +40,25 @@ The campaign SHALL run a bounded known-positive provider/toolchain probe indepen
 #### Scenario: Probe fails
 - **WHEN** a required provider or HPC/toolchain known-positive probe fails
 - **THEN** the attempt is not cutover eligible even if a formal path happens to produce empty files
+
+### Requirement: Artifact-derived healthy-empty closure
+The verifier SHALL derive the reached formal branch from sealed raw/parsed HMMER, score-filter, UniProt join, motif-score, and candidate artifacts. It SHALL require the exact operation set for that branch, reject extra or hidden failed formal operations, and use isolated probe coverage for required capabilities that the formal branch correctly omits.
+
+#### Scenario: HMMER upstream is empty
+- **WHEN** the sealed HMMER score-filter calculation yields no accession
+- **THEN** formal UniProt, HMMalign, and CD-HIT operations are absent; a strict upstream-empty receipt proves no UniProt I/O; coordinate-reference/scoring-input, canonical empty scoring/candidate/membership/graph artifacts, and an honest published empty report remain required
+
+#### Scenario: Length filter is empty
+- **WHEN** UniProt retrieval and the identity-preserving join succeed but no sequence is within inclusive length `650..700`
+- **THEN** formal HMMalign and CD-HIT are absent, the reference-only scoring alignment is recomputable, and all downstream empty artifacts validate
+
+#### Scenario: Motif filter is empty
+- **WHEN** HMMalign and `aox_motif_rule_score@1` succeed but no target passes
+- **THEN** formal CD-HIT is absent and canonical empty membership/graph closure is required without fabricating a representative
+
+#### Scenario: Formal result is non-empty
+- **WHEN** at least one target passes the motif rule
+- **THEN** the formal closure includes CD-HIT membership and the versioned real-sequence similarity calculation over actual candidate bytes
 
 ### Requirement: Sealed and offline-verifiable evidence bundle
 Each attempt SHALL generate a canonical evidence payload and digest covering commit/config/workflow/scoring/image/SDK/provider/toolchain identities, clean-root proof, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.

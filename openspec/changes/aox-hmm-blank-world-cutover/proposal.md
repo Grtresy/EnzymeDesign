@@ -7,8 +7,8 @@ OpenZyme V3 已经具备严格的 artifact、sandbox、approval、provider 与 H
 - **BREAKING**：把 AOX 候选筛选中的 `activity_score` 更正为版本化 `aox_motif_rule_score@1` / `motif_rule_score`，明确它是参考位点规则启发式分数，不代表实验活性预测。
 - 从只读 reference notebook/runner 提取坐标映射、位点、残基集合、权重和阈值，建立独立实现、源码摘要、golden tests 与严格科学前置错误。
 - 建立真实文献证据 quorum：PubMed/PMID/DOI 为 cutover 必需证据，Semantic Scholar/Tavily 为可降级 enrichment；禁止 provider 失败后生成替代证据。
-- 建立 NCBI reference、EBI HMMER `refprot`、UniProt candidate、HPC MAFFT/HMMER/CD-HIT、相似度图、规范化 artifact 和 published report 的端到端身份与 digest 链。
-- 建立机器可验证的 blank-world campaign：clean roots、cache bypass、known-positive probe、empty-result 语义、sealed evidence bundle 与 tamper verification。
+- 建立一次 exact-14 NCBI fetch 到“13 条 HMM model reference + `AAB57849.1` 坐标 reference”的两条显式选择链，再与 EBI HMMER `refprot` → score-filtered UniProt accession → UniProt sequence → identity-preserving length join → scoring-input/HMMalign → motif/CD-HIT/相似度图闭合为端到端身份与 digest 链。
+- 建立机器可验证的 blank-world campaign：clean roots、cache bypass、与正式科学 artifact 严格隔离的 known-positive probe、由封存 artifact 重算的 healthy-empty branch/operation omission、无伪造 provider digest 的 skip receipt、sealed evidence bundle 与 tamper verification。
 - 以同一 commit/config 下两次独立正向 live E2E 和一次故障注入作为 local Live cutover GO 门槛，并同步修正旧 S15 历史结论、UI/approval 验收与稳定架构文档。
 
 ## Capabilities

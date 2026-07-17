@@ -108,6 +108,8 @@ runtime 并发限制分层表达：
 - research provider：限制 Tavily、PubMed、Semantic Scholar、UniProt、RCSB PDB 等外部检索调用
 - execution provider：限制 sandbox/HPC submission 和 runner-side expensive operation
 
+research provider 另有 bounded adapter runtime：PubMed/Semantic Scholar/Tavily 调用记录 safe request digest、attempt、timeout/retry、`Retry-After`、typed failure、retrieval time 与 response digest。direct research tool 必须先持久化 `EngineInvocation(RUNNING)` 再触达 provider，并在 completed/empty/degraded/failed 或 artifact-seal failure 时终结同一 invocation。PubMed required 与 enrichment degradation 是 workflow evidence policy，不由 scheduler retry 或 tool success 自动改写 task 业务终态。
+
 异步调用应直接 await limiter。同步阻塞 SDK 只能通过受控 adapter 在 limiter 内 `to_thread`，不能把线程池大小当成 quota 策略。
 
 LLM provider 调用的统一治理边界是 `openzyme_runtime.LlmInvocationRuntime`：

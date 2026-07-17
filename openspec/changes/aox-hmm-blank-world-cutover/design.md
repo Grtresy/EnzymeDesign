@@ -50,13 +50,26 @@ PubMed query 使用 NCBI identity，至少一个 schema-valid PMID 才满足 req
 
 ### 4. Sequence identity is append-only across providers
 
-13 个 reference accession 的 requested/resolved identity、原始 FASTA record、sequence SHA-256 和 aggregate FASTA digest全部封存。EBI HMMER `refprot` hit 的 candidate 主身份是 UniProt accession；UniProt lookup/fetch 增加 reviewed status、release header、retrieved_at、response/sequence digest。cross-reference mapping 只追加 annotation edge；若两源序列不同，保留双方 bytes/digest 并要求显式 selection，禁止 overwrite。
+正式 NCBI protein fetch 一次请求 exact 14 个 identity：原 notebook 的 13 个 HMM model accession（包括以固定规则解析的 `9AVH_A`）加坐标 reference `AAB57849.1`。provider aggregate 必须封存全部 requested/resolved identity、原始 FASTA record、sequence SHA-256 和 aggregate FASTA digest，不允许缺失、重复、多余或身份替换。两个 versioned calculation 从同一份封存 bytes 分别生成 exact-13 `AOX_ref21.fasta`（`aox_hmm_reference_set_selection@1`）和单条 `AOX_coordinate_reference_AAB57849.1.fasta`（`aox_reference_selection@1`）；后者不得进入 MAFFT/hmmbuild 的 model-training input。
+
+EBI HMMER `refprot` hit 的 candidate 主身份是 UniProt accession。`hmmer_score_filtered_accessions@1` 只从严格 provider parsed schema 中保留 score `>200` 的 accession，其 canonical artifact 和 exact non-empty accession set 是唯一允许的 UniProt 请求输入；HMMER 不提供下游 sequence/length 真值。UniProt lookup/fetch 增加 reviewed status、release header、retrieved_at、response/sequence digest，再由 `aox_sequence_length_join@1` 按 accession 严格连接并筛选长度 `650..700` 产生 `target.fasta` 与 `hits_len650_700_200.csv`。cross-reference mapping 只追加 annotation edge；若两源序列不同，保留双方 bytes/digest 并要求显式 selection，禁止 overwrite。
+
+`aox_scoring_input_assembly@1` 把单条 AAB 坐标 reference 放在首位，再按 target id 字典序追加 post-UniProt target，生成 `AOX_scoring_input.fasta`。非空 target 时 HMMalign 必须同时消费 `AOX_ref.hmm` 和该 scoring input；空 target 时不伪造一次 HMMalign，而是用 `aox_reference_only_scoring_alignment@1` 将已验证的 AAB-only scoring input 物化为 scoring alignment。
 
 每一科学跳转都以 `input_artifact_ids + input_digests + operation_id + provider/toolchain identity + output_artifact_ids + output_digests` 连接。空 hit/空 candidate 可输出 schema-valid 空 artifact 和 empty-result explanation，但 known-positive probe 必须另行证明 provider/HPC 健康，probe 数据不得合入正式结果。
 
 ### 5. AOX execution remains agent-authored within a strict manifest
 
-workflow pack pin required outcomes、contract/digests、13 accessions、数据库 `refprot`、artifact schema 和 fail-closed 条件，但不硬编码唯一命令序列。executor 仍可选择合理的分批、重试和中间检查策略；Host 只提供真实约束与受控 `openzyme_pipeline` SDK。MAFFT、hmmbuild/hmmalign、CD-HIT 和 similarity 都由真实 input/output 产生并 seal tool version/params。similarity 采用版本化的全局 alignment identity 计算；不得用常数边或复制 HMM/motif score。
+workflow pack pin required outcomes、contract/digests、13 个 HMM model accession + AAB 坐标 accession 的 exact-14 NCBI 身份和拆分合同、数据库 `refprot`、artifact schema 和 fail-closed 条件，但不硬编码唯一命令序列。executor 仍可选择合理的分批、重试和中间检查策略；Host 只提供真实约束与受控 `openzyme_pipeline` SDK。MAFFT、hmmbuild/hmmalign、CD-HIT 和 similarity 都由真实 input/output 产生并 seal tool version/params。similarity 采用版本化的全局 alignment identity 计算；不得用常数边或复制 HMM/motif score。
+
+manifest 声明完整 capability set，但正式 operation closure 由封存 artifact 重算实际到达分支，不用静态“全工具必须调用”清单惩罚正确早停：
+
+- HMMER upstream empty：省略 UniProt、HMMalign 和 CD-HIT；UniProt 以 `provider_upstream_empty_receipt@1` 记录 `provider_io_performed=false`，不允许 request/response digest。
+- length-filter empty：已到达 UniProt 与 sequence join，省略 HMMalign 和 CD-HIT。
+- motif-filter empty：已到达 HMMalign 与 motif scoring，省略 CD-HIT。
+- nonempty：执行完整正式链。
+
+分支必须由 raw/parsed HMMER、score-filter、sequence join、motif/candidate artifact 重算，不信任 execution summary 或 agent 自报。正式分支省略的 capability 由独立 known-positive probe 覆盖，probe bytes/operation/task/workspace 不得进入正式图或 report claim。将这一逻辑抽象为通用 harness 的调整已单独记录为 `artifact-derived-conditional-capability-closure.md`，本 Goal 不实施通用化。
 
 ### 6. Workflow refs are explicit per delegation
 
@@ -69,6 +82,8 @@ workflow pack pin required outcomes、contract/digests、13 accessions、数据�
 新增 campaign CLI/模块而不是把 cutover 判定塞进 pytest fixture。每个 attempt 创建唯一空目录，随后初始化 SQLite、artifact/blob root、sandbox root 和独立 HPC workspace label；preflight 记录目录清单与 digest，并拒绝预载科学文件。允许项仅为 checkout commit、配置摘要、immutable image/toolchain、workflow pack、credentials 和用户 accession/prompt。
 
 正向 attempt 只通过一个 `/messages` 请求进入，之后使用公开 runtime drain、approval API 和读取接口推进，不直接调用 repository/service 写入真状态。driver 可自动轮询，但不得 seed task/approval/artifact/report。至少一次 attempt 在 Chrome 中人工批准同一 operation。attempt 完成要求 researcher/executor/reporter participation、task business exits、published report、final master response 和所有规范 artifact。
+
+独立健康证明使用已实现的 `aox_known_positive_probe@2` / `probe_id="independent_globin_provider_hpc_probe"`：NCBI `NP_000509.1` / `NP_000549.1`、UniProt `P68871` / `P69905`，以及 MAFFT、hmmbuild、protein CD-HIT identity `1.0`、一次同时消费真实 HMM 与 clustered UniProt FASTA 的 HMMalign，总共 exact six controlled operations。probe 使用单独 task/workspace/sandbox/source snapshot，绑定 raw HTTP response-body digest，不重复正式图必然到达的 EBI HMMER，也不允许任何 probe identity/bytes 进入正式 artifact 或 report claim。合同已实现不代表 live 已通过；仍必须由当前 attempt 封存并离线验证。
 
 offline verifier 使用 canonical JSON（排序 key、稳定 separators、UTF-8）重算 bundle digest，遍历 sealed artifact closure，重算 scoring rows、schema、provenance links 和 report references；不得发网络请求。tamper test 修改 artifact byte和 provenance 字段，必须定位精确 mismatch。
 

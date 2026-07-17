@@ -350,6 +350,7 @@ claimed --operator release--> pending
 - artifact storage 采用两层模型：Host-private Blob 层按 `content_digest` / `tree_digest` 封存与去重内容；Artifact 层按不可变 `artifact_id` 记录 session/task/lane/run/invocation、kind、format、validation、producer metadata、provenance、sealed digest 与展示用 `relative_path`
 - Blob 路径只是 content-addressed locator，不是完整性证明。register 幂等复用、source snapshot 复用、materialize 读取和复制完成后都必须从实际 bytes/tree manifest 重算 digest；与 Artifact row 声明不一致时必须 fail closed、记录 quarantine/GC 原因并保留异常 Blob 供取证，绝不能以同 digest 路径存在为由跳过验证或覆盖异常内容
 - 外部 provider 下载产物进入 Artifact 层时默认必须 sealed：Host 按实际下载 bytes 记录 SHA-256 `content_digest` / `sealed_digest`、provider、external id/source locator、format、retrieved_at 与 provenance。sealed 只证明 catalog 内容不可变且可授权搬运；PDB/FASTA 内容是否满足 fpocket、docking 或其它 execution tool 的业务输入要求，由对应 capability/tool validator 单独判断
+- Host 已持有的 licensed/safe provider bytes 可通过 artifact boundary external ingress 进入同一 Blob/Artifact 两层模型：ingress 必须复制 bytes、重算 digest、安装只读 content-addressed Blob，再 immutable commit Artifact row。临时 Host 文件和 provider metadata 本身都不是 sealing 证明
 - `storage_uri` 或后续等价 Host-private storage field 只能指向 sealed Blob/Artifact storage；不得指向 mutable sandbox `/workspace/output`、sandbox host path、runner path 或 Host repo path
 - 同一 `relative_path` 可以存在多个 artifact leaf；重复 path 不覆盖、不合并、不作为唯一键，UI/CLI 只能用 `artifact_id` 区分，并可按 created_at、version、run 或 artifact id 排序
 - executor sandbox 的 `/workspace` working copy 不是 canonical artifact store；只有 `artifacts.materialize`、`artifacts.register`、`artifacts.snapshot_code` 产生或回链的 Host-owned records 才进入 canonical workspace
@@ -420,6 +421,8 @@ workspace projection 必须足够恢复 UI 和协作状态：刷新浏览器或�
 `artifact` catalog 是 canonical 后端台账。`SessionArtifactRecord.storage_uri` 是 Host-private 字段，只能被 execution compiler、sandbox runner、preprocess adapter、controlled artifact readers 等后端代码用于授权 staging 或受控读取；它必须指向 sealed storage 或其它 Host-owned immutable backend，不是 workspace/API/agent read model 字段。
 
 `workspace.artifacts[]` 默认带 `artifact_id`、`kind`、`title`、`description`、`relative_path`、task/lane/invocation/run 关系字段、清洗后的 `metadata`，以及 projection-derived `provenance`。UI 默认按 `relative_path` 构造路径树；重复 `relative_path` 不合并，叶子身份始终是 `artifact_id`。`provenance` 固定展示 task、lane、invocation、run、producer/source、format、provider/external id/source locator、source/input/preprocess artifact ids、runner/pipeline id、code digest 与 tool contract 摘要。普通 workspace projection 不把 Host local path、runner staging path、`storage_uri`、`source_storage_uri`、`intermediate_storage_uri` 或 private path 当作 artifact browser 字段。
+
+`session_research_source_refs` 是 bibliographic/source identity 的 canonical row，不是 artifact metadata 副本。paper ref 可持久化 provider/external id、PMID、provider-supplied DOI、authors、venue/publication date、retrieved_at、request/response digest、safe provider provenance 与 sealed evidence artifact link；repository round-trip 和 workspace projection 保持这些字段。locator 只允许 query-free public HTTP(S) 地址；credential、private URL/header、Host path 和受限全文不得落库或投影。
 
 Agent / public read model 只能通过 `artifact_id` 与安全 artifact 投影读取 catalog 和文本预览。agent 不得请求 Host 本地路径，也不得把 `storage_uri`、runner staging path 或 sandbox host path 作为 tool 参数、HPC 输入或用户可见输出。
 
