@@ -33,6 +33,9 @@ def test_migration_asset_is_available() -> None:
     task_integrity_sql = get_migration_sql("020_v3_task_integrity")
     durable_event_sql = get_migration_sql("021_v3_durable_event_outbox")
     access_control_sql = get_migration_sql("022_v3_session_access_control")
+    research_source_provenance_sql = get_migration_sql(
+        "023_v3_research_source_provenance"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -71,6 +74,8 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS command_receipt_records" in durable_event_sql
     assert "durable_event_records_append_only_update" in durable_event_sql
     assert "CREATE TABLE IF NOT EXISTS session_access_records" in access_control_sql
+    assert "ADD COLUMN provider" in research_source_provenance_sql
+    assert "ADD COLUMN provider_provenance_json" in research_source_provenance_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -94,6 +99,7 @@ def test_migration_asset_is_available() -> None:
         "020_v3_task_integrity",
         "021_v3_durable_event_outbox",
         "022_v3_session_access_control",
+        "023_v3_research_source_provenance",
     )
 
 
@@ -152,6 +158,26 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         row[1]
         for row in connection.execute("PRAGMA table_info(agent_members)").fetchall()
     }
+    source_ref_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(session_research_source_refs)"
+        ).fetchall()
+    }
+    assert {
+        "provider",
+        "external_id",
+        "pmid",
+        "doi",
+        "authors_json",
+        "venue",
+        "publication_date",
+        "retrieved_at",
+        "request_digest",
+        "response_digest",
+        "provider_provenance_json",
+        "evidence_artifact_id",
+    }.issubset(source_ref_columns)
     assert {
         "member_id",
         "runtime_state",

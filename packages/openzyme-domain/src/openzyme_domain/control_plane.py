@@ -909,10 +909,28 @@ class ResearchSourceRef:
     kind: SourceRefKind
     created_at: str
     snippet: str | None = None
+    provider: str | None = None
+    external_id: str | None = None
+    pmid: str | None = None
+    doi: str | None = None
+    authors: tuple[dict[str, Any], ...] = ()
+    venue: str | None = None
+    publication_date: str | None = None
+    retrieved_at: str | None = None
+    request_digest: str | None = None
+    response_digest: str | None = None
+    provider_provenance: dict[str, Any] | None = None
+    evidence_artifact_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["kind"] = self.kind.value
+        data["authors"] = [dict(author) for author in self.authors]
+        data["provider_provenance"] = (
+            {}
+            if self.provider_provenance is None
+            else dict(self.provider_provenance)
+        )
         return data
 
 

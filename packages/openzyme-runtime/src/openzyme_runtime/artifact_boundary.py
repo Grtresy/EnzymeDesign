@@ -18,6 +18,7 @@ from openzyme_domain import SessionArtifactRecord
 from openzyme_domain.control_plane import utc_now_iso
 
 from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import sanitize_private_artifact_fields
 from .tooling import ToolInvocation
 from .tooling import ToolRegistryProtocol
 from .tooling import ToolResult
@@ -736,6 +737,154 @@ class ArtifactBoundaryService:
             reused=False,
         )
 
+    def seal_external_bytes(
+        self,
+        *,
+        session_id: str,
+        content: bytes,
+        filename: str,
+        kind: str | ArtifactKind = ArtifactKind.RESULT,
+        format: str,
+        title: str,
+        provider: str,
+        provenance: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+        task_id: str | None = None,
+        lane_id: str | None = None,
+        invocation_id: str | None = None,
+        description: str | None = None,
+        license_scope: str = "safe_provider_evidence",
+    ) -> RegisterResult:
+        """Seal Host-retrieved provider bytes without a sandbox source snapshot.
+
+        This is a narrow ingress seam for licensed/safe external evidence. It
+        keeps the same immutable blob and repository boundary as sandbox output
+        while recording provider provenance instead of pretending a temporary
+        Host file is already sealed.
+        """
+
+        if not isinstance(content, bytes) or not content:
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "external provider artifact content must be non-empty bytes",
+            )
+        safe_filename = _safe_ref(PurePosixPath(filename).name)
+        if not safe_filename:
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "external provider artifact filename is invalid",
+            )
+        safe_provenance = sanitize_private_artifact_fields(dict(provenance))
+        safe_metadata = sanitize_private_artifact_fields(dict(metadata or {}))
+        required_provenance = ("request_digest", "retrieved_at")
+        missing = [
+            key for key in required_provenance if not safe_provenance.get(key)
+        ]
+        if missing:
+            raise ArtifactBoundaryError(
+                "artifact_provenance_incomplete",
+                "external provider artifact provenance is incomplete",
+                details={"missing": missing},
+            )
+        source_digest = _sha256_bytes(content)
+        metadata_payload = {
+            **safe_metadata,
+            "format": str(format),
+            "provider": str(provider),
+            "license_scope": str(license_scope),
+            "source": "external_provider_artifact_boundary",
+            "storage_model": "sealed_blob",
+            "content_digest": source_digest,
+            "sealed_digest": source_digest,
+            "provenance": {
+                **safe_provenance,
+                "provider": str(provider),
+                "content_digest": source_digest,
+                "sealed_digest": source_digest,
+            },
+        }
+        idempotency_key = _json_digest(
+            {
+                "session_id": session_id,
+                "invocation_id": invocation_id,
+                "filename": safe_filename,
+                "content_digest": source_digest,
+                "metadata": metadata_payload,
+            }
+        )
+        metadata_payload["external_seal_idempotency_key"] = idempotency_key
+        existing = self.repositories.artifacts.find_by_metadata(
+            session_id=session_id,
+            key="external_seal_idempotency_key",
+            value=idempotency_key,
+        )
+        validation = {
+            "status": "passed",
+            "format": str(format),
+            "boundary": "external_provider",
+        }
+        if existing is not None:
+            self._verify_artifact_blob(existing)
+            return RegisterResult(
+                artifact=existing,
+                content_digest=source_digest,
+                tree_digest=None,
+                validation=validation,
+                reused=True,
+            )
+
+        temporary_root = Path(tempfile.mkdtemp(prefix="openzyme-provider-seal-"))
+        temporary_source = temporary_root / safe_filename
+        try:
+            temporary_source.write_bytes(content)
+            source_summary = _digest_path(temporary_source)[1]
+            sealed_path, sealed_digest, _ = self._seal_source(
+                source_path=temporary_source,
+                source_digest=source_digest,
+                source_summary_before=source_summary,
+            )
+        finally:
+            shutil.rmtree(temporary_root, ignore_errors=True)
+        if sealed_digest != source_digest:
+            raise ArtifactBoundaryError(
+                "artifact_sealed_digest_mismatch",
+                "sealed provider artifact digest does not match source",
+            )
+        artifact = SessionArtifactRecord(
+            artifact_id=_new_id("art_provider"),
+            session_id=session_id,
+            task_id=task_id,
+            lane_id=lane_id,
+            invocation_id=invocation_id,
+            run_id=None,
+            kind=kind if isinstance(kind, ArtifactKind) else ArtifactKind(str(kind)),
+            storage_uri=str(sealed_path),
+            relative_path=f"provider_evidence/{safe_filename}",
+            title=title,
+            description=description,
+            metadata=metadata_payload,
+            created_at=utc_now_iso(),
+        )
+        try:
+            self.repositories.artifacts.commit_immutable(artifact)
+        except Exception as exc:
+            self.repositories.artifact_blob_gc.enqueue(
+                blob_ref=str(sealed_path),
+                reason="external_provider_artifact_commit_failed",
+                created_at=utc_now_iso(),
+            )
+            raise ArtifactBoundaryError(
+                "artifact_commit_failed",
+                "external provider artifact row commit failed",
+            ) from exc
+        return RegisterResult(
+            artifact=artifact,
+            content_digest=sealed_digest,
+            tree_digest=None,
+            validation=validation,
+            reused=False,
+        )
+
     def snapshot_code(
         self,
         *,
@@ -1076,7 +1225,11 @@ def _tool_error(invocation: ToolInvocation, exc: ArtifactBoundaryError) -> ToolR
 
 def register_artifact_boundary_tools(registry: ToolRegistryProtocol) -> None:
     def _service(context: Any) -> ArtifactBoundaryService:
-        return ArtifactBoundaryService(context.repositories)
+        return ArtifactBoundaryService(
+            context.repositories,
+            workspace_root=getattr(context, "sandbox_workspace_root", None),
+            blob_store_root=getattr(context, "artifact_blob_root", None),
+        )
 
     def materialize_handler(context: Any, invocation: ToolInvocation) -> ToolResult:
         try:

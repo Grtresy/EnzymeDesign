@@ -1148,9 +1148,10 @@ def test_harness_docs_read_exposes_aox_hmm_live_recipe() -> None:
     assert "CAQ19344.1" in content
     assert "aox_hmm/execution_summary.json" in content
     assert "scientific_prerequisite_missing" in content
-    assert "do not manufacture `40-index`" in content
+    assert "`aox_motif_rule_score@1`" in content
+    assert "copied scores" in content
     assert "constant `0.91` edges" in content
-    assert "reference accessions to make the result non-empty" in content
+    assert "do not substitute reference or probe sequences" in content
 
 
 class ExplicitCompactionDriver:
@@ -2881,7 +2882,7 @@ def test_research_teammate_direct_download_persists_workspace_artifact() -> None
     assert invocation.engine_name == "research_tool"
 
 
-def test_research_teammate_direct_search_returns_observation_and_persists_canonical_rows() -> (
+def test_research_teammate_rejects_fixture_pubmed_from_required_quorum() -> (
     None
 ):
     repositories = _build_repositories()
@@ -2920,29 +2921,36 @@ def test_research_teammate_direct_search_returns_observation_and_persists_canoni
         .to_dict()
     )
 
-    assert result.ok is True
+    assert result.ok is False
+    assert result.error_code == "fixture_non_cutover"
     assert payload["provider"] == "pubmed"
-    assert payload["findings"][0]["sources"][0]["kind"] == "paper"
+    assert payload["status"] == "failed"
+    assert payload["findings"] == []
+    assert payload["raw_ref"]["call_local_literature_quorum"][
+        "cutover_eligible"
+    ] is False
+    assert invocation.status is EngineInvocationStatus.FAILED
     assert (
         repositories.research_summaries.get_by_invocation(
             session.session_id, invocation.invocation_id
         ).summary
         == (payload["summary"])
     )
-    assert repositories.research_evidence.list_by_invocation(
+    assert not repositories.research_evidence.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
-    assert repositories.research_source_refs.list_by_invocation(
+    assert not repositories.research_source_refs.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
+    artifacts = repositories.artifacts.list_by_invocation(
+        session.session_id, invocation.invocation_id
+    )
+    assert artifacts[0].metadata["cutover_eligible"] is False
     assert (
         workspace["capabilities"]["research_tool"][0]["canonical_summary"]["summary"]
         == payload["summary"]
     )
-    assert (
-        workspace["capabilities"]["research_tool"][0]["source_refs"][0]["kind"]
-        == "paper"
-    )
+    assert workspace["capabilities"]["research_tool"][0]["source_refs"] == []
 
 
 def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
@@ -2998,6 +3006,53 @@ def test_research_teammate_direct_web_fetch_persists_canonical_rows() -> None:
     assert repositories.research_source_refs.list_by_invocation(
         session.session_id, invocation.invocation_id
     )
+
+
+def test_research_teammate_web_fetch_rejects_private_url_without_projection() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    provider_calls: list[dict[str, object]] = []
+    adapter = TavilyResearchAdapter(
+        search_callable=lambda **_: {"results": []},
+        extract_callable=lambda **kwargs: provider_calls.append(kwargs)
+        or {"results": []},
+    )
+    registry = build_teammate_registry(research_adapter=adapter)
+    context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id="task_001"),
+        research_adapter=adapter,
+    )
+
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_private_fetch",
+            tool_name="web.fetch",
+            arguments={
+                "url": "http://127.0.0.1/private?token=never-project-this"
+            },
+            task_id="task_001",
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "private_url_forbidden"
+    assert provider_calls == []
+    assert repositories.invocations.list_by_session(session.session_id) == []
+    public = json.dumps(
+        SessionProjectionBuilder(repositories)
+        .build_session_workspace(session.session_id)
+        .to_dict(),
+        sort_keys=True,
+    )
+    assert "127.0.0.1" not in result.content
+    assert "never-project-this" not in result.content
+    assert "127.0.0.1" not in public
+    assert "never-project-this" not in public
 
 
 def test_research_teammate_web_fetch_rejects_rcsb_structure_page() -> None:
@@ -3109,7 +3164,7 @@ def test_research_teammate_web_fetch_rejects_rcsb_experimental_page() -> None:
     assert "rcsb_pdb.download_structure" in result.hint
 
 
-def test_research_teammate_direct_search_provider_429_propagates_runtime_failure() -> None:
+def test_research_teammate_direct_search_untyped_provider_failure_is_structured() -> None:
     repositories = _build_repositories()
     session = _seed_session(repositories)
     registry = build_teammate_registry(
@@ -3123,18 +3178,28 @@ def test_research_teammate_direct_search_provider_429_propagates_runtime_failure
         restore_focus=RestoreFocus(task_id="task_001"),
     )
 
-    with pytest.raises(RuntimeError, match="HTTP Error 429"):
-        registry.dispatch(
-            context,
-            ToolInvocation(
-                call_id="call_semantic",
-                tool_name="semantic_scholar.search",
-                arguments={"query": "AI systems engineering", "limit": 3},
-                task_id="task_001",
-            ),
-        )
+    result = registry.dispatch(
+        context,
+        ToolInvocation(
+            call_id="call_semantic",
+            tool_name="semantic_scholar.search",
+            arguments={"query": "AI systems engineering", "limit": 3},
+            task_id="task_001",
+        ),
+    )
 
-    assert repositories.invocations.list_by_session(session.session_id) == []
+    assert result.ok is False
+    assert result.error_code == "provider_unavailable"
+    assert result.details == {"exception_type": "RuntimeError"}
+    assert "HTTP Error 429" not in result.content
+    invocations = repositories.invocations.list_by_session(session.session_id)
+    assert len(invocations) == 1
+    assert invocations[0].status is EngineInvocationStatus.FAILED
+    assert invocations[0].output_ref is not None
+    output = repositories.engine_documents.get(invocations[0].output_ref)
+    assert output is not None
+    assert output.payload["status"] == "failed"
+    assert output.payload["raw_ref"]["typed_provider_outcome"] is False
 
 
 def test_session_workspace_projection_exposes_delegation_threads() -> None:

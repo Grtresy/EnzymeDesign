@@ -467,6 +467,20 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
             kind=SourceRefKind.PAPER,
             snippet="Thermostability signal",
             created_at="2026-04-16T10:09:34+00:00",
+            provider="pubmed",
+            external_id="PMID:12345",
+            pmid="12345",
+            doi="10.1000/example",
+            authors=({"name": "Doe J", "author_type": "Author"},),
+            venue="Plant Physiology",
+            publication_date="2024 Jan",
+            retrieved_at="2026-04-16T10:09:34+00:00",
+            request_digest="sha256:" + "1" * 64,
+            response_digest="sha256:" + "2" * 64,
+            provider_provenance={
+                "provider": "pubmed",
+                "request_digest": "sha256:" + "1" * 64,
+            },
         )
     )
     repositories.research_gaps.save(
@@ -517,7 +531,19 @@ def test_core_repositories_persist_v3_control_plane_records() -> None:
     assert repositories.research_evidence.list_by_invocation(session.session_id, invocation.invocation_id)[0].query == (
         "scaffold A evidence"
     )
-    assert repositories.research_source_refs.list_by_evidence("inv_001:evidence:1")[0].kind is SourceRefKind.PAPER
+    stored_source = repositories.research_source_refs.list_by_evidence(
+        "inv_001:evidence:1"
+    )[0]
+    assert stored_source.kind is SourceRefKind.PAPER
+    assert stored_source.provider == "pubmed"
+    assert stored_source.pmid == "12345"
+    assert stored_source.doi == "10.1000/example"
+    assert stored_source.authors == (
+        {"name": "Doe J", "author_type": "Author"},
+    )
+    assert stored_source.provider_provenance["request_digest"] == (
+        "sha256:" + "1" * 64
+    )
     assert repositories.research_gaps.list_by_invocation(session.session_id, invocation.invocation_id)[0].summary == (
         "Need wet-lab validation"
     )

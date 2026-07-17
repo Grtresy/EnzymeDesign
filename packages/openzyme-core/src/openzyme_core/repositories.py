@@ -5078,13 +5078,23 @@ class ResearchSourceRefRepository:
                 record_id=source_ref.lane_id,
                 expected_session_id=source_ref.session_id,
             )
+        if source_ref.evidence_artifact_id is not None:
+            _require_linked_session_id(
+                self.connection,
+                table_name="session_artifact_records",
+                id_column="artifact_id",
+                record_id=source_ref.evidence_artifact_id,
+                expected_session_id=source_ref.session_id,
+            )
         self.connection.execute(
             """
             INSERT INTO session_research_source_refs (
                 source_ref_id, session_id, task_id, lane_id, invocation_id, evidence_id, title,
-                locator, kind, snippet, created_at
+                locator, kind, snippet, created_at, provider, external_id, pmid, doi,
+                authors_json, venue, publication_date, retrieved_at, request_digest,
+                response_digest, provider_provenance_json, evidence_artifact_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_ref_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 task_id = excluded.task_id,
@@ -5094,7 +5104,19 @@ class ResearchSourceRefRepository:
                 title = excluded.title,
                 locator = excluded.locator,
                 kind = excluded.kind,
-                snippet = excluded.snippet
+                snippet = excluded.snippet,
+                provider = excluded.provider,
+                external_id = excluded.external_id,
+                pmid = excluded.pmid,
+                doi = excluded.doi,
+                authors_json = excluded.authors_json,
+                venue = excluded.venue,
+                publication_date = excluded.publication_date,
+                retrieved_at = excluded.retrieved_at,
+                request_digest = excluded.request_digest,
+                response_digest = excluded.response_digest,
+                provider_provenance_json = excluded.provider_provenance_json,
+                evidence_artifact_id = excluded.evidence_artifact_id
             """,
             (
                 source_ref.source_ref_id,
@@ -5108,6 +5130,26 @@ class ResearchSourceRefRepository:
                 source_ref.kind.value,
                 source_ref.snippet,
                 source_ref.created_at,
+                source_ref.provider,
+                source_ref.external_id,
+                source_ref.pmid,
+                source_ref.doi,
+                json.dumps(
+                    [dict(author) for author in source_ref.authors],
+                    sort_keys=True,
+                ),
+                source_ref.venue,
+                source_ref.publication_date,
+                source_ref.retrieved_at,
+                source_ref.request_digest,
+                source_ref.response_digest,
+                json.dumps(
+                    {}
+                    if source_ref.provider_provenance is None
+                    else source_ref.provider_provenance,
+                    sort_keys=True,
+                ),
+                source_ref.evidence_artifact_id,
             ),
         )
         _commit(self.connection)
@@ -5172,6 +5214,23 @@ class ResearchSourceRefRepository:
             kind=SourceRefKind(row["kind"]),
             snippet=row["snippet"],
             created_at=row["created_at"],
+            provider=row["provider"],
+            external_id=row["external_id"],
+            pmid=row["pmid"],
+            doi=row["doi"],
+            authors=tuple(
+                dict(author)
+                for author in json.loads(row["authors_json"] or "[]")
+            ),
+            venue=row["venue"],
+            publication_date=row["publication_date"],
+            retrieved_at=row["retrieved_at"],
+            request_digest=row["request_digest"],
+            response_digest=row["response_digest"],
+            provider_provenance=json.loads(
+                row["provider_provenance_json"] or "{}"
+            ),
+            evidence_artifact_id=row["evidence_artifact_id"],
         )
 
 
