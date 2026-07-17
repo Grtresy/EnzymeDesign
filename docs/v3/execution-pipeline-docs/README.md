@@ -28,6 +28,7 @@ Recommended reading paths:
 
 - New executor authoring: `sandbox-rules.md`, then `sdk-overview.md`
 - AOX/HMM live cutover: `aox-hmm-live.md`
+- AOX motif rule scoring contract and golden boundary: `aox-motif-rule-score-v1.md`
 - Moving files between catalog and sandbox: `artifacts.md`
 - Bio database fetch/search: `bio.md`
 - Sequence-mining toolchain: `bio-tools.md`
