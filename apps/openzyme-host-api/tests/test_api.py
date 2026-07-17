@@ -382,9 +382,22 @@ def test_v3_execution_engine_uses_configured_blank_world_roots(
         execution_engine = dependencies.build_v3_engine_registry(
             owner.repositories
         ).require("execution")
+        session = Session.create(
+            "sess_blank_world_roots",
+            "proj_001",
+            "Blank-world roots",
+            "Keep direct provider artifacts inside the attempt blob root.",
+        )
+        owner.repositories.sessions.save(session)
+        service = dependencies._build_v3_service(owner.repositories)
+        context = service._build_runtime_context(session.session_id)
 
     assert execution_engine.sandbox_workspace_root == sandbox_root
     assert execution_engine.artifact_blob_root == blob_root
+    assert service.sandbox_workspace_root == sandbox_root
+    assert service.artifact_blob_root == blob_root
+    assert context.sandbox_workspace_root == sandbox_root
+    assert context.artifact_blob_root == blob_root
 
 
 def test_v3_timed_out_callback_cannot_apply_late_business_effect(
@@ -3038,7 +3051,18 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
     assert pending_projection["approval_id"] == approval.approval_id
     assert pending_projection["operation"]["operation_id"] == operation.operation_id
     assert pending_projection["operation"]["logical_operation_key"] == "fake.controlled"
+    assert (
+        pending_projection["operation"]["operation_digest"]
+        == operation.operation_digest
+    )
     assert pending_projection["sandbox_run"]["sandbox_run_id"] == run.sandbox_run_id
+    pending_evidence_operation = service.workspace("sess_sdk_approval")[
+        "scientific_evidence"
+    ]["operations"][0]
+    assert pending_evidence_operation["operation_id"] == operation.operation_id
+    assert pending_evidence_operation["operation_digest"] == operation.operation_digest
+    assert pending_evidence_operation["approval_id"] == approval.approval_id
+    assert pending_evidence_operation["approval_state"] == "pending"
 
     result = service.resolve_approval(
         approval.approval_id,
@@ -3060,6 +3084,7 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
     assert updated_continuation.status is ContinuationStateStatus.APPROVED
     sdk_projection = result.workspace["capabilities"]["sdk_supervisor"][0]
     assert sdk_projection["operation_id"] == operation.operation_id
+    assert sdk_projection["operation_digest"] == operation.operation_digest
     assert sdk_projection["approval_state"] == "approved"
     assert sdk_projection["backend_category"] == "provider_http"
     assert any(
@@ -3069,8 +3094,17 @@ def test_v3_resolve_sdk_controlled_operation_uses_continuation_not_agent_wakeup(
     )
     assert any(
         event["event_type"] == "sdk_controlled_operation.approval_resolved"
+        and event["payload"]["operation_id"] == operation.operation_id
+        and event["payload"]["operation_digest"] == operation.operation_digest
         for event in result.events
     )
+    resumed_evidence_operation = result.workspace["scientific_evidence"]["operations"][
+        0
+    ]
+    assert resumed_evidence_operation["operation_id"] == operation.operation_id
+    assert resumed_evidence_operation["operation_digest"] == operation.operation_digest
+    assert resumed_evidence_operation["approval_id"] == approval.approval_id
+    assert resumed_evidence_operation["approval_state"] == "approved"
 
     duplicate = service.resolve_approval(
         approval.approval_id,

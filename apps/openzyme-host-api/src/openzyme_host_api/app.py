@@ -502,6 +502,8 @@ class HostApiDependencies:
             model_factory=self.foundation.model_factory,
             bio_research_service=self.foundation.bio_research_service,
             research_adapter=self.foundation.research_adapter,
+            sandbox_workspace_root=self.v3_sandbox_workspace_root,
+            artifact_blob_root=self.v3_artifact_blob_root,
             signal_notifier=self.v3_signal_notifier,
             runtime_repository_scope_factory=self.v3_repository_scope,
             engine_registry_factory=self.build_v3_engine_registry,

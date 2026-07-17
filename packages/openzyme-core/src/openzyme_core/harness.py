@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Protocol
@@ -429,6 +430,8 @@ class SessionRuntimeContext:
     engine_registry: EngineRegistry | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    sandbox_workspace_root: Path | None = None
+    artifact_blob_root: Path | None = None
     signal_notifier: Any | None = None
     session_runtime_lease: SessionRuntimeLease | None = None
     agent_id: str | None = None
@@ -1293,6 +1296,8 @@ def run_agent_harness_loop(
     model_factory: Any | None = None,
     bio_research_service: Any | None = None,
     research_adapter: Any | None = None,
+    sandbox_workspace_root: Path | None = None,
+    artifact_blob_root: Path | None = None,
     signal_notifier: Any | None = None,
 ) -> HarnessResult:
     from .skills import SkillRegistry
@@ -1314,6 +1319,8 @@ def run_agent_harness_loop(
         engine_registry=engine_registry,
         bio_research_service=bio_research_service,
         research_adapter=research_adapter,
+        sandbox_workspace_root=sandbox_workspace_root,
+        artifact_blob_root=artifact_blob_root,
         signal_notifier=signal_notifier,
         agent_id=harness_input.agent_id,
         actor_kind=harness_input.actor_kind,

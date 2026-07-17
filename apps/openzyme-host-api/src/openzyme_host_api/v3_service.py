@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 import json
+from pathlib import Path
 import threading
 from typing import Any
 from typing import Callable
@@ -206,6 +207,8 @@ class V3HostApiService:
     model_factory: Any | None = None
     bio_research_service: Any | None = None
     research_adapter: Any | None = None
+    sandbox_workspace_root: Path | None = None
+    artifact_blob_root: Path | None = None
     scheduler_limits: dict[str, int] = field(default_factory=dict)
     signal_notifier: Any | None = None
     runtime_repository_scope_factory: Callable[
@@ -555,6 +558,8 @@ class V3HostApiService:
             engine_registry=self.engine_registry,
             bio_research_service=self.bio_research_service,
             research_adapter=self.research_adapter,
+            sandbox_workspace_root=self.sandbox_workspace_root,
+            artifact_blob_root=self.artifact_blob_root,
             signal_notifier=self.signal_notifier,
         )
 
@@ -1008,6 +1013,9 @@ class V3HostApiService:
                     {
                         "approval_id": approval.approval_id,
                         "operation_id": None if operation is None else operation.operation_id,
+                        "operation_digest": (
+                            None if operation is None else operation.operation_digest
+                        ),
                         "continuation_id": None if continuation is None else continuation.continuation_id,
                         "decision": decision,
                     },

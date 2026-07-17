@@ -1252,6 +1252,8 @@ def run_teammate_loop(
         model_factory=parent_context.model_factory,
         bio_research_service=parent_context.bio_research_service,
         research_adapter=parent_context.research_adapter,
+        sandbox_workspace_root=parent_context.sandbox_workspace_root,
+        artifact_blob_root=parent_context.artifact_blob_root,
         signal_notifier=parent_context.signal_notifier,
     )
 

@@ -417,6 +417,8 @@ class AgentRuntimeService:
             model_factory=self.context.model_factory,
             bio_research_service=self.context.bio_research_service,
             research_adapter=self.context.research_adapter,
+            sandbox_workspace_root=self.context.sandbox_workspace_root,
+            artifact_blob_root=self.context.artifact_blob_root,
             signal_notifier=self.context.signal_notifier,
         )
         ok = result.status is not HarnessStatus.FAILED
