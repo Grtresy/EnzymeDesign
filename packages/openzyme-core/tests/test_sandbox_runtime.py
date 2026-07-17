@@ -114,6 +114,7 @@ def _service(
     *,
     workspace_root: Path,
     log_root: Path,
+    artifact_blob_root: Path | None = None,
     adapter_executor=None,
     hpc_fetch_executor=None,
     repository_scope_factory=None,
@@ -121,12 +122,62 @@ def _service(
     return SandboxRuntimeService(
         repositories,
         workspace_root=workspace_root,
+        artifact_blob_root=artifact_blob_root,
         log_root=log_root,
         execution_backend="local",
         adapter_executor=adapter_executor,
         hpc_fetch_executor=hpc_fetch_executor,
         repository_scope_factory=repository_scope_factory,
     )
+
+
+def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    blob_root = tmp_path / "attempt-blobs"
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=blob_root,
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/register_result.py",
+        content=(
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "target = Path('output/result.json')\n"
+            "target.parent.mkdir(parents=True, exist_ok=True)\n"
+            "target.write_text('{\"status\":\"ok\"}\\n', encoding='utf-8')\n"
+            "print(artifacts.register('/workspace/output/result.json', "
+            "kind='result', format='json')['artifact']['artifact_id'])\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/register_result.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    artifacts = repositories.artifacts.list_by_session(session.session_id)
+    result = next(item for item in artifacts if item.relative_path == "result.json")
+    assert workspace_root.resolve() in (
+        workspace_root / workspace.sandbox_workspace_id
+    ).resolve().parents
+    assert blob_root.resolve() in Path(result.storage_uri).resolve().parents
 
 
 def _wait_for_pending_approval(
@@ -914,8 +965,8 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
             "    'function_name': 'ncbi_fetch_proteins',\n"
             "    'idempotency_key': 's12_provider_001',\n"
             "    'params_digest': 'sha256:params-provider',\n"
-            "    'input_artifact_ids': ['artifact_query'],\n"
-            "    'input_artifact_digests': ['sha256:query'],\n"
+            "    'input_artifact_ids': ['artifact_zeta', 'artifact_alpha'],\n"
+            "    'input_artifact_digests': ['sha256:aaa-zeta', 'sha256:zzz-alpha'],\n"
             "    'expected_outputs': {'kind': 'fasta', 'storage_uri': '/private/out.fasta'},\n"
             "    'planned_fetch_intent': {'remote_path': '/private/provider/fetch'},\n"
             "    'resource_estimate': {'requests': 1},\n"
@@ -1004,6 +1055,21 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.adapter_result_envelope == result_envelope
+    assert persisted.input_artifact_ids == ("artifact_alpha", "artifact_zeta")
+    assert persisted.input_artifact_digests == (
+        "sha256:zzz-alpha",
+        "sha256:aaa-zeta",
+    )
+    assert dict(
+        zip(
+            persisted.input_artifact_ids,
+            persisted.input_artifact_digests,
+            strict=True,
+        )
+    ) == {
+        "artifact_alpha": "sha256:zzz-alpha",
+        "artifact_zeta": "sha256:aaa-zeta",
+    }
 
 
 def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(

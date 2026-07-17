@@ -52,6 +52,19 @@ def test_contract_manifest_loads_and_covers_configured_and_documented_tools() ->
     }
 
 
+def test_hmmalign_contract_requires_model_and_input_fasta() -> None:
+    contract = next(
+        contract
+        for contract in load_contract_manifest()
+        if contract.tool_id == "bio_tools.hmmalign"
+    )
+
+    assert contract.raw["required_inputs"] == [
+        {"name": "hmm", "path": "/work/model.hmm", "kind": "file"},
+        {"name": "fasta", "path": "/work/input.fasta", "kind": "file"},
+    ]
+
+
 def test_contract_manifest_rejects_duplicate_tool_ids() -> None:
     payload = {
         "schema_version": 1,

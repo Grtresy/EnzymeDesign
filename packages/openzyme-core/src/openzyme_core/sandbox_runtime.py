@@ -358,6 +358,7 @@ class _ControlSocketServer:
     task_id: str | None = None
     lane_id: str | None = None
     workspace_root: Path | None = None
+    artifact_blob_root: Path | None = None
     adapter_executor: SandboxAdapterExecutor | None = None
     hpc_fetch_executor: SandboxHpcFetchExecutor | None = None
     repository_scope_factory: Callable[[], Any] | None = None
@@ -469,6 +470,7 @@ class _ControlSocketServer:
         return ArtifactBoundaryService(
             self.repositories,
             workspace_root=self.workspace_root,
+            blob_store_root=self.artifact_blob_root,
         )
 
     def _handle_artifact_boundary(
@@ -915,6 +917,22 @@ class _ControlSocketServer:
         stage_refs = params.get("stage_refs") or []
         if not isinstance(input_artifact_ids, list) or not isinstance(input_artifact_digests, list):
             raise SandboxRuntimeError("invalid_tool_arguments", "input artifact fields must be lists")
+        if len(input_artifact_ids) != len(input_artifact_digests):
+            raise SandboxRuntimeError(
+                "invalid_tool_arguments",
+                "input artifact IDs and digests must have the same length",
+            )
+        input_artifact_pairs = sorted(
+            (
+                (str(artifact_id), str(artifact_digest))
+                for artifact_id, artifact_digest in zip(
+                    input_artifact_ids,
+                    input_artifact_digests,
+                    strict=True,
+                )
+            ),
+            key=lambda pair: pair[0],
+        )
         if not isinstance(stage_refs, list) or not all(isinstance(item, dict) for item in stage_refs):
             raise SandboxRuntimeError("invalid_tool_arguments", "stage_refs must be a list of objects")
         expected_outputs = params.get("expected_outputs", params.get("expected_outputs_summary") or {})
@@ -962,8 +980,8 @@ class _ControlSocketServer:
             "sdk_module": sdk_module,
             "function_name": function_name,
             "params_digest": params_digest,
-            "input_artifact_ids": sorted(str(item) for item in input_artifact_ids),
-            "input_artifact_digests": sorted(str(item) for item in input_artifact_digests),
+            "input_artifact_ids": [pair[0] for pair in input_artifact_pairs],
+            "input_artifact_digests": [pair[1] for pair in input_artifact_pairs],
             "backend_category": str(policy["backend_category"]),
             "route_policy_id": route_policy_id,
             "placement": placement,
@@ -1642,6 +1660,7 @@ class _ControlSocketServer:
 class SandboxRuntimeService:
     repositories: Any
     workspace_root: Path | None = None
+    artifact_blob_root: Path | None = None
     log_root: Path | None = None
     execution_backend: str = "podman"
     podman_binary: str = "podman"
@@ -2012,6 +2031,7 @@ class SandboxRuntimeService:
             task_id=task_id,
             lane_id=lane_id,
             workspace_root=self.workspace_root,
+            artifact_blob_root=self.artifact_blob_root,
             adapter_executor=self.adapter_executor,
             hpc_fetch_executor=self.hpc_fetch_executor,
             repository_scope_factory=self.repository_scope_factory,
@@ -2772,6 +2792,8 @@ def register_sandbox_runtime_tools(
     def _service(context: SessionRuntimeContext) -> SandboxRuntimeService:
         return SandboxRuntimeService(
             context.repositories,
+            workspace_root=context.sandbox_workspace_root,
+            artifact_blob_root=context.artifact_blob_root,
             adapter_executor=adapter_executor,
             hpc_fetch_executor=hpc_fetch_executor,
             repository_scope_factory=repository_scope_factory,

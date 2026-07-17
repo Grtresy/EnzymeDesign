@@ -307,7 +307,7 @@
         "partition": null
       },
       "required_inputs": [
-        { "name": "alignment", "path": "/work/alignment.fasta", "kind": "file" },
+        { "name": "hmm", "path": "/work/model.hmm", "kind": "file" },
         { "name": "fasta", "path": "/work/input.fasta", "kind": "file" }
       ],
       "optional_params": [],
