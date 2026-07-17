@@ -13,11 +13,15 @@ dependencies = [
   "openzyme-domain",
   "openzyme-engines",
   "openzyme-execution",
+  "openzyme-pipeline",
   "openzyme-research[tavily]",
   "openzyme-runtime",
   "openzyme-tools",
   "uvicorn>=0.30,<1.0",
 ]
+
+[project.scripts]
+openzyme-aox-cutover = "openzyme_host_api.aox_cutover_cli:main"
 
 [project.optional-dependencies]
 dev = [

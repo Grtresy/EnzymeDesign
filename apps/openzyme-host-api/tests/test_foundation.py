@@ -36,6 +36,7 @@ from openzyme_runtime import LlmSettings
 from openzyme_runtime import OpenAICompatibleChatModelFactory
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import ResearchSettings
+from openzyme_runtime import ResearchToolContext
 from openzyme_runtime import reset_settings_cache
 from openzyme_runtime import TestSettings as RuntimeTestSettings
 from openzyme_runtime import TracingSettings
@@ -110,8 +111,52 @@ def test_configured_foundation_fails_closed_without_live_integrations() -> None:
 
     assert isinstance(foundation.execution_adapter, UnavailableExecutionAdapter)
     assert foundation.research_adapter is None
-    assert foundation.research_tool_provider is None
+    assert foundation.research_tool_provider is not None
+    tool_names = {
+        tool.name
+        for tool in foundation.research_tool_provider.list_tools(
+            ResearchToolContext(
+                session_id="sess_foundation",
+                project_id=None,
+                objective="AOX",
+                design_brief=None,
+                research_brief="AOX literature",
+                tool_call_iterations=0,
+            )
+        )
+    }
+    assert {"pubmed.search", "semantic_scholar.search"}.issubset(tool_names)
+    assert "web.search" not in tool_names
     assert isinstance(foundation.model_factory, OpenAICompatibleChatModelFactory)
+
+
+def test_configured_foundation_wires_ncbi_identity_without_tavily() -> None:
+    base = _settings()
+    configured = replace(
+        base,
+        research=replace(
+            base.research,
+            tavily_api_key=None,
+            pubmed_email="ncbi@example.org",
+            pubmed_tool="openzyme-aox",
+            pubmed_api_key="ncbi-secret",
+            semantic_scholar_api_key="s2-secret",
+            provider_timeout_seconds=7.5,
+            provider_max_attempts=2,
+        ),
+    )
+
+    foundation = build_configured_foundation(settings=configured)
+
+    service = foundation.bio_research_service
+    assert service.pubmed_email == "ncbi@example.org"
+    assert service.pubmed_tool == "openzyme-aox"
+    assert service.pubmed_api_key == "ncbi-secret"
+    assert service.semantic_scholar_api_key == "s2-secret"
+    assert service.http_client.timeout_seconds == 7.5
+    assert service.http_client.max_attempts == 2
+    assert foundation.research_adapter is None
+    assert foundation.research_tool_provider is not None
 
 
 @pytest.mark.parametrize("backend", ["demo", "fixture", "fixture_non_cutover"])
@@ -137,6 +182,8 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(monkeypatch) -> 
             tavily_api_key="tavily-key",
             tavily_max_results=4,
             tavily_topic="news",
+            tavily_timeout_seconds=11.0,
+            provider_max_attempts=2,
             mcp_enabled=False,
         ),
         execution=ExecutionSettings(backend="hpc", hpc_runner_config="/tmp/hpc.toml"),
@@ -172,6 +219,8 @@ def test_configured_foundation_uses_hpc_and_tavily_when_enabled(monkeypatch) -> 
     assert calls["limiter_registry"] is foundation.limiter_registry
     assert type(foundation.execution_adapter).__name__ == "FakeHpcRunnerExecutionAdapter"
     assert type(foundation.research_adapter).__name__ == "TavilyResearchAdapter"
+    assert foundation.research_adapter.timeout_seconds == 11.0
+    assert foundation.research_adapter.callable_client.max_attempts == 2
 
 
 def test_apply_live_llm_test_budget_constrains_live_e2e_llm_settings() -> None:
@@ -282,6 +331,66 @@ def test_model_factory_enables_ledger_only_for_explicit_live_micu(tmp_path) -> N
     )
     assert quality_eval is not None
     assert quality_eval.live_token_scenario == "live_llm+quality_eval"
+
+
+def test_live_campaign_can_bind_micu_usage_to_a_dedicated_scenario(
+    tmp_path,
+) -> None:
+    base = _settings()
+    live_micu = replace(
+        base,
+        llm=replace(base.llm, base_url="https://www.micuapi.ai/v1"),
+        test=replace(
+            base.test,
+            enable_live_e2e=True,
+            live_llm=replace(
+                base.test.live_llm,
+                token_ledger_path=str(tmp_path / "live-ledger.sqlite3"),
+            ),
+        ),
+    )
+
+    factory = build_model_factory_from_settings(
+        live_micu,
+        token_scenario_override="aox_blank_world_cutover",
+    )
+    foundation = build_configured_foundation(
+        settings=live_micu,
+        token_scenario_override="aox_blank_world_cutover",
+    )
+
+    assert factory is not None
+    assert factory.live_token_scenario == "aox_blank_world_cutover"
+    assert foundation.model_factory is not None
+    assert foundation.model_factory.live_token_scenario == (
+        "aox_blank_world_cutover"
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["", "contains spaces", "../escape", "a" * 65],
+)
+def test_live_token_scenario_override_rejects_unsafe_values(scenario: str) -> None:
+    base = _settings()
+    live = replace(
+        base,
+        test=replace(base.test, enable_live_e2e=True),
+    )
+
+    with pytest.raises(ValueError, match="safe, non-empty scenario"):
+        build_model_factory_from_settings(
+            live,
+            token_scenario_override=scenario,
+        )
+
+
+def test_live_token_scenario_override_requires_live_test_opt_in() -> None:
+    with pytest.raises(ValueError, match="enabled live test"):
+        build_model_factory_from_settings(
+            _settings(),
+            token_scenario_override="aox_blank_world_cutover",
+        )
 
 
 def test_local_eval_foundation_wires_deterministic_components() -> None:

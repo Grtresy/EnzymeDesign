@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+import re
 
 from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_domain import ArtifactKind
@@ -27,6 +28,8 @@ from openzyme_research import ResearchUnit
 from openzyme_research import ResearchUnitResult
 from openzyme_research import TavilyResearchAdapter
 from openzyme_research import BioResearchService
+from openzyme_research import BoundedCallableClient
+from openzyme_research import BoundedHttpClient
 from openzyme_research import DefaultBioResearchService
 from openzyme_research import DeterministicBioResearchService
 from openzyme_runtime import build_bio_research_tools
@@ -231,10 +234,15 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
 def build_model_factory_from_settings(
     settings: OpenZymeSettings,
     limiter_registry: LimiterRegistry | None = None,
+    *,
+    token_scenario_override: str | None = None,
 ) -> OpenAICompatibleChatModelFactory | None:
     if not settings.llm.enabled or settings.llm.api_key is None:
         return None
-    live_token_scenario = _live_llm_token_scenario(settings)
+    live_token_scenario = _resolve_live_llm_token_scenario(
+        settings,
+        token_scenario_override=token_scenario_override,
+    )
     live_token_ledger = (
         LiveMicuTokenLedger(settings.test.live_llm.token_ledger_path)
         if live_token_scenario is not None
@@ -293,6 +301,26 @@ def _live_llm_token_scenario(settings: OpenZymeSettings) -> str | None:
     return "+".join(scenarios) or None
 
 
+def _resolve_live_llm_token_scenario(
+    settings: OpenZymeSettings,
+    *,
+    token_scenario_override: str | None,
+) -> str | None:
+    default = _live_llm_token_scenario(settings)
+    if token_scenario_override is None:
+        return default
+    if (
+        default is None
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", token_scenario_override)
+        is None
+    ):
+        raise ValueError(
+            "token_scenario_override requires an enabled live test and a safe, "
+            "non-empty scenario identifier"
+        )
+    return token_scenario_override
+
+
 def build_model_factory_from_env() -> OpenAICompatibleChatModelFactory | None:
     settings = get_settings()
     return build_model_factory_from_settings(
@@ -328,6 +356,9 @@ def _build_research_adapter(settings: OpenZymeSettings):
             max_results=settings.research.tavily_max_results,
             topic=settings.research.tavily_topic,
             timeout_seconds=settings.research.tavily_timeout_seconds,
+            callable_client=BoundedCallableClient(
+                max_attempts=settings.research.provider_max_attempts,
+            ),
             diagnostic_label=(
                 "live-provider"
                 if settings.test.enable_live_llm
@@ -340,8 +371,16 @@ def _build_research_adapter(settings: OpenZymeSettings):
 
 
 def _build_bio_research_service(settings: OpenZymeSettings) -> BioResearchService:
-    del settings
-    return DefaultBioResearchService()
+    return DefaultBioResearchService(
+        semantic_scholar_api_key=settings.research.semantic_scholar_api_key,
+        pubmed_api_key=settings.research.pubmed_api_key,
+        pubmed_email=settings.research.pubmed_email,
+        pubmed_tool=settings.research.pubmed_tool,
+        http_client=BoundedHttpClient(
+            timeout_seconds=settings.research.provider_timeout_seconds,
+            max_attempts=settings.research.provider_max_attempts,
+        ),
+    )
 
 
 def build_local_eval_foundation(
@@ -376,6 +415,7 @@ def build_local_eval_foundation(
 def build_configured_foundation(
     *,
     settings: OpenZymeSettings | None = None,
+    token_scenario_override: str | None = None,
 ) -> RuntimeFoundation:
     effective_settings = settings or get_settings()
     if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
@@ -383,16 +423,12 @@ def build_configured_foundation(
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)
-    research_tool_provider = (
-        None
-        if research_adapter is None
-        else DefaultResearchToolProvider(
-            research_adapter,
-            mcp_tools=build_bio_research_tools(bio_research_service),
-            mcp_enabled=True,
-            mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
-            limiter_registry=limiter_registry,
-        )
+    research_tool_provider = DefaultResearchToolProvider(
+        research_adapter,
+        mcp_tools=build_bio_research_tools(bio_research_service),
+        mcp_enabled=True,
+        mcp_tool_allowlist=effective_settings.research.mcp_tool_allowlist,
+        limiter_registry=limiter_registry,
     )
     return RuntimeFoundation(
         execution_adapter=_build_execution_adapter(effective_settings, limiter_registry),
@@ -406,6 +442,7 @@ def build_configured_foundation(
         model_factory=build_model_factory_from_settings(
             effective_settings,
             limiter_registry,
+            token_scenario_override=token_scenario_override,
         ),
         limiter_registry=limiter_registry,
         settings=effective_settings,

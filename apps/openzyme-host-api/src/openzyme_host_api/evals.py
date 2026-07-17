@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from contextlib import ExitStack
+from decimal import Decimal
+from decimal import InvalidOperation
 import hashlib
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -36,6 +41,11 @@ from openzyme_engines import ResearchUnitPlan
 from openzyme_engines import ExecutionOutcome
 from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import ExecutionArtifactRef
+from openzyme_pipeline import aox_hmmer
+from openzyme_pipeline import aox_motif
+from openzyme_pipeline import aox_reference
+from openzyme_pipeline import aox_sequence_join
+from openzyme_pipeline import aox_similarity
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_settings
 from openzyme_runtime import live_e2e_skip_reason
@@ -125,7 +135,9 @@ def _created_code_artifact_id(messages: list[object]) -> str | None:
     return None
 
 
-def _latest_tool_payload(messages: list[object], tool_name: str) -> dict[str, object] | None:
+def _latest_tool_payload(
+    messages: list[object], tool_name: str
+) -> dict[str, object] | None:
     for message in reversed(messages):
         if _tool_message_name(message) == tool_name:
             return _tool_message_payload(message)
@@ -234,7 +246,10 @@ class V3LocalEvalInvoker:
                         }
                     ],
                 }
-            return {"content": "Source-backed enzyme design evidence collected.", "tool_calls": []}
+            return {
+                "content": "Source-backed enzyme design evidence collected.",
+                "tool_calls": [],
+            }
         if self.purpose == "v3_teammate_loop:researcher":
             return self._researcher_response(system_prompt)
         if self.purpose == "v3_teammate_loop:executor":
@@ -592,7 +607,9 @@ class V3LocalEvalModelFactory:
     def __init__(self) -> None:
         self.invokers: dict[str, V3LocalEvalInvoker] = {}
 
-    def create_structured_invoker(self, *, purpose: str) -> "V3LocalEvalStructuredInvoker":
+    def create_structured_invoker(
+        self, *, purpose: str
+    ) -> "V3LocalEvalStructuredInvoker":
         return V3LocalEvalStructuredInvoker(purpose)
 
     def create_tool_calling_invoker(self, *, purpose: str) -> V3LocalEvalInvoker:
@@ -660,34 +677,48 @@ class V3LocalEvalStructuredInvoker:
         raise AssertionError(f"Unhandled eval structured schema {schema!r}")
 
 
-AOX_HMM_ACCESSIONS = (
-    "AAC72747.1",
-    "KDQ24956.1",
-    "9AVH_A",
-    "XP_014653549.1",
-    "KIS68002.1",
-    "XP_003660923.1",
-    "AMW87253.1",
-    "AFP17823.1",
-    "WP_190019735.1",
-    "WP_138089821.1",
-    "WP_176407597.1",
-    "CAQ19343.1",
-    "CAQ19344.1",
-)
+AOX_HMM_ACCESSIONS = aox_reference.HMM_REFERENCE_ACCESSIONS
+AOX_NCBI_ACCESSIONS = aox_reference.NCBI_REFERENCE_ACCESSIONS
 
 S15_AOX_HMM_SCENARIO_ID = "v3_aox_hmm_cutover_live_e2e"
 S15_AOX_HMM_FIXTURE_SCENARIO_ID = "v3_aox_hmm_prompt_fixture"
 S15_AOX_HMM_FIXED_PROMPT = (
-    "Run AOX/HMM mining from only this prompt. Use these 13 AOX accessions: "
-    + ", ".join(AOX_HMM_ACCESSIONS)
-    + ". Build a reference HMM, search EBI HMMER refprot with bio.hmmer_search, "
-    "filter hits to length 650-700 and HMM score >200, score with reference coordinate "
-    "AAB57849.1 using activity score threshold 33.6, deduplicate at similarity threshold 0.85, "
-    "and export normalized deliverables under aox_hmm/: AOX_ref21.fasta, target.fasta, "
-    "AOX_ref.hmm, hits_raw.csv, hits_len650_700_200.csv, scored_ref_plus_hits.csv, "
-    "AOX_candidates.fasta, AOX_candidates_cdhit85.fasta, nodes.csv, "
-    "edges_similarity.csv, and execution_summary.json."
+    "Run AOX/HMM mining from only this one user message. As master, create and "
+    "delegate separate research, execution, and reporting tasks to researcher, "
+    "executor, and reporter teammates. The researcher must obtain required PubMed "
+    "evidence with a real PMID (Semantic Scholar and Tavily are enrichment only). "
+    "The reporter must publish a final report whose claims link to the research and "
+    "execution artifacts; every teammate must finish its task explicitly. In one "
+    "bio.ncbi_fetch_proteins call request these exact 14 identities: "
+    + ", ".join(AOX_NCBI_ACCESSIONS)
+    + ". Apply aox_hmm_reference_set_selection@1 to materialize AOX_ref21.fasta "
+    "with exactly the fixed 13 HMM references, and apply aox_reference_selection@1 "
+    "to materialize AOX_coordinate_reference_AAB57849.1.fasta with only AAB57849.1; "
+    "both selections must bind the same sealed NCBI input and no identity may be "
+    "replaced. Feed only AOX_ref21.fasta to MAFFT, then build AOX_ref.hmm from that "
+    "alignment. Search EBI HMMER refprot with bio.hmmer_search, "
+    "materialize its provider_parsed/parsed_hits.csv artifact and run the versioned "
+    "hmmer_score_filtered_accessions@1 calculation. Register the canonical "
+    "aox_hmm/hmmer_score_filtered_accessions.csv before any UniProt call and bind that "
+    "exact artifact plus its exact nonempty accessions as bio.uniprot_fetch "
+    "source_hit_artifact. If it is empty, do not call UniProt and preserve the typed "
+    "upstream-empty reason. After a real UniProt response, join by accession and filter "
+    "the fetched sequences to length 650-700; never source length or sequence from the "
+    "HMMER response. Apply aox_scoring_input_assembly@1 to materialize "
+    "AOX_scoring_input.fasta as AAB57849.1 first followed by the post-UniProt target "
+    "records in lexical accession order, then feed AOX_ref.hmm plus that exact scoring "
+    "input to HMMalign. Score with "
+    "aox_motif_rule_score@1 against reference coordinate AAB57849.1 using the exact "
+    "integer-tenths threshold 336 (display 33.6), deduplicate at similarity threshold 0.85, "
+    "and export normalized deliverables under aox_hmm/: AOX_ref21.fasta, "
+    "AOX_coordinate_reference_AAB57849.1.fasta, AOX_scoring_input.fasta, target.fasta, "
+    "AOX_ref.hmm, hits_raw.csv, hmmer_score_filtered_accessions.csv, "
+    "hits_len650_700_200.csv, AOX_scoring_alignment.fasta, "
+    "scored_ref_plus_hits.csv, AOX_candidates.fasta, AOX_candidates_cdhit85.fasta, "
+    "AOX_candidates_cdhit85.clusters.csv, nodes.csv, "
+    "edges_similarity.csv, similarity_graph_manifest.json, and execution_summary.json. "
+    "A schema-valid empty candidate result is honest success only when its reason and "
+    "the independent provider/HPC health evidence are preserved; never synthesize a hit."
 )
 S15_AOX_HMM_WORKFLOW_REF = next(
     manifest.selection_ref
@@ -696,15 +727,21 @@ S15_AOX_HMM_WORKFLOW_REF = next(
 )
 S15_AOX_HMM_FIXED_DELIVERABLES = {
     "aox_hmm/AOX_ref21.fasta",
+    "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
+    "aox_hmm/AOX_scoring_input.fasta",
     "aox_hmm/target.fasta",
     "aox_hmm/AOX_ref.hmm",
     "aox_hmm/hits_raw.csv",
+    "aox_hmm/hmmer_score_filtered_accessions.csv",
     "aox_hmm/hits_len650_700_200.csv",
+    "aox_hmm/AOX_scoring_alignment.fasta",
     "aox_hmm/scored_ref_plus_hits.csv",
     "aox_hmm/AOX_candidates.fasta",
     "aox_hmm/AOX_candidates_cdhit85.fasta",
+    "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
     "aox_hmm/nodes.csv",
     "aox_hmm/edges_similarity.csv",
+    "aox_hmm/similarity_graph_manifest.json",
     "aox_hmm/execution_summary.json",
 }
 S15_AOX_HMM_OLD_DELIVERABLES = {
@@ -716,7 +753,28 @@ S15_AOX_HMM_OLD_DELIVERABLES = {
     "aox_hmm/candidate_cdhit85.fasta",
 }
 S15_AOX_HMM_REQUIRED_CSV_COLUMNS = {
-    "aox_hmm/hits_raw.csv": {"target", "uniprot_accession", "hmm_score", "evalue", "length"},
+    "aox_hmm/hits_raw.csv": {
+        "target",
+        "accession",
+        "evalue",
+        "score",
+        "page",
+        "hit_index",
+        "evalue_numeric",
+        "score_numeric",
+        "raw_page_digest",
+        "raw_hit_digest",
+        "parsed_row_digest",
+    },
+    "aox_hmm/hmmer_score_filtered_accessions.csv": {
+        "accession",
+        "target",
+        "evalue_numeric",
+        "score_numeric",
+        "raw_page_digest",
+        "raw_hit_digest",
+        "parsed_row_digest",
+    },
     "aox_hmm/hits_len650_700_200.csv": {
         "target",
         "uniprot_accession",
@@ -725,24 +783,78 @@ S15_AOX_HMM_REQUIRED_CSV_COLUMNS = {
         "length",
         "sequence",
     },
-    "aox_hmm/scored_ref_plus_hits.csv": {
-        "id",
-        "seq_score",
-        "pass_rule",
-        "activity_score",
-        "reference_coordinate",
+    "aox_hmm/scored_ref_plus_hits.csv": set(aox_motif.CANONICAL_COLUMNS),
+    "aox_hmm/AOX_candidates_cdhit85.clusters.csv": {
+        "cluster_id",
+        "member_id",
+        "representative_id",
+        "is_representative",
+        "identity_to_representative",
+        "member_length",
     },
-    "aox_hmm/nodes.csv": {"node_id", "label", "score", "cluster_id"},
-    "aox_hmm/edges_similarity.csv": {"source", "target", "similarity"},
+    "aox_hmm/nodes.csv": set(aox_similarity.NODE_COLUMNS),
+    "aox_hmm/edges_similarity.csv": set(aox_similarity.EDGE_COLUMNS),
 }
 S15_AOX_HMM_REQUIRED_SUMMARY_FIELDS = {
     "accession_count",
+    "ncbi_reference_accession_count",
+    "filtered_hit_count",
+    "scoring_row_count",
     "candidate_count",
+    "representative_count",
+    "graph_node_count",
+    "graph_edge_count",
     "length_filter",
     "hmm_score_threshold",
-    "activity_score_threshold",
+    "motif_rule_score_threshold_tenths",
+    "motif_rule_score_threshold",
     "similarity_threshold",
     "hmmer_database",
+    "hmmer_score_filter_contract_id",
+    "hmmer_score_filter_contract_digest",
+    "hmmer_score_filter_implementation_digest",
+    "hmmer_score_filter_input_digest",
+    "hmmer_score_filter_output_digest",
+    "sequence_length_join_contract_id",
+    "sequence_length_join_contract_digest",
+    "sequence_length_join_implementation_digest",
+    "sequence_length_join_hits_digest",
+    "sequence_length_join_target_digest",
+    "hmm_reference_set_selection_contract_id",
+    "hmm_reference_set_selection_contract_digest",
+    "hmm_reference_set_selection_implementation_digest",
+    "hmm_reference_set_input_digest",
+    "hmm_reference_set_output_digest",
+    "scoring_reference_selection_contract_id",
+    "scoring_reference_selection_contract_digest",
+    "scoring_reference_selection_implementation_digest",
+    "scoring_reference_selection_input_digest",
+    "scoring_reference_output_digest",
+    "scoring_input_assembly_contract_id",
+    "scoring_input_assembly_contract_digest",
+    "scoring_input_assembly_implementation_digest",
+    "scoring_reference_input_digest",
+    "post_uniprot_target_input_digest",
+    "scoring_contract_id",
+    "scoring_contract_digest",
+    "scoring_implementation_digest",
+    "scoring_reference_accession",
+    "scoring_input_digest",
+    "scoring_alignment_input_digest",
+    "scoring_alignment_digest",
+    "cdhit_membership_schema_id",
+    "similarity_calculation_id",
+    "similarity_calculation_digest",
+    "similarity_implementation_digest",
+    "similarity_threshold_ppm",
+    "candidate_graph_manifest_schema_id",
+    "candidate_graph_node_schema_id",
+    "candidate_graph_edge_schema_id",
+    "candidate_graph_manifest_digest",
+    "scientific_outcome",
+    "scientific_branch",
+    "omitted_operation_roles",
+    "upstream_empty_skip_receipt_digest",
     "provider_status",
     "tool_status",
     "warning_count",
@@ -763,6 +875,452 @@ def _s15_aox_legacy_paths_present(artifact_paths: set[str]) -> list[str]:
     return sorted(S15_AOX_HMM_OLD_DELIVERABLES & artifact_paths)
 
 
+S15_AOX_HMM_LEGACY_SCIENTIFIC_FIELDS = frozenset(
+    {"activity_score", "seq_score", "pass_rule"}
+)
+S15_AOX_HMM_CDHIT_MEMBERSHIP_COLUMNS = (
+    "cluster_id",
+    "member_id",
+    "representative_id",
+    "is_representative",
+    "identity_to_representative",
+    "member_length",
+)
+_S15_AOX_SEQUENCE_PATTERN = re.compile(r"^[A-Z]+$")
+_S15_AOX_CDHIT_IDENTITY_PATTERN = re.compile(r"(?:0|1)\.[0-9]{6}")
+_S15_AOX_SYNTHETIC_MARKERS = ("MSEQUENCE", "FIXTURE", "SYNTHETIC")
+
+
+def _s15_aox_content_digest(text: str) -> str:
+    return f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}"
+
+
+def _s15_aox_reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _s15_aox_error(
+    errors: list[dict[str, object]],
+    error_code: str,
+    *,
+    path: str | None = None,
+    **details: object,
+) -> None:
+    error: dict[str, object] = {"error_code": error_code}
+    if path is not None:
+        error["path"] = path
+    error.update(details)
+    errors.append(error)
+
+
+def _s15_aox_parse_fasta(
+    text: str,
+    *,
+    path: str,
+    errors: list[dict[str, object]],
+    allow_empty: bool,
+) -> dict[str, str] | None:
+    if not text.strip():
+        if allow_empty:
+            return {}
+        _s15_aox_error(errors, "invalid_fasta", path=path, reason="empty")
+        return None
+    records: dict[str, str] = {}
+    header: str | None = None
+    fragments: list[str] = []
+
+    def finish_record() -> bool:
+        nonlocal header, fragments
+        if header is None:
+            return True
+        sequence_id = header.split(maxsplit=1)[0] if header else ""
+        sequence = "".join(fragments).upper()
+        if not sequence_id or not sequence:
+            _s15_aox_error(
+                errors,
+                "invalid_fasta",
+                path=path,
+                reason="empty_header_or_sequence",
+            )
+            return False
+        if sequence_id in records:
+            _s15_aox_error(
+                errors,
+                "invalid_fasta",
+                path=path,
+                reason="duplicate_sequence_id",
+                sequence_id=sequence_id,
+            )
+            return False
+        if _S15_AOX_SEQUENCE_PATTERN.fullmatch(sequence) is None:
+            _s15_aox_error(
+                errors,
+                "invalid_fasta",
+                path=path,
+                reason="invalid_sequence_residue",
+                sequence_id=sequence_id,
+            )
+            return False
+        upper_header = header.upper()
+        if any(
+            marker in upper_header or marker in sequence
+            for marker in _S15_AOX_SYNTHETIC_MARKERS
+        ):
+            _s15_aox_error(
+                errors,
+                "synthetic_sequence_evidence_forbidden",
+                path=path,
+                sequence_id=sequence_id,
+            )
+            return False
+        records[sequence_id] = sequence
+        header = None
+        fragments = []
+        return True
+
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            if not finish_record():
+                return None
+            header = line[1:].strip()
+            continue
+        if header is None or any(character.isspace() for character in line):
+            _s15_aox_error(
+                errors,
+                "invalid_fasta",
+                path=path,
+                reason="sequence_before_header_or_internal_whitespace",
+                line=line_number,
+            )
+            return None
+        fragments.append(line)
+    if not finish_record():
+        return None
+    if not records:
+        _s15_aox_error(errors, "invalid_fasta", path=path, reason="no_records")
+        return None
+    sequences = list(records.values())
+    if any(len(set(sequence)) == 1 for sequence in sequences) or (
+        path == "aox_hmm/AOX_ref21.fasta"
+        and len(sequences) > 1
+        and len(set(sequences)) == 1
+    ):
+        _s15_aox_error(
+            errors,
+            "constant_sequence_evidence_forbidden",
+            path=path,
+        )
+        return None
+    return records
+
+
+def _s15_aox_parse_csv(
+    text: str,
+    *,
+    path: str,
+    expected_columns: tuple[str, ...],
+    errors: list[dict[str, object]],
+) -> list[dict[str, str]] | None:
+    try:
+        reader = csv.DictReader(io.StringIO(text, newline=""), strict=True)
+        fieldnames = tuple(reader.fieldnames or ())
+        rows = list(reader)
+    except csv.Error as exc:
+        _s15_aox_error(
+            errors,
+            "invalid_csv",
+            path=path,
+            reason=type(exc).__name__,
+        )
+        return None
+    legacy_fields = sorted(
+        S15_AOX_HMM_LEGACY_SCIENTIFIC_FIELDS.intersection(fieldnames)
+    )
+    if legacy_fields:
+        _s15_aox_error(
+            errors,
+            "legacy_scoring_schema_forbidden",
+            path=path,
+            fields=legacy_fields,
+        )
+    if fieldnames != expected_columns:
+        _s15_aox_error(
+            errors,
+            "invalid_csv_columns",
+            path=path,
+            expected_columns=list(expected_columns),
+            actual_columns=list(fieldnames),
+        )
+        return None
+    for row_number, row in enumerate(rows, start=2):
+        if None in row or any(value is None for value in row.values()):
+            _s15_aox_error(
+                errors,
+                "invalid_csv_row_shape",
+                path=path,
+                row=row_number,
+            )
+            return None
+    return [{key: str(value) for key, value in row.items()} for row in rows]
+
+
+def _s15_aox_fixture_or_legacy_evidence_errors(
+    payload: object,
+    *,
+    path: str,
+    errors: list[dict[str, object]],
+) -> None:
+    fixture_found = False
+    legacy_fields: set[str] = set()
+
+    def inspect(value: object) -> None:
+        nonlocal fixture_found
+        if isinstance(value, dict):
+            for raw_key, nested in value.items():
+                key = str(raw_key)
+                if key in S15_AOX_HMM_LEGACY_SCIENTIFIC_FIELDS:
+                    legacy_fields.add(key)
+                if key == "fixture" and nested is True:
+                    fixture_found = True
+                if key == "cutover_eligible" and nested is False:
+                    fixture_found = True
+                inspect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                inspect(nested)
+        elif isinstance(value, str) and "fixture_non_cutover" in value.casefold():
+            fixture_found = True
+
+    inspect(payload)
+    if legacy_fields:
+        _s15_aox_error(
+            errors,
+            "legacy_scientific_field_forbidden",
+            path=path,
+            fields=sorted(legacy_fields),
+        )
+    if fixture_found:
+        _s15_aox_error(errors, "fixture_non_cutover_forbidden", path=path)
+
+
+def _s15_aox_require_metadata(
+    metadata_by_path: dict[str, dict[str, object]],
+    *,
+    path: str,
+    fields: tuple[str, ...],
+    errors: list[dict[str, object]],
+    error_code: str,
+) -> None:
+    metadata = metadata_by_path.get(path, {})
+    for field in fields:
+        if metadata.get(field) in (None, "", [], {}):
+            _s15_aox_error(
+                errors,
+                error_code,
+                path=path,
+                missing_metadata=field,
+            )
+
+
+def _s15_aox_validate_metadata_values(
+    metadata_by_path: dict[str, dict[str, object]],
+    *,
+    path: str,
+    expected: dict[str, object],
+    errors: list[dict[str, object]],
+    error_code: str,
+) -> None:
+    metadata = metadata_by_path.get(path, {})
+    for field, expected_value in expected.items():
+        if metadata.get(field) != expected_value:
+            _s15_aox_error(
+                errors,
+                error_code,
+                path=path,
+                field=field,
+                expected=expected_value,
+                actual=metadata.get(field),
+            )
+
+
+def _s15_aox_validate_cdhit_membership(
+    rows: list[dict[str, str]] | None,
+    *,
+    candidates: dict[str, str],
+    representatives: dict[str, str] | None,
+    errors: list[dict[str, object]],
+) -> tuple[set[str], dict[str, str]]:
+    path = "aox_hmm/AOX_candidates_cdhit85.clusters.csv"
+    if rows is None:
+        return set(), {}
+    if not candidates:
+        if rows:
+            _s15_aox_error(
+                errors,
+                "empty_candidate_membership_not_empty",
+                path=path,
+                row_count=len(rows),
+            )
+        if representatives:
+            _s15_aox_error(
+                errors,
+                "empty_candidate_representatives_not_empty",
+                path="aox_hmm/AOX_candidates_cdhit85.fasta",
+            )
+        return set(), {}
+    if not rows:
+        _s15_aox_error(errors, "cdhit_membership_empty", path=path)
+        return set(), {}
+
+    members: dict[str, dict[str, str]] = {}
+    clusters: dict[str, list[dict[str, str]]] = {}
+    for row_number, row in enumerate(rows, start=2):
+        empty_fields = [key for key, value in row.items() if not value.strip()]
+        if empty_fields:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_value_missing",
+                path=path,
+                row=row_number,
+                fields=empty_fields,
+            )
+            continue
+        member_id = row["member_id"]
+        if member_id in members:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_duplicate_member",
+                path=path,
+                member_id=member_id,
+            )
+            continue
+        if row["is_representative"] not in {"true", "false"}:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_invalid_representative_flag",
+                path=path,
+                row=row_number,
+            )
+        identity_text = row["identity_to_representative"]
+        if _S15_AOX_CDHIT_IDENTITY_PATTERN.fullmatch(identity_text) is None:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_invalid_identity",
+                path=path,
+                row=row_number,
+                value=identity_text,
+            )
+        else:
+            try:
+                identity = Decimal(identity_text)
+            except InvalidOperation:
+                identity = Decimal(-1)
+            if not identity.is_finite() or identity < 0 or identity > 1:
+                _s15_aox_error(
+                    errors,
+                    "cdhit_membership_invalid_identity",
+                    path=path,
+                    row=row_number,
+                    value=identity_text,
+                )
+        try:
+            member_length = int(row["member_length"])
+        except ValueError:
+            member_length = -1
+        expected_sequence = candidates.get(member_id)
+        if expected_sequence is not None and member_length != len(expected_sequence):
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_length_mismatch",
+                path=path,
+                member_id=member_id,
+                expected=len(expected_sequence),
+                actual=member_length,
+            )
+        members[member_id] = row
+        clusters.setdefault(row["cluster_id"], []).append(row)
+
+    missing_members = sorted(set(candidates) - set(members))
+    unexpected_members = sorted(set(members) - set(candidates))
+    if missing_members or unexpected_members:
+        _s15_aox_error(
+            errors,
+            "cdhit_membership_candidate_mismatch",
+            path=path,
+            missing_member_ids=missing_members,
+            unexpected_member_ids=unexpected_members,
+        )
+
+    representative_ids: set[str] = set()
+    member_clusters: dict[str, str] = {}
+    for cluster_id, cluster_rows in clusters.items():
+        representative_rows = [
+            row for row in cluster_rows if row["is_representative"] == "true"
+        ]
+        if len(representative_rows) != 1:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_representative_count_invalid",
+                path=path,
+                cluster_id=cluster_id,
+                representative_count=len(representative_rows),
+            )
+            continue
+        representative = representative_rows[0]
+        representative_id = representative["member_id"]
+        representative_ids.add(representative_id)
+        if (
+            representative["representative_id"] != representative_id
+            or representative["identity_to_representative"] != "1.000000"
+            or any(
+                row["representative_id"] != representative_id for row in cluster_rows
+            )
+        ):
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_representative_inconsistent",
+                path=path,
+                cluster_id=cluster_id,
+            )
+        for row in cluster_rows:
+            member_clusters[row["member_id"]] = cluster_id
+
+    actual_representatives = set(representatives or {})
+    if actual_representatives != representative_ids:
+        _s15_aox_error(
+            errors,
+            "cdhit_representative_fasta_mismatch",
+            path="aox_hmm/AOX_candidates_cdhit85.fasta",
+            missing_representative_ids=sorted(
+                representative_ids - actual_representatives
+            ),
+            unexpected_representative_ids=sorted(
+                actual_representatives - representative_ids
+            ),
+        )
+    for representative_id in sorted(representative_ids & actual_representatives):
+        if representatives is not None and representatives[
+            representative_id
+        ] != candidates.get(representative_id):
+            _s15_aox_error(
+                errors,
+                "cdhit_representative_sequence_mismatch",
+                path="aox_hmm/AOX_candidates_cdhit85.fasta",
+                representative_id=representative_id,
+            )
+    return representative_ids, member_clusters
+
+
 def _s15_aox_validate_final_artifacts(
     artifact_paths: set[str],
     artifact_text_by_path: dict[str, str],
@@ -781,122 +1339,1142 @@ def _s15_aox_validate_final_artifacts(
     summary_text = artifact_text_by_path.get("aox_hmm/execution_summary.json", "")
     if "aox_hmm/execution_summary.json" in artifact_paths:
         try:
-            loaded_summary = json.loads(summary_text)
-        except json.JSONDecodeError:
-            errors.append({"error_code": "invalid_json", "path": "aox_hmm/execution_summary.json"})
+            loaded_summary = json.loads(
+                summary_text,
+                object_pairs_hook=_s15_aox_reject_duplicate_json_keys,
+            )
+        except (json.JSONDecodeError, ValueError):
+            _s15_aox_error(
+                errors,
+                "invalid_json",
+                path="aox_hmm/execution_summary.json",
+            )
         else:
             if isinstance(loaded_summary, dict):
                 execution_summary = loaded_summary
             else:
-                errors.append({"error_code": "invalid_json", "path": "aox_hmm/execution_summary.json"})
+                _s15_aox_error(
+                    errors,
+                    "invalid_json",
+                    path="aox_hmm/execution_summary.json",
+                )
 
-    for path in sorted(S15_AOX_HMM_FIXED_DELIVERABLES):
-        if path not in artifact_paths:
-            continue
-        text = artifact_text_by_path.get(path, "")
-        if path == "aox_hmm/target.fasta" and not text.strip():
+    _s15_aox_fixture_or_legacy_evidence_errors(
+        execution_summary,
+        path="aox_hmm/execution_summary.json",
+        errors=errors,
+    )
+    for path, metadata in sorted(metadata_by_path.items()):
+        if path in S15_AOX_HMM_FIXED_DELIVERABLES:
+            _s15_aox_fixture_or_legacy_evidence_errors(
+                metadata,
+                path=path,
+                errors=errors,
+            )
+
+    reference_path = "aox_hmm/AOX_ref21.fasta"
+    reference_text = artifact_text_by_path.get(reference_path, "")
+    reference_records: dict[str, str] | None = None
+    reference_digest = _s15_aox_content_digest(reference_text)
+    if reference_path in artifact_paths:
+        reference_records = _s15_aox_parse_fasta(
+            reference_text,
+            path=reference_path,
+            errors=errors,
+            allow_empty=False,
+        )
+        metadata = metadata_by_path.get(reference_path, {})
+        if metadata.get("accession_count") != len(AOX_HMM_ACCESSIONS):
+            _s15_aox_error(
+                errors,
+                "invalid_accession_count",
+                path=reference_path,
+                accession_count=metadata.get("accession_count"),
+            )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=reference_path,
+            fields=("source_ncbi_fasta_artifact_id", "provider_request_ids"),
+            errors=errors,
+            error_code="provider_provenance_incomplete",
+        )
+        _s15_aox_validate_metadata_values(
+            metadata_by_path,
+            path=reference_path,
+            expected={
+                "contract_id": (
+                    aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID
+                ),
+                "contract_digest": (
+                    aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+                ),
+                "implementation_digest": (
+                    aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+                ),
+                "output_digest": reference_digest,
+                "output_name": aox_reference.HMM_REFERENCE_SET_OUTPUT_NAME,
+                "selected_accessions": list(AOX_HMM_ACCESSIONS),
+                "excluded_accessions": [
+                    aox_reference.SCORING_REFERENCE_ACCESSION
+                ],
+                "identity_replacement_count": 0,
+                "ncbi_reference_accessions": list(AOX_NCBI_ACCESSIONS),
+            },
+            errors=errors,
+            error_code="hmm_reference_selection_metadata_mismatch",
+        )
+        if reference_records is not None:
+            actual_ids = tuple(reference_records)
+            if actual_ids != AOX_HMM_ACCESSIONS:
+                _s15_aox_error(
+                    errors,
+                    "hmm_reference_identity_order_mismatch",
+                    path=reference_path,
+                    expected=list(AOX_HMM_ACCESSIONS),
+                    actual=list(actual_ids),
+                )
+            canonical_reference_text = "".join(
+                f">{accession}\n{reference_records[accession]}\n"
+                for accession in reference_records
+            )
+            if reference_text != canonical_reference_text:
+                _s15_aox_error(
+                    errors,
+                    "hmm_reference_fasta_not_canonical",
+                    path=reference_path,
+                )
+
+    scoring_reference_path = (
+        "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta"
+    )
+    scoring_reference_text = artifact_text_by_path.get(
+        scoring_reference_path,
+        "",
+    )
+    scoring_reference_records: dict[str, str] | None = None
+    scoring_reference_digest = _s15_aox_content_digest(scoring_reference_text)
+    if scoring_reference_path in artifact_paths:
+        scoring_reference_records = _s15_aox_parse_fasta(
+            scoring_reference_text,
+            path=scoring_reference_path,
+            errors=errors,
+            allow_empty=False,
+        )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=scoring_reference_path,
+            fields=("source_ncbi_fasta_artifact_id", "provider_request_ids"),
+            errors=errors,
+            error_code="provider_provenance_incomplete",
+        )
+        _s15_aox_validate_metadata_values(
+            metadata_by_path,
+            path=scoring_reference_path,
+            expected={
+                "contract_id": (
+                    aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_ID
+                ),
+                "contract_digest": (
+                    aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST
+                ),
+                "implementation_digest": (
+                    aox_reference.SCORING_REFERENCE_SELECTION_IMPLEMENTATION_DIGEST
+                ),
+                "output_digest": scoring_reference_digest,
+                "output_name": aox_reference.SCORING_REFERENCE_OUTPUT_NAME,
+                "reference_accession": (
+                    aox_reference.SCORING_REFERENCE_ACCESSION
+                ),
+                "identity_replacement_count": 0,
+                "ncbi_reference_accessions": list(AOX_NCBI_ACCESSIONS),
+            },
+            errors=errors,
+            error_code="scoring_reference_selection_metadata_mismatch",
+        )
+        if scoring_reference_records is not None:
+            expected_reference_ids = (
+                aox_reference.SCORING_REFERENCE_ACCESSION,
+            )
+            actual_ids = tuple(scoring_reference_records)
+            if actual_ids != expected_reference_ids:
+                _s15_aox_error(
+                    errors,
+                    "scoring_reference_identity_mismatch",
+                    path=scoring_reference_path,
+                    expected=list(expected_reference_ids),
+                    actual=list(actual_ids),
+                )
+            canonical_scoring_reference_text = "".join(
+                f">{accession}\n{scoring_reference_records[accession]}\n"
+                for accession in scoring_reference_records
+            )
+            if scoring_reference_text != canonical_scoring_reference_text:
+                _s15_aox_error(
+                    errors,
+                    "scoring_reference_fasta_not_canonical",
+                    path=scoring_reference_path,
+                )
+
+    if reference_path in artifact_paths and scoring_reference_path in artifact_paths:
+        reference_metadata = metadata_by_path.get(reference_path, {})
+        scoring_reference_metadata = metadata_by_path.get(
+            scoring_reference_path,
+            {},
+        )
+        for field in (
+            "input_digest",
+            "source_ncbi_fasta_artifact_id",
+            "provider_request_ids",
+            "ncbi_reference_accessions",
+        ):
+            if reference_metadata.get(field) != scoring_reference_metadata.get(field):
+                _s15_aox_error(
+                    errors,
+                    "reference_selection_source_mismatch",
+                    path=scoring_reference_path,
+                    field=field,
+                    hmm_reference_value=reference_metadata.get(field),
+                    scoring_reference_value=scoring_reference_metadata.get(field),
+                )
+
+    target_path = "aox_hmm/target.fasta"
+    target_text = artifact_text_by_path.get(target_path, "")
+    target_records: dict[str, str] | None = None
+    if target_path in artifact_paths:
+        target_records = _s15_aox_parse_fasta(
+            target_text,
+            path=target_path,
+            errors=errors,
+            allow_empty=True,
+        )
+        if not target_text.strip():
             warning_count = execution_summary.get("warning_count")
-            if not isinstance(warning_count, int) or warning_count <= 0:
-                errors.append({"error_code": "empty_target_warning_missing", "path": path})
-        elif path.endswith(".fasta") and not text.lstrip().startswith(">"):
-            errors.append({"error_code": "invalid_fasta", "path": path})
-        if path in {"aox_hmm/AOX_candidates.fasta", "aox_hmm/AOX_candidates_cdhit85.fasta"} and not text.strip():
-            candidate_count = execution_summary.get("candidate_count")
-            if candidate_count not in {0, "0"}:
-                errors.append({"error_code": "candidate_fasta_empty_inconsistent", "path": path})
-        if path == "aox_hmm/AOX_ref.hmm" and not text.startswith("HMMER3"):
-            errors.append({"error_code": "invalid_hmm", "path": path})
-        if path == "aox_hmm/AOX_ref.hmm":
-            metadata = metadata_by_path.get(path, {})
-            for key in ("source_reference_fasta_artifact_id", "mafft_artifact_ids", "hmmbuild_artifact_ids"):
-                if metadata.get(key) in (None, "", [], {}):
-                    errors.append(
-                        {
-                            "error_code": "hmm_provenance_incomplete",
-                            "path": path,
-                            "missing_metadata": key,
-                        }
-                    )
-        if path == "aox_hmm/AOX_ref21.fasta":
-            metadata = metadata_by_path.get(path, {})
-            if metadata.get("accession_count") != len(AOX_HMM_ACCESSIONS):
-                errors.append(
-                    {
-                        "error_code": "invalid_accession_count",
-                        "path": path,
-                        "accession_count": metadata.get("accession_count"),
-                    }
-                )
-            if metadata.get("provider_request_ids") in (None, "", [], {}):
-                errors.append(
-                    {
-                        "error_code": "provider_provenance_incomplete",
-                        "path": path,
-                        "missing_metadata": "provider_request_ids",
-                    }
-                )
-        required_columns = S15_AOX_HMM_REQUIRED_CSV_COLUMNS.get(path)
-        if required_columns:
-            header = set(text.splitlines()[0].split(",")) if text.splitlines() else set()
-            missing_columns = sorted(required_columns - header)
-            if missing_columns:
-                errors.append(
-                    {
-                        "error_code": "invalid_csv_columns",
-                        "path": path,
-                        "missing_columns": missing_columns,
-                    }
-                )
-        if path == "aox_hmm/execution_summary.json":
-            if not execution_summary:
-                continue
-            missing_fields = sorted(S15_AOX_HMM_REQUIRED_SUMMARY_FIELDS - set(execution_summary))
-            if missing_fields:
-                errors.append(
-                    {
-                        "error_code": "invalid_execution_summary",
-                        "path": path,
-                        "missing_fields": missing_fields,
-                    }
-                )
-            expected_values = {
-                "accession_count": len(AOX_HMM_ACCESSIONS),
-                "length_filter": [650, 700],
-                "hmm_score_threshold": 200,
-                "activity_score_threshold": 33.6,
-                "similarity_threshold": 0.85,
-                "hmmer_database": "refprot",
-            }
-            for key, expected in expected_values.items():
-                if execution_summary.get(key) != expected:
-                    errors.append(
-                        {
-                            "error_code": "invalid_execution_summary_value",
-                            "path": path,
-                            "field": key,
-                            "expected": expected,
-                            "actual": execution_summary.get(key),
-                        }
-                    )
-            if sorted(execution_summary.get("normalized_final_deliverable_paths") or []) != sorted(
-                S15_AOX_HMM_FIXED_DELIVERABLES
+            if (
+                isinstance(warning_count, bool)
+                or not isinstance(warning_count, int)
+                or warning_count <= 0
             ):
-                errors.append(
-                    {
-                        "error_code": "invalid_normalized_final_deliverable_paths",
-                        "path": path,
-                    }
+                _s15_aox_error(
+                    errors,
+                    "empty_target_warning_missing",
+                    path=target_path,
                 )
-            if not isinstance(execution_summary.get("artifact_ids"), list) or not execution_summary.get("artifact_ids"):
-                errors.append({"error_code": "invalid_artifact_ids", "path": path})
-            if not execution_summary.get("provider_status") or not execution_summary.get("tool_status"):
-                errors.append({"error_code": "invalid_execution_status_summary", "path": path})
+
+    scoring_input_path = "aox_hmm/AOX_scoring_input.fasta"
+    scoring_input_text = artifact_text_by_path.get(scoring_input_path, "")
+    scoring_input_result: aox_reference.ScoringInputAssemblyResult | None = None
+    if scoring_input_path in artifact_paths:
+        try:
+            scoring_input_result = aox_reference.assemble_scoring_input(
+                scoring_reference_text,
+                target_text,
+                expected_contract_id=(
+                    aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_ID
+                ),
+                expected_contract_digest=(
+                    aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST
+                ),
+                expected_implementation_digest=(
+                    aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST
+                ),
+            )
+        except aox_reference.ScientificPrerequisiteError as exc:
+            _s15_aox_error(
+                errors,
+                "scoring_input_assembly_recalculation_failed",
+                path=scoring_input_path,
+                scientific_error=exc.to_dict(),
+            )
+        else:
+            if scoring_input_text != scoring_input_result.to_fasta():
+                _s15_aox_error(
+                    errors,
+                    "scoring_input_assembly_mismatch",
+                    path=scoring_input_path,
+                )
+            expected_scoring_input_metadata = scoring_input_result.metadata()
+            _s15_aox_validate_metadata_values(
+                metadata_by_path,
+                path=scoring_input_path,
+                expected={
+                    "contract_id": expected_scoring_input_metadata["contract_id"],
+                    "contract_digest": expected_scoring_input_metadata[
+                        "contract_digest"
+                    ],
+                    "implementation_digest": expected_scoring_input_metadata[
+                        "implementation_digest"
+                    ],
+                    "input_digests": expected_scoring_input_metadata[
+                        "input_digests"
+                    ],
+                    "output_digest": expected_scoring_input_metadata["output_digest"],
+                    "output_name": expected_scoring_input_metadata["output_name"],
+                    "reference_accession": expected_scoring_input_metadata[
+                        "reference_accession"
+                    ],
+                    "target_accessions": expected_scoring_input_metadata[
+                        "target_accessions"
+                    ],
+                    "ordering": expected_scoring_input_metadata["ordering"],
+                    "healthy_empty": expected_scoring_input_metadata["healthy_empty"],
+                },
+                errors=errors,
+                error_code="scoring_input_assembly_metadata_mismatch",
+            )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=scoring_input_path,
+            fields=(
+                "source_scoring_reference_artifact_id",
+                "source_target_fasta_artifact_id",
+            ),
+            errors=errors,
+            error_code="scoring_input_assembly_provenance_incomplete",
+        )
+
+    hmm_path = "aox_hmm/AOX_ref.hmm"
+    hmm_text = artifact_text_by_path.get(hmm_path, "")
+    hmm_digest = _s15_aox_content_digest(hmm_text)
+    if hmm_path in artifact_paths:
+        if not hmm_text.startswith("HMMER3"):
+            _s15_aox_error(errors, "invalid_hmm", path=hmm_path)
+        metadata = metadata_by_path.get(hmm_path, {})
+        for key in (
+            "source_reference_fasta_artifact_id",
+            "source_reference_fasta_digest",
+            "mafft_artifact_ids",
+            "hmmbuild_artifact_ids",
+        ):
+            if metadata.get(key) in (None, "", [], {}):
+                _s15_aox_error(
+                    errors,
+                    "hmm_provenance_incomplete",
+                    path=hmm_path,
+                    missing_metadata=key,
+                )
+        if metadata.get("source_reference_fasta_digest") != reference_digest:
+            _s15_aox_error(
+                errors,
+                "hmm_reference_digest_mismatch",
+                path=hmm_path,
+                expected=reference_digest,
+                actual=metadata.get("source_reference_fasta_digest"),
+            )
+
+    hit_csv_specs = {
+        "aox_hmm/hits_raw.csv": (
+            "target",
+            "accession",
+            "evalue",
+            "score",
+            "page",
+            "hit_index",
+            "evalue_numeric",
+            "score_numeric",
+            "raw_page_digest",
+            "raw_hit_digest",
+            "parsed_row_digest",
+        ),
+        "aox_hmm/hmmer_score_filtered_accessions.csv": (
+            "accession",
+            "target",
+            "evalue_numeric",
+            "score_numeric",
+            "raw_page_digest",
+            "raw_hit_digest",
+            "parsed_row_digest",
+        ),
+        "aox_hmm/hits_len650_700_200.csv": (
+            "target",
+            "uniprot_accession",
+            "hmm_score",
+            "evalue",
+            "length",
+            "sequence",
+        ),
+    }
+    parsed_csv: dict[str, list[dict[str, str]] | None] = {}
+    for path, columns in hit_csv_specs.items():
+        if path in artifact_paths:
+            parsed_csv[path] = _s15_aox_parse_csv(
+                artifact_text_by_path.get(path, ""),
+                path=path,
+                expected_columns=columns,
+                errors=errors,
+            )
+
+    raw_hits_path = "aox_hmm/hits_raw.csv"
+    score_filtered_path = "aox_hmm/hmmer_score_filtered_accessions.csv"
+    score_filter_result: aox_hmmer.ScoreFilteredAccessionsResult | None = None
+    if raw_hits_path in artifact_paths and score_filtered_path in artifact_paths:
+        try:
+            score_filter_result = aox_hmmer.parse_and_filter_csv(
+                artifact_text_by_path.get(raw_hits_path, ""),
+                expected_contract_id=aox_hmmer.CONTRACT_ID,
+                expected_contract_digest=aox_hmmer.CONTRACT_DIGEST,
+                expected_implementation_digest=aox_hmmer.IMPLEMENTATION_DIGEST,
+            )
+            expected_score_filtered = score_filter_result.to_csv()
+        except ValueError as exc:
+            _s15_aox_error(
+                errors,
+                "hmmer_score_filter_input_invalid",
+                path=raw_hits_path,
+                detail=type(exc).__name__,
+            )
+        else:
+            if artifact_text_by_path.get(score_filtered_path, "") != (
+                expected_score_filtered
+            ):
+                _s15_aox_error(
+                    errors,
+                    "hmmer_score_filter_output_mismatch",
+                    path=score_filtered_path,
+                )
+            _s15_aox_validate_metadata_values(
+                metadata_by_path,
+                path=score_filtered_path,
+                expected=score_filter_result.metadata(),
+                errors=errors,
+                error_code="hmmer_score_filter_metadata_mismatch",
+            )
+            _s15_aox_require_metadata(
+                metadata_by_path,
+                path=score_filtered_path,
+                fields=("source_provider_parsed_artifact_id",),
+                errors=errors,
+                error_code="hmmer_score_filter_provenance_incomplete",
+            )
+
+    scoring_result: aox_motif.ScoringResult | None = None
+    scoring_alignment_path = "aox_hmm/AOX_scoring_alignment.fasta"
+    if scoring_alignment_path in artifact_paths:
+        try:
+            scoring_result = aox_motif.score_aligned_fasta(
+                artifact_text_by_path.get(scoring_alignment_path, ""),
+            )
+        except aox_motif.ScientificPrerequisiteError as exc:
+            _s15_aox_error(
+                errors,
+                "motif_scoring_recalculation_failed",
+                path=scoring_alignment_path,
+                scientific_error=exc.to_dict(),
+            )
+        if scoring_result is not None:
+            for record in scoring_result.alignment.records:
+                if (
+                    any(
+                        marker in record.aligned_sequence
+                        or marker in record.description.upper()
+                        for marker in _S15_AOX_SYNTHETIC_MARKERS
+                    )
+                    or not record.sequence
+                    or len(set(record.sequence)) == 1
+                ):
+                    _s15_aox_error(
+                        errors,
+                        "synthetic_sequence_evidence_forbidden",
+                        path=scoring_alignment_path,
+                        sequence_id=record.sequence_id,
+                    )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=scoring_alignment_path,
+            fields=(
+                "source_hmm_artifact_id",
+                "source_hmm_digest",
+                "source_scoring_input_artifact_id",
+                "source_scoring_input_digest",
+                "alignment_operation_artifact_ids",
+            ),
+            errors=errors,
+            error_code="motif_alignment_provenance_incomplete",
+        )
+        alignment_metadata = metadata_by_path.get(scoring_alignment_path, {})
+        if (
+            alignment_metadata.get("reference_accession")
+            != aox_motif.REFERENCE_ACCESSION
+        ):
+            _s15_aox_error(
+                errors,
+                "motif_alignment_reference_mismatch",
+                path=scoring_alignment_path,
+                expected=aox_motif.REFERENCE_ACCESSION,
+                actual=alignment_metadata.get("reference_accession"),
+            )
+        expected_alignment_metadata = {
+            "source_hmm_digest": hmm_digest,
+            "source_scoring_input_digest": (
+                scoring_input_result.output_digest
+                if scoring_input_result is not None
+                else _s15_aox_content_digest(scoring_input_text)
+            ),
+        }
+        _s15_aox_validate_metadata_values(
+            metadata_by_path,
+            path=scoring_alignment_path,
+            expected=expected_alignment_metadata,
+            errors=errors,
+            error_code="motif_alignment_input_digest_mismatch",
+        )
+        if scoring_result is not None and scoring_input_result is not None:
+            alignment_sequence_ids = {
+                record.sequence_id for record in scoring_result.alignment.records
+            }
+            expected_sequence_ids = {
+                record.sequence_id for record in scoring_input_result.records
+            }
+            if alignment_sequence_ids != expected_sequence_ids:
+                _s15_aox_error(
+                    errors,
+                    "hmmalign_scoring_input_identity_mismatch",
+                    path=scoring_alignment_path,
+                    expected=sorted(expected_sequence_ids),
+                    actual=sorted(alignment_sequence_ids),
+                )
+
+    scored_path = "aox_hmm/scored_ref_plus_hits.csv"
+    if scored_path in artifact_paths:
+        scored_text = artifact_text_by_path.get(scored_path, "")
+        _s15_aox_parse_csv(
+            scored_text,
+            path=scored_path,
+            expected_columns=tuple(aox_motif.CANONICAL_COLUMNS),
+            errors=errors,
+        )
+        if scoring_result is not None and scored_text != scoring_result.to_csv():
+            _s15_aox_error(
+                errors,
+                "motif_scoring_recalculation_mismatch",
+                path=scored_path,
+            )
+        metadata = metadata_by_path.get(scored_path, {})
+        expected_metadata = {
+            "scoring_contract_id": aox_motif.CONTRACT_ID,
+            "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
+            "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
+            "reference_accession": aox_motif.REFERENCE_ACCESSION,
+        }
+        if scoring_result is not None:
+            expected_metadata.update(
+                {
+                    "input_digest": scoring_result.alignment.input_digest,
+                    "alignment_digest": scoring_result.alignment.alignment_digest,
+                }
+            )
+        for key, expected in expected_metadata.items():
+            if metadata.get(key) != expected:
+                _s15_aox_error(
+                    errors,
+                    "motif_scoring_metadata_mismatch",
+                    path=scored_path,
+                    field=key,
+                    expected=expected,
+                    actual=metadata.get(key),
+                )
+        if metadata.get("source_alignment_artifact_id") in (None, "", [], {}):
+            _s15_aox_error(
+                errors,
+                "motif_scoring_provenance_incomplete",
+                path=scored_path,
+                missing_metadata="source_alignment_artifact_id",
+            )
+
+    filtered_rows = parsed_csv.get("aox_hmm/hits_len650_700_200.csv")
+    filtered_sequences: dict[str, str] = {}
+    if filtered_rows is not None:
+        for row_number, row in enumerate(filtered_rows, start=2):
+            accession = row["uniprot_accession"]
+            sequence = row["sequence"].upper()
+            if not accession or accession in filtered_sequences:
+                _s15_aox_error(
+                    errors,
+                    "filtered_hit_identity_invalid",
+                    path="aox_hmm/hits_len650_700_200.csv",
+                    row=row_number,
+                    uniprot_accession=accession,
+                )
+                continue
+            if _S15_AOX_SEQUENCE_PATTERN.fullmatch(sequence) is None or any(
+                marker in sequence for marker in _S15_AOX_SYNTHETIC_MARKERS
+            ):
+                _s15_aox_error(
+                    errors,
+                    "synthetic_sequence_evidence_forbidden",
+                    path="aox_hmm/hits_len650_700_200.csv",
+                    row=row_number,
+                    sequence_id=accession,
+                )
+                continue
+            try:
+                length = int(row["length"])
+                hmm_score = Decimal(row["hmm_score"])
+            except (ValueError, InvalidOperation):
+                _s15_aox_error(
+                    errors,
+                    "filtered_hit_numeric_field_invalid",
+                    path="aox_hmm/hits_len650_700_200.csv",
+                    row=row_number,
+                )
+                continue
+            if (
+                not hmm_score.is_finite()
+                or length != len(sequence)
+                or not 650 <= length <= 700
+                or hmm_score <= 200
+            ):
+                _s15_aox_error(
+                    errors,
+                    "filtered_hit_threshold_or_length_mismatch",
+                    path="aox_hmm/hits_len650_700_200.csv",
+                    row=row_number,
+                    observed_length=length,
+                    sequence_length=len(sequence),
+                    hmm_score=row["hmm_score"],
+                )
+            filtered_sequences[accession] = sequence
+
+    if target_records is not None:
+        for accession, sequence in sorted(filtered_sequences.items()):
+            if target_records.get(accession) != sequence:
+                _s15_aox_error(
+                    errors,
+                    "filtered_hit_target_sequence_mismatch",
+                    path="aox_hmm/hits_len650_700_200.csv",
+                    sequence_id=accession,
+                )
+
+    expected_candidates: dict[str, str] = {}
+    if scoring_result is not None and filtered_rows is not None:
+        score_rows = {row.sequence_id: row for row in scoring_result.rows}
+        alignment_sequences = {
+            record.sequence_id: record.sequence
+            for record in scoring_result.alignment.records
+        }
+        expected_scoring_ids = set(filtered_sequences) | {aox_motif.REFERENCE_ACCESSION}
+        if set(score_rows) != expected_scoring_ids:
+            _s15_aox_error(
+                errors,
+                "motif_scoring_hit_lineage_mismatch",
+                path=scoring_alignment_path,
+                missing_sequence_ids=sorted(expected_scoring_ids - set(score_rows)),
+                unexpected_sequence_ids=sorted(set(score_rows) - expected_scoring_ids),
+            )
+        for accession, sequence in sorted(filtered_sequences.items()):
+            scored = score_rows.get(accession)
+            if scored is None:
+                continue
+            if alignment_sequences.get(accession) != sequence:
+                _s15_aox_error(
+                    errors,
+                    "motif_scoring_sequence_mismatch",
+                    path=scoring_alignment_path,
+                    sequence_id=accession,
+                )
+                continue
+            if scored.passes_motif_rule:
+                expected_candidates[accession] = sequence
+
+    candidates_path = "aox_hmm/AOX_candidates.fasta"
+    candidates: dict[str, str] | None = None
+    if candidates_path in artifact_paths:
+        candidates = _s15_aox_parse_fasta(
+            artifact_text_by_path.get(candidates_path, ""),
+            path=candidates_path,
+            errors=errors,
+            allow_empty=True,
+        )
+        if candidates is not None and candidates != expected_candidates:
+            _s15_aox_error(
+                errors,
+                "motif_candidate_fasta_mismatch",
+                path=candidates_path,
+                expected_sequence_ids=sorted(expected_candidates),
+                actual_sequence_ids=sorted(candidates),
+            )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=candidates_path,
+            fields=("source_scored_artifact_id", "source_alignment_artifact_id"),
+            errors=errors,
+            error_code="motif_candidate_provenance_incomplete",
+        )
+
+    representatives_path = "aox_hmm/AOX_candidates_cdhit85.fasta"
+    representatives: dict[str, str] | None = None
+    if representatives_path in artifact_paths:
+        representatives = _s15_aox_parse_fasta(
+            artifact_text_by_path.get(representatives_path, ""),
+            path=representatives_path,
+            errors=errors,
+            allow_empty=True,
+        )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path=representatives_path,
+            fields=(
+                (
+                    "source_candidate_fasta_artifact_id",
+                    "source_membership_artifact_id",
+                    "cdhit_operation_artifact_ids",
+                )
+                if candidates
+                else (
+                    "source_candidate_fasta_artifact_id",
+                    "source_membership_artifact_id",
+                )
+            ),
+            errors=errors,
+            error_code="cdhit_representative_provenance_incomplete",
+        )
+
+    membership_path = "aox_hmm/AOX_candidates_cdhit85.clusters.csv"
+    membership_rows: list[dict[str, str]] | None = None
+    if membership_path in artifact_paths:
+        membership_rows = _s15_aox_parse_csv(
+            artifact_text_by_path.get(membership_path, ""),
+            path=membership_path,
+            expected_columns=S15_AOX_HMM_CDHIT_MEMBERSHIP_COLUMNS,
+            errors=errors,
+        )
+        metadata = metadata_by_path.get(membership_path, {})
+        if metadata.get("membership_schema_id") != "cdhit_cluster_membership@1":
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_metadata_mismatch",
+                path=membership_path,
+                field="membership_schema_id",
+            )
+        if metadata.get("source_candidate_fasta_artifact_id") in (None, "", [], {}):
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_provenance_incomplete",
+                path=membership_path,
+                missing_metadata="source_candidate_fasta_artifact_id",
+            )
+        if metadata.get("cdhit_identity_ppm") != aox_similarity.DEFAULT_THRESHOLD_PPM:
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_metadata_mismatch",
+                path=membership_path,
+                field="cdhit_identity_ppm",
+                expected=aox_similarity.DEFAULT_THRESHOLD_PPM,
+                actual=metadata.get("cdhit_identity_ppm"),
+            )
+        if candidates and metadata.get("cdhit_operation_artifact_ids") in (
+            None,
+            "",
+            [],
+            {},
+        ):
+            _s15_aox_error(
+                errors,
+                "cdhit_membership_provenance_incomplete",
+                path=membership_path,
+                missing_metadata="cdhit_operation_artifact_ids",
+            )
+        if not candidates:
+            empty_result = execution_summary.get("empty_result")
+            expected_reason = (
+                str(empty_result.get("reason") or "").strip()
+                if isinstance(empty_result, dict)
+                else ""
+            )
+            if (
+                metadata.get("empty_result_reason") != expected_reason
+                or not expected_reason
+            ):
+                _s15_aox_error(
+                    errors,
+                    "cdhit_empty_membership_reason_mismatch",
+                    path=membership_path,
+                    expected=expected_reason,
+                    actual=metadata.get("empty_result_reason"),
+                )
+
+    representative_ids, _ = _s15_aox_validate_cdhit_membership(
+        membership_rows,
+        candidates=candidates or {},
+        representatives=representatives,
+        errors=errors,
+    )
+
+    graph_result: aox_similarity.SimilarityGraphResult | None = None
+    graph_paths = {
+        candidates_path,
+        membership_path,
+        "aox_hmm/nodes.csv",
+        "aox_hmm/edges_similarity.csv",
+        "aox_hmm/similarity_graph_manifest.json",
+    }
+    if graph_paths <= artifact_paths:
+        empty_result = execution_summary.get("empty_result")
+        empty_result_reason = (
+            str(empty_result.get("reason") or "").strip()
+            if isinstance(empty_result, dict)
+            else None
+        )
+        if candidates:
+            empty_result_reason = None
+        try:
+            graph_result = aox_similarity.validate_graph_artifacts(
+                artifact_text_by_path.get(candidates_path, ""),
+                artifact_text_by_path.get(membership_path, ""),
+                artifact_text_by_path.get("aox_hmm/nodes.csv", ""),
+                artifact_text_by_path.get("aox_hmm/edges_similarity.csv", ""),
+                artifact_text_by_path.get("aox_hmm/similarity_graph_manifest.json", ""),
+                threshold_ppm=aox_similarity.DEFAULT_THRESHOLD_PPM,
+                empty_result_reason=empty_result_reason,
+            )
+        except aox_motif.ScientificPrerequisiteError as exc:
+            _s15_aox_error(
+                errors,
+                "similarity_graph_recalculation_failed",
+                path="aox_hmm/similarity_graph_manifest.json",
+                scientific_error=exc.to_dict(),
+            )
+        manifest_metadata = metadata_by_path.get(
+            "aox_hmm/similarity_graph_manifest.json", {}
+        )
+        expected_manifest_metadata = {
+            "manifest_schema_id": aox_similarity.MANIFEST_SCHEMA_ID,
+            "node_schema_id": aox_similarity.NODE_SCHEMA_ID,
+            "edge_schema_id": aox_similarity.EDGE_SCHEMA_ID,
+            "similarity_calculation_id": aox_similarity.CALCULATION_ID,
+            "similarity_calculation_digest": aox_similarity.CALCULATION_DIGEST,
+            "similarity_implementation_digest": aox_similarity.IMPLEMENTATION_DIGEST,
+        }
+        for key, expected in expected_manifest_metadata.items():
+            if manifest_metadata.get(key) != expected:
+                _s15_aox_error(
+                    errors,
+                    "similarity_graph_metadata_mismatch",
+                    path="aox_hmm/similarity_graph_manifest.json",
+                    field=key,
+                    expected=expected,
+                    actual=manifest_metadata.get(key),
+                )
+        _s15_aox_require_metadata(
+            metadata_by_path,
+            path="aox_hmm/similarity_graph_manifest.json",
+            fields=(
+                "source_candidate_fasta_artifact_id",
+                "source_membership_artifact_id",
+                "nodes_artifact_id",
+                "edges_artifact_id",
+            ),
+            errors=errors,
+            error_code="similarity_graph_provenance_incomplete",
+        )
+
+    scientific_branch: str | None = None
+    omitted_operation_roles: list[str] | None = None
+    expected_empty_reason: str | None = None
+    if score_filter_result is not None:
+        if not score_filter_result.hits:
+            scientific_branch = "hmmer_upstream_empty"
+            omitted_operation_roles = [
+                "candidate_alignment",
+                "cdhit",
+                "uniprot_fetch",
+            ]
+            expected_empty_reason = (
+                "no_hmmer_hits"
+                if score_filter_result.input_row_count == 0
+                else "no_filtered_hmmer_accessions"
+            )
+        elif not filtered_sequences:
+            scientific_branch = "length_filter_empty"
+            omitted_operation_roles = ["candidate_alignment", "cdhit"]
+            expected_empty_reason = "no_candidates_after_length_filter"
+        elif not expected_candidates:
+            scientific_branch = "motif_filter_empty"
+            omitted_operation_roles = ["cdhit"]
+            expected_empty_reason = "no_candidates_after_motif_filter"
+        else:
+            scientific_branch = "nonempty"
+            omitted_operation_roles = []
+
+    if execution_summary:
+        missing_fields = sorted(
+            S15_AOX_HMM_REQUIRED_SUMMARY_FIELDS - set(execution_summary)
+        )
+        if missing_fields:
+            _s15_aox_error(
+                errors,
+                "invalid_execution_summary",
+                path="aox_hmm/execution_summary.json",
+                missing_fields=missing_fields,
+            )
+        expected_values: dict[str, object] = {
+            "accession_count": len(AOX_HMM_ACCESSIONS),
+            "ncbi_reference_accession_count": len(AOX_NCBI_ACCESSIONS),
+            "filtered_hit_count": len(filtered_sequences),
+            "scoring_row_count": len(scoring_result.rows)
+            if scoring_result is not None
+            else None,
+            "candidate_count": len(expected_candidates),
+            "representative_count": len(representative_ids),
+            "graph_node_count": len(graph_result.nodes)
+            if graph_result is not None
+            else None,
+            "graph_edge_count": len(graph_result.edges)
+            if graph_result is not None
+            else None,
+            "length_filter": [650, 700],
+            "hmm_score_threshold": 200,
+            "motif_rule_score_threshold_tenths": aox_motif.THRESHOLD_TENTHS,
+            "motif_rule_score_threshold": aox_motif.THRESHOLD_DISPLAY,
+            "similarity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
+            "similarity_threshold": "0.850000",
+            "hmmer_database": "refprot",
+            "hmmer_score_filter_contract_id": aox_hmmer.CONTRACT_ID,
+            "hmmer_score_filter_contract_digest": aox_hmmer.CONTRACT_DIGEST,
+            "hmmer_score_filter_implementation_digest": (
+                aox_hmmer.IMPLEMENTATION_DIGEST
+            ),
+            "hmmer_score_filter_input_digest": (
+                score_filter_result.input_digest
+                if score_filter_result is not None
+                else None
+            ),
+            "hmmer_score_filter_output_digest": (
+                score_filter_result.output_digest
+                if score_filter_result is not None
+                else None
+            ),
+            "sequence_length_join_contract_id": aox_sequence_join.CONTRACT_ID,
+            "sequence_length_join_contract_digest": (
+                aox_sequence_join.CONTRACT_DIGEST
+            ),
+            "sequence_length_join_implementation_digest": (
+                aox_sequence_join.IMPLEMENTATION_DIGEST
+            ),
+            "sequence_length_join_hits_digest": _s15_aox_content_digest(
+                artifact_text_by_path.get(
+                    "aox_hmm/hits_len650_700_200.csv",
+                    "",
+                )
+            ),
+            "sequence_length_join_target_digest": _s15_aox_content_digest(
+                target_text
+            ),
+            "hmm_reference_set_selection_contract_id": (
+                aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID
+            ),
+            "hmm_reference_set_selection_contract_digest": (
+                aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+            ),
+            "hmm_reference_set_selection_implementation_digest": (
+                aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+            ),
+            "hmm_reference_set_input_digest": metadata_by_path.get(
+                reference_path,
+                {},
+            ).get("input_digest"),
+            "hmm_reference_set_output_digest": reference_digest,
+            "scoring_reference_selection_contract_id": (
+                aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_ID
+            ),
+            "scoring_reference_selection_contract_digest": (
+                aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST
+            ),
+            "scoring_reference_selection_implementation_digest": (
+                aox_reference.SCORING_REFERENCE_SELECTION_IMPLEMENTATION_DIGEST
+            ),
+            "scoring_reference_selection_input_digest": metadata_by_path.get(
+                scoring_reference_path,
+                {},
+            ).get("input_digest"),
+            "scoring_reference_output_digest": scoring_reference_digest,
+            "scoring_input_assembly_contract_id": (
+                aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_ID
+            ),
+            "scoring_input_assembly_contract_digest": (
+                aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST
+            ),
+            "scoring_input_assembly_implementation_digest": (
+                aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST
+            ),
+            "scoring_reference_input_digest": (
+                scoring_input_result.scoring_reference_input_digest
+                if scoring_input_result is not None
+                else None
+            ),
+            "post_uniprot_target_input_digest": (
+                scoring_input_result.target_input_digest
+                if scoring_input_result is not None
+                else None
+            ),
+            "scoring_contract_id": aox_motif.CONTRACT_ID,
+            "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
+            "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
+            "scoring_reference_accession": aox_motif.REFERENCE_ACCESSION,
+            "scoring_input_digest": (
+                scoring_input_result.output_digest
+                if scoring_input_result is not None
+                else None
+            ),
+            "scoring_alignment_input_digest": (
+                scoring_result.alignment.input_digest
+                if scoring_result is not None
+                else None
+            ),
+            "scoring_alignment_digest": (
+                scoring_result.alignment.alignment_digest
+                if scoring_result is not None
+                else None
+            ),
+            "cdhit_membership_schema_id": "cdhit_cluster_membership@1",
+            "similarity_calculation_id": aox_similarity.CALCULATION_ID,
+            "similarity_calculation_digest": aox_similarity.CALCULATION_DIGEST,
+            "similarity_implementation_digest": aox_similarity.IMPLEMENTATION_DIGEST,
+            "candidate_graph_manifest_schema_id": aox_similarity.MANIFEST_SCHEMA_ID,
+            "candidate_graph_node_schema_id": aox_similarity.NODE_SCHEMA_ID,
+            "candidate_graph_edge_schema_id": aox_similarity.EDGE_SCHEMA_ID,
+            "candidate_graph_manifest_digest": _s15_aox_content_digest(
+                artifact_text_by_path.get("aox_hmm/similarity_graph_manifest.json", "")
+            ),
+            "scientific_outcome": "candidates_found"
+            if expected_candidates
+            else "empty",
+            "scientific_branch": scientific_branch,
+            "omitted_operation_roles": omitted_operation_roles,
+        }
+        for key, expected in expected_values.items():
+            if expected is not None and execution_summary.get(key) != expected:
+                _s15_aox_error(
+                    errors,
+                    "invalid_execution_summary_value",
+                    path="aox_hmm/execution_summary.json",
+                    field=key,
+                    expected=expected,
+                    actual=execution_summary.get(key),
+                )
+        for digest_field in (
+            "hmm_reference_set_input_digest",
+            "scoring_reference_selection_input_digest",
+        ):
+            if not _s15_is_digest(execution_summary.get(digest_field)):
+                _s15_aox_error(
+                    errors,
+                    "invalid_execution_summary_digest",
+                    path="aox_hmm/execution_summary.json",
+                    field=digest_field,
+                )
+        upstream_skip_digest = execution_summary.get(
+            "upstream_empty_skip_receipt_digest"
+        )
+        if scientific_branch == "hmmer_upstream_empty":
+            if not _s15_is_digest(upstream_skip_digest):
+                _s15_aox_error(
+                    errors,
+                    "upstream_empty_skip_receipt_digest_missing",
+                    path="aox_hmm/execution_summary.json",
+                )
+        elif upstream_skip_digest is not None:
+            _s15_aox_error(
+                errors,
+                "unexpected_upstream_empty_skip_receipt_digest",
+                path="aox_hmm/execution_summary.json",
+                scientific_branch=scientific_branch,
+            )
+        for count_field in (
+            "accession_count",
+            "ncbi_reference_accession_count",
+            "filtered_hit_count",
+            "scoring_row_count",
+            "candidate_count",
+            "representative_count",
+            "graph_node_count",
+            "graph_edge_count",
+            "warning_count",
+            "motif_rule_score_threshold_tenths",
+            "similarity_threshold_ppm",
+        ):
+            value = execution_summary.get(count_field)
+            if count_field in execution_summary and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                _s15_aox_error(
+                    errors,
+                    "invalid_execution_summary_type",
+                    path="aox_hmm/execution_summary.json",
+                    field=count_field,
+                )
+        normalized_paths = execution_summary.get("normalized_final_deliverable_paths")
+        if (
+            not isinstance(normalized_paths, list)
+            or any(not isinstance(path, str) or not path for path in normalized_paths)
+            or len(normalized_paths) != len(set(normalized_paths))
+            or set(normalized_paths) != S15_AOX_HMM_FIXED_DELIVERABLES
+        ):
+            _s15_aox_error(
+                errors,
+                "invalid_normalized_final_deliverable_paths",
+                path="aox_hmm/execution_summary.json",
+            )
+        artifact_ids = execution_summary.get("artifact_ids")
+        if (
+            not isinstance(artifact_ids, list)
+            or len(artifact_ids) < len(S15_AOX_HMM_FIXED_DELIVERABLES) - 1
+            or any(
+                not isinstance(artifact_id, str) or not artifact_id
+                for artifact_id in artifact_ids
+            )
+            or len(artifact_ids) != len(set(artifact_ids))
+        ):
+            _s15_aox_error(
+                errors,
+                "invalid_artifact_ids",
+                path="aox_hmm/execution_summary.json",
+            )
+        if not execution_summary.get("provider_status") or not execution_summary.get(
+            "tool_status"
+        ):
+            _s15_aox_error(
+                errors,
+                "invalid_execution_status_summary",
+                path="aox_hmm/execution_summary.json",
+            )
+        if not expected_candidates:
+            empty_result = execution_summary.get("empty_result")
+            if (
+                not isinstance(empty_result, dict)
+                or empty_result.get("reason") != expected_empty_reason
+                or empty_result.get("scientific_branch") != scientific_branch
+                or empty_result.get("omitted_operation_roles")
+                != omitted_operation_roles
+            ):
+                _s15_aox_error(
+                    errors,
+                    "empty_result_explanation_mismatch",
+                    path="aox_hmm/execution_summary.json",
+                    expected_reason=expected_empty_reason,
+                    expected_scientific_branch=scientific_branch,
+                    expected_omitted_operation_roles=omitted_operation_roles,
+                )
+            elif scientific_branch == "hmmer_upstream_empty" and empty_result.get(
+                "skip_receipt_digest"
+            ) != upstream_skip_digest:
+                _s15_aox_error(
+                    errors,
+                    "upstream_empty_skip_receipt_digest_mismatch",
+                    path="aox_hmm/execution_summary.json",
+                )
 
     return {
         "passed": not errors,
         "missing_paths": missing,
         "legacy_paths": legacy_paths,
         "errors": errors,
+        "candidate_count": len(expected_candidates),
+        "representative_count": len(representative_ids),
+        "graph_node_count": 0 if graph_result is None else len(graph_result.nodes),
+        "graph_edge_count": 0 if graph_result is None else len(graph_result.edges),
+        "scientific_outcome": "discovered" if expected_candidates else "empty",
+        "scientific_branch": scientific_branch,
+        "omitted_operation_roles": omitted_operation_roles,
     }
 
 
@@ -926,7 +2504,9 @@ def _s15_prerequisite_entry(
         entry["error_code"] = error_code
     if hint is not None:
         entry["hint"] = hint
-    entry.update({key: value for key, value in extra.items() if value not in (None, "", [], {})})
+    entry.update(
+        {key: value for key, value in extra.items() if value not in (None, "", [], {})}
+    )
     return entry
 
 
@@ -1024,7 +2604,11 @@ def _s15_sandbox_image_prerequisite(
             image_ref=image_ref,
         )
     if rootless.returncode != 0 or rootless.stdout.strip() != "true":
-        detail = rootless.stderr.strip() or rootless.stdout.strip() or "rootless podman is not available"
+        detail = (
+            rootless.stderr.strip()
+            or rootless.stdout.strip()
+            or "rootless podman is not available"
+        )
         return _s15_prerequisite_entry(
             name="sandbox_image",
             status="prerequisite_missing",
@@ -1077,7 +2661,9 @@ def _s15_sandbox_image_prerequisite(
         )
     image_id = inspect.stdout.strip()
     if inspect.returncode != 0 or not image_id:
-        detail = inspect.stderr.strip() or inspect.stdout.strip() or "image digest is empty"
+        detail = (
+            inspect.stderr.strip() or inspect.stdout.strip() or "image digest is empty"
+        )
         return _s15_prerequisite_entry(
             name="sandbox_image",
             status="prerequisite_missing",
@@ -1162,6 +2748,7 @@ def _s15_live_prerequisite_report() -> dict[str, object]:
         _s15_prerequisite_entry(
             name="tavily",
             status="ok" if tavily_reason is None else "prerequisite_missing",
+            required=False,
             error_code=None if tavily_reason is None else "live_prerequisite_missing",
             hint=tavily_reason,
         )
@@ -1180,12 +2767,16 @@ def _s15_live_prerequisite_report() -> dict[str, object]:
     checks.append(_s15_sandbox_image_prerequisite())
     ncbi_identity_hint = None
     if not os.getenv("OPENZYME_NCBI_EMAIL") and not os.getenv("NCBI_EMAIL"):
-        ncbi_identity_hint = "Set OPENZYME_NCBI_EMAIL or NCBI_EMAIL before live AOX/HMM."
+        ncbi_identity_hint = (
+            "Set OPENZYME_NCBI_EMAIL or NCBI_EMAIL before live AOX/HMM."
+        )
     checks.append(
         _s15_prerequisite_entry(
             name="ncbi_identity",
             status="ok" if ncbi_identity_hint is None else "prerequisite_missing",
-            error_code=None if ncbi_identity_hint is None else "live_prerequisite_missing",
+            error_code=None
+            if ncbi_identity_hint is None
+            else "live_prerequisite_missing",
             hint=ncbi_identity_hint,
         )
     )
@@ -1249,7 +2840,6 @@ def _s15_live_prerequisite_report() -> dict[str, object]:
         "status": status,
         "required": [
             "llm",
-            "tavily",
             "ncbi_identity",
             "uniprot_http",
             "ebi_hmmer_rest_refprot",
@@ -1258,6 +2848,7 @@ def _s15_live_prerequisite_report() -> dict[str, object]:
             "sandbox_image",
             "staging_fetch_output_validation",
         ],
+        "enrichment": ["semantic_scholar", "tavily"],
         "missing": missing,
         "checks": checks,
         "selected_backend": {
@@ -1276,12 +2867,23 @@ def _s15_live_prerequisite_report() -> dict[str, object]:
 
 
 def _s15_digest(value: object) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
+def _s15_is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
+
+
 def _s15_prompt_digest() -> str:
-    return f"sha256:{hashlib.sha256(S15_AOX_HMM_FIXED_PROMPT.encode('utf-8')).hexdigest()}"
+    return (
+        f"sha256:{hashlib.sha256(S15_AOX_HMM_FIXED_PROMPT.encode('utf-8')).hexdigest()}"
+    )
 
 
 def _s15_config_snapshot_digest(
@@ -1356,12 +2958,30 @@ def _s15_build_evidence_bundle(
     operations = repositories.controlled_operations.list_by_session(session_id)
     sandbox_workspaces = repositories.sandbox_workspaces.list_by_session(session_id)
     sandbox_runs = repositories.sandbox_runs.list_by_session(session_id)
+    tasks = repositories.tasks.list_by_session(session_id)
+    agents = repositories.agents.list_by_session(session_id)
+    task_finish_documents = {
+        str(document.payload.get("task_id") or ""): document
+        for document in repositories.engine_documents.list_by_session(session_id)
+        if document.document_kind == "task_finish"
+        and isinstance(document.payload, dict)
+        and document.payload.get("task_id")
+    }
+    reports = repositories.reports.list_by_session(session_id)
+    report_drafts = repositories.report_drafts.list_by_session(session_id)
+    research_source_refs = repositories.research_source_refs.list_by_session(session_id)
     final_answer = _s15_final_answer(workspace)
     operation_trace: list[dict[str, object]] = []
     backend_run_ids: list[str | None] = []
     for operation in operations:
-        backend_run_ids.extend(_s15_find_payload_values(operation.result_summary or {}, "backend_run_id"))
-        backend_run_ids.extend(_s15_find_payload_values(operation.adapter_result_envelope or {}, "backend_run_id"))
+        backend_run_ids.extend(
+            _s15_find_payload_values(operation.result_summary or {}, "backend_run_id")
+        )
+        backend_run_ids.extend(
+            _s15_find_payload_values(
+                operation.adapter_result_envelope or {}, "backend_run_id"
+            )
+        )
         operation_trace.append(
             {
                 "operation_id": operation.operation_id,
@@ -1389,7 +3009,9 @@ def _s15_build_evidence_bundle(
                     operation.expected_outputs_summary or {}
                 ),
                 "stage_ref_count": len(operation.stage_refs),
-                "planned_fetch_intent_digest": _s15_digest(operation.planned_fetch_intent or {}),
+                "planned_fetch_intent_digest": _s15_digest(
+                    operation.planned_fetch_intent or {}
+                ),
                 "adapter_approval_envelope_digest": _s15_digest(
                     operation.adapter_approval_envelope or {}
                 ),
@@ -1407,7 +3029,9 @@ def _s15_build_evidence_bundle(
         [operation.source_snapshot_digest for operation in operations]
         + [sandbox_run.source_tree_digest for sandbox_run in sandbox_runs]
     )
-    sandbox_workspace_ids = [workspace_record.sandbox_workspace_id for workspace_record in sandbox_workspaces]
+    sandbox_workspace_ids = [
+        workspace_record.sandbox_workspace_id for workspace_record in sandbox_workspaces
+    ]
     evidence_bundle: dict[str, object] = {
         "fixed_prompt_digest": f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}",
         "config_snapshot_digest": _s15_config_snapshot_digest(
@@ -1415,7 +3039,79 @@ def _s15_build_evidence_bundle(
             prerequisite_report=prerequisite_report,
         ),
         "session_id": session_id,
-        "sandbox_workspace_id": sandbox_workspace_ids[0] if sandbox_workspace_ids else None,
+        "participant_roles": sorted(
+            {agent.role for agent in agents if agent.role != "master"}
+        ),
+        "task_receipts": [
+            {
+                "task_id": task.task_id,
+                "kind": task.kind,
+                "status": task.status.value,
+                "assigned_ref": task.assigned_ref,
+                "finish_ref": (
+                    task_finish_documents[task.task_id].document_id
+                    if task.task_id in task_finish_documents
+                    else None
+                ),
+                "finish_payload_digest": (
+                    _s15_digest(task_finish_documents[task.task_id].payload)
+                    if task.task_id in task_finish_documents
+                    else None
+                ),
+                "finished_by": (
+                    task_finish_documents[task.task_id].payload.get("finished_by")
+                    if task.task_id in task_finish_documents
+                    else None
+                ),
+                "evidence_refs": (
+                    list(
+                        task_finish_documents[task.task_id].payload.get("evidence_refs")
+                        or []
+                    )
+                    if task.task_id in task_finish_documents
+                    else []
+                ),
+            }
+            for task in tasks
+        ],
+        "research_source_receipts": [
+            {
+                "source_ref_id": source.source_ref_id,
+                "provider": source.provider,
+                "pmid": source.pmid,
+                "doi": source.doi,
+                "request_digest": source.request_digest,
+                "response_digest": source.response_digest,
+                "provider_provenance_digest": _s15_digest(
+                    source.provider_provenance or {}
+                ),
+                "evidence_artifact_id": source.evidence_artifact_id,
+            }
+            for source in research_source_refs
+        ],
+        "report_draft_receipts": [
+            {
+                "draft_id": draft.draft_id,
+                "task_id": draft.task_id,
+                "owner_agent_id": draft.owner_agent_id,
+                "status": draft.status.value,
+                "content_ref": draft.content_ref,
+                "published_report_id": draft.published_report_id,
+            }
+            for draft in report_drafts
+        ],
+        "report_receipts": [
+            {
+                "report_id": report.report_id,
+                "task_id": report.task_id,
+                "status": report.status.value,
+                "artifact_id": report.artifact_id,
+            }
+            for report in reports
+        ],
+        "sandbox_workspace_id": sandbox_workspace_ids[0]
+        if sandbox_workspace_ids
+        else None,
         "sandbox_workspaces": [
             {
                 "sandbox_workspace_id": sandbox_workspace.sandbox_workspace_id,
@@ -1425,8 +3121,12 @@ def _s15_build_evidence_bundle(
                 "image_version": sandbox_workspace.image_version,
                 "sandbox_protocol_version": sandbox_workspace.sandbox_protocol_version,
                 "manifest_version": sandbox_workspace.manifest_version,
-                "source_code_artifact_ids": list(sandbox_workspace.source_code_artifact_ids),
-                "registered_artifact_ids": list(sandbox_workspace.registered_artifact_ids),
+                "source_code_artifact_ids": list(
+                    sandbox_workspace.source_code_artifact_ids
+                ),
+                "registered_artifact_ids": list(
+                    sandbox_workspace.registered_artifact_ids
+                ),
             }
             for sandbox_workspace in sandbox_workspaces
         ],
@@ -1454,16 +3154,24 @@ def _s15_build_evidence_bundle(
         "adapter_schema_versions": _s15_non_empty_unique(
             [operation.adapter_envelope_schema_version for operation in operations]
         ),
-        "route_policy_ids": _s15_non_empty_unique([operation.route_policy_id for operation in operations]),
-        "toolchain_ids": _s15_non_empty_unique([operation.toolchain_id for operation in operations]),
+        "route_policy_ids": _s15_non_empty_unique(
+            [operation.route_policy_id for operation in operations]
+        ),
+        "toolchain_ids": _s15_non_empty_unique(
+            [operation.toolchain_id for operation in operations]
+        ),
         "runtime_packaging_ids": _s15_non_empty_unique(
             [operation.runtime_packaging_id for operation in operations]
         ),
         "provider_config_digests": _s15_non_empty_unique(
             [operation.provider_config_digest for operation in operations]
         ),
-        "selected_backends": _s15_non_empty_unique([operation.selected_backend for operation in operations]),
-        "approval_ids": _s15_non_empty_unique([approval.approval_id for approval in approvals]),
+        "selected_backends": _s15_non_empty_unique(
+            [operation.selected_backend for operation in operations]
+        ),
+        "approval_ids": _s15_non_empty_unique(
+            [approval.approval_id for approval in approvals]
+        ),
         "approval_trace": [
             {
                 "approval_id": approval.approval_id,
@@ -1491,12 +3199,16 @@ def _s15_build_evidence_bundle(
             operation.error_code for operation in operations if operation.error_code
         ],
         "final_answer_available": final_answer is not None,
-        "final_answer_digest": None if final_answer is None else _s15_digest({"content": final_answer}),
+        "final_answer_digest": None
+        if final_answer is None
+        else _s15_digest({"content": final_answer}),
     }
     return evidence_bundle
 
 
-def _s15_validate_evidence_bundle(evidence_bundle: dict[str, object]) -> dict[str, object]:
+def _s15_validate_evidence_bundle(
+    evidence_bundle: dict[str, object],
+) -> dict[str, object]:
     required_non_empty = {
         "fixed_prompt_digest",
         "config_snapshot_digest",
@@ -1518,16 +3230,25 @@ def _s15_validate_evidence_bundle(evidence_bundle: dict[str, object]) -> dict[st
         "final_answer_digest",
     }
     missing_fields = sorted(
-        key for key in required_non_empty if evidence_bundle.get(key) in (None, "", [], {})
+        key
+        for key in required_non_empty
+        if evidence_bundle.get(key) in (None, "", [], {})
     )
     errors: list[dict[str, object]] = []
     if missing_fields:
-        errors.append({"error_code": "live_evidence_incomplete", "missing_fields": missing_fields})
+        errors.append(
+            {"error_code": "live_evidence_incomplete", "missing_fields": missing_fields}
+        )
     operation_trace = evidence_bundle.get("operation_trace")
     if isinstance(operation_trace, list):
         for operation in operation_trace:
             if not isinstance(operation, dict):
-                errors.append({"error_code": "live_evidence_incomplete", "invalid_operation_trace": True})
+                errors.append(
+                    {
+                        "error_code": "live_evidence_incomplete",
+                        "invalid_operation_trace": True,
+                    }
+                )
                 continue
             for required_key in (
                 "operation_id",
@@ -1548,7 +3269,9 @@ def _s15_validate_evidence_bundle(evidence_bundle: dict[str, object]) -> dict[st
                         }
                     )
     else:
-        errors.append({"error_code": "live_evidence_incomplete", "invalid_operation_trace": True})
+        errors.append(
+            {"error_code": "live_evidence_incomplete", "invalid_operation_trace": True}
+        )
     return {"passed": not errors, "missing_fields": missing_fields, "errors": errors}
 
 
@@ -1563,6 +3286,65 @@ def _s15_validate_live_product_path(
         errors.append({"error_code": "live_legacy_pipeline_forbidden"})
     if workspace.get("pending_approvals"):
         errors.append({"error_code": "live_approval_still_pending"})
+    participant_roles = set(evidence_bundle.get("participant_roles") or [])
+    required_roles = {"researcher", "executor", "reporter"}
+    missing_roles = sorted(required_roles - participant_roles)
+    if missing_roles:
+        errors.append(
+            {
+                "error_code": "live_product_roles_incomplete",
+                "missing_roles": missing_roles,
+            }
+        )
+    task_receipts = evidence_bundle.get("task_receipts")
+    completed_task_kinds = {
+        str(receipt.get("kind") or "")
+        for receipt in task_receipts or []
+        if isinstance(receipt, dict)
+        and receipt.get("status") == "completed"
+        and receipt.get("finish_ref")
+        and receipt.get("finish_payload_digest")
+        and receipt.get("finished_by")
+    }
+    required_task_kinds = {"research", "execution", "reporting"}
+    missing_task_exits = sorted(required_task_kinds - completed_task_kinds)
+    if missing_task_exits:
+        errors.append(
+            {
+                "error_code": "live_task_business_exit_incomplete",
+                "missing_task_kinds": missing_task_exits,
+            }
+        )
+    source_receipts = evidence_bundle.get("research_source_receipts")
+    pubmed_receipts = [
+        receipt
+        for receipt in source_receipts or []
+        if isinstance(receipt, dict)
+        and receipt.get("provider") == "pubmed"
+        and isinstance(receipt.get("pmid"), str)
+        and str(receipt.get("pmid") or "").isdigit()
+        and _s15_is_digest(receipt.get("request_digest"))
+        and _s15_is_digest(receipt.get("response_digest"))
+        and receipt.get("evidence_artifact_id")
+    ]
+    if not pubmed_receipts:
+        errors.append({"error_code": "live_pubmed_evidence_missing"})
+    report_receipts = evidence_bundle.get("report_receipts")
+    publishable_reports = {
+        str(report.get("report_id") or "")
+        for report in report_receipts or []
+        if isinstance(report, dict)
+        and report.get("status") in {"ready", "published"}
+        and report.get("artifact_id")
+    }
+    report_drafts = evidence_bundle.get("report_draft_receipts")
+    if not any(
+        isinstance(draft, dict)
+        and draft.get("status") == "published"
+        and draft.get("published_report_id") in publishable_reports
+        for draft in report_drafts or []
+    ):
+        errors.append({"error_code": "live_published_report_missing"})
     sandbox_runs = evidence_bundle.get("sandbox_runs")
     if not isinstance(sandbox_runs, list) or not sandbox_runs:
         errors.append({"error_code": "live_sandbox_exec_missing"})
@@ -1578,11 +3360,15 @@ def _s15_validate_live_product_path(
         if not completed_runs:
             errors.append({"error_code": "live_sandbox_exec_missing_source_snapshot"})
     approval_trace = evidence_bundle.get("approval_trace")
-    approved_ids = {
-        item.get("approval_id")
-        for item in approval_trace
-        if isinstance(item, dict) and item.get("status") == "approved"
-    } if isinstance(approval_trace, list) else set()
+    approved_ids = (
+        {
+            item.get("approval_id")
+            for item in approval_trace
+            if isinstance(item, dict) and item.get("status") == "approved"
+        }
+        if isinstance(approval_trace, list)
+        else set()
+    )
     if not approved_ids:
         errors.append({"error_code": "live_sdk_approval_missing"})
     operation_trace = evidence_bundle.get("operation_trace")
@@ -1608,7 +3394,9 @@ def _s15_validate_live_product_path(
         S15_ROUTE_POLICY_IDS["bio_tools.hmmalign"],
     }
     observed_route_policy_ids = set(evidence_bundle.get("route_policy_ids") or [])
-    missing_route_policy_ids = sorted(required_route_policy_ids - observed_route_policy_ids)
+    missing_route_policy_ids = sorted(
+        required_route_policy_ids - observed_route_policy_ids
+    )
     if missing_route_policy_ids:
         errors.append(
             {
@@ -1616,6 +3404,24 @@ def _s15_validate_live_product_path(
                 "missing_route_policy_ids": missing_route_policy_ids,
             }
         )
+    elif isinstance(operation_trace, list):
+        completed_route_policy_ids = {
+            str(operation.get("route_policy_id") or "")
+            for operation in operation_trace
+            if isinstance(operation, dict)
+            and operation.get("status") == "completed"
+            and operation.get("approval_id") in approved_ids
+        }
+        incomplete_route_policy_ids = sorted(
+            required_route_policy_ids - completed_route_policy_ids
+        )
+        if incomplete_route_policy_ids:
+            errors.append(
+                {
+                    "error_code": "live_required_operation_incomplete",
+                    "route_policy_ids": incomplete_route_policy_ids,
+                }
+            )
     return {"passed": not errors, "errors": errors}
 
 
@@ -1661,12 +3467,15 @@ def _s15_inline_evidence_refs(
 
 
 def _aox_hmm_final_source() -> str:
-    return f'''from pathlib import Path
+    return f"""from pathlib import Path
+import hashlib
+import json
 
-from openzyme_pipeline import artifacts, bio, bio_tools, hpc
+from openzyme_pipeline import aox_hmmer, aox_motif, aox_reference, aox_sequence_join, aox_similarity, artifacts, bio, bio_tools, hpc
 
 
-AOX_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}
+AOX_HMM_ACCESSIONS = {list(AOX_HMM_ACCESSIONS)!r}
+AOX_NCBI_ACCESSIONS = {list(AOX_NCBI_ACCESSIONS)!r}
 OUTPUT = Path("/openzyme/output/aox_hmm")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
@@ -1692,11 +3501,20 @@ def register_text(relative_path, content, *, kind="result", format=None, require
 
 
 def fasta_for(accessions):
-    return "".join(f">{{accession}} candidate\\nMSEQUENCE{{index}}AOX\\n" for index, accession in enumerate(accessions, start=1))
+    alphabet = "ACDEFGHIKLMNPQRSTVWY"
+    return "".join(
+        f">{{accession}}\\nM"
+        + "".join(
+            alphabet[(index + position) % len(alphabet)]
+            for position in range(662)
+        )
+        + "\\n"
+        for index, accession in enumerate(accessions, start=1)
+    )
 
 
 reference = bio.ncbi_fetch_proteins(
-    accessions=AOX_ACCESSIONS,
+    accessions=AOX_NCBI_ACCESSIONS,
     output_dir="/workspace/output/bio/ncbi",
     fields=["definition", "organism", "length"],
 )
@@ -1732,6 +3550,43 @@ def operation_artifact_ids(result):
 
 reference_fasta_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.fasta")
 reference_metadata_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.metadata.json")
+ncbi_reference_path = artifacts.materialize(
+    reference_fasta_id,
+    target="/workspace/input/aox_ncbi_exact14.fasta",
+)
+ncbi_reference_bytes = Path(ncbi_reference_path).read_bytes()
+hmm_reference_selection = aox_reference.select_hmm_reference_set(
+    ncbi_reference_bytes
+)
+scoring_reference_selection = aox_reference.select_scoring_reference(
+    ncbi_reference_bytes
+)
+shared_reference_metadata = {{
+    "source_ncbi_fasta_artifact_id": reference_fasta_id,
+    "provider_request_ids": list(reference.get("artifact_ids") or []),
+    "ncbi_reference_accessions": list(AOX_NCBI_ACCESSIONS),
+}}
+hmm_reference_fasta = register_text(
+    "AOX_ref21.fasta",
+    hmm_reference_selection.to_fasta(),
+    kind="sequence",
+    format="fasta",
+    metadata={{
+        **hmm_reference_selection.metadata(),
+        **shared_reference_metadata,
+        "accession_count": len(AOX_HMM_ACCESSIONS),
+    }},
+)
+scoring_reference_fasta = register_text(
+    "AOX_coordinate_reference_AAB57849.1.fasta",
+    scoring_reference_selection.to_fasta(),
+    kind="sequence",
+    format="fasta",
+    metadata={{
+        **scoring_reference_selection.metadata(),
+        **shared_reference_metadata,
+    }},
+)
 
 ws = hpc.workspace("aox_hmm")
 
@@ -1744,20 +3599,12 @@ def fetch(run):
     return ws.fetch_outputs(run)
 
 
-reference_fasta_remote = stage(reference_fasta_id, "inputs/reference.fasta")
-reference_cdhit90 = fetch(bio_tools.cdhit(
-    input_fasta=reference_fasta_remote,
-    placement=ws,
-    expected_outputs=[
-        {{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}},
-        {{"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"}},
-    ],
-    identity=0.9,
-    mode="reference",
-))
-reference_cdhit90_remote = stage(reference_cdhit90["registered_artifact_ids"][0], "inputs/reference_cdhit90.fasta")
+hmm_reference_fasta_remote = stage(
+    hmm_reference_fasta["artifact_id"],
+    "inputs/AOX_ref21.fasta",
+)
 alignment = fetch(bio_tools.mafft(
-    input_fasta=reference_cdhit90_remote,
+    input_fasta=hmm_reference_fasta_remote,
     placement=ws,
     expected_outputs=[{{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence", "format": "fasta"}}],
 ))
@@ -1768,69 +3615,102 @@ hmm = fetch(bio_tools.hmmbuild(
     expected_outputs=[{{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result", "format": "hmm"}}],
 ))
 hmm_remote = stage(hmm["registered_artifact_ids"][0], "inputs/model.hmm")
-hmmalign = fetch(bio_tools.hmmalign(
-    hmm=hmm_remote,
-    fasta=reference_fasta_remote,
-    placement=ws,
-    expected_outputs=[{{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence", "format": "fasta"}}],
-))
 hmmer_provider = bio.hmmer_search(
     hmm_artifact_id=hmm["registered_artifact_ids"][0],
+    hmm_artifact_digest=hmm_remote["artifact_digest"],
     database="refprot",
     output_dir="/workspace/output/bio/hmmer",
     params={{"evalue": "1e-20", "query": "aox"}},
 )
-candidate_cdhit85 = fetch(bio_tools.cdhit(
-    input_fasta=reference_fasta_remote,
-    placement=ws,
-    expected_outputs=[
-        {{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}},
-        {{"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"}},
-    ],
-    identity=0.85,
-    mode="candidate",
-))
-
-candidates = AOX_ACCESSIONS[:5]
-hits_raw_rows = ["target,uniprot_accession,hmm_score,evalue,length"]
+candidates = ["P12345", "Q9H9K5", "O14920", "P69905", "Q8N158"]
+hits_raw_rows = [",".join(aox_hmmer.INPUT_COLUMNS)]
 hits_filtered_rows = ["target,uniprot_accession,hmm_score,evalue,length,sequence"]
-scoring_rows = ["id,seq_score,pass_rule,activity_score,reference_coordinate"]
-nodes = ["node_id,label,score,cluster_id"]
-edges = ["source,target,similarity"]
+fixture_scoring_rows = ["fixture_sequence_id,fixture_score"]
+fixture_nodes = ["fixture_node_id,fixture_value"]
+fixture_edges = ["fixture_source,fixture_target,fixture_value"]
 for index, accession in enumerate(candidates, start=1):
     hmm_score = 240 - index
-    seq_score = 40 - index
+    fixture_score = 40 - index
     sequence = f"MSEQUENCE{{index}}AOX"
-    hits_raw_rows.append(f"target_{{index}},{{accession}},{{hmm_score}},1e-{{20 + index}},{{650 + index}}")
+    evalue = f"1e-{{20 + index}}"
+    raw_page_digest = "sha256:" + hashlib.sha256(b"fixture-page-1").hexdigest()
+    raw_hit_digest = "sha256:" + hashlib.sha256(
+        f"fixture-hit-{{index}}".encode("utf-8")
+    ).hexdigest()
+    parsed_material = {{
+        "target": f"target_{{index}}",
+        "accession": accession,
+        "evalue": evalue,
+        "score": str(hmm_score),
+        "page": 1,
+        "hit_index": index - 1,
+        "evalue_numeric": evalue.upper(),
+        "score_numeric": str(hmm_score),
+        "raw_page_digest": raw_page_digest,
+        "raw_hit_digest": raw_hit_digest,
+    }}
+    parsed_row_digest = "sha256:" + hashlib.sha256(
+        (json.dumps(parsed_material, sort_keys=True, indent=2) + "\\n").encode("utf-8")
+    ).hexdigest()
+    hits_raw_rows.append(
+        ",".join(
+            [
+                parsed_material["target"],
+                accession,
+                evalue,
+                str(hmm_score),
+                "1",
+                str(index - 1),
+                evalue.upper(),
+                str(hmm_score),
+                raw_page_digest,
+                raw_hit_digest,
+                parsed_row_digest,
+            ]
+        )
+    )
     hits_filtered_rows.append(f"target_{{index}},{{accession}},{{hmm_score}},1e-{{20 + index}},{{650 + index}},{{sequence}}")
-    scoring_rows.append(f"{{accession}},{{seq_score}},true,{{seq_score}},AAB57849.1")
-    nodes.append(f"{{accession}},candidate {{index}},{{seq_score}},cluster_1")
+    fixture_scoring_rows.append(f"{{accession}},{{fixture_score}}")
+    fixture_nodes.append(f"{{accession}},{{fixture_score}}")
 for left, right in zip(candidates, candidates[1:]):
-    edges.append(f"{{left}},{{right}},0.91")
+    fixture_edges.append(f"{{left}},{{right}},0.91")
 
-reference_fasta = register_text(
-    "AOX_ref21.fasta",
-    fasta_for(AOX_ACCESSIONS),
-    kind="sequence",
-    format="fasta",
-    metadata={{
-        "accession_count": len(AOX_ACCESSIONS),
-        "provider_artifact_ids": [reference_fasta_id, reference_metadata_id],
-    }},
-)
+target_fasta_content = fasta_for(candidates)
 target_fasta = register_text(
     "target.fasta",
-    fasta_for(candidates),
+    target_fasta_content,
     kind="sequence",
     format="fasta",
     metadata={{"warning_policy": "empty_target_requires_structured_warning"}},
 )
+scoring_input_result = aox_reference.assemble_scoring_input(
+    scoring_reference_selection.to_fasta(),
+    target_fasta_content,
+)
+scoring_input = register_text(
+    "AOX_scoring_input.fasta",
+    scoring_input_result.to_fasta(),
+    kind="sequence",
+    format="fasta",
+    metadata={{
+        **scoring_input_result.metadata(),
+        "source_scoring_reference_artifact_id": scoring_reference_fasta["artifact_id"],
+        "source_target_fasta_artifact_id": target_fasta["artifact_id"],
+    }},
+)
+hmmalign = fetch(bio_tools.hmmalign(
+    hmm=hmm_remote,
+    fasta=stage(scoring_input["artifact_id"], "inputs/AOX_scoring_input.fasta"),
+    placement=ws,
+    expected_outputs=[{{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence", "format": "fasta"}}],
+))
 reference_hmm = register_text(
     "AOX_ref.hmm",
     "HMMER3/f [aox_ref]\\nNAME AOX_ref\\n//\\n",
     format="hmm",
     metadata={{
-        "source_reference_fasta_artifact_id": reference_fasta["artifact_id"],
+        "source_reference_fasta_artifact_id": hmm_reference_fasta["artifact_id"],
+        "source_reference_fasta_digest": hmm_reference_selection.output_digest,
         "mafft_artifact_ids": alignment["registered_artifact_ids"],
         "hmmbuild_artifact_ids": hmm["registered_artifact_ids"],
     }},
@@ -1839,7 +3719,17 @@ hits_raw_csv = register_text(
     "hits_raw.csv",
     "\\n".join(hits_raw_rows) + "\\n",
     format="csv",
-    required_columns=["target", "uniprot_accession", "hmm_score", "evalue", "length"],
+    required_columns=list(aox_hmmer.INPUT_COLUMNS),
+)
+hmmer_score_filter_result = aox_hmmer.parse_and_filter_csv(
+    "\\n".join(hits_raw_rows) + "\\n"
+)
+hmmer_score_filtered_csv = register_text(
+    "hmmer_score_filtered_accessions.csv",
+    hmmer_score_filter_result.to_csv(),
+    format="csv",
+    required_columns=list(aox_hmmer.OUTPUT_COLUMNS),
+    metadata=hmmer_score_filter_result.metadata(),
 )
 hits_filtered_csv = register_text(
     "hits_len650_700_200.csv",
@@ -1847,19 +3737,36 @@ hits_filtered_csv = register_text(
     format="csv",
     required_columns=["target", "uniprot_accession", "hmm_score", "evalue", "length", "sequence"],
 )
+scoring_alignment = register_text(
+    "AOX_scoring_alignment.fasta",
+    ">AAB57849.1 fixture coordinate reference\\nMSEQUENCEAOX\\n" + fasta_for(candidates),
+    kind="sequence",
+    format="fasta",
+    metadata={{"scientific_status": "fixture_non_cutover"}},
+)
 scored_csv = register_text(
     "scored_ref_plus_hits.csv",
-    "\\n".join(scoring_rows) + "\\n",
+    "\\n".join(fixture_scoring_rows) + "\\n",
     format="csv",
-    required_columns=["id", "seq_score", "pass_rule"],
+    required_columns=["fixture_sequence_id", "fixture_score"],
 )
 candidate_fasta = register_text(
     "AOX_candidates.fasta",
     fasta_for(candidates[:3]),
     kind="sequence",
     format="fasta",
-    metadata={{"activity_score_threshold": 33.6}},
+    metadata={{"motif_rule_score_threshold_tenths": 336}},
 )
+candidate_cdhit85 = fetch(bio_tools.cdhit(
+    input_fasta=stage(candidate_fasta["artifact_id"], "inputs/AOX_candidates.fasta"),
+    placement=ws,
+    expected_outputs=[
+        {{"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"}},
+        {{"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"}},
+    ],
+    identity=0.85,
+    mode="candidate",
+))
 candidate_cdhit85_fasta = register_text(
     "AOX_candidates_cdhit85.fasta",
     fasta_for(candidates[:3]),
@@ -1871,26 +3778,92 @@ candidate_cdhit85_fasta = register_text(
         "source_operation_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     }},
 )
+candidate_cdhit85_membership = register_text(
+    "AOX_candidates_cdhit85.clusters.csv",
+    "cluster_id,member_id,representative_id,is_representative,identity_to_representative,member_length\\n",
+    format="csv",
+    metadata={{
+        "membership_schema_id": "cdhit_cluster_membership@1",
+        "scientific_status": "fixture_non_cutover",
+    }},
+)
 nodes_csv = register_text(
     "nodes.csv",
-    "\\n".join(nodes) + "\\n",
+    "\\n".join(fixture_nodes) + "\\n",
     format="csv",
-    required_columns=["node_id", "label", "score", "cluster_id"],
+    required_columns=["fixture_node_id", "fixture_value"],
 )
 edges_csv = register_text(
     "edges_similarity.csv",
-    "\\n".join(edges) + "\\n",
+    "\\n".join(fixture_edges) + "\\n",
     format="csv",
-    required_columns=["source", "target", "similarity"],
+    required_columns=["fixture_source", "fixture_target", "fixture_value"],
+)
+graph_manifest = register_text(
+    "similarity_graph_manifest.json",
+    '{{"scientific_status":"fixture_non_cutover"}}\\n',
+    format="json",
 )
 summary = {{
-    "accession_count": len(AOX_ACCESSIONS),
+    "accession_count": len(AOX_HMM_ACCESSIONS),
+    "ncbi_reference_accession_count": len(AOX_NCBI_ACCESSIONS),
+    "filtered_hit_count": len(candidates),
+    "scoring_row_count": len(candidates),
     "candidate_count": len(candidates),
+    "representative_count": 3,
+    "graph_node_count": len(candidates),
+    "graph_edge_count": max(0, len(candidates) - 1),
     "length_filter": [650, 700],
     "hmm_score_threshold": 200,
-    "activity_score_threshold": 33.6,
-    "similarity_threshold": 0.85,
+    "motif_rule_score_threshold_tenths": aox_motif.THRESHOLD_TENTHS,
+    "motif_rule_score_threshold": aox_motif.THRESHOLD_DISPLAY,
+    "similarity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
+    "similarity_threshold": "0.850000",
     "hmmer_database": "refprot",
+    "hmmer_score_filter_contract_id": aox_hmmer.CONTRACT_ID,
+    "hmmer_score_filter_contract_digest": aox_hmmer.CONTRACT_DIGEST,
+    "hmmer_score_filter_implementation_digest": aox_hmmer.IMPLEMENTATION_DIGEST,
+    "hmmer_score_filter_input_digest": hmmer_score_filter_result.input_digest,
+    "hmmer_score_filter_output_digest": hmmer_score_filter_result.output_digest,
+    "sequence_length_join_contract_id": aox_sequence_join.CONTRACT_ID,
+    "sequence_length_join_contract_digest": aox_sequence_join.CONTRACT_DIGEST,
+    "sequence_length_join_implementation_digest": aox_sequence_join.IMPLEMENTATION_DIGEST,
+    "sequence_length_join_hits_digest": "fixture_non_cutover",
+    "sequence_length_join_target_digest": "fixture_non_cutover",
+    "hmm_reference_set_selection_contract_id": aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID,
+    "hmm_reference_set_selection_contract_digest": aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST,
+    "hmm_reference_set_selection_implementation_digest": aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST,
+    "hmm_reference_set_input_digest": hmm_reference_selection.input_digest,
+    "hmm_reference_set_output_digest": hmm_reference_selection.output_digest,
+    "scoring_reference_selection_contract_id": aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_ID,
+    "scoring_reference_selection_contract_digest": aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST,
+    "scoring_reference_selection_implementation_digest": aox_reference.SCORING_REFERENCE_SELECTION_IMPLEMENTATION_DIGEST,
+    "scoring_reference_selection_input_digest": scoring_reference_selection.input_digest,
+    "scoring_reference_output_digest": scoring_reference_selection.output_digest,
+    "scoring_input_assembly_contract_id": aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_ID,
+    "scoring_input_assembly_contract_digest": aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST,
+    "scoring_input_assembly_implementation_digest": aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST,
+    "scoring_reference_input_digest": scoring_input_result.scoring_reference_input_digest,
+    "post_uniprot_target_input_digest": scoring_input_result.target_input_digest,
+    "scoring_contract_id": aox_motif.CONTRACT_ID,
+    "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
+    "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
+    "scoring_reference_accession": aox_motif.REFERENCE_ACCESSION,
+    "scoring_input_digest": scoring_input_result.output_digest,
+    "scoring_alignment_input_digest": "fixture_non_cutover",
+    "scoring_alignment_digest": "fixture_non_cutover",
+    "cdhit_membership_schema_id": "cdhit_cluster_membership@1",
+    "similarity_calculation_id": "fixture_non_cutover",
+    "similarity_calculation_digest": "fixture_non_cutover",
+    "similarity_implementation_digest": "fixture_non_cutover",
+    "candidate_graph_manifest_schema_id": aox_similarity.MANIFEST_SCHEMA_ID,
+    "candidate_graph_node_schema_id": aox_similarity.NODE_SCHEMA_ID,
+    "candidate_graph_edge_schema_id": aox_similarity.EDGE_SCHEMA_ID,
+    "candidate_graph_manifest_digest": "fixture_non_cutover",
+    "scientific_outcome": "fixture_non_cutover",
+    "scientific_branch": "fixture_non_cutover",
+    "omitted_operation_roles": [],
+    "upstream_empty_skip_receipt_digest": None,
     "provider_status": "fixture_non_cutover",
     "tool_status": "fixture_non_cutover",
     "fixture": True,
@@ -1898,36 +3871,47 @@ summary = {{
     "warning_count": 0,
     "reference_fasta_artifact_id": reference_fasta_id,
     "reference_metadata_artifact_id": reference_metadata_id,
-    "cdhit90_artifact_ids": reference_cdhit90["registered_artifact_ids"],
     "alignment_artifact_ids": alignment["registered_artifact_ids"],
     "hmm_artifact_ids": hmm["registered_artifact_ids"],
     "hmmalign_artifact_ids": hmmalign["registered_artifact_ids"],
     "hmmer_provider_artifact_ids": operation_artifact_ids(hmmer_provider),
     "candidate_cdhit85_artifact_ids": candidate_cdhit85["registered_artifact_ids"],
     "derived_artifact_ids": [
-        reference_fasta["artifact_id"],
+        hmm_reference_fasta["artifact_id"],
+        scoring_reference_fasta["artifact_id"],
+        scoring_input["artifact_id"],
         target_fasta["artifact_id"],
         reference_hmm["artifact_id"],
         hits_raw_csv["artifact_id"],
+        hmmer_score_filtered_csv["artifact_id"],
         hits_filtered_csv["artifact_id"],
+        scoring_alignment["artifact_id"],
         scored_csv["artifact_id"],
         candidate_fasta["artifact_id"],
         candidate_cdhit85_fasta["artifact_id"],
+        candidate_cdhit85_membership["artifact_id"],
         nodes_csv["artifact_id"],
         edges_csv["artifact_id"],
+        graph_manifest["artifact_id"],
     ],
     "artifact_ids": [],
     "normalized_final_deliverable_paths": [
         "aox_hmm/AOX_ref21.fasta",
+        "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
+        "aox_hmm/AOX_scoring_input.fasta",
         "aox_hmm/target.fasta",
         "aox_hmm/AOX_ref.hmm",
         "aox_hmm/hits_raw.csv",
+        "aox_hmm/hmmer_score_filtered_accessions.csv",
         "aox_hmm/hits_len650_700_200.csv",
+        "aox_hmm/AOX_scoring_alignment.fasta",
         "aox_hmm/scored_ref_plus_hits.csv",
         "aox_hmm/AOX_candidates.fasta",
         "aox_hmm/AOX_candidates_cdhit85.fasta",
+        "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
         "aox_hmm/nodes.csv",
         "aox_hmm/edges_similarity.csv",
+        "aox_hmm/similarity_graph_manifest.json",
         "aox_hmm/execution_summary.json",
     ],
 }}
@@ -1938,7 +3922,7 @@ register_text(
     format="json",
     metadata={{"candidate_count": len(candidates), "hmmer_database": "refprot"}},
 )
-'''
+"""
 
 
 class V3AOXHMMEvalInvoker:
@@ -1956,7 +3940,9 @@ class V3AOXHMMEvalInvoker:
             return self._executor_response(system_prompt, messages)
         return self._master_response(system_prompt, messages)
 
-    def _executor_response(self, system_prompt: str, messages: list[object]) -> dict[str, object]:
+    def _executor_response(
+        self, system_prompt: str, messages: list[object]
+    ) -> dict[str, object]:
         task_id = _focused_task_from_prompt(system_prompt) or "task_aox_hmm_execution"
         if any(
             _tool_message_name(message) in {"task.update", "task.finish"}
@@ -1971,8 +3957,7 @@ class V3AOXHMMEvalInvoker:
             "sandbox.workspace.status",
         )
         source_written = any(
-            _tool_message_name(message) == "sandbox.file.write"
-            for message in messages
+            _tool_message_name(message) == "sandbox.file.write" for message in messages
         )
         sandbox_executed = any(
             _tool_message_name(message) == "sandbox.exec" for message in messages
@@ -2036,7 +4021,9 @@ class V3AOXHMMEvalInvoker:
             ],
         }
 
-    def _master_response(self, system_prompt: str, messages: list[object]) -> dict[str, object]:
+    def _master_response(
+        self, system_prompt: str, messages: list[object]
+    ) -> dict[str, object]:
         del messages
         focused_task = _focused_task_from_prompt(system_prompt)
         if (
@@ -2109,14 +4096,19 @@ class V3AOXHMMEvalInvoker:
                     }
                 ],
             }
-        return {"content": "AOX/HMM execution is waiting for the executor workflow.", "tool_calls": []}
+        return {
+            "content": "AOX/HMM execution is waiting for the executor workflow.",
+            "tool_calls": [],
+        }
 
 
 class V3AOXHMMEvalModelFactory:
     def __init__(self) -> None:
         self.invokers: dict[str, V3AOXHMMEvalInvoker] = {}
 
-    def create_structured_invoker(self, *, purpose: str) -> V3LocalEvalStructuredInvoker:
+    def create_structured_invoker(
+        self, *, purpose: str
+    ) -> V3LocalEvalStructuredInvoker:
         return V3LocalEvalStructuredInvoker(purpose)
 
     def create_tool_calling_invoker(self, *, purpose: str) -> V3AOXHMMEvalInvoker:
@@ -2146,9 +4138,7 @@ class AoxHmmFixtureHpcExecutionAdapter:
         runspec = payload.get("runspec")
         metadata = runspec.get("metadata") if isinstance(runspec, dict) else None
         declared_outputs = (
-            metadata.get("declared_outputs", [])
-            if isinstance(metadata, dict)
-            else []
+            metadata.get("declared_outputs", []) if isinstance(metadata, dict) else []
         )
         artifacts: list[ExecutionArtifactRef] = []
         for item in declared_outputs:
@@ -2157,7 +4147,9 @@ class AoxHmmFixtureHpcExecutionAdapter:
             relative_path = str(item.get("path") or "")
             if not relative_path:
                 continue
-            output_path = self.output_root / session_id / str(self.call_count) / relative_path
+            output_path = (
+                self.output_root / session_id / str(self.call_count) / relative_path
+            )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(
                 self._content(relative_path, str(item.get("format") or "")),
@@ -2191,15 +4183,57 @@ class AoxHmmFixtureHpcExecutionAdapter:
 
     def _content(self, relative_path: str, format_value: str) -> str:
         normalized_format = format_value.casefold()
+        alphabet = "ACDEFGHIKLMNPQRSTVWY"
+        fixture_candidates = ("P12345", "Q9H9K5", "O14920")
+
+        def fixture_sequence(accession: str) -> str:
+            seed = sum(ord(char) for char in accession)
+            return "M" + "".join(
+                alphabet[(seed + index) % len(alphabet)] for index in range(59)
+            )
+
+        def fixture_candidate_sequence(accession: str) -> str:
+            accession_index = fixture_candidates.index(accession) + 1
+            return "M" + "".join(
+                alphabet[(accession_index + position) % len(alphabet)]
+                for position in range(662)
+            )
+
+        if "bio_tools/cdhit/" in relative_path and relative_path.endswith(".csv"):
+            header = (
+                "cluster_id,member_id,representative_id,is_representative,"
+                "identity_to_representative,member_length\n"
+            )
+            rows = "".join(
+                f"cluster_{index},{accession},{accession},true,1.000000,663\n"
+                for index, accession in enumerate(fixture_candidates)
+            )
+            return header + rows
+        if "bio_tools/cdhit/" in relative_path and relative_path.endswith(".fasta"):
+            return "".join(
+                f">{accession} fixture\n{fixture_candidate_sequence(accession)}\n"
+                for accession in fixture_candidates
+            )
         if normalized_format in {"fasta", "fa", "faa", "afa"} or relative_path.endswith(
             (".fasta", ".fa", ".faa", ".afa")
         ):
-            return ">fixture_1\nMSEQUENCEAOX\n>fixture_2\nMSEQUENCEAOY\n"
+            return "".join(
+                f">{accession} fixture\n{fixture_sequence(accession)}\n"
+                for accession in AOX_HMM_ACCESSIONS
+            )
         if normalized_format == "hmm" or relative_path.endswith(".hmm"):
             return "HMMER3/f [fixture-non-cutover]\nNAME AOX_fixture\n//\n"
         if normalized_format == "csv" or relative_path.endswith(".csv"):
             if "cluster" in relative_path:
-                return "cluster_id,representative,member_count\n0,fixture_1,2\n"
+                header = (
+                    "cluster_id,member_id,representative_id,is_representative,"
+                    "identity_to_representative,member_length\n"
+                )
+                rows = "".join(
+                    f"cluster_{index},{accession},{accession},true,1.000000,60\n"
+                    for index, accession in enumerate(AOX_HMM_ACCESSIONS)
+                )
+                return header + rows
             return "target,accession,evalue,score\nfixture_1,FIXTURE1,1e-20,250\n"
         return "fixture_non_cutover\n"
 
@@ -2223,7 +4257,7 @@ class AoxHmmFixtureSandboxRunner:
         reference = control_handler(
             "bio.ncbi_fetch_proteins",
             {
-                "accessions": list(AOX_HMM_ACCESSIONS),
+                "accessions": list(AOX_NCBI_ACCESSIONS),
                 "fields": ["definition", "organism", "length"],
                 "output_dir": "/workspace/output/bio/ncbi",
             },
@@ -2235,7 +4269,9 @@ class AoxHmmFixtureSandboxRunner:
                     return str(artifact["artifact_id"])
             raise RuntimeError(f"Missing expected artifact suffix: {suffix}")
 
-        reference_fasta_id = artifact_id_by_suffix(reference, "provider_parsed/proteins.fasta")
+        reference_fasta_id = artifact_id_by_suffix(
+            reference, "provider_parsed/proteins.fasta"
+        )
         workspace = dict(control_handler("hpc.workspace", {"label": "aox_hmm"}))
 
         def stage(artifact_id: str, path: str) -> dict[str, Any]:
@@ -2261,30 +4297,17 @@ class AoxHmmFixtureSandboxRunner:
                 )
             )
 
-        reference_remote = stage(reference_fasta_id, "inputs/reference.fasta")
-        cdhit90 = fetch(
-            control_handler(
-                "bio_tools.cdhit",
-                {
-                    "input_fasta": reference_remote,
-                    "placement": workspace,
-                    "expected_outputs": [
-                        {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"},
-                        {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
-                    ],
-                    "identity": 0.9,
-                    "mode": "reference",
-                },
-            )
-        )
-        alignment_remote = stage(cdhit90["registered_artifact_ids"][0], "inputs/alignment_input.fasta")
+        reference_remote = stage(reference_fasta_id, "inputs/AOX_ref21.fasta")
+        alignment_remote = reference_remote
         alignment = fetch(
             control_handler(
                 "bio_tools.mafft",
                 {
                     "input_fasta": alignment_remote,
                     "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}],
+                    "expected_outputs": [
+                        {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}
+                    ],
                     "params": {},
                 },
             )
@@ -2293,22 +4316,33 @@ class AoxHmmFixtureSandboxRunner:
             control_handler(
                 "bio_tools.hmmbuild",
                 {
-                    "alignment": stage(alignment["registered_artifact_ids"][0], "inputs/alignment.fasta"),
+                    "alignment": stage(
+                        alignment["registered_artifact_ids"][0],
+                        "inputs/alignment.fasta",
+                    ),
                     "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}],
+                    "expected_outputs": [
+                        {"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}
+                    ],
                     "params": {},
                 },
             )
         )
         hmm_remote = stage(hmm["registered_artifact_ids"][0], "inputs/model.hmm")
+        scoring_input_remote = stage(
+            reference_fasta_id,
+            "inputs/AOX_scoring_input.fasta",
+        )
         fetch(
             control_handler(
                 "bio_tools.hmmalign",
                 {
                     "hmm": hmm_remote,
-                    "fasta": reference_remote,
+                    "fasta": scoring_input_remote,
                     "placement": workspace,
-                    "expected_outputs": [{"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}],
+                    "expected_outputs": [
+                        {"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}
+                    ],
                     "params": {},
                 },
             )
@@ -2329,8 +4363,16 @@ class AoxHmmFixtureSandboxRunner:
                     "input_fasta": reference_remote,
                     "placement": workspace,
                     "expected_outputs": [
-                        {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence", "format": "fasta"},
-                        {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
+                        {
+                            "path": "bio_tools/cdhit/clustered.fasta",
+                            "kind": "sequence",
+                            "format": "fasta",
+                        },
+                        {
+                            "path": "bio_tools/cdhit/clusters.csv",
+                            "kind": "result",
+                            "format": "csv",
+                        },
                     ],
                     "identity": 0.85,
                     "mode": "candidate",
@@ -2338,9 +4380,11 @@ class AoxHmmFixtureSandboxRunner:
             )
         )
 
-        output_dir = Path(tempfile.gettempdir()) / "openzyme-aox-hmm-fixture" / invocation_id
+        output_dir = (
+            Path(tempfile.gettempdir()) / "openzyme-aox-hmm-fixture" / invocation_id
+        )
         output_dir.mkdir(parents=True, exist_ok=True)
-        candidates = AOX_HMM_ACCESSIONS[:5]
+        candidates = ("P12345", "Q9H9K5", "O14920", "P69905", "Q8N158")
 
         def fasta_for(accessions: tuple[str, ...]) -> str:
             return "".join(
@@ -2367,25 +4411,67 @@ class AoxHmmFixtureSandboxRunner:
                 metadata=metadata_payload,
             )
 
-        hits_raw_rows = ["target,uniprot_accession,hmm_score,evalue,length"]
-        hits_filtered_rows = ["target,uniprot_accession,hmm_score,evalue,length,sequence"]
-        scoring_rows = ["id,seq_score,pass_rule,activity_score,reference_coordinate"]
-        nodes = ["node_id,label,score,cluster_id"]
-        edges = ["source,target,similarity"]
+        hits_raw_rows = [",".join(aox_hmmer.INPUT_COLUMNS)]
+        hits_filtered_rows = [
+            "target,uniprot_accession,hmm_score,evalue,length,sequence"
+        ]
+        fixture_scoring_rows = ["fixture_sequence_id,fixture_score"]
+        fixture_nodes = ["fixture_node_id,fixture_value"]
+        fixture_edges = ["fixture_source,fixture_target,fixture_value"]
         for index, accession in enumerate(candidates, start=1):
             hmm_score = 240 - index
-            seq_score = 40 - index
+            fixture_score = 40 - index
             sequence = f"MSEQUENCE{index}AOX"
+            evalue = f"1e-{20 + index}"
+            raw_page_digest = (
+                "sha256:" + hashlib.sha256(b"fixture-page-1").hexdigest()
+            )
+            raw_hit_digest = "sha256:" + hashlib.sha256(
+                f"fixture-hit-{index}".encode("utf-8")
+            ).hexdigest()
+            parsed_material = {
+                "target": f"target_{index}",
+                "accession": accession,
+                "evalue": evalue,
+                "score": str(hmm_score),
+                "page": 1,
+                "hit_index": index - 1,
+                "evalue_numeric": evalue.upper(),
+                "score_numeric": str(hmm_score),
+                "raw_page_digest": raw_page_digest,
+                "raw_hit_digest": raw_hit_digest,
+            }
+            parsed_row_digest = "sha256:" + hashlib.sha256(
+                (json.dumps(parsed_material, sort_keys=True, indent=2) + "\n").encode(
+                    "utf-8"
+                )
+            ).hexdigest()
             hits_raw_rows.append(
-                f"target_{index},{accession},{hmm_score},1e-{20 + index},{650 + index}"
+                ",".join(
+                    [
+                        parsed_material["target"],
+                        accession,
+                        evalue,
+                        str(hmm_score),
+                        "1",
+                        str(index - 1),
+                        evalue.upper(),
+                        str(hmm_score),
+                        raw_page_digest,
+                        raw_hit_digest,
+                        parsed_row_digest,
+                    ]
+                )
             )
             hits_filtered_rows.append(
                 f"target_{index},{accession},{hmm_score},1e-{20 + index},{650 + index},{sequence}"
             )
-            scoring_rows.append(f"{accession},{seq_score},true,{seq_score},AAB57849.1")
-            nodes.append(f"{accession},candidate {index},{seq_score},cluster_1")
+            fixture_scoring_rows.append(f"{accession},{fixture_score}")
+            fixture_nodes.append(f"{accession},{fixture_score}")
         for left, right in zip(candidates, candidates[1:]):
-            edges.append(f"{left},{right},0.91")
+            fixture_edges.append(f"{left},{right},0.91")
+        hits_raw_csv = "\n".join(hits_raw_rows) + "\n"
+        hmmer_score_filter_result = aox_hmmer.parse_and_filter_csv(hits_raw_csv)
         artifacts = (
             write_artifact(
                 "AOX_ref21.fasta",
@@ -2394,14 +4480,61 @@ class AoxHmmFixtureSandboxRunner:
                 metadata={
                     "format": "fasta",
                     "accession_count": len(AOX_HMM_ACCESSIONS),
+                    "contract_id": (
+                        aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID
+                    ),
+                    "contract_digest": (
+                        aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+                    ),
+                    "implementation_digest": (
+                        aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+                    ),
                     "provider_request_ids": list(reference["artifact_ids"]),
+                    "ncbi_reference_accessions": list(AOX_NCBI_ACCESSIONS),
+                },
+            ),
+            write_artifact(
+                "AOX_coordinate_reference_AAB57849.1.fasta",
+                ">AAB57849.1\nMSEQUENCEAOX\n",
+                kind=ArtifactKind.SEQUENCE,
+                metadata={
+                    "format": "fasta",
+                    "contract_id": (
+                        aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_ID
+                    ),
+                    "contract_digest": (
+                        aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST
+                    ),
+                    "implementation_digest": (
+                        aox_reference.SCORING_REFERENCE_SELECTION_IMPLEMENTATION_DIGEST
+                    ),
+                    "scientific_status": "fixture_non_cutover",
+                },
+            ),
+            write_artifact(
+                "AOX_scoring_input.fasta",
+                ">AAB57849.1\nMSEQUENCEAOX\n" + fasta_for(candidates),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={
+                    "format": "fasta",
+                    "contract_id": aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_ID,
+                    "contract_digest": (
+                        aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST
+                    ),
+                    "implementation_digest": (
+                        aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST
+                    ),
+                    "scientific_status": "fixture_non_cutover",
                 },
             ),
             write_artifact(
                 "target.fasta",
                 fasta_for(candidates),
                 kind=ArtifactKind.SEQUENCE,
-                metadata={"format": "fasta", "warning_policy": "empty_target_requires_structured_warning"},
+                metadata={
+                    "format": "fasta",
+                    "warning_policy": "empty_target_requires_structured_warning",
+                },
             ),
             write_artifact(
                 "AOX_ref.hmm",
@@ -2409,16 +4542,26 @@ class AoxHmmFixtureSandboxRunner:
                 metadata={
                     "format": "hmm",
                     "source_reference_fasta_artifact_id": reference_fasta_id,
+                    "source_reference_fasta_digest": "fixture_non_cutover",
                     "mafft_artifact_ids": list(alignment["registered_artifact_ids"]),
                     "hmmbuild_artifact_ids": list(hmm["registered_artifact_ids"]),
                 },
             ),
             write_artifact(
                 "hits_raw.csv",
-                "\n".join(hits_raw_rows) + "\n",
+                hits_raw_csv,
                 metadata={
                     "format": "csv",
-                    "required_columns": ["target", "uniprot_accession", "hmm_score", "evalue", "length"],
+                    "required_columns": list(aox_hmmer.INPUT_COLUMNS),
+                },
+            ),
+            write_artifact(
+                "hmmer_score_filtered_accessions.csv",
+                hmmer_score_filter_result.to_csv(),
+                metadata={
+                    "format": "csv",
+                    "required_columns": list(aox_hmmer.OUTPUT_COLUMNS),
+                    **hmmer_score_filter_result.metadata(),
                 },
             ),
             write_artifact(
@@ -2437,15 +4580,28 @@ class AoxHmmFixtureSandboxRunner:
                 },
             ),
             write_artifact(
+                "AOX_scoring_alignment.fasta",
+                ">AAB57849.1 fixture coordinate reference\nMSEQUENCEAOX\n"
+                + fasta_for(candidates),
+                kind=ArtifactKind.SEQUENCE,
+                metadata={
+                    "format": "fasta",
+                    "scientific_status": "fixture_non_cutover",
+                },
+            ),
+            write_artifact(
                 "scored_ref_plus_hits.csv",
-                "\n".join(scoring_rows) + "\n",
-                metadata={"format": "csv", "required_columns": ["id", "seq_score", "pass_rule"]},
+                "\n".join(fixture_scoring_rows) + "\n",
+                metadata={
+                    "format": "csv",
+                    "required_columns": ["fixture_sequence_id", "fixture_score"],
+                },
             ),
             write_artifact(
                 "AOX_candidates.fasta",
                 fasta_for(candidates[:3]),
                 kind=ArtifactKind.SEQUENCE,
-                metadata={"format": "fasta", "activity_score_threshold": 33.6},
+                metadata={"format": "fasta", "motif_rule_score_threshold_tenths": 336},
             ),
             write_artifact(
                 "AOX_candidates_cdhit85.fasta",
@@ -2455,40 +4611,156 @@ class AoxHmmFixtureSandboxRunner:
                     "format": "fasta",
                     "tool_name": "cd-hit",
                     "identity": 0.85,
-                    "source_operation_artifact_ids": list(cdhit85["registered_artifact_ids"]),
+                    "source_operation_artifact_ids": list(
+                        cdhit85["registered_artifact_ids"]
+                    ),
+                },
+            ),
+            write_artifact(
+                "AOX_candidates_cdhit85.clusters.csv",
+                (
+                    "cluster_id,member_id,representative_id,is_representative,"
+                    "identity_to_representative,member_length\n"
+                ),
+                metadata={
+                    "format": "csv",
+                    "membership_schema_id": "cdhit_cluster_membership@1",
+                    "scientific_status": "fixture_non_cutover",
                 },
             ),
             write_artifact(
                 "nodes.csv",
-                "\n".join(nodes) + "\n",
-                metadata={"format": "csv", "required_columns": ["node_id", "label", "score", "cluster_id"]},
+                "\n".join(fixture_nodes) + "\n",
+                metadata={
+                    "format": "csv",
+                    "required_columns": ["fixture_node_id", "fixture_value"],
+                },
             ),
             write_artifact(
                 "edges_similarity.csv",
-                "\n".join(edges) + "\n",
-                metadata={"format": "csv", "required_columns": ["source", "target", "similarity"]},
+                "\n".join(fixture_edges) + "\n",
+                metadata={
+                    "format": "csv",
+                    "required_columns": [
+                        "fixture_source",
+                        "fixture_target",
+                        "fixture_value",
+                    ],
+                },
+            ),
+            write_artifact(
+                "similarity_graph_manifest.json",
+                '{"scientific_status":"fixture_non_cutover"}\n',
+                metadata={"format": "json", "scientific_status": "fixture_non_cutover"},
             ),
             write_artifact(
                 "execution_summary.json",
                 json.dumps(
                     {
                         "accession_count": len(AOX_HMM_ACCESSIONS),
+                        "ncbi_reference_accession_count": len(AOX_NCBI_ACCESSIONS),
+                        "filtered_hit_count": len(candidates),
+                        "scoring_row_count": len(candidates),
                         "candidate_count": len(candidates),
+                        "representative_count": 3,
+                        "graph_node_count": len(candidates),
+                        "graph_edge_count": max(0, len(candidates) - 1),
                         "length_filter": [650, 700],
                         "hmm_score_threshold": 200,
-                        "activity_score_threshold": 33.6,
-                        "similarity_threshold": 0.85,
+                        "motif_rule_score_threshold_tenths": aox_motif.THRESHOLD_TENTHS,
+                        "motif_rule_score_threshold": aox_motif.THRESHOLD_DISPLAY,
+                        "similarity_threshold_ppm": aox_similarity.DEFAULT_THRESHOLD_PPM,
+                        "similarity_threshold": "0.850000",
                         "hmmer_database": "refprot",
+                        "hmmer_score_filter_contract_id": aox_hmmer.CONTRACT_ID,
+                        "hmmer_score_filter_contract_digest": aox_hmmer.CONTRACT_DIGEST,
+                        "hmmer_score_filter_implementation_digest": (
+                            aox_hmmer.IMPLEMENTATION_DIGEST
+                        ),
+                        "hmmer_score_filter_input_digest": (
+                            hmmer_score_filter_result.input_digest
+                        ),
+                        "hmmer_score_filter_output_digest": (
+                            hmmer_score_filter_result.output_digest
+                        ),
+                        "sequence_length_join_contract_id": (
+                            aox_sequence_join.CONTRACT_ID
+                        ),
+                        "sequence_length_join_contract_digest": (
+                            aox_sequence_join.CONTRACT_DIGEST
+                        ),
+                        "sequence_length_join_implementation_digest": (
+                            aox_sequence_join.IMPLEMENTATION_DIGEST
+                        ),
+                        "sequence_length_join_hits_digest": "fixture_non_cutover",
+                        "sequence_length_join_target_digest": "fixture_non_cutover",
+                        "hmm_reference_set_selection_contract_id": (
+                            aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID
+                        ),
+                        "hmm_reference_set_selection_contract_digest": (
+                            aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+                        ),
+                        "hmm_reference_set_selection_implementation_digest": (
+                            aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+                        ),
+                        "hmm_reference_set_input_digest": "fixture_non_cutover",
+                        "hmm_reference_set_output_digest": "fixture_non_cutover",
+                        "scoring_reference_selection_contract_id": (
+                            aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_ID
+                        ),
+                        "scoring_reference_selection_contract_digest": (
+                            aox_reference.SCORING_REFERENCE_SELECTION_CONTRACT_DIGEST
+                        ),
+                        "scoring_reference_selection_implementation_digest": (
+                            aox_reference.SCORING_REFERENCE_SELECTION_IMPLEMENTATION_DIGEST
+                        ),
+                        "scoring_reference_selection_input_digest": (
+                            "fixture_non_cutover"
+                        ),
+                        "scoring_reference_output_digest": "fixture_non_cutover",
+                        "scoring_input_assembly_contract_id": (
+                            aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_ID
+                        ),
+                        "scoring_input_assembly_contract_digest": (
+                            aox_reference.SCORING_INPUT_ASSEMBLY_CONTRACT_DIGEST
+                        ),
+                        "scoring_input_assembly_implementation_digest": (
+                            aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST
+                        ),
+                        "scoring_reference_input_digest": "fixture_non_cutover",
+                        "post_uniprot_target_input_digest": "fixture_non_cutover",
+                        "scoring_contract_id": aox_motif.CONTRACT_ID,
+                        "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
+                        "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
+                        "scoring_reference_accession": aox_motif.REFERENCE_ACCESSION,
+                        "scoring_input_digest": "fixture_non_cutover",
+                        "scoring_alignment_input_digest": "fixture_non_cutover",
+                        "scoring_alignment_digest": "fixture_non_cutover",
+                        "cdhit_membership_schema_id": "cdhit_cluster_membership@1",
+                        "similarity_calculation_id": "fixture_non_cutover",
+                        "similarity_calculation_digest": "fixture_non_cutover",
+                        "similarity_implementation_digest": "fixture_non_cutover",
+                        "candidate_graph_manifest_schema_id": aox_similarity.MANIFEST_SCHEMA_ID,
+                        "candidate_graph_node_schema_id": aox_similarity.NODE_SCHEMA_ID,
+                        "candidate_graph_edge_schema_id": aox_similarity.EDGE_SCHEMA_ID,
+                        "candidate_graph_manifest_digest": "fixture_non_cutover",
+                        "scientific_outcome": "fixture_non_cutover",
+                        "scientific_branch": "fixture_non_cutover",
+                        "omitted_operation_roles": [],
+                        "upstream_empty_skip_receipt_digest": None,
                         "provider_status": "fixture_non_cutover",
                         "tool_status": "fixture_non_cutover",
                         "fixture": True,
                         "cutover_eligible": False,
                         "warning_count": 0,
                         "reference_artifact_ids": list(reference["artifact_ids"]),
-                        "cdhit90_artifact_ids": list(cdhit90["registered_artifact_ids"]),
-                        "candidate_cdhit85_artifact_ids": list(cdhit85["registered_artifact_ids"]),
+                        "candidate_cdhit85_artifact_ids": list(
+                            cdhit85["registered_artifact_ids"]
+                        ),
                         "artifact_ids": [],
-                        "normalized_final_deliverable_paths": sorted(S15_AOX_HMM_FIXED_DELIVERABLES),
+                        "normalized_final_deliverable_paths": sorted(
+                            S15_AOX_HMM_FIXED_DELIVERABLES
+                        ),
                     },
                     sort_keys=True,
                     indent=2,
@@ -2511,12 +4783,18 @@ class AoxHmmFixtureSandboxRunner:
             exit_code=0,
         )
 
-    def _validate_output_content(self, relative_path: str, content: str, metadata: dict[str, Any]) -> None:
+    def _validate_output_content(
+        self, relative_path: str, content: str, metadata: dict[str, Any]
+    ) -> None:
         output_format = str(metadata.get("format") or "").lower()
-        required_columns = [str(column) for column in list(metadata.get("required_columns") or [])]
+        required_columns = [
+            str(column) for column in list(metadata.get("required_columns") or [])
+        ]
         if not content.strip():
             raise ValueError(f"fixture output is empty: {relative_path}")
-        if output_format in {"fasta", "fa", "faa"} and not content.lstrip().startswith(">"):
+        if output_format in {"fasta", "fa", "faa"} and not content.lstrip().startswith(
+            ">"
+        ):
             raise ValueError(f"fixture FASTA output is invalid: {relative_path}")
         if output_format == "hmm" and not content.startswith("HMMER"):
             raise ValueError(f"fixture HMM output is invalid: {relative_path}")
@@ -2524,7 +4802,9 @@ class AoxHmmFixtureSandboxRunner:
             header = content.splitlines()[0].split(",") if content.splitlines() else []
             missing = [column for column in required_columns if column not in header]
             if missing:
-                raise ValueError(f"fixture CSV output {relative_path} is missing required columns: {missing}")
+                raise ValueError(
+                    f"fixture CSV output {relative_path} is missing required columns: {missing}"
+                )
 
 
 def build_local_eval_runtime() -> RuntimeFoundation:
@@ -2642,7 +4922,7 @@ def _poll_v3_background_workspace(
     return workspace, event_text, runtime_status
 
 
-S15_TASK_TERMINAL_STATUS_VALUES = {"completed", "failed", "cancelled"}
+S15_TASK_TERMINAL_STATUS_VALUES = {"completed", "blocked", "failed", "cancelled"}
 S15_SANDBOX_RUN_TERMINAL_STATUS_VALUES = {
     "completed",
     "failed",
@@ -2664,6 +4944,19 @@ def _s15_aox_execution_task_status(workspace: dict[str, Any]) -> str | None:
             status = task.get("status")
             return None if status is None else str(status)
     return None
+
+
+def _s15_task_statuses_by_kind(workspace: dict[str, Any]) -> dict[str, set[str]]:
+    statuses: dict[str, set[str]] = {}
+    for item in (workspace.get("task_board") or {}).get("items", []):
+        task = item.get("task") if isinstance(item, dict) else None
+        if not isinstance(task, dict):
+            continue
+        kind = str(task.get("kind") or "")
+        status = str(task.get("status") or "")
+        if kind and status:
+            statuses.setdefault(kind, set()).add(status)
+    return statuses
 
 
 def _s15_fixture_workspace_ready(workspace: dict[str, Any]) -> bool:
@@ -2691,30 +4984,46 @@ def _s15_live_workspace_ready(
 ) -> bool:
     if workspace.get("pending_approvals"):
         return False
-    task_status = _s15_aox_execution_task_status(workspace)
-    if task_status not in S15_TASK_TERMINAL_STATUS_VALUES:
-        return False
+    task_statuses = _s15_task_statuses_by_kind(workspace)
+    required_task_kinds = {"research", "execution", "reporting"}
     artifact_paths = {
         artifact.relative_path
         for artifact in repositories.artifacts.list_by_session(session_id)
     }
     fixed_outputs_ready = S15_AOX_HMM_FIXED_DELIVERABLES <= artifact_paths
-    sandbox_terminal = any(
-        run.status.value in S15_SANDBOX_RUN_TERMINAL_STATUS_VALUES
+    sandbox_failed = any(
+        run.status.value in (S15_SANDBOX_RUN_TERMINAL_STATUS_VALUES - {"completed"})
         for run in repositories.sandbox_runs.list_by_session(session_id)
     )
     operations = repositories.controlled_operations.list_by_session(session_id)
-    operations_terminal = bool(operations) and all(
-        operation.status.value in S15_CONTROLLED_OPERATION_TERMINAL_STATUS_VALUES
+    operation_failed = any(
+        operation.status.value
+        in (S15_CONTROLLED_OPERATION_TERMINAL_STATUS_VALUES - {"completed"})
         for operation in operations
     )
-    final_answer_seen = _s15_final_answer(workspace) is not None
-    return bool(
-        fixed_outputs_ready
-        or sandbox_terminal
-        or operations_terminal
-        or final_answer_seen
+    task_failed = any(
+        status in {"blocked", "failed", "cancelled"}
+        for statuses in task_statuses.values()
+        for status in statuses
     )
+    completed_task_kinds = {
+        kind for kind, statuses in task_statuses.items() if "completed" in statuses
+    }
+    reports_ready = any(
+        isinstance(report, dict) and report.get("status") in {"ready", "published"}
+        for report in workspace.get("reports") or []
+    ) and any(
+        isinstance(draft, dict) and draft.get("status") == "published"
+        for draft in workspace.get("report_drafts") or []
+    )
+    final_answer_seen = _s15_final_answer(workspace) is not None
+    success_ready = bool(
+        fixed_outputs_ready
+        and required_task_kinds <= completed_task_kinds
+        and reports_ready
+        and final_answer_seen
+    )
+    return success_ready or sandbox_failed or operation_failed or task_failed
 
 
 def _run_v3_design_cutover_scenario(
@@ -2938,7 +5247,9 @@ def _run_v3_aox_hmm_prompt_scenario(
             prompt = S15_AOX_HMM_FIXED_PROMPT
             with workflow_trace(
                 "openzyme.v3_aox_hmm_prompt_eval",
-                action="v3_fixture_eval" if scenario_class == "fixture" else "v3_live_eval",
+                action="v3_fixture_eval"
+                if scenario_class == "fixture"
+                else "v3_live_eval",
                 project_id="proj_001",
                 phase="evaluation",
                 inputs={"scenario_id": scenario_id, "objective": objective},
@@ -2972,7 +5283,9 @@ def _run_v3_aox_hmm_prompt_scenario(
                 artifact_paths = {artifact.relative_path for artifact in artifacts}
                 execution_invocations = [
                     invocation
-                    for invocation in v3_repositories.invocations.list_by_session(session_id)
+                    for invocation in v3_repositories.invocations.list_by_session(
+                        session_id
+                    )
                     if invocation.engine_name == "execution"
                 ]
                 output_artifacts = [
@@ -2992,11 +5305,13 @@ def _run_v3_aox_hmm_prompt_scenario(
                 for artifact in artifacts:
                     if artifact.relative_path not in S15_AOX_HMM_FIXED_DELIVERABLES:
                         continue
-                    artifact_metadata_by_path[artifact.relative_path] = dict(artifact.metadata or {})
+                    artifact_metadata_by_path[artifact.relative_path] = dict(
+                        artifact.metadata or {}
+                    )
                     try:
-                        artifact_text_by_path[artifact.relative_path] = Path(artifact.storage_uri).read_text(
-                            encoding="utf-8"
-                        )
+                        artifact_text_by_path[artifact.relative_path] = Path(
+                            artifact.storage_uri
+                        ).read_text(encoding="utf-8")
                     except OSError:
                         artifact_text_by_path[artifact.relative_path] = ""
                 final_output_validation = _s15_aox_validate_final_artifacts(
@@ -3010,13 +5325,16 @@ def _run_v3_aox_hmm_prompt_scenario(
                     scenario_id=scenario_id,
                     session_id=session_id,
                     prompt=prompt,
-                    prerequisite_report=prerequisite_report or {"status": "ok", "required": []},
+                    prerequisite_report=prerequisite_report
+                    or {"status": "ok", "required": []},
                     workspace=workspace,
                     artifacts=artifacts,
                     required_paths=required_paths,
                     final_output_validation=final_output_validation,
                 )
-                evidence_bundle_validation = _s15_validate_evidence_bundle(evidence_bundle)
+                evidence_bundle_validation = _s15_validate_evidence_bundle(
+                    evidence_bundle
+                )
                 has_legacy_execution_pipeline = bool(
                     execution_invocations
                 ) or _s15_event_text_has_legacy_execution_pipeline(event_text)
@@ -3027,7 +5345,9 @@ def _run_v3_aox_hmm_prompt_scenario(
                 )
                 sandbox_workspace_id = evidence_bundle.get("sandbox_workspace_id")
                 file_audit_entries = (
-                    v3_repositories.file_audit_entries.list_by_workspace(sandbox_workspace_id)
+                    v3_repositories.file_audit_entries.list_by_workspace(
+                        sandbox_workspace_id
+                    )
                     if isinstance(sandbox_workspace_id, str)
                     else []
                 )
@@ -3047,14 +5367,64 @@ def _run_v3_aox_hmm_prompt_scenario(
                     and item.get("route_policy_id")
                     for item in operation_trace
                 )
+                participant_roles = set(evidence_bundle.get("participant_roles") or [])
+                task_receipts = evidence_bundle.get("task_receipts") or []
+                completed_task_kinds = {
+                    str(item.get("kind") or "")
+                    for item in task_receipts
+                    if isinstance(item, dict)
+                    and item.get("status") == "completed"
+                    and item.get("finish_ref")
+                }
+                published_report_ids = {
+                    str(item.get("report_id") or "")
+                    for item in evidence_bundle.get("report_receipts") or []
+                    if isinstance(item, dict)
+                    and item.get("status") in {"ready", "published"}
+                    and item.get("artifact_id")
+                }
                 checks = {
-                    "single_user_prompt": sum(1 for item in workspace["conversation"] if item["role"] == "user") == 1,
+                    "single_user_prompt": sum(
+                        1
+                        for item in workspace["conversation"]
+                        if item["role"] == "user"
+                    )
+                    == 1,
                     "delegated_executor": any(
                         item["agent"]["role"] == "executor"
                         for item in workspace["delegation"]["agents"]
                     )
                     and "task.delegate" in event_text,
-                    "source_snapshot": bool(evidence_bundle.get("source_snapshot_artifact_ids"))
+                    "canonical_product_roles": {
+                        "researcher",
+                        "executor",
+                        "reporter",
+                    }
+                    <= participant_roles,
+                    "explicit_task_business_exits": {
+                        "research",
+                        "execution",
+                        "reporting",
+                    }
+                    <= completed_task_kinds,
+                    "required_pubmed_evidence": any(
+                        isinstance(item, dict)
+                        and item.get("provider") == "pubmed"
+                        and str(item.get("pmid") or "").isdigit()
+                        and item.get("evidence_artifact_id")
+                        for item in evidence_bundle.get("research_source_receipts")
+                        or []
+                    ),
+                    "published_report": bool(published_report_ids)
+                    and any(
+                        isinstance(item, dict)
+                        and item.get("status") == "published"
+                        and item.get("published_report_id") in published_report_ids
+                        for item in evidence_bundle.get("report_draft_receipts") or []
+                    ),
+                    "source_snapshot": bool(
+                        evidence_bundle.get("source_snapshot_artifact_ids")
+                    )
                     and bool(evidence_bundle.get("source_snapshot_digests")),
                     "source_write_audited": any(
                         entry.operation == "write" and entry.new_digest
@@ -3078,14 +5448,18 @@ def _run_v3_aox_hmm_prompt_scenario(
                     and any(
                         item.get("status") == "succeeded"
                         for item in workspace["capabilities"].get(
-                            "execution" if scenario_class == "live" else "sandbox_adapter",
+                            "execution"
+                            if scenario_class == "live"
+                            else "sandbox_adapter",
                             [],
                         )
                     )
                     if scenario_class == "fixture"
                     else bool(live_product_path_validation["passed"]),
                     "required_artifacts": required_paths <= artifact_paths,
-                    "legacy_artifacts_excluded": not _s15_aox_legacy_paths_present(artifact_paths),
+                    "legacy_artifacts_excluded": not _s15_aox_legacy_paths_present(
+                        artifact_paths
+                    ),
                     "candidate85_artifact": any(
                         artifact.relative_path == "aox_hmm/AOX_candidates_cdhit85.fasta"
                         and (artifact.metadata or {}).get("identity") == 0.85
@@ -3113,7 +5487,8 @@ def _run_v3_aox_hmm_prompt_scenario(
                         if scenario_class == "fixture"
                         else bool(evidence_bundle.get("final_answer_available"))
                     ),
-                    "background_runtime": runtime_status.get("worker_id") == "host-api:background-runtime"
+                    "background_runtime": runtime_status.get("worker_id")
+                    == "host-api:background-runtime"
                     and int(runtime_status.get("processed_signal_count") or 0) > 0,
                     "legacy_pipeline_not_used": not has_legacy_execution_pipeline,
                     "sandbox_product_path": (
@@ -3121,9 +5496,15 @@ def _run_v3_aox_hmm_prompt_scenario(
                         if scenario_class == "fixture"
                         else bool(live_product_path_validation["passed"])
                     ),
-                    "evidence_bundle_complete": bool(evidence_bundle_validation["passed"]),
+                    "evidence_bundle_complete": bool(
+                        evidence_bundle_validation["passed"]
+                    ),
                 }
                 live_cutover_check_names = {
+                    "canonical_product_roles",
+                    "explicit_task_business_exits",
+                    "required_pubmed_evidence",
+                    "published_report",
                     "required_artifacts",
                     "candidate85_artifact",
                     "final_output_validation",
@@ -3165,7 +5546,8 @@ def _run_v3_aox_hmm_prompt_scenario(
                         scenario_id=scenario_id,
                         session_id=session_id,
                         status="passed" if passed else "failed",
-                        prerequisite_report=prerequisite_report or {"status": "ok", "required": []},
+                        prerequisite_report=prerequisite_report
+                        or {"status": "ok", "required": []},
                         evidence_payload=evidence_bundle,
                         safe_summary=safe_summary,
                     )
@@ -3173,7 +5555,8 @@ def _run_v3_aox_hmm_prompt_scenario(
                     "scenario_id": scenario_id,
                     "scenario_class": scenario_class,
                     "status": "passed" if passed else "failed",
-                    "live_cutover_eligible": scenario_class == "live" and all(checks.values()),
+                    "live_cutover_eligible": scenario_class == "live"
+                    and all(checks.values()),
                     **live_evidence_refs,
                     "session_id": session_id,
                     "task_count": len(workspace["task_board"]["items"]),
@@ -3182,7 +5565,9 @@ def _run_v3_aox_hmm_prompt_scenario(
                     "required_artifact_count": len(required_paths),
                     "required_artifacts": sorted(required_paths),
                     "legacy_artifacts": _s15_aox_legacy_paths_present(artifact_paths),
-                    "candidate_count": 5,
+                    "candidate_count": final_output_validation.get(
+                        "candidate_count", 0
+                    ),
                     "final_output_validation": final_output_validation,
                     "evidence_bundle": evidence_bundle,
                     "evidence_bundle_validation": evidence_bundle_validation,
@@ -3278,13 +5663,12 @@ def _run_v3_live_task_plan_scenario(*, upload_results: bool = False) -> dict[str
                     client,
                     session_id="sess_eval_v3_live_plan",
                     timeout_seconds=240.0,
-                    is_ready=lambda current: len(
-                        (current.get("task_board") or {}).get("items", [])
-                    )
-                    >= 3
-                    and any(
-                        message.get("role") == "assistant"
-                        for message in current.get("conversation", [])
+                    is_ready=lambda current: (
+                        len((current.get("task_board") or {}).get("items", [])) >= 3
+                        and any(
+                            message.get("role") == "assistant"
+                            for message in current.get("conversation", [])
+                        )
                     ),
                 )
                 tasks = [item["task"] for item in workspace["task_board"]["items"]]
@@ -3404,9 +5788,7 @@ def run_v3_s15_live_evals(*, upload_results: bool = False) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Run OpenZyme V3 workflow evals"
-    )
+    parser = argparse.ArgumentParser(description="Run OpenZyme V3 workflow evals")
     parser.add_argument(
         "--live",
         action="store_true",
