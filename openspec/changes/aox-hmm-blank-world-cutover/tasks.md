@@ -54,6 +54,7 @@
 - [x] 6.11 Bind formal evidence to exact durable role-scoped delegation/workflow receipts, publish the installed scientific callable/provider/fetch map, and reject approximation or path guessing.
 - [x] 6.12 Require explicit bounded MICU context configuration and close the post-drain-response `waiting_approval` visibility race without changing stable failure taxonomy.
 - [x] 6.13 Keep failed-coordinator cleanup active through the existing attempt deadline, retry transient cleanup reads/resolves without masking the primary blocker, reconcile selected-session pending approvals in the Web UI without stale overwrite or old-request starvation, and make the Chrome consumer ignore same-type activity projection echoes without a closed decision while treating an explicit rejected command decision as fail closed.
+- [x] 6.14 Add strict direct-field artifact response selectors, require attempt-local completed-operation checkpoints after local parser/source errors, and reject duplicate-method or post-failure approvals before external dispatch without weakening the exact formal operation set.
 
 ## 7. Architecture and operator documentation
 

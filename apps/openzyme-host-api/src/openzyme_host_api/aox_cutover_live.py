@@ -27,6 +27,7 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
+from openzyme_domain import ControlledOperationStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
@@ -1918,6 +1919,11 @@ class LiveAoxAttemptRunner:
                     approval_id = str(approval.get("approval_id") or "")
                     if not approval_id or approval_id in handled:
                         continue
+                    _assert_cutover_operation_budget_before_approval(
+                        provider,
+                        session_id=session_id,
+                        approval_id=approval_id,
+                    )
                     if browser_gate_enabled and browser_approval_receipt is None:
                         browser_approval_receipt, latest_workspace = (
                             self._wait_for_browser_approval(
@@ -3120,6 +3126,11 @@ class LiveAoxAttemptRunner:
             "relative_path ends with /provider_parsed/proteins.fasta for NCBI or "
             "/provider_parsed/sequences.fasta for UniProt, and use that file's artifact_id. "
             "Do not select from adapter_result_envelope ID lists or any positional list order. "
+            "Use artifacts.provider_file_ref, artifacts.registered_artifact_ref, and "
+            "artifacts.fetched_output_ref rather than recursively searching rich response "
+            "envelopes. Persist each completed operation response under /workspace/work "
+            "before downstream parsing and reuse it after a local source error; never create "
+            "a replacement operation because this probe admits exactly six operations. "
             "The fixed runner templates require exactly these "
             "declared outputs: MAFFT bio_tools/mafft/alignment.fasta; hmmbuild "
             "bio_tools/hmmbuild/model.hmm; CD-HIT bio_tools/cdhit/clustered.fasta and "
@@ -3174,6 +3185,15 @@ class LiveAoxAttemptRunner:
             + "entry ending in /provider_parsed/proteins.fasta for NCBI, "
             + "/provider_parsed/parsed_hits.csv for EBI HMMER, and both "
             + "/provider_parsed/sequences.fasta and /provider_parsed/metadata.json for UniProt. "
+            + "Use the installed strict helpers artifacts.provider_file_ref, "
+            + "artifacts.registered_artifact_ref, and artifacts.fetched_output_ref for those "
+            + "closed response projections; never recursively search a rich operation, "
+            + "registration, or fetch envelope because nested provenance may repeat the same "
+            + "artifact. Persist each completed controlled-operation response under "
+            + "/workspace/work before any downstream local parsing. If local source later "
+            + "fails, repair it and reuse that completed response/artifact; never create a "
+            + "second controlled operation for the same reached SDK method. If no trustworthy "
+            + "attempt-local checkpoint remains, fail the task and let a fresh attempt retry. "
             + "Runner templates accept only the "
             + "fixed declared paths bio_tools/mafft/alignment.fasta, "
             + "bio_tools/hmmbuild/model.hmm, bio_tools/cdhit/clustered.fasta plus "
@@ -4389,7 +4409,7 @@ def _single_completed_operation(
             "formal product path requires exactly one completed canonical operation",
             details={
                 "sdk_method": f"{sdk_module}.{function_name}",
-                "completed_count": len(matches),
+                **_operation_surface_details(matches),
             },
         )
     if matches[0].status.value != "completed":
@@ -4402,6 +4422,95 @@ def _single_completed_operation(
             },
         )
     return matches[0]
+
+
+def _assert_cutover_operation_budget_before_approval(
+    provider: SQLiteRepositoryProvider,
+    *,
+    session_id: str,
+    approval_id: str,
+) -> None:
+    """Reject an already-ineligible operation history before external execution.
+
+    The cutover evidence contract admits one controlled operation for every
+    reached SDK method.  A model may repair local source after a sandbox error,
+    but it must reuse an already completed operation response instead of
+    creating a replacement operation.  Checking at approval time prevents the
+    replacement from consuming provider or runner resources.
+    """
+
+    with provider.read() as scope:
+        operations = tuple(
+            scope.repositories.controlled_operations.list_by_session(session_id)
+        )
+    approval_matches = [
+        operation for operation in operations if operation.approval_id == approval_id
+    ]
+    if len(approval_matches) != 1:
+        raise LiveProductPathError(
+            "cutover_approval_operation_binding_invalid",
+            "cutover approval must bind exactly one controlled operation",
+            details={
+                "session_id": session_id,
+                "approval_id": approval_id,
+                "operation_count": len(approval_matches),
+            },
+        )
+    current = approval_matches[0]
+    same_method = [
+        operation
+        for operation in operations
+        if operation.sdk_module == current.sdk_module
+        and operation.function_name == current.function_name
+    ]
+    if len(same_method) != 1:
+        raise LiveProductPathError(
+            "cutover_operation_budget_exceeded",
+            "cutover operation history already contains this reached SDK method",
+            details={
+                "session_id": session_id,
+                "approval_id": approval_id,
+                "sdk_method": f"{current.sdk_module}.{current.function_name}",
+                "operation_count": len(same_method),
+                "operations": [
+                    {
+                        "operation_id": operation.operation_id,
+                        "status": operation.status.value,
+                    }
+                    for operation in same_method
+                ],
+            },
+        )
+    failed = [
+        operation
+        for operation in operations
+        if operation.operation_id != current.operation_id
+        and operation.status
+        in {
+            ControlledOperationStatus.FAILED,
+            ControlledOperationStatus.RECOVERY_FAILED,
+        }
+    ]
+    if failed:
+        raise LiveProductPathError(
+            "cutover_operation_history_failed",
+            "cutover operation history already contains a terminal failed operation",
+            details={
+                "session_id": session_id,
+                "approval_id": approval_id,
+                "operations": [
+                    {
+                        "operation_id": operation.operation_id,
+                        "sdk_method": (
+                            f"{operation.sdk_module}.{operation.function_name}"
+                        ),
+                        "status": operation.status.value,
+                        "error_code": operation.error_code,
+                    }
+                    for operation in failed
+                ],
+            },
+        )
 
 
 def _optional_completed_operation(
@@ -4422,7 +4531,7 @@ def _optional_completed_operation(
             "formal product path has more than one canonical operation for an optional role",
             details={
                 "sdk_method": f"{sdk_module}.{function_name}",
-                "operation_count": len(matches),
+                **_operation_surface_details(matches),
             },
         )
     if matches and matches[0].status.value != "completed":
@@ -4435,6 +4544,32 @@ def _optional_completed_operation(
             },
         )
     return None if not matches else matches[0]
+
+
+def _operation_surface_details(
+    operations: list[ControlledOperation],
+) -> dict[str, object]:
+    status_histogram: dict[str, int] = {}
+    for operation in operations:
+        status = operation.status.value
+        status_histogram[status] = status_histogram.get(status, 0) + 1
+    return {
+        "operation_count": len(operations),
+        "completed_count": status_histogram.get("completed", 0),
+        "failed_count": (
+            status_histogram.get("failed", 0)
+            + status_histogram.get("recovery_failed", 0)
+        ),
+        "nonterminal_count": sum(
+            count
+            for status, count in status_histogram.items()
+            if status not in {"completed", "failed", "recovery_failed"}
+        ),
+        "status_histogram": {
+            status: status_histogram[status] for status in sorted(status_histogram)
+        },
+        "operation_ids": sorted(operation.operation_id for operation in operations),
+    }
 
 
 def _copy_with_name(

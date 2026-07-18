@@ -89,6 +89,55 @@ bio.uniprot_fetch(
 )
 ```
 
+Provider, registration, and fetch responses are deliberately rich provenance
+envelopes. The same artifact can therefore appear in a canonical direct list
+and again in a nested explanatory projection. Executor source MUST use the
+installed strict selectors below instead of recursively walking an envelope or
+guessing its shape:
+
+```python
+ncbi_file = artifacts.provider_file_ref(
+    ncbi_operation,
+    relative_path_suffix="/provider_parsed/proteins.fasta",
+)
+registered_reference = artifacts.registered_artifact_ref(
+    artifacts.register("/workspace/output/aox_hmm/AOX_ref21.fasta", format="fasta")
+)
+reference_stage = workspace.stage_artifact(
+    registered_reference["artifact_id"],
+    workspace_path="aox_hmm/AOX_ref21.fasta",
+)
+mafft_operation = bio_tools.mafft(
+    input_fasta=reference_stage,
+    placement=workspace,
+    expected_outputs=[{"path": "bio_tools/mafft/alignment.fasta"}],
+)
+mafft_output = artifacts.fetched_output_ref(
+    workspace.fetch_outputs(mafft_operation),
+    declared_output_path="bio_tools/mafft/alignment.fasta",
+)
+```
+
+`provider_file_ref` reads only
+`result_summary.transcript_manifest.files`, `registered_artifact_ref` reads only
+the closed registration projection, and `fetched_output_ref` reads only the
+top-level `fetch_refs` list. Each requires one exact match plus canonical
+artifact and SHA-256 identities. Missing, duplicated, malformed, or nested-only
+data fails locally with a non-retryable structured SDK error. None of these
+helpers performs provider I/O, runner execution, artifact registration, hidden
+fallback, or recursive selection.
+
+After every controlled operation completes, persist its full response in the
+same sandbox's mutable `/workspace/work` before doing downstream local parsing.
+On a later `sandbox.exec` after a source/parser error, load that attempt-local
+checkpoint first and verify/reuse its catalog artifact. Do not overwrite the
+checkpoint before reading it. A completed operation MUST NOT be replayed merely
+because response selection, serialization, or later Python source failed. If a
+trustworthy attempt-local response is unavailable, explicitly fail the task and
+start a fresh blank-world attempt; do not create a replacement operation in the
+same formal session. `/workspace/work` checkpoints are agent working state, not
+scientific evidence, and never authorize cross-session or cross-attempt reuse.
+
 The formal scientific closure always reaches `bio.ncbi_fetch_proteins`,
 `bio_tools.mafft`, `bio_tools.hmmbuild`, and
 `bio.hmmer_search(database="refprot")`. It reaches `bio.uniprot_fetch` only
@@ -106,6 +155,15 @@ formal operation set for that branch and rejects extra or hidden failed
 operations. The agent may batch, inspect, retry within the bounded policy, or
 stop at a proven empty prerequisite without asking the harness to invent an
 alternate route.
+
+"Retry within the bounded policy" means provider/runtime attempts that remain
+inside one durable controlled-operation identity. It does not authorize a new
+controlled operation for a scientific method that the formal session already
+reached. The live cutover driver checks this exact-operation budget before
+approval, rejects a duplicate before provider/runner dispatch, and stops
+approving later scientific work after any controlled operation reaches
+`failed` or `recovery_failed`. Local source repair remains allowed when it
+reuses the already completed response and artifact identities.
 
 ### Pinned SDK calculation and runner projection
 

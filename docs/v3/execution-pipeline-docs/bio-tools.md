@@ -3,21 +3,10 @@
 Use `openzyme_pipeline.bio_tools` for AOX/HMM sequence-mining tools. Pipeline code must not call `subprocess`, shell, MAFFT, CD-HIT, HMMER binaries, SSH, Slurm, or runner config directly.
 
 ```python
-from openzyme_pipeline import bio, bio_tools, hpc
+from openzyme_pipeline import artifacts, bio, bio_tools, hpc
 
 ws = hpc.workspace("aox_hmm")
 sequences = ws.stage_artifact("art_sequences", workspace_path="input/sequences.fasta")
-
-def fetched_artifact_ref(outputs, declared_output_path):
-    matches = [
-        ref
-        for ref in outputs.get("fetch_refs", [])
-        if ref.get("declared_output_path") == declared_output_path
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(f"expected one fetched artifact for {declared_output_path}")
-    return matches[0]
-
 
 clustered_run = bio_tools.cdhit(
     input_fasta=sequences,
@@ -38,10 +27,11 @@ clustered_run = bio_tools.cdhit(
     mode="protein",
 )
 clustered_outputs = ws.fetch_outputs(clustered_run)
-clustered_fasta_ref = fetched_artifact_ref(
-    clustered_outputs, "bio_tools/cdhit/clustered.fasta"
+clustered_fasta_ref = artifacts.fetched_output_ref(
+    clustered_outputs,
+    declared_output_path="bio_tools/cdhit/clustered.fasta",
 )
-clustered_fasta = clustered_fasta_ref["registered_artifact_id"]
+clustered_fasta = clustered_fasta_ref["artifact_id"]
 
 alignment_run = bio_tools.mafft(
     input_fasta=ws.stage_artifact(
@@ -57,10 +47,11 @@ alignment_run = bio_tools.mafft(
     ],
 )
 alignment_outputs = ws.fetch_outputs(alignment_run)
-alignment_fasta_ref = fetched_artifact_ref(
-    alignment_outputs, "bio_tools/mafft/alignment.fasta"
+alignment_fasta_ref = artifacts.fetched_output_ref(
+    alignment_outputs,
+    declared_output_path="bio_tools/mafft/alignment.fasta",
 )
-alignment_fasta = alignment_fasta_ref["registered_artifact_id"]
+alignment_fasta = alignment_fasta_ref["artifact_id"]
 
 hmm_run = bio_tools.hmmbuild(
     alignment=ws.stage_artifact(
@@ -76,10 +67,11 @@ hmm_run = bio_tools.hmmbuild(
     ],
 )
 hmm_outputs = ws.fetch_outputs(hmm_run)
-hmm_artifact_ref = fetched_artifact_ref(
-    hmm_outputs, "bio_tools/hmmbuild/model.hmm"
+hmm_artifact_ref = artifacts.fetched_output_ref(
+    hmm_outputs,
+    declared_output_path="bio_tools/hmmbuild/model.hmm",
 )
-hmm_artifact = hmm_artifact_ref["registered_artifact_id"]
+hmm_artifact = hmm_artifact_ref["artifact_id"]
 
 hmmalign_run = bio_tools.hmmalign(
     hmm=ws.stage_artifact(hmm_artifact, workspace_path="input/model.hmm"),
@@ -94,12 +86,13 @@ hmmalign_run = bio_tools.hmmalign(
     ],
 )
 hmmalign_outputs = ws.fetch_outputs(hmmalign_run)
-aligned_fasta_ref = fetched_artifact_ref(
-    hmmalign_outputs, "bio_tools/hmmalign/aligned.fasta"
+aligned_fasta_ref = artifacts.fetched_output_ref(
+    hmmalign_outputs,
+    declared_output_path="bio_tools/hmmalign/aligned.fasta",
 )
 hits = bio.hmmer_search(
     hmm_artifact_id=hmm_artifact,
-    hmm_artifact_digest=hmm_artifact_ref["output_digest"],
+    hmm_artifact_digest=hmm_artifact_ref["content_digest"],
     database="refprot",
     output_dir="/workspace/output/bio/hmmer",
 )
@@ -134,5 +127,12 @@ member、代表不一致、长度漂移或 malformed `.clstr` 均 fail closed。
 The Host supervisor owns tool discovery, preflight, static route policy, resource estimates, expected outputs, output format validation, log truncation, and artifact registration. Pipeline RPC for enabled `bio_tools.*` operations returns a run handle; output artifact refs are produced by `ws.fetch_outputs(run)`. Full outputs and oversized logs must be stored as artifacts.
 
 The four enabled runner templates own the exact output paths shown above. Declare the complete path set, call `ws.fetch_outputs(run)` even for a terminal tool operation, and select an output through the unique `fetch_refs[].declared_output_path` match. Do not depend on `registered_artifact_ids` or `artifacts` list order. A fetched ref's `registered_artifact_id` and `output_digest` form the exact input pair required when a provider operation consumes that artifact. Provider operations return a full controlled-operation response; select parsed provider files from `result_summary.transcript_manifest.files` by their unique `relative_path` suffix, such as `/provider_parsed/proteins.fasta` or `/provider_parsed/sequences.fasta`.
+
+Use `artifacts.fetched_output_ref(...)` to enforce that direct top-level
+`fetch_refs` selection and normalize the result to `artifact_id` plus
+`content_digest`. Do not recursively search `artifacts`, `resolved_artifacts`,
+or nested provenance rows, which may describe the same fetched output again.
+Use `artifacts.provider_file_ref(...)` for the provider counterpart. Both
+helpers fail closed on direct ambiguity and never replay a completed operation.
 
 Structured failures include `unsupported_in_s14`, `bio_tool_output_contract_mismatch`, `tool_missing`, `invalid_fasta`, `invalid_hmm`, `resource_limit_exceeded`, `declared_output_missing`, `invalid_csv`, `hpc_runner_timeout`, `hpc_runner_unavailable`, and true tool `nonzero_exit` failures. Runner-issued SSH connection failures remain transport failures with `retryable=true`; this does not authorize automatic resubmission or substitution of another backend. Do not substitute another tool or treat malformed declared output as success.

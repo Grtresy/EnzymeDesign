@@ -49,6 +49,40 @@ def _digest(label: str) -> str:
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
 
 
+class _OperationReadProvider:
+    """Read-only repository double for the cutover approval budget guard."""
+
+    class _Scope:
+        def __init__(self, operations: tuple[ControlledOperation, ...]) -> None:
+            self.repositories = SimpleNamespace(
+                controlled_operations=SimpleNamespace(
+                    list_by_session=lambda _session_id: operations
+                )
+            )
+
+        def __enter__(self) -> _OperationReadProvider._Scope:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+    def __init__(self, *operations: ControlledOperation) -> None:
+        self._operations = tuple(operations)
+
+    def read(self) -> _OperationReadProvider._Scope:
+        return self._Scope(self._operations)
+
+
+def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep coordination-only tests independent from repository fixtures."""
+
+    monkeypatch.setattr(
+        live,
+        "_assert_cutover_operation_budget_before_approval",
+        lambda *args, **kwargs: None,
+    )
+
+
 def _chrome_effective_config() -> dict[str, object]:
     return {"driver": {"ui_dist_digest": _digest("built-ui-dist")}}
 
@@ -629,6 +663,103 @@ def test_live_collector_preserves_exact_control_plane_operation_digest() -> None
     assert record["backend_run_id"] == "job_001"
 
 
+def test_cutover_operation_budget_accepts_first_method_approval() -> None:
+    current = replace(
+        _operation(),
+        operation_id="op_current",
+        approval_id="approval_current",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-current"),
+    )
+    provider = _OperationReadProvider(current)
+
+    live._assert_cutover_operation_budget_before_approval(
+        provider,  # type: ignore[arg-type]
+        session_id=current.session_id,
+        approval_id=current.approval_id or "",
+    )
+
+
+def test_cutover_operation_budget_rejects_duplicate_method_before_approval() -> None:
+    prior = _operation()
+    current = replace(
+        prior,
+        operation_id="op_duplicate",
+        approval_id="approval_duplicate",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-duplicate"),
+        created_at="2026-07-17T00:00:02+00:00",
+        updated_at="2026-07-17T00:00:02+00:00",
+    )
+    provider = _OperationReadProvider(prior, current)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._assert_cutover_operation_budget_before_approval(
+            provider,  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+        )
+
+    assert error.value.code == "cutover_operation_budget_exceeded"
+    assert error.value.details == {
+        "session_id": "sess_001",
+        "approval_id": "approval_duplicate",
+        "sdk_method": "bio_tools.mafft",
+        "operation_count": 2,
+        "operations": [
+            {"operation_id": "op_001", "status": "completed"},
+            {"operation_id": "op_duplicate", "status": "waiting_approval"},
+        ],
+    }
+
+
+def test_cutover_operation_budget_rejects_prior_failed_operation() -> None:
+    failed = replace(
+        _operation(),
+        operation_id="op_failed",
+        approval_id="approval_failed",
+        sdk_module="bio_tools",
+        function_name="hmmbuild",
+        status=ControlledOperationStatus.FAILED,
+        error_code="hpc_runner_unavailable",
+        operation_digest=_digest("op-failed"),
+    )
+    current = replace(
+        _operation(),
+        operation_id="op_current",
+        approval_id="approval_current",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-current"),
+        created_at="2026-07-17T00:00:02+00:00",
+        updated_at="2026-07-17T00:00:02+00:00",
+    )
+    provider = _OperationReadProvider(failed, current)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._assert_cutover_operation_budget_before_approval(
+            provider,  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+        )
+
+    assert error.value.code == "cutover_operation_history_failed"
+    assert error.value.details == {
+        "session_id": "sess_001",
+        "approval_id": "approval_current",
+        "operations": [
+            {
+                "operation_id": "op_failed",
+                "sdk_method": "bio_tools.hmmbuild",
+                "status": "failed",
+                "error_code": "hpc_runner_unavailable",
+            }
+        ],
+    }
+
+
 def test_public_api_receipt_normalizes_events_query_to_canonical_route() -> None:
     client = live._PublicHostClient(object())
 
@@ -1095,6 +1226,11 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "/provider_parsed/proteins.fasta" in prompt
     assert "/provider_parsed/sequences.fasta" in prompt
     assert "adapter_result_envelope ID lists" in prompt
+    assert "artifacts.provider_file_ref" in prompt
+    assert "artifacts.registered_artifact_ref" in prompt
+    assert "artifacts.fetched_output_ref" in prompt
+    assert "Persist each completed operation response under /workspace/work" in prompt
+    assert "never create a replacement operation" in prompt
     assert "bio_tools/mafft/alignment.fasta" in prompt
     assert "bio_tools/hmmbuild/model.hmm" in prompt
     assert "bio_tools/cdhit/clustered.fasta" in prompt
@@ -1160,6 +1296,11 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "pass the exact dict returned by ws.stage_artifact(...) unchanged" in prompt
     assert "never reconstruct it, rename its keys" in prompt
     assert "unique fetch_refs entry" in prompt
+    assert "artifacts.provider_file_ref" in prompt
+    assert "artifacts.registered_artifact_ref" in prompt
+    assert "artifacts.fetched_output_ref" in prompt
+    assert "Persist each completed controlled-operation response" in prompt
+    assert "never create a second controlled operation" in prompt
     assert "exact fetched hmmbuild artifact id and content digest" in prompt
     assert "validation_profile='fasta_zero_records@1'" in prompt
     assert (
@@ -1814,7 +1955,9 @@ def test_live_runner_preserves_transport_blocker_when_receipt_chain_failed(
 
 def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
@@ -1877,7 +2020,9 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
 
 def test_runtime_drain_resolves_approval_exposed_by_waiting_response(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
@@ -1918,6 +2063,7 @@ def test_later_drain_auto_approves_after_chrome_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
@@ -1968,6 +2114,7 @@ def test_same_inflight_drain_uses_chrome_once_then_auto_approves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     drain_number = 4
     runner = live.LiveAoxAttemptRunner(
@@ -2379,6 +2526,7 @@ def test_fault_injection_invariant_failure_rejects_pending_without_approval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
@@ -2450,6 +2598,7 @@ def test_fault_path_rejects_approval_after_target_injection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _disable_cutover_operation_budget(monkeypatch)
     ledger_path = tmp_path / "ledger.sqlite3"
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),

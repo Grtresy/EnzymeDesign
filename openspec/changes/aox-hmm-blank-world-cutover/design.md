@@ -73,6 +73,8 @@ manifest 声明完整 capability set，但正式 operation closure 由封存 art
 
 formal prompt 只呈现实际安装的 `openzyme_pipeline.aox_reference`、`aox_hmmer`、`aox_sequence_join`、`aox_motif`、`aox_similarity` callable 及 canonical serializer，不允许 agent 近似重写。provider artifact 按 transcript manifest 的唯一声明后缀选择；HPC artifact 按 runner-owned canonical path 对应的唯一 `fetch_refs[].declared_output_path` 选择，HMMER search 精确绑定 fetched HMM artifact id/digest。合法零记录 FASTA 必须是 exact zero bytes，并携带 `fasta_zero_records@1`、稳定 empty reason 和版本化 derivation contract；通用空文件或 sentinel 不能通过 artifact boundary。
 
+r12b 证明 rich operation/fetch envelope 会在 nested provenance 中重复描述同一 artifact，若让 agent 自行递归扫描，很容易在外部 operation 已完成后因本地 parser 误判而整段重跑。当前 Goal 的小修是在 `openzyme_pipeline.artifacts` 提供只读 canonical direct field 的 `provider_file_ref`、`registered_artifact_ref`、`fetched_output_ref`，missing/duplicate/malformed/nested-only 均以 non-retryable SDK error fail closed。executor 在下游本地解析前把已完成 response 写入 attempt-local `/workspace/work`；source 修复只复用已有 response/artifact。cutover driver 在 approval 前检查 method operation budget，同一 method 的第二个 operation 或既有 terminal failed operation 直接拒绝，避免已确定无效的 attempt 继续触达 provider/runner。该修复不改变 exact-operation-set，也不选择最新或成功子集。
+
 ### 6. Workflow refs are explicit per delegation
 
 `task.delegate` 增加可选 `workflow_refs` 参数，值只能是当前 turn 已授权的 active workflow refs 的无重复子集；payload 持久化所选 manifest snapshot。省略或传空数组均表示不绑定 workflow，不再从 parent focus 隐式继承全部 refs。若 ref 与目标 role/tool/capability 不兼容，delegation 在 claim 前返回 LLM 可读错误。master prompt/tool result 会列出可选 refs，使 agent 能把 executor pack 只交给 executor，同时让 researcher/reporter 使用各自工具面。
@@ -137,6 +139,8 @@ workspace/events/API/UI 只呈现 provider、status、citation、operation/artif
 实施中发现的 harness 问题先判断是否能以单一局部合同、现有状态模型和 focused regression 解决。满足者可直接修复并同步稳定文档；涉及新增顶层真状态、跨包 ownership 重划、scheduler/approval/protocol 语义迁移或 workflow schema 总体重构者视为大架构调整。每个大调整单独成文，至少包含现状证据、agent 受限方式、目标不变量、候选方案、迁移、兼容/回滚、风险和验收；本 Goal 只引用文档，不实现代码。
 
 本轮发现“科学 callable、canonical serializer、agent-facing facts 与 receipt 分散”会迫使 agent 自行猜测计算入口，但统一 registry/projection 涉及跨 SDK、workflow、tool catalog 和 evidence schema ownership，属于大改；详细方案单独记录在 `docs/v3/architecture-proposals/versioned-scientific-calculation-capability-projection.md`，本 Goal 不实现。
+
+本轮还发现跨 `sandbox.exec` 显式采用一个既有 completed operation、同时保留 failed/superseded/abandoned 全历史，需要 durable chain-selection 真状态、operation disposition、approval/public projection 与 bundle/verifier schema 升级，不能用“最新成功”或 content-digest 去重局部修补。详细方案单独记录在 `docs/v3/architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md`，本 Goal 不实现。
 
 ## Risks / Trade-offs
 

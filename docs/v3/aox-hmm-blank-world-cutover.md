@@ -172,6 +172,46 @@ The persistent ledger closed at 28,150,263 / 500,000,000 charged tokens with
 zero breaches. r11 is diagnostic evidence only: neither its bundle, roots nor
 browser interaction can be reused by a fresh positive attempt.
 
+The subsequent r12b campaign pinned commit
+`3819ba7eab0b7ba9febd43ff13206cf3d0f9e1a6` with the same config digest, but
+was also terminated as strict **NO-GO** before it could spend further external
+resources. Its formal session already contained two NCBI controlled operations
+(`op_80b00685b2a0` completed and `op_fb3cc37d8df6` failed) plus two completed
+MAFFT operations (`op_830c597ac386` and `op_e5ca4eba6220`). The second NCBI
+request did reach the real adapter before Host artifact-conflict persistence
+failed, so it cannot be described as a pre-I/O validation. Both MAFFT jobs
+completed with identical alignment bytes, but the final script bound HMMbuild
+only to the second artifact identity. The exact-operation-set contract
+therefore made the attempt permanently ineligible before EBI HMMER completed;
+selecting the newest success or collapsing identical content would hide the
+actual operation history and is forbidden. The operator interrupted the
+campaign instead of knowingly consuming more provider/MICU budget. The live
+ledger then stood at `32,200,575 / 500,000,000` charged tokens with zero hard
+limit breaches. r12b has no eligible sealed bundle and none of its sessions,
+operations, roots, artifacts or browser interaction can be reused.
+
+The direct trigger was a low-friction harness defect rather than scientific
+uncertainty. A recursive executor helper saw one provider file twice through a
+canonical manifest row and a nested provenance projection; the same mistake
+later counted one fetched MAFFT output twice through top-level `fetch_refs` and
+a nested catalog row. Both local parser failures occurred after the controlled
+operation had completed, and the repaired script replayed the operation.
+`openzyme_pipeline.artifacts` now provides strict direct-field
+`provider_file_ref`, `registered_artifact_ref`, and `fetched_output_ref`
+helpers. The workflow pack requires attempt-local `/workspace/work`
+checkpoints before downstream parsing and forbids a replacement operation when
+local source fails. The campaign driver also checks the exact method budget
+before every approval and rejects a duplicate or any continuation after a
+terminal failed controlled operation before provider/runner dispatch. These
+changes preserve the existing exact-operation-set acceptance rule and do not
+silently adopt a preferred result.
+
+Supporting explicit cross-run adoption while preserving all failed,
+superseded, and abandoned operation facts would change the canonical attempt
+model and verifier schema. That larger design is proposal-only in
+[canonical scientific chain adoption and attempt closure](architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
+and is not implemented in this goal.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model

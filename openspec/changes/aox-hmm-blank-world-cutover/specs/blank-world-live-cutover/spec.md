@@ -81,6 +81,8 @@ The formal executor SHALL use the installed versioned callables `openzyme_pipeli
 
 Provider outputs SHALL be selected from the unique transcript-manifest entry ending in `/provider_parsed/proteins.fasta`, `/provider_parsed/parsed_hits.csv`, `/provider_parsed/sequences.fasta`, or `/provider_parsed/metadata.json` as appropriate. Runner outputs SHALL use only the canonical MAFFT/hmmbuild/CD-HIT/HMMalign declared paths and SHALL be selected from the unique `fetch_refs` item whose `declared_output_path` exactly matches. HMMER search SHALL bind the exact fetched hmmbuild artifact id and content digest.
 
+The sandbox SDK SHALL expose strict direct-field selectors for provider files, artifact registration results, and fetched outputs. A selector SHALL read only its documented canonical field, require one canonical artifact id/digest, and reject missing, duplicated, malformed, or nested-only data without recursive fallback or external I/O. A completed controlled-operation response SHALL be reusable from attempt-local sandbox working state after a local source/parser error; such a local error SHALL NOT authorize another controlled operation for the same reached SDK method.
+
 #### Scenario: Execute through the installed calculation map
 - **WHEN** the formal executor derives reference sets, HMMER filters, identity joins, scoring input, motif scores, or the similarity graph
 - **THEN** each output is reproducible from the named callable/serializer, exact sealed inputs, and versioned contract/implementation digest
@@ -88,6 +90,14 @@ Provider outputs SHALL be selected from the unique transcript-manifest entry end
 #### Scenario: Reject approximation or positional artifact guessing
 - **WHEN** agent source substitutes an approximate calculation, copies a score, guesses an artifact by list position, declares a custom runner path, or binds HMMER to a workspace guess
 - **THEN** execution or offline verification fails closed and the attempt is not cutover eligible
+
+#### Scenario: Select a rich response without counting nested provenance twice
+- **WHEN** one provider or fetched artifact appears once in its canonical direct list and again in a nested provenance projection
+- **THEN** the strict SDK selector returns the one canonical id/digest pair without walking the nested copy or replaying the completed operation
+
+#### Scenario: Stop a duplicate operation before external dispatch
+- **WHEN** a local parser/source failure is followed by a second approval request for an SDK method already reached in that cutover session, or any prior controlled operation is terminal failed
+- **THEN** the campaign rejects the new approval before provider/runner dispatch, preserves the exact operation history, and requires a fresh attempt rather than selecting a successful subset
 
 ### Requirement: Runner-issued toolchain execution identity
 Every cutover-eligible MAFFT, hmmbuild, hmmalign, and CD-HIT operation SHALL carry a closed `mcp_hpc_toolchain_runtime_identity@1` issued by the runner execution boundary. The runner-owned manifest SHALL bind the tool, adapter, command template, contract digest, and private SIF locator; callers MUST NOT submit or override the locator, runtime request/identity, or equivalent deployment metadata. The observed image digest MUST equal the exact prerequisite digest for the operation's versioned toolchain id.
@@ -135,6 +145,8 @@ The campaign SHALL use `aox_known_positive_probe@2` / `probe_id="independent_glo
 
 ### Requirement: Artifact-derived healthy-empty closure
 The verifier SHALL derive the reached formal branch from sealed raw/parsed HMMER, score-filter, UniProt join, motif-score, and candidate artifacts. It SHALL require the exact operation set for that branch, reject extra or hidden failed formal operations, and use isolated probe coverage for required capabilities that the formal branch correctly omits.
+
+The live campaign SHALL enforce the same exact operation surface before each approval. A second operation for one reached SDK method, or a prior `failed` / `recovery_failed` controlled operation, permanently disqualifies the attempt; the driver SHALL reject rather than approve additional external work. Provider-internal bounded retries that remain inside one durable controlled operation are not additional operations.
 
 #### Scenario: HMMER upstream is empty
 - **WHEN** the sealed HMMER score-filter calculation yields no accession

@@ -98,14 +98,37 @@ run = structure_tools.fpocket(
     ],
 )
 result = ws.fetch_outputs(run)
-
-for item in result.get("artifacts", []):
-    print(item["artifact_id"])
+output = artifacts.fetched_output_ref(
+    result,
+    declared_output_path="target_out",
+)
+print(output["artifact_id"], output["content_digest"])
 ```
 
 Fetched outputs must be declared, actually returned as readable content by the runner, fetched by the Host supervisor, and registered as artifact refs rather than exposed as private runner paths. A missing declared output, failed run, or unreadable fetch source is a structured failure and never creates a synthetic scientific artifact. Explicit non-cutover fixture/simulation outcomes are the sole exception; their placeholders carry `synthetic_source=true`, `cutover_eligible=false`, and non-product scientific status.
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
+
+## Closed response selectors
+
+Rich Host responses may repeat one artifact in nested provenance projections.
+Do not recursively search them. The sandbox SDK provides three pure,
+non-I/O selectors:
+
+- `artifacts.registered_artifact_ref(response)` reads only the closed
+  `artifacts.register` response and returns canonical `artifact_id` plus
+  `content_digest`;
+- `artifacts.provider_file_ref(operation, relative_path_suffix=...)` reads only
+  `result_summary.transcript_manifest.files` and requires one exact suffix
+  match;
+- `artifacts.fetched_output_ref(fetch, declared_output_path=...)` reads only the
+  top-level `fetch_refs` list and requires one exact declared-path match.
+
+All three validate non-empty identities and lowercase canonical SHA-256
+digests. Missing, duplicate, malformed, or nested-only data raises a
+non-retryable `PipelineSdkError` at `artifacts.response_selection`. The helpers
+never choose list order, search a fallback projection, register or materialize
+content, replay a provider/tool operation, or conceal an ambiguous response.
 
 Built-in validators normally enforce non-empty output plus format checks for
 FASTA, HMM, CSV, JSON, and text-like outputs. `metadata.required_columns` can

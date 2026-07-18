@@ -136,6 +136,20 @@ blank-world prerequisite 只接受 exact nine：`git_commit`、`config_digest`�
 
 fresh SQLite 不继承任何 sandbox image row。campaign 在第一个 session / model / provider 调用前读取 public runtime health，只接受与 campaign identity 完全一致的 canonical image digest 和 Pipeline SDK digest，再把 digest-pinned、cutover-grade image 身份登记进本 attempt；缺失、格式非法、预存 registry row 或任一 digest 漂移均直接 fail closed。该 preflight identity 进入 sealed launch receipt，offline verifier 再对 image/SDK identity 做精确比对。
 
+r12b 的真实 formal path 证明 rich provider/fetch response 会在 canonical direct
+field 与 nested provenance 中重复描述同一 artifact。agent 的递归 selector 因此在
+首次 NCBI 和首次 MAFFT 都已完成后误报两个匹配，整段脚本重跑又产生第二个 NCBI
+和第二个 MAFFT operation。该 attempt 违反 exact operation set，已在 HMMER 未完成时
+主动终止为 NO-GO；不能选择最后一次成功或按相同 content digest 合并历史。SDK 现以
+`artifacts.provider_file_ref`、`registered_artifact_ref`、
+`fetched_output_ref` 固定 canonical direct-field 选择，executor 必须在本地解析前把
+completed response 写到 attempt-local `/workspace/work` 并在 source 修复后复用。live
+driver 则在 approval 前拒绝同一 method 的第二个 operation，或已有
+`failed|recovery_failed` 后的任何新增科学 approval，从而在 provider/runner dispatch
+前停止已确定不合格的 attempt。跨 run 显式 adopted/superseded chain 是
+[canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
+提案，本 Goal 不实现。
+
 每个 MAFFT/hmmbuild/hmmalign/CD-HIT cutover receipt 还必须来自 runner-issued `mcp_hpc_toolchain_runtime_identity@1`：runner-owned manifest 决定私有 SIF locator；当前 SSH 窄保证在同一 login shell 中直接用该 resolved pathname 执行，并在 payload 前后哈希同一路径，两个 digest 必须相同。Host 只逐层传递闭集 public projection，collector/verifier 将观察到的 digest 与 sealed prerequisite 精确比较；caller override、missing/mismatch 均 fail closed。该机制证明“同一路径前后未变并被直接执行”，尚不证明 immutable inode/content-addressed snapshot；后者单独记录在 [immutable HPC SIF execution snapshot](../architecture-proposals/immutable-hpc-sif-execution-snapshot.md)，不在本 Goal 实现。Slurm 本身仍可用于一般 runner 任务，但当前没有 job-internal same-execution SIF attestation，因此 Slurm execution 不能构成此 cutover identity。跨层 toolchain 定义收敛属于大改，只记录在 [single-source HPC toolchain contract registry](../architecture-proposals/single-source-hpc-toolchain-contract-registry.md)，不在本 Goal 实现。
 
 GO 只由顺序固定的三次 campaign 聚合得出：
