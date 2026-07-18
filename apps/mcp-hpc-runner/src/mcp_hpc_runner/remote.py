@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import shlex
 import subprocess
+import time
 
 
 @dataclass(slots=True)
@@ -12,6 +13,8 @@ class CommandResult:
     stdout: str
     stderr: str
     stage: str | None = None
+    timed_out: bool = False
+    elapsed_seconds: float = 0.0
 
 
 class CommandRunner:
@@ -23,6 +26,7 @@ class CommandRunner:
         timeout: float | None = None,
         stage: str | None = None,
     ) -> CommandResult:
+        started_at = time.monotonic()
         try:
             proc = subprocess.run(
                 args,
@@ -32,6 +36,7 @@ class CommandRunner:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
+            elapsed_seconds = time.monotonic() - started_at
             stdout = "" if exc.stdout is None else str(exc.stdout)
             stderr = "" if exc.stderr is None else str(exc.stderr)
             if stderr:
@@ -43,12 +48,31 @@ class CommandRunner:
                 stdout=stdout,
                 stderr=stderr,
                 stage=stage,
+                timed_out=True,
+                elapsed_seconds=elapsed_seconds,
             )
             if check:
                 raise RuntimeError(
                     f"Command timed out ({stage or 'unknown'}): {shlex.join(args)}\n{stderr}"
                 )
             return result
+        except OSError as exc:
+            elapsed_seconds = time.monotonic() - started_at
+            result = CommandResult(
+                args=args,
+                returncode=127,
+                stdout="",
+                stderr=str(exc),
+                stage=stage,
+                elapsed_seconds=elapsed_seconds,
+            )
+            if check:
+                raise RuntimeError(
+                    f"Command could not start ({stage or 'unknown'}): "
+                    f"{shlex.join(args)}\n{exc}"
+                ) from exc
+            return result
+        elapsed_seconds = time.monotonic() - started_at
         if check and proc.returncode != 0:
             raise RuntimeError(
                 f"Command failed ({proc.returncode}): {shlex.join(args)}\n{proc.stderr}"
@@ -59,6 +83,7 @@ class CommandRunner:
             stdout=proc.stdout,
             stderr=proc.stderr,
             stage=stage,
+            elapsed_seconds=elapsed_seconds,
         )
 
 

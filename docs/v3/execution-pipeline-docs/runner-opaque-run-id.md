@@ -31,6 +31,40 @@ in the same call, so it deliberately has no resumable `job_handle.json`.
 Asynchronous Slurm submission persists both same-run `runspec.json` and
 `job_handle.json`, which are the restart recovery authority.
 
+## Pre-execution staging diagnostics
+
+Failures before payload execution use the runner-owned typed exception and
+local manifest schema `runner_failure@1`. The runner writes
+`metadata/runner_failure.json` through `ArtifactStore` as soon as a terminal
+staging command fails. This Host-trusted diagnostic does not make the run, an
+input, or a partial output into a successful artifact authority.
+
+The schema is closed to these fields:
+
+- `schema_id`: exactly `runner_failure@1`;
+- `phase`: `remote_layout`, `input_parent`, `input_transfer`, or
+  `runner_control_transfer` for the Slurm `job.sbatch` control file;
+- `run_id`: the same opaque server-issued runner handle;
+- `input_ordinal`: one-based input position, or `null` for `remote_layout` and
+  `runner_control_transfer`;
+- `content_digest`: `sha256:<hex>` of input content, the Slurm control-file
+  bytes for `runner_control_transfer`, or `null` for `remote_layout`;
+- `returncode`, `timed_out`, and `elapsed_seconds` for the terminal failed
+  command.
+
+The exception text, manifest, and engine projection must not contain an SSH
+target, command argv, stderr text, credential, local path, remote path,
+`remote_run_dir`, or any other locator. The execution engine keeps the
+agent-facing error type `hpc_staging_failed`; its `details.runner_failure`
+contains only the validated closed projection above, so an agent can distinguish
+the honest failure phase without gaining runner-private addressing data.
+
+This diagnostic contract adds no reconnect loop, additional automatic retry,
+connection reuse, or timeout-value relaxation. The existing rsync-to-at-most-one
+scp fallback remains bounded. As a corrective fail-closed change, Slurm remote
+layout creation and runner control-file transfer now apply the already configured
+`staging_timeout_seconds`; no timeout value is increased.
+
 The engine still has a backend-neutral `RunRecord.remote_run_dir` column for
 non-HPC implementations. For the active Host-supervised HPC path it contains
 only `opaque://<run_id>`, never the real cluster path.

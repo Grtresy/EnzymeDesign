@@ -336,7 +336,7 @@ class SSHRunner:
     def _remote_run_dir(self, run_id: str) -> str:
         return str(PurePosixPath(self.config.cluster.remote_base_dir) / run_id)
 
-    def _ensure_remote_layout(self, remote_run_dir: str) -> None:
+    def _ensure_remote_layout(self, run_id: str, remote_run_dir: str) -> None:
         mkdir_cmd = wrap_ssh(
             self.config.cluster.ssh_target,
             [
@@ -348,12 +348,18 @@ class SSHRunner:
                 str(PurePosixPath(remote_run_dir) / "logs"),
             ],
         )
-        self.command_runner.run(
+        result = self.command_runner.run(
             mkdir_cmd,
-            check=True,
+            check=False,
             timeout=self.config.execution.staging_timeout_seconds,
             stage="staging",
         )
+        if result.returncode != 0:
+            self.staging.raise_staging_failure(
+                phase="remote_layout",
+                run_id=run_id,
+                result=result,
+            )
 
     def exec_run(self, spec: RunSpec) -> RunResult:
         ensure_valid_runspec(
@@ -368,7 +374,7 @@ class SSHRunner:
         self.store.write_json(run_id, "runspec.json", spec.to_dict())
 
         if self.config.execution.create_remote_dir_for_ssh:
-            self._ensure_remote_layout(remote_run_dir)
+            self._ensure_remote_layout(run_id, remote_run_dir)
 
         upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+import hashlib
+from pathlib import Path, PurePosixPath
 import shlex
 import uuid
 
@@ -60,7 +61,7 @@ class SlurmRunner:
     def _remote_run_dir(self, run_id: str) -> str:
         return str(PurePosixPath(self.config.cluster.remote_base_dir) / run_id)
 
-    def _ensure_remote_layout(self, remote_run_dir: str) -> None:
+    def _ensure_remote_layout(self, run_id: str, remote_run_dir: str) -> None:
         cmd = wrap_ssh(
             self.config.cluster.ssh_target,
             [
@@ -72,7 +73,61 @@ class SlurmRunner:
                 str(PurePosixPath(remote_run_dir) / "logs"),
             ],
         )
-        self.command_runner.run(cmd, check=True)
+        result = self.command_runner.run(
+            cmd,
+            check=False,
+            timeout=self.config.execution.staging_timeout_seconds,
+            stage="staging",
+        )
+        if result.returncode != 0:
+            self.staging.raise_staging_failure(
+                phase="remote_layout",
+                run_id=run_id,
+                result=result,
+            )
+
+    def _transfer_runner_control_file(
+        self,
+        *,
+        run_id: str,
+        local_script: Path,
+        remote_script: str,
+    ) -> None:
+        content_digest = f"sha256:{hashlib.sha256(local_script.read_bytes()).hexdigest()}"
+        upload_cmd = self.staging.build_upload_command(
+            local_script,
+            remote_script,
+            use_rsync=self.config.execution.use_rsync,
+        )
+        upload = self.command_runner.run(
+            upload_cmd,
+            check=False,
+            timeout=self.config.execution.staging_timeout_seconds,
+            stage="staging",
+        )
+        if upload.returncode == 0:
+            return
+        if self.config.execution.use_rsync:
+            fallback_cmd = self.staging.build_upload_command(
+                local_script,
+                remote_script,
+                use_rsync=False,
+            )
+            fallback = self.command_runner.run(
+                fallback_cmd,
+                check=False,
+                timeout=self.config.execution.staging_timeout_seconds,
+                stage="staging",
+            )
+            if fallback.returncode == 0:
+                return
+            upload = fallback
+        self.staging.raise_staging_failure(
+            phase="runner_control_transfer",
+            run_id=run_id,
+            result=upload,
+            content_digest=content_digest,
+        )
 
     def _partition_for(self, spec: RunSpec) -> str | None:
         if spec.resources.partition:
@@ -193,7 +248,7 @@ class SlurmRunner:
         remote_run_dir = self._remote_run_dir(run_id)
         self.store.ensure_run_layout(run_id)
         self.store.write_json(run_id, "runspec.json", spec.to_dict())
-        self._ensure_remote_layout(remote_run_dir)
+        self._ensure_remote_layout(run_id, remote_run_dir)
         upload_entries = self.staging.upload_inputs(run_id, spec.inputs, remote_run_dir)
 
         preflight_result = run_preflight(
@@ -211,17 +266,11 @@ class SlurmRunner:
         local_script.write_text(script, encoding="utf-8")
 
         remote_script = str(PurePosixPath(remote_run_dir) / "logs" / "job.sbatch")
-        upload_cmd = self.staging.build_upload_command(
-            local_script, remote_script, use_rsync=self.config.execution.use_rsync
+        self._transfer_runner_control_file(
+            run_id=run_id,
+            local_script=local_script,
+            remote_script=remote_script,
         )
-        upload = self.command_runner.run(upload_cmd, check=False)
-        if upload.returncode != 0 and self.config.execution.use_rsync:
-            upload_fallback = self.staging.build_upload_command(
-                local_script, remote_script, use_rsync=False
-            )
-            self.command_runner.run(upload_fallback, check=True)
-        elif upload.returncode != 0:
-            raise RuntimeError(upload.stderr.strip())
 
         submit_cmd = wrap_ssh(
             self.config.cluster.ssh_target,

@@ -156,6 +156,11 @@ class ArtifactStore:
     def write_preflight_manifest(self, run_id: str, data: dict[str, Any]) -> Path:
         return self.write_json(run_id, "preflight_manifest.json", data)
 
+    def write_runner_failure_manifest(
+        self, run_id: str, data: dict[str, Any]
+    ) -> Path:
+        return self.write_json(run_id, "runner_failure.json", data)
+
     def dedup_cache_path(self) -> Path:
         return self._safe_leaf_path(
             self.cache_dir,

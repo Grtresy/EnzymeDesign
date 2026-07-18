@@ -10,6 +10,7 @@ from decimal import InvalidOperation
 from http import client as http_client
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -219,6 +220,30 @@ _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
 )
 _SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SAFE_RUNNER_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_RUNNER_STAGING_FAILURE_PHASES = frozenset(
+    {
+        "remote_layout",
+        "input_parent",
+        "input_transfer",
+        "runner_control_transfer",
+    }
+)
+_RUNNER_STAGING_FAILURE_FIELDS = frozenset(
+    {
+        "schema_id",
+        "phase",
+        "run_id",
+        "input_ordinal",
+        "content_digest",
+        "returncode",
+        "timed_out",
+        "elapsed_seconds",
+    }
+)
+_INVALID_RUNNER_STAGING_DIAGNOSTIC_REASON = (
+    "HPC runner returned an invalid staging diagnostic."
+)
 
 
 def _project_toolchain_runtime_identity(
@@ -248,6 +273,81 @@ def _project_toolchain_runtime_identity(
     ):
         return None
     return identity
+
+
+def _project_runner_staging_failure(
+    exc: Exception,
+) -> tuple[bool, dict[str, Any] | None]:
+    missing = object()
+    try:
+        projector = getattr(exc, "to_safe_diagnostic", missing)
+    except Exception:  # noqa: BLE001 - hostile exception objects fail closed.
+        return True, None
+    if projector is missing:
+        return False, None
+    if not callable(projector):
+        return True, None
+    try:
+        raw = projector()
+        if not isinstance(raw, dict) or set(raw) != _RUNNER_STAGING_FAILURE_FIELDS:
+            return True, None
+        phase = str(raw.get("phase") or "")
+        run_id = str(raw.get("run_id") or "")
+        input_ordinal = raw.get("input_ordinal")
+        content_digest = raw.get("content_digest")
+        returncode = raw.get("returncode")
+        timed_out = raw.get("timed_out")
+        elapsed_seconds = raw.get("elapsed_seconds")
+        if (
+            raw.get("schema_id") != "runner_failure@1"
+            or phase not in _RUNNER_STAGING_FAILURE_PHASES
+            or _SAFE_RUNNER_RUN_ID_PATTERN.fullmatch(run_id) is None
+            or isinstance(returncode, bool)
+            or not isinstance(returncode, int)
+            or not isinstance(timed_out, bool)
+            or isinstance(elapsed_seconds, bool)
+            or not isinstance(elapsed_seconds, (int, float))
+            or not math.isfinite(float(elapsed_seconds))
+            or float(elapsed_seconds) < 0
+        ):
+            return True, None
+        if phase == "remote_layout":
+            if input_ordinal is not None or content_digest is not None:
+                return True, None
+        elif phase == "runner_control_transfer":
+            if (
+                input_ordinal is not None
+                or not isinstance(content_digest, str)
+                or _SHA256_DIGEST_PATTERN.fullmatch(content_digest) is None
+            ):
+                return True, None
+        elif (
+            isinstance(input_ordinal, bool)
+            or not isinstance(input_ordinal, int)
+            or input_ordinal < 1
+            or not isinstance(content_digest, str)
+            or _SHA256_DIGEST_PATTERN.fullmatch(content_digest) is None
+        ):
+            return True, None
+        return True, {
+            "schema_id": "runner_failure@1",
+            "phase": phase,
+            "run_id": run_id,
+            "input_ordinal": input_ordinal,
+            "content_digest": content_digest,
+            "returncode": returncode,
+            "timed_out": timed_out,
+            "elapsed_seconds": round(float(elapsed_seconds), 6),
+        }
+    except Exception:  # noqa: BLE001 - the complete validation boundary is closed.
+        return True, None
+
+
+def _legacy_runner_failure_reason(exc: Exception) -> str:
+    try:
+        return _scrub_provider_text(str(exc))
+    except Exception:  # noqa: BLE001 - exception rendering is untrusted.
+        return "HPC runner submission failed without a usable diagnostic."
 
 
 @dataclass(frozen=True, slots=True)
@@ -9864,7 +9964,13 @@ class ExecutionEngine:
         try:
             outcome = self.runner.submit_execution(session.session_id, request)
         except Exception as exc:  # noqa: BLE001 - runner boundary errors must become SDK failures.
-            reason = _scrub_provider_text(str(exc))
+            has_projector, runner_failure = _project_runner_staging_failure(exc)
+            if runner_failure is not None:
+                details = {"runner_failure": runner_failure}
+            elif has_projector:
+                details = {"reason": _INVALID_RUNNER_STAGING_DIAGNOSTIC_REASON}
+            else:
+                details = {"reason": _legacy_runner_failure_reason(exc)}
             raise PipelineSdkFailure(
                 error_type="hpc_staging_failed",
                 message=f"{sdk_method} HPC runner submission or staging failed.",
@@ -9872,7 +9978,7 @@ class ExecutionEngine:
                 stage="hpc_staging",
                 retryable=True,
                 sdk_method=sdk_method,
-                details={"reason": reason},
+                details=details,
             ) from exc
         now = utc_now_iso()
         run = RunRecord(

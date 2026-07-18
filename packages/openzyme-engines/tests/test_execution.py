@@ -682,6 +682,82 @@ class CapturingTimeoutRunner(CapturingFailedRunner):
         )
 
 
+class RaisingTypedStagingRunner:
+    def submit_execution(
+        self, session_id: str, payload: dict[str, object]
+    ):  # type: ignore[no-untyped-def]
+        from mcp_hpc_runner.errors import HpcStagingFailure
+
+        del session_id, payload
+        raise HpcStagingFailure(
+            phase="input_transfer",
+            run_id="opaque_runner_123",
+            input_ordinal=2,
+            content_digest="sha256:" + "a" * 64,
+            returncode=124,
+            timed_out=True,
+            elapsed_seconds=120.125,
+        )
+
+
+class MalformedStagingDiagnostic(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(
+            "runner failed at alice@private-hpc:~/secret "
+            "credential=must-not-cross /home/alice/private/input.fasta"
+        )
+
+    def to_safe_diagnostic(self) -> dict[str, object]:
+        return {
+            "schema_id": "runner_failure@1",
+            "phase": "input_transfer",
+            "run_id": "opaque_runner_456",
+            "input_ordinal": 1,
+            "content_digest": "sha256:" + "b" * 64,
+            "returncode": 1,
+            "timed_out": False,
+            "elapsed_seconds": 0.5,
+            "remote_path": "/private/runner/input.fasta",
+        }
+
+
+class RaisingMalformedStagingRunner:
+    def submit_execution(
+        self, session_id: str, payload: dict[str, object]
+    ):  # type: ignore[no-untyped-def]
+        del session_id, payload
+        raise MalformedStagingDiagnostic()
+
+
+class ThrowingStagingDiagnostic(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(
+            "alice@private-hpc:~/secret credential=must-not-cross "
+            "/home/alice/private/input.fasta"
+        )
+
+    def to_safe_diagnostic(self) -> dict[str, object]:
+        raise RuntimeError(
+            "projector saw alice@private-hpc:~/secret credential=must-not-cross"
+        )
+
+
+class RaisingThrowingStagingRunner:
+    def submit_execution(
+        self, session_id: str, payload: dict[str, object]
+    ):  # type: ignore[no-untyped-def]
+        del session_id, payload
+        raise ThrowingStagingDiagnostic()
+
+
+class RaisingLegacyStagingRunner:
+    def submit_execution(
+        self, session_id: str, payload: dict[str, object]
+    ):  # type: ignore[no-untyped-def]
+        del session_id, payload
+        raise RuntimeError("runner failed at /home/alice/private/input.fasta")
+
+
 class SandboxPreflight:
     def __init__(
         self,
@@ -5760,6 +5836,193 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
         "inv_pipeline_hpc_failed",
     ) == []
     assert "partial-result.fasta" not in str(status)
+
+
+def test_pipeline_hpc_staging_failure_projects_only_closed_runner_diagnostic() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = ExecutionEngine(
+        repositories,
+        RaisingTypedStagingRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_hpc_staging_failure",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_hpc_staging_failure",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_hpc_staging_failure",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "hpc_staging_failed"
+    assert error["stage"] == "hpc_staging"
+    assert error["details"] == {
+        "runner_failure": {
+            "schema_id": "runner_failure@1",
+            "phase": "input_transfer",
+            "run_id": "opaque_runner_123",
+            "input_ordinal": 2,
+            "content_digest": "sha256:" + "a" * 64,
+            "returncode": 124,
+            "timed_out": True,
+            "elapsed_seconds": 120.125,
+        }
+    }
+    public_payload = json.dumps(error, sort_keys=True)
+    for forbidden in (
+        "command",
+        "ssh_target",
+        "local_path",
+        "remote_path",
+        "remote_dir",
+        "stderr",
+        "locator",
+        "credential",
+    ):
+        assert forbidden not in public_payload
+
+
+def test_pipeline_rejects_open_runner_diagnostic_with_fixed_safe_reason() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = ExecutionEngine(
+        repositories,
+        RaisingMalformedStagingRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_malformed_hpc_staging_failure",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_malformed_hpc_staging_failure",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_malformed_hpc_staging_failure",
+        resolution="approved",
+    )
+
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "hpc_staging_failed"
+    assert error["details"] == {
+        "reason": "HPC runner returned an invalid staging diagnostic.",
+    }
+    public_payload = json.dumps(error, sort_keys=True)
+    for private_value in (
+        "remote_path",
+        "/private/runner/input.fasta",
+        "alice@private-hpc",
+        "~/secret",
+        "credential",
+        "must-not-cross",
+    ):
+        assert private_value not in public_payload
+
+
+def test_pipeline_throwing_runner_projector_uses_fixed_safe_reason() -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    engine = ExecutionEngine(
+        repositories,
+        RaisingThrowingStagingRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_throwing_hpc_staging_failure",
+        _fpocket_pipeline_code(),
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_pipeline_throwing_hpc_staging_failure",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": ["art_001"]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    result = engine.continue_after_approval(
+        invocation_id="inv_pipeline_throwing_hpc_staging_failure",
+        resolution="approved",
+    )
+
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["details"] == {
+        "reason": "HPC runner returned an invalid staging diagnostic.",
+    }
+    public_payload = json.dumps(error, sort_keys=True)
+    for private_value in (
+        "alice@private-hpc",
+        "~/secret",
+        "credential",
+        "must-not-cross",
+        "/home/alice",
+    ):
+        assert private_value not in public_payload
+
+
+def test_runner_projector_absence_remains_distinct_from_invalid_projection() -> None:
+    from openzyme_engines.execution import _legacy_runner_failure_reason
+    from openzyme_engines.execution import _project_runner_staging_failure
+
+    legacy = RuntimeError("runner failed at /home/alice/private/input.fasta")
+    invalid = RuntimeError("alice@private-hpc:~/secret credential=must-not-cross")
+    invalid.to_safe_diagnostic = None  # type: ignore[attr-defined]
+
+    assert _project_runner_staging_failure(legacy) == (False, None)
+    assert _project_runner_staging_failure(invalid) == (True, None)
+    assert _legacy_runner_failure_reason(legacy) == (
+        "runner failed at [redacted-path]"
+    )
+
+
+def test_engine_accepts_closed_runner_control_transfer_projection() -> None:
+    from mcp_hpc_runner.errors import HpcStagingFailure
+    from openzyme_engines.execution import _project_runner_staging_failure
+
+    failure = HpcStagingFailure(
+        phase="runner_control_transfer",
+        run_id="opaque_control_123",
+        input_ordinal=None,
+        content_digest="sha256:" + "c" * 64,
+        returncode=1,
+        timed_out=False,
+        elapsed_seconds=0.25,
+    )
+
+    assert _project_runner_staging_failure(failure) == (
+        True,
+        failure.to_safe_diagnostic(),
+    )
 
 
 def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(

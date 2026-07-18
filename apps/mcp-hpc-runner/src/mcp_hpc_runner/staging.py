@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import hashlib
-from typing import Any
+from typing import Any, Never
 
 from .config import RunnerConfig
+from .errors import HpcStagingFailure, StagingFailurePhase
 from .models import ExpectedOutput, StagedInput
-from .remote import CommandRunner, wrap_ssh
+from .remote import CommandResult, CommandRunner, wrap_ssh
 from .store import ArtifactStore
 from .validation import safe_relative_path, safe_remote_run_dir
 
@@ -45,6 +46,30 @@ class StagingManager:
     @property
     def _ssh_target(self) -> str:
         return self.config.cluster.ssh_target
+
+    def raise_staging_failure(
+        self,
+        *,
+        phase: StagingFailurePhase,
+        run_id: str,
+        result: CommandResult,
+        input_ordinal: int | None = None,
+        content_digest: str | None = None,
+    ) -> Never:
+        failure = HpcStagingFailure(
+            phase=phase,
+            run_id=run_id,
+            input_ordinal=input_ordinal,
+            content_digest=content_digest,
+            returncode=result.returncode,
+            timed_out=result.timed_out,
+            elapsed_seconds=result.elapsed_seconds,
+        )
+        self.store.write_runner_failure_manifest(
+            run_id,
+            failure.to_safe_diagnostic(),
+        )
+        raise failure from None
 
     def build_upload_command(
         self, local_path: Path, remote_path: str, use_rsync: bool
@@ -113,7 +138,7 @@ class StagingManager:
 
         cache = self.store.load_dedup_cache()
         entries: list[dict[str, Any]] = []
-        for item in inputs:
+        for input_ordinal, item in enumerate(inputs, start=1):
             stage_to = str(item.stage_to)
             if stage_to not in {"work", "out"}:
                 raise ValueError("inputs.stage_to must be one of ['out', 'work']")
@@ -127,6 +152,7 @@ class StagingManager:
             )
             remote_parent = str(PurePosixPath(remote_path).parent)
             checksum = _sha256(local_path)
+            content_digest = f"sha256:{checksum}"
             # Key is content + absolute remote destination (run-specific).
             # This avoids collisions across runs when remote_path is reused.
             cache_key = f"{checksum}:{remote_path}"
@@ -134,12 +160,20 @@ class StagingManager:
 
             if not skipped:
                 mkdir_cmd = wrap_ssh(self._ssh_target, ["mkdir", "-p", remote_parent])
-                self.command_runner.run(
+                parent_result = self.command_runner.run(
                     mkdir_cmd,
-                    check=True,
+                    check=False,
                     timeout=self.config.execution.staging_timeout_seconds,
                     stage="staging",
                 )
+                if parent_result.returncode != 0:
+                    self.raise_staging_failure(
+                        phase="input_parent",
+                        run_id=run_id,
+                        result=parent_result,
+                        input_ordinal=input_ordinal,
+                        content_digest=content_digest,
+                    )
                 transfer_cmd = self.build_upload_command(
                     local_path, remote_path, use_rsync=self.config.execution.use_rsync
                 )
@@ -153,14 +187,28 @@ class StagingManager:
                     fallback = self.build_upload_command(
                         local_path, remote_path, use_rsync=False
                     )
-                    self.command_runner.run(
+                    fallback_result = self.command_runner.run(
                         fallback,
-                        check=True,
+                        check=False,
                         timeout=self.config.execution.staging_timeout_seconds,
                         stage="staging",
                     )
+                    if fallback_result.returncode != 0:
+                        self.raise_staging_failure(
+                            phase="input_transfer",
+                            run_id=run_id,
+                            result=fallback_result,
+                            input_ordinal=input_ordinal,
+                            content_digest=content_digest,
+                        )
                 elif transfer.returncode != 0:
-                    raise RuntimeError(transfer.stderr.strip())
+                    self.raise_staging_failure(
+                        phase="input_transfer",
+                        run_id=run_id,
+                        result=transfer,
+                        input_ordinal=input_ordinal,
+                        content_digest=content_digest,
+                    )
                 cache[cache_key] = remote_path
 
             entries.append(

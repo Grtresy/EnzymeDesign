@@ -18,6 +18,7 @@ Useful search keywords:
 - `preprocess prepare_receptor prepare_ligand`
 - `tool adapter external bridge`
 - `hpc placement`
+- `runner_failure@1 staging phase`
 - `stage_artifact`
 - `fetch_outputs`
 - `batch ligand docking`

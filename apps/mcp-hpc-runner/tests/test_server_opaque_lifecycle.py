@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from mcp_hpc_runner.errors import HpcStagingFailure
 from mcp_hpc_runner.models import JobHandle, RunResult, RunSpec
 from mcp_hpc_runner.preflight import PreflightResult
 from mcp_hpc_runner.remote import CommandResult
@@ -91,6 +92,39 @@ def test_submit_tools_reject_caller_supplied_run_id(
 
     with pytest.raises(ValueError, match="run_id is server-generated"):
         server.call_tool(tool_name, {"runspec": _runspec(run_id="caller-run")})
+
+
+def test_exec_run_staging_failure_keeps_server_issued_opaque_run_id(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fail_remote_layout(
+        args: list[str],
+        check: bool = False,
+        *,
+        timeout: float | None = None,
+        stage: str | None = None,
+    ) -> CommandResult:  # noqa: ARG001
+        return CommandResult(
+            args=args,
+            returncode=255,
+            stdout="",
+            stderr="private SSH target rejected the connection",
+            stage=stage,
+            elapsed_seconds=0.5,
+        )
+
+    server.command_runner.run = fail_remote_layout  # type: ignore[method-assign]
+
+    with pytest.raises(HpcStagingFailure) as caught:
+        server.call_tool("exec.run", {"runspec": _runspec()})
+
+    run_id = caught.value.run_id
+    assert re.fullmatch(r"[0-9a-f]{32}", run_id)
+    assert server.store.read_json(run_id, "runner_failure.json") == (
+        caught.value.to_safe_diagnostic()
+    )
 
 
 def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
@@ -564,7 +598,9 @@ def test_submit_persists_server_id_in_runspec_and_handle_for_restart(
 
     fake_runner = FakeCommandRunner()
     server.slurm_runner.command_runner = fake_runner  # type: ignore[assignment]
-    server.slurm_runner._ensure_remote_layout = lambda remote_run_dir: None  # type: ignore[method-assign]
+    server.slurm_runner._ensure_remote_layout = (  # type: ignore[method-assign]
+        lambda run_id, remote_run_dir: None
+    )
     server.slurm_runner.staging.upload_inputs = (  # type: ignore[method-assign]
         lambda run_id, inputs, remote_run_dir: []
     )

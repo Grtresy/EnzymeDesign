@@ -2,9 +2,24 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
-from mcp_hpc_runner.remote import make_remote_shell_command_with_env
+from mcp_hpc_runner.remote import CommandRunner, make_remote_shell_command_with_env
+
+
+def test_command_runner_records_timeout_and_elapsed() -> None:
+    result = CommandRunner().run(
+        [sys.executable, "-c", "import time; time.sleep(1)"],
+        check=False,
+        timeout=0.01,
+        stage="staging",
+    )
+
+    assert result.returncode == 124
+    assert result.timed_out is True
+    assert result.elapsed_seconds > 0
+    assert result.stage == "staging"
 
 
 def test_remote_shell_normalizes_relative_layout_paths(tmp_path: Path) -> None:
