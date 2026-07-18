@@ -31,6 +31,17 @@ in the same call, so it deliberately has no resumable `job_handle.json`.
 Asynchronous Slurm submission persists both same-run `runspec.json` and
 `job_handle.json`, which are the restart recovery authority.
 
+For synchronous SSH, runner-private `metadata/run_result_metadata.json`
+durably records terminal `status`, numeric `exit_code`, classified
+`error_code`, stage, validation summary, and any successful closed toolchain
+identity alongside the existing internal command/staging metadata. This file
+is trusted-Host operator evidence, not an agent-facing payload. The Host
+uses the terminal fields to derive closed error taxonomy, retryability, stage,
+and opaque handles. This persistence grants no authority to expose the private
+command, target, path, or raw stderr; the broader cross-surface diagnostic
+consolidation remains proposal-only in
+[canonical public diagnostic boundary](../architecture-proposals/canonical-public-diagnostic-boundary.md).
+
 ## Pre-execution staging diagnostics
 
 Failures before payload execution use the runner-owned typed exception and

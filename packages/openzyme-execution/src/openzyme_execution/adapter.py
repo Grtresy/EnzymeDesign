@@ -228,6 +228,8 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
             safe_result["toolchain_runtime_identity"] = dict(
                 toolchain_runtime_identity
             )
+        for private_key in ("stdout", "stderr", "logs"):
+            safe_result.pop(private_key, None)
         if run_status is not RunStatus.SUCCEEDED:
             safe_result["artifacts"] = {}
         artifacts = tuple(

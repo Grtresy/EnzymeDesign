@@ -81,6 +81,28 @@ None of these corrections turns the failed attempt into cutover evidence. A
 fresh commit/config pin and fresh blank roots are required for the two positive
 attempts and controlled fault proof below.
 
+The next real campaign on commit `6c828d9e` also remained strict **NO-GO**.
+Attempt `positive-2ec8aa40c2a4476b8347442550f5ee43` sealed and offline-verified
+bundle digest
+`sha256:5f23469a3ad137e9724581f4ff1b2c2908de7d21ef3556c1158af943cf5e3498`,
+but its independent probe stopped before formal execution. Real NCBI and
+UniProt fetches, MAFFT and hmmbuild completed; the runner's private diagnostic
+proved that the subsequent SSH connection timed out before the CD-HIT payload
+started. The legacy runner regex did not match that OpenSSH timeout wording;
+then the absent success-only toolchain marker overwrote the primary nonzero
+remote failure, and the Host finally collapsed the unknown runner code to
+non-retryable `nonzero_exit`. That three-layer loss of failure identity is
+corrected by matching the observed wording, preserving a primary remote
+failure whenever the remote command is nonzero, splitting connection timeouts
+as `SSH_CONNECTION_TIMEOUT`, and projecting runner transport failures as
+retryable `hpc_runner_timeout` or `hpc_runner_unavailable`. A zero-exit command
+with a missing or malformed identity marker still fails closed as
+`TOOLCHAIN_IDENTITY_MISSING`. Retryability remains an agent-visible fact only:
+no operation is automatically replayed, no backend fallback is selected, and
+the failed attempt remains non-eligible. The campaign ledger closed at
+17,121,634 charged tokens against the fixed 500,000,000 limit with zero
+breaches.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model

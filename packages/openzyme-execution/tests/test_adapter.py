@@ -167,6 +167,37 @@ def test_hpc_runner_adapter_does_not_project_failed_partial_artifacts() -> None:
     assert "/private/partial" not in str(outcome.raw_result)
 
 
+def test_hpc_runner_adapter_preserves_transport_failure_taxonomy() -> None:
+    adapter = HpcRunnerExecutionAdapter(server=FakeRunnerServer())
+
+    outcome = adapter._normalize_result(
+        {
+            "run_id": "run_transport_failed",
+            "selected_mode": "ssh",
+            "status": "failed",
+            "exit_code": 255,
+            "error_code": "SSH_CONNECTION_TIMEOUT",
+            "stage": "remote_execution",
+            "stdout": "private stdout",
+            "stderr": "private stderr",
+            "logs": {"stderr": {"inline": "private inline diagnostic"}},
+            "artifacts": {
+                "bio_tools/cdhit/clustered.fasta": (
+                    "/private/partial/clustered.fasta"
+                )
+            },
+        }
+    )
+
+    assert outcome.status is RunStatus.FAILED
+    assert outcome.exit_code == 255
+    assert outcome.artifacts == ()
+    assert outcome.raw_result["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert outcome.raw_result["stage"] == "remote_execution"
+    assert outcome.raw_result["artifacts"] == {}
+    assert "private" not in str(outcome.raw_result)
+
+
 def test_hpc_runner_adapter_rejects_unknown_tool_names() -> None:
     server = FakeRunnerServer()
     adapter = HpcRunnerExecutionAdapter(server=server)

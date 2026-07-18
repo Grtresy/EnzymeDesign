@@ -144,17 +144,6 @@ def _text_excerpt(path: str, *, limit: int = 2000) -> str | None:
     return content[:limit].rstrip() + "\n...[truncated]"
 
 
-def _inline_excerpt(value: Any, *, limit: int = 2000) -> str | None:
-    if value is None:
-        return None
-    content = str(value).strip()
-    if not content:
-        return None
-    if len(content) <= limit:
-        return content
-    return content[:limit].rstrip() + "\n...[truncated]"
-
-
 def _count_pdb_atoms_and_residues(path: str) -> tuple[int, int]:
     atom_count = 0
     residues: set[tuple[str, str, str]] = set()
@@ -187,22 +176,7 @@ def _hpc_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
         "exit_code": result.get("exit_code"),
         "error_code": raw.get("error_code"),
         "stage": raw.get("stage") or result.get("stage"),
-        "stdout_excerpt": _inline_excerpt(raw.get("stdout")),
-        "stderr_excerpt": _inline_excerpt(raw.get("stderr")),
     }
-    logs = raw.get("logs")
-    if isinstance(logs, dict):
-        inline_logs: dict[str, Any] = {}
-        for key in ("stdout", "stderr"):
-            value = logs.get(key)
-            if isinstance(value, dict):
-                inline_logs[key] = {
-                    item_key: item_value
-                    for item_key, item_value in value.items()
-                    if item_key in {"text", "truncated", "line_count"}
-                }
-        if inline_logs:
-            details["logs"] = inline_logs
     return {key: value for key, value in details.items() if value is not None}
 
 
@@ -526,6 +500,18 @@ BIO_TOOL_ROUTE_POLICY_IDS = {
     "bio_tools.hmmalign": "bio_tools.hmmalign.hpc:v1",
     "bio_tools.hmmer_search_cli": "bio_tools.hmmer_search_cli.disabled:v1",
 }
+
+_HPC_RUNNER_TIMEOUT_ERROR_CODES = frozenset(
+    {
+        "timeout",
+        "command_timeout",
+        "hpc_runner_timeout",
+        "ssh_timeout",
+        "ssh_connection_timeout",
+    }
+)
+_HPC_RUNNER_UNAVAILABLE_ERROR_CODES = frozenset({"ssh_connection_failed"})
+
 STRUCTURE_TOOL_ROUTE_POLICY_IDS = {
     "structure_tools.fpocket": "structure_tools.fpocket.hpc:v1",
 }
@@ -9413,22 +9399,38 @@ class ExecutionEngine:
     ) -> PipelineSdkFailure:
         raw = dict(result.get("runner_result") or result.get("raw_result") or {})
         runner_code = str(raw.get("error_code") or result.get("error_code") or "")
+        normalized_code = runner_code.lower()
+        retryable = False
         if runner_code in {"APPTAINER_MISSING", "SIF_MISSING"}:
             error_type = "container_runtime_missing"
-        elif runner_code == "COMMAND_TIMEOUT":
-            error_type = "timeout"
+        elif normalized_code in _HPC_RUNNER_TIMEOUT_ERROR_CODES:
+            error_type = "hpc_runner_timeout"
+            retryable = True
+        elif normalized_code in _HPC_RUNNER_UNAVAILABLE_ERROR_CODES:
+            error_type = "hpc_runner_unavailable"
+            retryable = True
         else:
             error_type = (
                 "nonzero_exit"
                 if result.get("exit_code") not in {None, 0}
                 else "hpc_operation_failed"
             )
+        if retryable:
+            hint = (
+                "Retry only after the trusted runner transport recovers; do not "
+                "fall back to Host-local or sandbox binaries."
+            )
+        else:
+            hint = (
+                "Inspect the safe runner diagnostics and fix the S14 "
+                "toolchain/runtime packaging before retrying."
+            )
         return PipelineSdkFailure(
             error_type=error_type,
             message=f"{method} HPC runner execution failed.",
-            hint="Inspect the safe runner diagnostics and fix the S14 toolchain/runtime packaging before retrying.",
+            hint=hint,
             stage=str(raw.get("stage") or result.get("stage") or "remote_execution"),
-            retryable=False,
+            retryable=retryable,
             sdk_method=method,
             hpc_failure=_hpc_failure_details(
                 {
@@ -9803,20 +9805,22 @@ class ExecutionEngine:
         raw = dict(result.get("runner_result") or result.get("raw_result") or {})
         runner_code = str(raw.get("error_code") or result.get("error_code") or "")
         normalized_code = runner_code.lower()
-        timed_out = normalized_code in {
-            "timeout",
-            "command_timeout",
-            "hpc_runner_timeout",
-            "ssh_timeout",
-        }
+        timed_out = normalized_code in _HPC_RUNNER_TIMEOUT_ERROR_CODES
+        unavailable = normalized_code in _HPC_RUNNER_UNAVAILABLE_ERROR_CODES
+        if timed_out:
+            error_type = "hpc_runner_timeout"
+        elif unavailable:
+            error_type = "hpc_runner_unavailable"
+        else:
+            error_type = "hpc_operation_failed"
         return PipelineSdkFailure(
-            error_type="hpc_runner_timeout" if timed_out else "hpc_operation_failed",
+            error_type=error_type,
             message=f"{method} Host-supervised HPC execution failed.",
             hint=(
                 "Inspect the HPC run and trusted runner diagnostics; do not fall back to Host-local or sandbox binaries."
             ),
             stage=str(raw.get("stage") or result.get("stage") or "remote_execution"),
-            retryable=timed_out,
+            retryable=timed_out or unavailable,
             sdk_method=method,
             hpc_failure=_hpc_failure_details(
                 {
@@ -10577,16 +10581,20 @@ class ExecutionEngine:
                         break
             if hpc_failure is not None and str(
                 hpc_failure.get("error_code") or ""
-            ).lower() in {
-                "timeout",
-                "command_timeout",
-                "hpc_runner_timeout",
-                "ssh_timeout",
-            }:
+            ).lower() in _HPC_RUNNER_TIMEOUT_ERROR_CODES:
                 error_type = "hpc_runner_timeout"
                 error_hint = (
                     "The Host-supervised HPC SDK call timed out while waiting on the runner or remote SSH/HPC boundary. "
                     "Treat this as an HPC runner timeout, not a Podman sandbox startup failure."
+                )
+                error_retryable = True
+            elif hpc_failure is not None and str(
+                hpc_failure.get("error_code") or ""
+            ).lower() in _HPC_RUNNER_UNAVAILABLE_ERROR_CODES:
+                error_type = "hpc_runner_unavailable"
+                error_hint = (
+                    "The trusted HPC runner transport was unavailable before the SDK call could complete. "
+                    "Retry only after runner connectivity recovers; do not use a local fallback."
                 )
                 error_retryable = True
         error_payload = None

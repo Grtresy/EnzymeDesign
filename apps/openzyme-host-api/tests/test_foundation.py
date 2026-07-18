@@ -623,6 +623,9 @@ def test_v3_execution_runner_adapter_does_not_project_runner_storage_in_raw_resu
                         "artifacts": {"result.json": "/host/private/result.json"},
                         "job_id": "12345",
                         "remote_run_dir": "/cluster/private/run",
+                        "stdout": "private stdout",
+                        "stderr": "private stderr",
+                        "logs": {"stderr": {"inline": "private log"}},
                     },
                 )
 

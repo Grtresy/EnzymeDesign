@@ -167,6 +167,7 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
         "selected_mode",
         "exit_code",
         "error_code",
+        "stage",
         "artifacts",
         "logs",
     }
@@ -177,6 +178,47 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
     assert "remote_run_dir" not in result
     assert "stdout" not in result
     assert "metadata" not in result
+
+
+def test_exec_run_projects_transport_failure_code_without_partial_artifacts(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="failed",
+            exit_code=255,
+            error_code="SSH_CONNECTION_TIMEOUT",
+            artifacts={
+                "mcp_runs/private/out/partial.fasta": (
+                    "/private/runner/partial.fasta"
+                )
+            },
+            logs={"stderr": {"inline": "private transport diagnostic"}},
+            metadata={
+                "stage": "remote_execution",
+                "remote_command": ["private"],
+            },
+        )
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+
+    result = server.call_tool("exec.run", {"runspec": _runspec()})
+
+    assert result["status"] == "failed"
+    assert result["exit_code"] == 255
+    assert result["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert result["stage"] == "remote_execution"
+    assert result["artifacts"] == {}
+    assert result["logs"] == {}
+    assert "remote_run_dir" not in result
+    assert "metadata" not in result
+    assert "private transport diagnostic" not in str(result)
 
 
 @pytest.mark.parametrize(

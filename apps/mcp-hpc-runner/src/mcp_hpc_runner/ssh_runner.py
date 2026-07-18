@@ -427,7 +427,11 @@ class SSHRunner:
         self.store.write_log(run_id, "stderr.log", stderr)
 
         artifact_entries = []
-        if spec.expected_outputs:
+        if (
+            spec.expected_outputs
+            and raw.returncode == 0
+            and not toolchain_identity_failed
+        ):
             artifact_entries = self.staging.download_outputs(
                 run_id, spec.expected_outputs, remote_run_dir
             )
@@ -440,7 +444,10 @@ class SSHRunner:
 
         mapped_error = self.failure_mapper.map_error(stderr, spec.failure_signatures)
         error_code = mapped_error.code if mapped_error else None
-        if toolchain_identity_failed:
+        # A failed payload cannot emit the success-only identity marker. Preserve
+        # its primary runner/transport failure; missing or malformed identity is
+        # authoritative only when the remote command otherwise reports success.
+        if toolchain_identity_failed and raw.returncode == 0:
             error_code = "TOOLCHAIN_IDENTITY_MISSING"
 
         status = "completed"
@@ -453,20 +460,23 @@ class SSHRunner:
         ):
             status = "failed"
             if error_code is None:
-                error_code = (
-                    "COMMAND_TIMEOUT"
-                    if raw.returncode == 124
-                    else
-                    "OUTPUT_VALIDATION_FAILED"
-                    if missing_outputs or empty_outputs
-                    else "RUN_FAILED"
-                )
+                if raw.returncode == 124:
+                    error_code = "COMMAND_TIMEOUT"
+                elif raw.returncode != 0:
+                    error_code = "RUN_FAILED"
+                elif missing_outputs or empty_outputs or success_check_failures:
+                    error_code = "OUTPUT_VALIDATION_FAILED"
+                else:
+                    error_code = "RUN_FAILED"
 
         metadata = {
             "started_at": started_at,
             "finished_at": datetime.now(tz=UTC).isoformat(),
             "remote_command": remote_argv,
             "stage": raw.stage,
+            "status": status,
+            "exit_code": raw.returncode,
+            "error_code": error_code,
             "upload_entries": upload_entries,
             "validation": {
                 "missing_outputs": missing_outputs,

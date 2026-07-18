@@ -48,7 +48,7 @@ S14 的实现落点按模块职责划分，不改变 S11 public SDK surface，�
 - SDK operation approval/provenance 记录 `route_reason="static_policy:v1"` 或后续明确 policy id。
 - `AdapterApprovalEnvelope` 中的 pre-run frozen fields 不得被运行后字段原地改写；`backend_run_id`、`fetch_refs`、output sealed digest、`registered_artifact_ids`、validation result 和 safe diagnostics 只能进入 `AdapterResultEnvelope` 或 output artifact provenance。
 - `bio_tools.hmmer_search_cli` 的 disabled route 返回 `unsupported_in_s14`，message 指向 provider-side `bio.hmmer_search(..., database="refprot")` 作为当前 AOX/HMM 主路；不得尝试 Host-local HMMER、fixture 或 sibling backend。
-- 结构化错误码覆盖 `unsupported_in_s14`、`tool_missing`、`container_runtime_missing`、`database_missing`、`invalid_params`、`forbidden_param`、`nonzero_exit`、`timeout`、`declared_output_missing`、`output_validation_failed`、`hpc_staging_failed`。
+- 结构化错误码覆盖 `unsupported_in_s14`、`tool_missing`、`container_runtime_missing`、`database_missing`、`invalid_params`、`forbidden_param`、`nonzero_exit`、`timeout`、`hpc_runner_timeout`、`hpc_runner_unavailable`、`declared_output_missing`、`output_validation_failed`、`hpc_staging_failed`。runner-issued `SSH_CONNECTION_TIMEOUT` 与其他 `SSH_CONNECTION_FAILED` 不得降格为工具 `nonzero_exit`；二者分别投影为 retryable runner timeout/unavailable，但不触发 harness 自动重放或本地 fallback。
 
 ## Declared Outputs / Validators
 

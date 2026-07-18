@@ -310,21 +310,24 @@ class MCPHpcServer:
         normalized_status = str(raw_status or "").strip().lower()
         status_valid = normalized_status in _PUBLIC_RUN_STATUSES
         status = normalized_status if status_valid else "failed"
+        metadata = dict(result.get("metadata") or {})
+        stage = metadata.get("stage")
+        if selected_mode != "ssh" or stage != "remote_execution":
+            stage = None
         projected = {
             "run_id": str(result["run_id"]),
             "status": status,
             "selected_mode": selected_mode,
             "exit_code": result.get("exit_code"),
             "error_code": result.get("error_code"),
+            "stage": stage,
             "artifacts": {
                 self._relative_artifact_path(str(path)): str(storage_uri)
                 for path, storage_uri in dict(result.get("artifacts") or {}).items()
             },
-            # Slurm submit stdout contains the raw scheduler job ID. Async
-            # diagnostics are retrieved separately through bounded job.logs.
-            "logs": (
-                dict(result.get("logs") or {}) if selected_mode == "ssh" else {}
-            ),
+            # Raw runner logs remain Host-private. Async diagnostics are
+            # retrieved separately through bounded operator-facing job.logs.
+            "logs": {},
         }
         if not status_valid and not projected["error_code"]:
             projected["error_code"] = "RUNNER_STATUS_INVALID"

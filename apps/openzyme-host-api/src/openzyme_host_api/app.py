@@ -386,7 +386,14 @@ class V3ExecutionRunnerAdapter:
         # Runner artifact values are Host-local catalog/storage references.
         # They travel through the typed artifact channel below and must not be
         # duplicated into the agent-facing raw_result document.
-        for private_key in ("artifacts", "job_id", "remote_run_dir"):
+        for private_key in (
+            "artifacts",
+            "job_id",
+            "remote_run_dir",
+            "stdout",
+            "stderr",
+            "logs",
+        ):
             raw_result.pop(private_key, None)
         return V3ExecutionOutcome(
             run_id=str(outcome.run_id),

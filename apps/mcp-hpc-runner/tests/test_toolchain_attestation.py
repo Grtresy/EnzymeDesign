@@ -15,7 +15,7 @@ from mcp_hpc_runner.config import (
     SlurmConfig,
 )
 from mcp_hpc_runner.errors import FailureMapper
-from mcp_hpc_runner.models import RunSpec
+from mcp_hpc_runner.models import ExpectedOutput, RunSpec
 from mcp_hpc_runner.preflight import PreflightChecker, PreflightResult
 from mcp_hpc_runner.remote import CommandResult
 from mcp_hpc_runner.ssh_runner import (
@@ -81,8 +81,16 @@ def _spec(*, run_id: str = "attested-run") -> RunSpec:
 
 
 class FakeCommandRunner:
-    def __init__(self, remote_stdout: str) -> None:
+    def __init__(
+        self,
+        remote_stdout: str,
+        *,
+        remote_returncode: int = 0,
+        remote_stderr: str = "",
+    ) -> None:
         self.remote_stdout = remote_stdout
+        self.remote_returncode = remote_returncode
+        self.remote_stderr = remote_stderr
         self.commands: list[tuple[str | None, list[str]]] = []
 
     def run(
@@ -95,11 +103,13 @@ class FakeCommandRunner:
     ) -> CommandResult:  # noqa: ARG002
         self.commands.append((stage, args))
         stdout = self.remote_stdout if stage == "remote_execution" else ""
+        returncode = self.remote_returncode if stage == "remote_execution" else 0
+        stderr = self.remote_stderr if stage == "remote_execution" else ""
         return CommandResult(
             args=args,
-            returncode=0,
+            returncode=returncode,
             stdout=stdout,
-            stderr="",
+            stderr=stderr,
             stage=stage,
         )
 
@@ -515,3 +525,56 @@ def test_ssh_runner_fails_closed_when_attestation_marker_is_not_unique_and_valid
     assert result.error_code == "TOOLCHAIN_IDENTITY_MISSING"
     assert result.metadata["toolchain_runtime_identity"] is None
     assert _TOOLCHAIN_IDENTITY_MARKER not in result.stdout
+
+
+def test_ssh_runner_preserves_transport_timeout_over_missing_success_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_runner = FakeCommandRunner(
+        "",
+        remote_returncode=255,
+        remote_stderr="Connection to 192.0.2.10 port 22222 timed out\n",
+    )
+    monkeypatch.setattr(
+        "mcp_hpc_runner.ssh_runner.run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(checks=[], passed=True),
+    )
+
+    result = _runner(tmp_path, command_runner).exec_run(_spec())
+
+    assert result.status == "failed"
+    assert result.error_code == "SSH_CONNECTION_TIMEOUT"
+    assert result.metadata["toolchain_runtime_identity"] is None
+    assert result.metadata["status"] == "failed"
+    assert result.metadata["exit_code"] == 255
+    assert result.metadata["error_code"] == "SSH_CONNECTION_TIMEOUT"
+
+
+def test_ssh_runner_preserves_unknown_nonzero_over_missing_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_runner = FakeCommandRunner("", remote_returncode=23)
+    monkeypatch.setattr(
+        "mcp_hpc_runner.ssh_runner.run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(checks=[], passed=True),
+    )
+    spec = _spec(run_id="unknown-nonzero")
+    spec.expected_outputs = [
+        ExpectedOutput(
+            path="bio_tools/mafft/alignment.fasta",
+            required=True,
+            non_empty=True,
+        )
+    ]
+
+    result = _runner(tmp_path, command_runner).exec_run(spec)
+
+    assert result.status == "failed"
+    assert result.error_code == "RUN_FAILED"
+    assert result.artifacts == {}
+    assert result.metadata["validation"]["missing_outputs"] == [
+        "bio_tools/mafft/alignment.fasta"
+    ]
+    assert all(stage != "artifact_fetch" for stage, _ in command_runner.commands)

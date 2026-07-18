@@ -135,7 +135,17 @@ class FailureMapper:
             ),
             FailureSignature(pattern=r"sbatch: error", error_code="SBATCH_ERROR"),
             FailureSignature(
-                pattern=r"(ssh: connect to host|Connection timed out)",
+                pattern=(
+                    r"(ssh: connect to host .*: Connection timed out|"
+                    r"Connection to .* port [0-9]+ timed out)"
+                ),
+                error_code="SSH_CONNECTION_TIMEOUT",
+            ),
+            FailureSignature(
+                pattern=(
+                    r"(ssh: connect to host|Could not resolve hostname|"
+                    r"No route to host|Connection refused)"
+                ),
                 error_code="SSH_CONNECTION_FAILED",
             ),
         ]

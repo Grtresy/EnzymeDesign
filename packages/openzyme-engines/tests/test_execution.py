@@ -682,6 +682,34 @@ class CapturingTimeoutRunner(CapturingFailedRunner):
         )
 
 
+class CapturingTransportFailedRunner(CapturingFailedRunner):
+    def __init__(self, error_code: str) -> None:
+        super().__init__()
+        self.error_code = error_code
+
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        del session_id
+        self.payloads.append(payload)
+        return ExecutionOutcome(
+            run_id="runner_transport_failed_001",
+            status=RunStatus.FAILED,
+            execution_mode="ssh",
+            remote_run_dir="opaque://runner_transport_failed_001",
+            raw_result={
+                "status": "failed",
+                "exit_code": 255,
+                "error_code": self.error_code,
+                "stage": "remote_execution",
+                "stdout": "",
+                "stderr": "trusted runner transport unavailable",
+            },
+            artifacts=(),
+            exit_code=255,
+        )
+
+
 class RaisingTypedStagingRunner:
     def submit_execution(
         self, session_id: str, payload: dict[str, object]
@@ -4664,6 +4692,211 @@ def test_pipeline_bio_tools_runner_and_invalid_input_failures_are_structured() -
     assert invalid_runner.payloads == []
 
 
+@pytest.mark.parametrize(
+    ("runner_code", "expected_error_type", "expected_retryable"),
+    [
+        ("SSH_CONNECTION_TIMEOUT", "hpc_runner_timeout", True),
+        ("SSH_CONNECTION_FAILED", "hpc_runner_unavailable", True),
+        ("RUN_FAILED", "nonzero_exit", False),
+    ],
+)
+def test_pipeline_bio_tools_runner_failures_preserve_taxonomy(
+    runner_code: str,
+    expected_error_type: str,
+    expected_retryable: bool,
+) -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    fasta_artifact_id = _save_fasta_artifact(
+        repositories, f"art_fasta_{runner_code.lower()}"
+    )
+    workspace = _workspace_payload(f"transport_{runner_code.lower()}")
+    staged_fasta = _stage_payload(
+        repositories,
+        fasta_artifact_id,
+        workspace,
+        "inputs/sequences.fasta",
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        f"code_{runner_code.lower()}",
+        "from openzyme_pipeline import bio_tools\n",
+    )
+    runner = CapturingTransportFailedRunner(runner_code)
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio_tools.mafft",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+                    "params": {},
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(repositories, runner, sandbox_runner=sandbox)
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id=f"inv_{runner_code.lower()}",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [fasta_artifact_id]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    failed = engine.continue_after_approval(
+        invocation_id=f"inv_{runner_code.lower()}",
+        resolution="approved",
+    )
+
+    assert failed.invocation.status is EngineInvocationStatus.FAILED
+    assert failed.parsed_result is not None
+    error = failed.parsed_result.structured_findings["error"]
+    assert error["type"] == expected_error_type
+    assert error["stage"] == "remote_execution"
+    assert error["retryable"] is expected_retryable
+    assert error["hpc_failure"]["error_code"] == runner_code
+
+
+def test_pipeline_bio_tools_real_runner_stack_projects_transport_timeout_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_hpc_runner.preflight import PreflightResult
+    from mcp_hpc_runner.remote import CommandResult
+    from mcp_hpc_runner.server import MCPHpcServer
+    from openzyme_execution import HpcRunnerExecutionAdapter
+
+    config_path = tmp_path / "hpc-runner.toml"
+    runner_artifact_root = tmp_path / "runner-artifacts"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[cluster]",
+                'ssh_host = "private-runner.invalid"',
+                'remote_base_dir = "mcp_runs"',
+                "",
+                "[execution]",
+                f'artifact_root = "{runner_artifact_root}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    server = MCPHpcServer(config_path)
+    observed_stages: list[str | None] = []
+    private_stderr = (
+        "Connection to private-runner.invalid port 22222 timed out\n"
+    )
+
+    def fake_command_run(
+        args: list[str],
+        check: bool = False,
+        *,
+        timeout: float | None = None,
+        stage: str | None = None,
+    ) -> CommandResult:  # noqa: ARG001
+        observed_stages.append(stage)
+        if stage == "remote_execution":
+            return CommandResult(
+                args=args,
+                returncode=255,
+                stdout="",
+                stderr=private_stderr,
+                stage=stage,
+                elapsed_seconds=60.0,
+            )
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+            stage=stage,
+        )
+
+    server.command_runner.run = fake_command_run  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "mcp_hpc_runner.ssh_runner.run_preflight",
+        lambda *_args, **_kwargs: PreflightResult(checks=[], passed=True),
+    )
+
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    fasta_artifact_id = _save_fasta_artifact(
+        repositories, "art_real_stack_transport"
+    )
+    workspace = _workspace_payload("real_stack_transport")
+    staged_fasta = _stage_payload(
+        repositories,
+        fasta_artifact_id,
+        workspace,
+        "inputs/sequences.fasta",
+    )
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_real_stack_transport",
+        "from openzyme_pipeline import bio_tools\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio_tools.mafft",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+                    "params": {},
+                },
+            ),
+        )
+    )
+    engine = ExecutionEngine(
+        repositories,
+        HpcRunnerExecutionAdapter(server=server),
+        sandbox_runner=sandbox,
+    )
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_real_stack_transport",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [fasta_artifact_id]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    failed = engine.continue_after_approval(
+        invocation_id="inv_real_stack_transport",
+        resolution="approved",
+    )
+
+    assert failed.invocation.status is EngineInvocationStatus.FAILED
+    assert failed.parsed_result is not None
+    error = failed.parsed_result.structured_findings["error"]
+    assert error["type"] == "hpc_runner_timeout"
+    assert error["stage"] == "remote_execution"
+    assert error["retryable"] is True
+    assert error["hpc_failure"]["error_code"] == "SSH_CONNECTION_TIMEOUT"
+    assert "stderr_excerpt" not in error["hpc_failure"]
+    assert private_stderr.strip() not in str(error)
+    assert repositories.artifacts.list_by_invocation(
+        "sess_001", "inv_real_stack_transport"
+    ) == []
+    assert "artifact_fetch" not in observed_stages
+
+    metadata_paths = list(
+        runner_artifact_root.glob("*/metadata/run_result_metadata.json")
+    )
+    assert len(metadata_paths) == 1
+    runner_metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
+    assert runner_metadata["stage"] == "remote_execution"
+    assert runner_metadata["status"] == "failed"
+    assert runner_metadata["exit_code"] == 255
+    assert runner_metadata["error_code"] == "SSH_CONNECTION_TIMEOUT"
+
+
 def test_pipeline_bio_tools_missing_declared_output_does_not_synthesize_artifact() -> (
     None
 ):
@@ -5830,7 +6063,10 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
     assert error["type"] == "hpc_operation_failed"
     assert error["hpc_failure"]["runner_run_id"] == "runner_failed_001"
     assert error["hpc_failure"]["error_code"] == "APPTAINER_MISSING"
-    assert error["hpc_failure"]["stderr_excerpt"] == "apptainer: command not found"
+    assert "stderr_excerpt" not in error["hpc_failure"]
+    assert "stdout_excerpt" not in error["hpc_failure"]
+    assert "logs" not in error["hpc_failure"]
+    assert "apptainer: command not found" not in str(status)
     assert repositories.artifacts.list_by_invocation(
         "sess_001",
         "inv_pipeline_hpc_failed",
