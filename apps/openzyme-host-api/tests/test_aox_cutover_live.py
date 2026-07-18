@@ -2743,6 +2743,30 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
                 "decision": "approved",
             },
         },
+        {
+            "cursor": 13,
+            "event_id": "event_browser_projection_backfill",
+            "session_id": "sess_browser_001",
+            "event_type": "approval.resolved",
+            "schema_version": "openzyme.v3.event.v1",
+            "visibility": "public",
+            "actor_ref": None,
+            "command_id": None,
+            "created_at": "2026-07-18T00:00:02+00:00",
+            "payload": {
+                "approval_id": "approval_browser_001",
+                "session_id": "sess_browser_001",
+                "task_id": "task_browser_001",
+                "lane_id": None,
+                "kind": "sdk_controlled_operation",
+                "requested_action": "Approve browser operation",
+                "status": "approved",
+                "request_ref": "operation_browser_001",
+                "resolution_ref": None,
+                "created_at": "2026-07-18T00:00:00+00:00",
+                "resolved_at": "2026-07-18T00:00:01+00:00",
+            },
+        },
     )
 
     workspace_receipt = _public_receipt(
@@ -2829,6 +2853,96 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
         handoff["browser_observation_receipt_schema_id"]
         == live.BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
     )
+
+
+def test_chrome_once_rejects_explicit_operator_decision(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        effective_config=_chrome_effective_config(),
+        approval_mode="chrome-once",
+        timeout_seconds=0.05,
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.0,
+    )
+    operation_digest = _digest("browser-operation")
+    pending = {
+        "approval_id": "approval_browser_001",
+        "operation": {
+            "operation_id": "operation_browser_001",
+            "operation_digest": operation_digest,
+            "sandbox_workspace_id": "sandbox_workspace_browser_001",
+        },
+        "sandbox_run": {"sandbox_run_id": "sandbox_run_browser_001"},
+    }
+    pre_workspace = {"pending_approvals": [pending]}
+    workspace_receipt = _public_receipt(
+        sequence=1,
+        route="/v3/sessions/sess_browser_001/workspace",
+        semantic_value=pre_workspace,
+    )
+    rejected_event = {
+        "cursor": 11,
+        "event_id": "event_browser_rejected",
+        "session_id": "sess_browser_001",
+        "event_type": "approval.resolved",
+        "schema_version": "openzyme.v3.event.v1",
+        "visibility": "public",
+        "actor_ref": "local-user",
+        "command_id": "command_browser_rejected",
+        "created_at": "2026-07-18T00:00:00+00:00",
+        "payload": {
+            "approval_id": "approval_browser_001",
+            "decision": "rejected",
+            "actor_ref": "local-user",
+        },
+    }
+
+    class Api(_ReceiptAwareFake):
+        base_url = "http://127.0.0.1:54321"
+        response_binding = staticmethod(live._PublicHostClient.response_binding)
+
+        def __init__(self) -> None:
+            super().__init__((workspace_receipt,))
+
+        def get_event_records(
+            self,
+            session_id: str,
+            *,
+            after_cursor: int = 0,
+            _timeout_seconds: float | None = None,
+        ) -> tuple[dict[str, object], ...]:
+            del _timeout_seconds
+            assert session_id == "sess_browser_001"
+            assert after_cursor == 10
+            records = (rejected_event,)
+            self._append_receipt(
+                _public_receipt(
+                    sequence=len(self.receipts) + 1,
+                    route=(
+                        "/v3/sessions/sess_browser_001/events"
+                        "?replay=1&after_cursor=10"
+                    ),
+                    semantic_value=list(records),
+                )
+            )
+            return records
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._wait_for_browser_approval(
+            Api(),  # type: ignore[arg-type]
+            session_id="sess_browser_001",
+            workspace=pre_workspace,
+            workspace_receipt=workspace_receipt,
+            pending_approval=pending,
+            started=time.monotonic(),
+            pre_event_cursor=10,
+        )
+
+    assert error.value.code == "browser_approval_rejected"
 
 
 def test_chrome_once_rejects_continuation_operation_identity_drift(

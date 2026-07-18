@@ -146,6 +146,13 @@ GO 只由顺序固定的三次 campaign 聚合得出：
 
 正式 campaign 使用 `--approval-mode chrome-once` 时，只把 positive 1 的首个 formal approval 暴露给同进程 loopback Host 提供的 Web UI。driver 不调用 resolve route；它在触发该 drain 前先记录 durable event cursor，再从该 cursor 重建 resolution/continuation，避免即时浏览器批准与事后 snapshot 竞争。浏览器审批 timeout 从 handoff 发出时独立计时，同时受 attempt 总 deadline 上界约束。用户在 approval card 上批准后，driver 必须从有序 durable events 证明同一 approval、operation digest、sandbox run/workspace 和 continuation 恢复到同一 operation 的 terminal state，并在完成后保留 bounded UI observation window。handoff 对动态身份是完整的：发出 sealed page、Host/UI identity 和 receipt schema id，而 exact 23-field builder 合同由稳定 guide/code 定义。trusted operator 必须使 final target 在 hold 内不存在，hold 后使用另一个写入 config digest 的正有限 submission timeout 完成 sibling-temp/fsync/atomic-rename。当前 Host 证据只覆盖 hold polls 未观察到提前 target、post-hold mtime 与两次 stat/read 稳定，不声称证明轮询间连续缺失或 atomic/fsync provenance。该 receipt 加上 browser console 无 application error 才构成当前 trusted-operator Chrome proof；`auto` 模式不能满足这一 GO 条件。任一必需 quorum、digest、分支 closure、published report、offline verification、Chrome proof 或 MICU ledger 条件失败，campaign 只能产生最小 evidence-backed **NO-GO** blocker。
 
+Chrome resolution consumer 只把带闭合 `decision=approved|rejected` 的 canonical
+`approval.resolved` command event 当作 operator decision。当前 activity backfill
+可能以同一 event type 投影 ApprovalRequest 的 `status`，但不带 `decision`；这种
+projection echo 必须忽略，既不能证明批准，也不能解释为拒绝。真正的 canonical
+`decision=rejected` 仍立即 fail closed；若有界 deadline 内始终没有 canonical closed
+decision，则以 timeout/缺失证据 fail closed。
+
 同进程 coordinator 在成功 drain worker terminal 后还必须发起一次确定发生在
 response 之后的 public workspace GET，才能排除最后时刻投影出的
 `waiting_approval`。后台 drain 自身异常保持

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import Any
 
 from .client import call
@@ -15,6 +16,32 @@ _ROUTE_POLICY_IDS = {
 }
 
 _SHA256_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+def _validated_provider_output_dir(output_dir: str) -> str:
+    if (
+        not isinstance(output_dir, str)
+        or not output_dir
+        or output_dir != output_dir.strip()
+        or any(character in output_dir for character in ("\\", "\n", "\r", "\0"))
+    ):
+        raise ValueError(
+            "bio provider output_dir must be a canonical absolute path under "
+            "/workspace/output, for example /workspace/output/bio/ncbi"
+        )
+    path = PurePosixPath(output_dir)
+    parts = path.parts
+    if (
+        not path.is_absolute()
+        or len(parts) < 4
+        or parts[:3] != ("/", "workspace", "output")
+        or any(part in {"", ".", ".."} for part in parts[3:])
+    ):
+        raise ValueError(
+            "bio provider output_dir must be a canonical absolute path under "
+            "/workspace/output, for example /workspace/output/bio/ncbi"
+        )
+    return output_dir
 
 
 def _validated_provider_input_refs(
@@ -85,6 +112,9 @@ def ncbi_fetch_proteins(
     output_dir: str,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Fetch NCBI proteins into an absolute directory below ``/workspace/output``."""
+
+    output_dir = _validated_provider_output_dir(output_dir)
     params = {
         "accessions": list(accessions),
         "fields": list(fields or []),
@@ -114,6 +144,9 @@ def uniprot_fetch(
     sequence_mismatch_choices: dict[str, str] | None = None,
     source_hit_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Fetch UniProt records below ``/workspace/output`` with source identity bound."""
+
+    output_dir = _validated_provider_output_dir(output_dir)
     source_refs, _, _ = _validated_provider_input_refs(
         [] if source_hit_artifact is None else [dict(source_hit_artifact)]
     )
@@ -150,6 +183,9 @@ def hmmer_search(
     output_dir: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Run the provider HMMER search with output below ``/workspace/output``."""
+
+    output_dir = _validated_provider_output_dir(output_dir)
     payload = {
         "hmm_artifact_id": hmm_artifact_id,
         "hmm_artifact_digest": hmm_artifact_digest,

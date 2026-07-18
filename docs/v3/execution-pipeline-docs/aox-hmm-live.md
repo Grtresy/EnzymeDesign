@@ -57,6 +57,38 @@ a failed or empty real operation with cached fixture sequences, the reference
 accessions, pseudo-HMM construction, local stand-in clustering, invented scores,
 synthetic hits, or fabricated graph edges.
 
+Every `openzyme_pipeline.bio` provider call requires an explicit canonical
+`output_dir="/workspace/output/<provider-specific-directory>"`. A relative
+path, `/workspace/output` itself, `/workspace/input`, traversal, whitespace, or
+a Host path is invalid. The SDK rejects these shapes before creating a
+controlled operation; the Host repeats the authoritative validation after
+approval. This is a path boundary, not a prescribed directory name: the agent
+remains free to choose distinct meaningful subdirectories under the output
+root. The minimum provider signatures are:
+
+```python
+bio.ncbi_fetch_proteins(
+    accessions=[...],
+    output_dir="/workspace/output/providers/ncbi_reference",
+    fields=[...],
+)
+bio.hmmer_search(
+    hmm_artifact_id=...,
+    hmm_artifact_digest=...,
+    database="refprot",
+    output_dir="/workspace/output/providers/ebi_hmmer",
+    params={...},
+)
+bio.uniprot_fetch(
+    accessions=[...],
+    output_dir="/workspace/output/providers/uniprot",
+    source_hit_artifact={
+        "artifact_id": ...,
+        "content_digest": ...,
+    },
+)
+```
+
 The formal scientific closure always reaches `bio.ncbi_fetch_proteins`,
 `bio_tools.mafft`, `bio_tools.hmmbuild`, and
 `bio.hmmer_search(database="refprot")`. It reaches `bio.uniprot_fetch` only

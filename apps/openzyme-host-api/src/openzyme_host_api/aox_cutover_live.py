@@ -2213,7 +2213,15 @@ class LiveAoxAttemptRunner:
                     event.get("event_type") == "approval.resolved"
                     and payload.get("approval_id") == approval_id
                 ):
-                    if payload.get("decision") != "approved":
+                    decision = payload.get("decision")
+                    if decision is None:
+                        # The public activity backfill also projects the full
+                        # resolved ApprovalRequest under this event type.  It
+                        # carries ``status`` rather than the authenticated
+                        # command event's closed ``decision`` payload and is
+                        # neither positive nor negative browser proof.
+                        continue
+                    if decision != "approved":
                         raise LiveProductPathError(
                             "browser_approval_rejected",
                             "Chrome operator rejected the cutover operation",

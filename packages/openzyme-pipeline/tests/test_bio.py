@@ -25,6 +25,57 @@ def _capture_controlled_operation(
     return captured
 
 
+@pytest.mark.parametrize(
+    "output_dir",
+    [
+        "providers/ncbi",
+        "/workspace/output",
+        "/workspace/input/providers/ncbi",
+        "/workspace/output/../input/ncbi",
+        " /workspace/output/providers/ncbi",
+        "/workspace/output/providers/ncbi\n",
+        "C:\\workspace\\output\\providers\\ncbi",
+    ],
+)
+@pytest.mark.parametrize("method", ["ncbi_fetch_proteins", "uniprot_fetch"])
+def test_provider_calls_fail_fast_before_operation_for_invalid_output_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    output_dir: str,
+    method: str,
+) -> None:
+    captured = _capture_controlled_operation(monkeypatch)
+
+    with pytest.raises(ValueError, match="absolute path under /workspace/output"):
+        if method == "ncbi_fetch_proteins":
+            bio.ncbi_fetch_proteins(
+                accessions=["AAB57849.1"],
+                output_dir=output_dir,
+            )
+        else:
+            bio.uniprot_fetch(
+                accessions=["P12345"],
+                output_dir=output_dir,
+            )
+
+    assert captured == []
+
+
+def test_hmmer_search_fails_fast_before_input_binding_for_invalid_output_dir(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_controlled_operation(monkeypatch)
+
+    with pytest.raises(ValueError, match="absolute path under /workspace/output"):
+        bio.hmmer_search(
+            hmm_artifact_id="art_hmm_001",
+            hmm_artifact_digest=HMM_DIGEST,
+            database="refprot",
+            output_dir="providers/hmmer",
+        )
+
+    assert captured == []
+
+
 def test_hmmer_search_binds_hmm_artifact_id_and_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

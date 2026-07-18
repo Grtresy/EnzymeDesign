@@ -1246,6 +1246,7 @@ def test_harness_docs_read_exposes_aox_hmm_live_recipe() -> None:
     assert payload["version"] == "v3"
     assert payload["content_sha256"].startswith("sha256:")
     assert "bio.ncbi_fetch_proteins" in content
+    assert 'output_dir="/workspace/output/<provider-specific-directory>"' in content
     assert "bio_tools.hmmbuild" in content
     assert "AAC72747.1" in content
     assert "CAQ19344.1" in content

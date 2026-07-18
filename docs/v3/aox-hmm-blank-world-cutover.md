@@ -148,6 +148,30 @@ as an estimated reservation. Timer hooks are now invoked through detached
 wrappers, with a receiver-sensitive regression test. This failed campaign is
 diagnostic evidence only and cannot be reused by the next fresh pin.
 
+The following r11 campaign pinned commit
+`093c573e0a8f4980d206c708fc60bfcbe7ff14a7` and config digest
+`sha256:8e0ce95c21e13d9397586df7fc5bbf52a77246418b075e182024e3dc07487011`,
+but also remained strict **NO-GO**. Its real known-positive probe completed all
+six controlled operations, the formal researcher preserved real PubMed
+evidence, and the same-process Chrome UI resolved the first formal approval.
+That initially approved NCBI operation then failed for the real, LLM-readable
+reason `provider_output_path_invalid`: the executor supplied relative
+`providers/ncbi_aox_reference` rather than the required
+`/workspace/output/providers/ncbi_aox_reference`. The agent corrected the
+argument and opened a new approval, but event replay also returned an activity
+backfill for the earlier approval under the same `approval.resolved` event type.
+The canonical command event carried a closed `decision=approved`; the activity
+projection echo carried `status=approved` and no `decision`. The r11 driver
+mistook that projection echo for a rejection, entered coordination cleanup and
+explicitly rejected the corrected pending operation. The resulting attempt
+bundle still passed offline integrity verification at
+`sha256:3610fc0c9841fd8426111a0c94dfc1def7167e263ef535b5b355c412a4c18260`,
+while remaining non-eligible; the campaign sealed the NO-GO decision
+`sha256:b80a803bef6af527e723a0fc0e8e87b672016a32dcea6d648d6b148daac88057`.
+The persistent ledger closed at 28,150,263 / 500,000,000 charged tokens with
+zero breaches. r11 is diagnostic evidence only: neither its bundle, roots nor
+browser interaction can be reused by a fresh positive attempt.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model
@@ -661,7 +685,15 @@ ordered durable resolution/continuation events before allowing the same
 reach terminal state. The launch receipt seals this lineage and the built UI
 dist digest. The event cursor is captured before the drain that exposes the
 handoff, so an immediate browser resolution is reconstructed from durable
-events instead of racing a later snapshot. The independent approval deadline
+events instead of racing a later snapshot. A resolution consumer treats only
+the canonical `approval.resolved` command event carrying a closed
+`decision=approved|rejected` as operator evidence. An activity-backfill
+projection may currently reuse that event type while carrying approval
+`status` but no `decision`; such an echo is ignored as neither approval nor
+rejection. A canonical `decision=rejected` still fails closed immediately, and
+failure to observe any canonical closed decision remains bounded by the
+approval timeout rather than being inferred from projection state. The
+independent approval deadline
 starts when the handoff is emitted and is capped by the attempt-wide deadline;
 after formal completion the driver keeps a bounded UI observation window.
 Under the trusted-operator contract, the final observation target must remain
