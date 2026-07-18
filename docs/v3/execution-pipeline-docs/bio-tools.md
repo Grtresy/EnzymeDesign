@@ -105,6 +105,15 @@ hits = bio.hmmer_search(
 )
 ```
 
+In supervised sandbox mode, every HPC input passed to `bio_tools.*` must be the
+exact `hpc_stage_ref` object returned by `ws.stage_artifact(...)`. Pass that
+return value directly, as the examples above do. Do not hand-write or
+reconstruct an artifact/digest/path dictionary: the SDK rejects malformed
+ad-hoc descriptors before the Host RPC with
+`PipelineSdkError(error_code="hpc_stage_ref_required")` and directs the caller
+back to `ws.stage_artifact(...)`. The Host remains the authority for workspace
+ownership, artifact authorization, and complete S11/S12 binding validation.
+
 Functions:
 
 - `bio_tools.cdhit(input_fasta=..., placement=..., expected_outputs=..., identity=..., mode=...)`

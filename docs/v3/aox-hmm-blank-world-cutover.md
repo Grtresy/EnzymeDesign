@@ -53,6 +53,34 @@ receipts is proposal-only in
 [versioned scientific calculation capability projection](architecture-proposals/versioned-scientific-calculation-capability-projection.md)
 and is not implemented in this goal.
 
+The first real post-closure campaign on commit `fbce624` remained strict
+**NO-GO**. Attempt `positive-b6fa75b20b554cd286a2fd2111257f42` sealed a
+structurally valid non-eligible bundle but stopped after the executor discarded
+the valid value returned by `ws.stage_artifact(...)` and hand-built a malformed
+MAFFT input descriptor. The run also exposed a cleanup-stage top-level blocker;
+code-path reconstruction plus a deterministic regression showed that cleanup
+could mask an earlier coordination blocker. The next pin therefore adds these
+small harness corrections without changing scientific acceptance:
+
+- supervised `bio_tools.*` rejects a malformed input locally with
+  `hpc_stage_ref_required` and directs the agent to pass the exact
+  `ws.stage_artifact(...)` return value; the Host remains authoritative for
+  workspace ownership, artifact authorization and complete S11/S12 binding;
+- the live prompt fixes one canonical research/execution/report task-id family.
+  Every master wake reconciles that set: it may create a missing canonical
+  member and advance an existing member, but cannot invent another/suffixed
+  task id. This is a campaign-local idempotency guard, not a replacement for
+  the proposal-only
+  [request-lineage workflow authority](architecture-proposals/request-lineage-workflow-authority.md)
+  design;
+- drain failure arbitration preserves `drain command > earlier coordination >
+  cleanup-only`; cleanup is still attempted fail closed and only its safe
+  failure type may be attached as secondary diagnostic metadata.
+
+None of these corrections turns the failed attempt into cutover evidence. A
+fresh commit/config pin and fresh blank roots are required for the two positive
+attempts and controlled fault proof below.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model
@@ -506,9 +534,16 @@ reject a still-pending operation only to release the failed worker; it never
 approves an operation as cleanup. A successful drain response is not by itself
 proof that no last approval became visible: after observing worker terminal,
 the coordinator performs one public workspace GET that is known to begin after
-that response. A background drain exception retains
-`runtime_drain_command_failed`; only public coordination/cleanup failures use
-the coordination taxonomy. The worker must join before Host teardown or
+that response. Failure arbitration happens only after the drain worker joins:
+a drain-command exception remains authoritative, otherwise the earliest public
+coordination exception remains authoritative, and a cleanup-only exception uses
+`runtime_drain_coordination_cleanup_failed`. Cleanup is still attempted
+fail-closed; when it also fails, its safe failure type is retained as secondary
+diagnostic metadata in the sealed failure blocker instead of replacing either
+earlier blocker. Thus a
+background drain exception retains `runtime_drain_command_failed`; only public
+coordination/cleanup failures use the coordination taxonomy. The worker must
+join before Host teardown or
 evidence collection.  Because a client timeout does not prove the synchronous
 FastAPI handler has stopped, the loopback Host also tracks every server-side
 mutation lifetime, initiates server shutdown, and waits through server retirement

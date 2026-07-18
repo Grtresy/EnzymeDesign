@@ -287,6 +287,56 @@ class _ConcurrentDrainAndWorkspaceFailureJsonClient:
         raise RuntimeError("private concurrent drain failure detail")
 
 
+class _CoordinationCleanupFailureJsonClient:
+    """Keep the drain blocked while primary and cleanup reads both fail."""
+
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self, *, drain_fails: bool) -> None:
+        self.drain_fails = drain_fails
+        self.release_drain = threading.Event()
+        self.cleanup_attempted = threading.Event()
+        self.drain_finished = threading.Event()
+        self.workspace_get_count = 0
+        self.primary_error = live.LiveProductPathError(
+            "scientific_primary_failure",
+            "formal scientific path failed before cleanup",
+            details={"scientific_stage": "motif"},
+        )
+        self.cleanup_error = RuntimeError("private cleanup failure detail")
+        self.drain_error = RuntimeError("private drain failure detail")
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route == "/v3/sessions/sess_cleanup_precedence/workspace"
+        self.workspace_get_count += 1
+        if self.workspace_get_count == 1:
+            raise self.primary_error
+        assert self.workspace_get_count == 2
+        self.cleanup_attempted.set()
+        self.release_drain.set()
+        raise self.cleanup_error
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del json, headers
+        assert route == (
+            "/v3/sessions/sess_cleanup_precedence/runtime/drain"
+        )
+        try:
+            if not self.release_drain.wait(timeout=2.0):
+                raise AssertionError("cleanup did not release the drain test worker")
+            if self.drain_fails:
+                raise self.drain_error
+            return _JsonResponse({"status": "failed"})
+        finally:
+            self.drain_finished.set()
+
+
 class _DrainReturnsPendingApprovalJsonClient:
     """Expose an approval in the same bounded response that yields for it."""
 
@@ -1009,6 +1059,17 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
 
     assert "campaign already enforces evidence-bearing provider cache bypass" in prompt
     assert "do not pass or invent unsupported cache flags" in prompt
+    execution_task_id = (
+        "aox_execution_cutover_"
+        + roots.hpc_workspace_label.removeprefix("aox-cutover-")
+    )
+    assert "canonical task ids aox_research_pubmed_evidence" in prompt
+    assert execution_task_id in prompt
+    assert "aox_final_source_linked_report" in prompt
+    assert "reconcile the durable task board and inbox" in prompt
+    assert "create only a missing canonical member" in prompt
+    assert "advance any existing member" in prompt
+    assert "never create another, suffixed, or replacement task id" in prompt
     assert f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor" in prompt
     assert "researcher and reporter must omit workflow_refs" in prompt
     assert "openzyme_pipeline.aox_reference.select_hmm_reference_set" in prompt
@@ -1027,6 +1088,8 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "bio_tools/cdhit/clustered.fasta" in prompt
     assert "bio_tools/cdhit/clusters.csv" in prompt
     assert "bio_tools/hmmalign/aligned.fasta" in prompt
+    assert "pass the exact dict returned by ws.stage_artifact(...) unchanged" in prompt
+    assert "never reconstruct it, rename its keys" in prompt
     assert "unique fetch_refs entry" in prompt
     assert "exact fetched hmmbuild artifact id and content digest" in prompt
     assert "validation_profile='fasta_zero_records@1'" in prompt
@@ -1673,6 +1736,9 @@ def test_live_runner_preserves_transport_blocker_when_receipt_chain_failed(
     assert blocker_payload["blocker"]["code"] == (
         "host_public_api_transport_failed"
     )
+    assert blocker_payload["blocker"]["details"] == {
+        "failure_type": "ConnectError"
+    }
     assert blocker_payload["public_api_receipts"] == []
     assert raw_client.calls == ["/v3/runtime/health"]
 
@@ -1911,6 +1977,137 @@ def test_runtime_drain_failure_wins_over_concurrent_workspace_failure(
     assert "workspace failure" not in str(error.value)
     assert all(
         not thread.is_alive() or thread.name != drain_thread_name
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_primary_error_wins_over_cleanup_failure(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 11
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _CoordinationCleanupFailureJsonClient(drain_fails=False)
+    api = live._PublicHostClient(raw_client)
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_cleanup_precedence",
+                drain_number=drain_number,
+                started=time.monotonic(),
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=False,
+                fault_blob_root=None,
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_drain.set()
+
+    assert error.value is raw_client.primary_error
+    assert error.value.code == "scientific_primary_failure"
+    assert error.value.details == {
+        "scientific_stage": "motif",
+        "cleanup_failure_type": "RuntimeError",
+    }
+    assert raw_client.cleanup_attempted.is_set()
+    assert raw_client.drain_finished.is_set()
+    assert "private cleanup failure detail" not in str(error.value)
+    assert all(
+        not thread.is_alive()
+        or thread.name != f"aox-cutover-drain-{drain_number}"
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_cleanup_failure_without_primary_uses_cleanup_taxonomy() -> None:
+    cleanup_error = RuntimeError("private standalone cleanup failure")
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._raise_runtime_drain_failures(
+            drain_errors=[],
+            coordination_error=None,
+            cleanup_errors=[cleanup_error],
+        )
+
+    assert error.value.code == "runtime_drain_coordination_cleanup_failed"
+    assert error.value.details == {"failure_type": "RuntimeError"}
+    assert error.value.__cause__ is cleanup_error
+    assert "private standalone cleanup failure" not in str(error.value)
+
+
+def test_sealed_failure_details_allowlists_only_safe_machine_identifiers() -> None:
+    assert live._sealed_failure_details(
+        {
+            "failure_type": "RuntimeError",
+            "coordination_failure_type": "LiveProductPathError",
+            "cleanup_failure_type": "OSError",
+            "route": "/v3/private/runtime/drain",
+            "private_locator": "ssh://private-runner",
+        }
+    ) == {
+        "cleanup_failure_type": "OSError",
+        "coordination_failure_type": "LiveProductPathError",
+        "failure_type": "RuntimeError",
+    }
+
+
+def test_runtime_drain_command_failure_wins_over_primary_and_cleanup_failures(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 12
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _CoordinationCleanupFailureJsonClient(drain_fails=True)
+    api = live._PublicHostClient(raw_client)
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_cleanup_precedence",
+                drain_number=drain_number,
+                started=time.monotonic(),
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=False,
+                fault_blob_root=None,
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_drain.set()
+
+    assert error.value.code == "runtime_drain_command_failed"
+    assert error.value.details == {
+        "failure_type": "RuntimeError",
+        "cleanup_failure_type": "RuntimeError",
+    }
+    assert error.value.__cause__ is raw_client.drain_error
+    assert raw_client.cleanup_attempted.is_set()
+    assert raw_client.drain_finished.is_set()
+    assert "private cleanup failure detail" not in str(error.value)
+    assert "private drain failure detail" not in str(error.value)
+    assert all(
+        not thread.is_alive()
+        or thread.name != f"aox-cutover-drain-{drain_number}"
         for thread in threading.enumerate()
     )
 

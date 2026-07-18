@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .client import PipelineSdkError
 from .client import call
 from .client import controlled_operation
 from .client import supervised_sandbox_mode
@@ -17,8 +18,48 @@ _ROUTE_POLICY_IDS = {
 }
 
 
-def _input_refs(*refs: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    stage_refs = [dict(ref) for ref in refs]
+_HPC_STAGE_REF_REQUIRED_FIELDS = (
+    "kind",
+    "stage_ref_id",
+    "hpc_workspace_id",
+    "artifact_id",
+    "artifact_digest",
+)
+
+
+def _input_refs(
+    function_name: str,
+    *refs: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    stage_refs: list[dict[str, Any]] = []
+    for input_index, ref in enumerate(refs):
+        missing_fields = [
+            field
+            for field in _HPC_STAGE_REF_REQUIRED_FIELDS
+            if not isinstance(ref.get(field), str) or not str(ref[field]).strip()
+        ]
+        if ref.get("kind") != "hpc_stage_ref" and "kind" not in missing_fields:
+            missing_fields.insert(0, "kind")
+        if missing_fields:
+            raise PipelineSdkError(
+                "HPC bio_tools inputs must be the exact object returned by "
+                "ws.stage_artifact(...); pass that return value directly and do not "
+                "hand-write or reconstruct the input dict.",
+                error_code="hpc_stage_ref_required",
+                stage="bio_tools.input_validation",
+                retryable=False,
+                hint=(
+                    "Call staged = ws.stage_artifact(artifact_id, workspace_path=...), "
+                    f"then pass staged directly to bio_tools.{function_name}(...)."
+                ),
+                details={
+                    "function_name": function_name,
+                    "input_index": input_index,
+                    "expected_kind": "hpc_stage_ref",
+                    "missing_fields": missing_fields,
+                },
+            )
+        stage_refs.append(dict(ref))
     artifact_ids = [
         str(ref.get("artifact_id"))
         for ref in stage_refs
@@ -85,7 +126,9 @@ def cdhit(
         "mode": mode,
     }
     if supervised_sandbox_mode():
-        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(input_fasta)
+        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(
+            "cdhit", input_fasta
+        )
         return _hpc_operation(
             function_name="cdhit",
             params=params,
@@ -117,7 +160,9 @@ def mafft(
         "params": dict(params or {}),
     }
     if supervised_sandbox_mode():
-        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(input_fasta)
+        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(
+            "mafft", input_fasta
+        )
         return _hpc_operation(
             function_name="mafft",
             params=params_payload,
@@ -149,7 +194,9 @@ def hmmbuild(
         "params": dict(params or {}),
     }
     if supervised_sandbox_mode():
-        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(alignment)
+        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(
+            "hmmbuild", alignment
+        )
         return _hpc_operation(
             function_name="hmmbuild",
             params=params_payload,
@@ -183,7 +230,9 @@ def hmmalign(
         "params": dict(params or {}),
     }
     if supervised_sandbox_mode():
-        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(hmm, fasta)
+        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(
+            "hmmalign", hmm, fasta
+        )
         return _hpc_operation(
             function_name="hmmalign",
             params=params_payload,
@@ -217,7 +266,9 @@ def hmmer_search_cli(
         "params": dict(params or {}),
     }
     if supervised_sandbox_mode():
-        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(hmm, target_fasta)
+        stage_refs, input_artifact_ids, input_artifact_digests = _input_refs(
+            "hmmer_search_cli", hmm, target_fasta
+        )
         return _hpc_operation(
             function_name="hmmer_search_cli",
             params=params_payload,

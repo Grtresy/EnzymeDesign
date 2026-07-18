@@ -356,6 +356,88 @@ class LiveProductPathError(RuntimeError):
         super().__init__(f"{code}: {message}")
 
 
+_SEALED_FAILURE_DETAIL_KEYS = frozenset(
+    {
+        "cleanup_failure_type",
+        "coordination_failure_type",
+        "failure_type",
+    }
+)
+
+
+def _sealed_failure_details(
+    details: Mapping[str, object] | None,
+) -> dict[str, str]:
+    """Project only bounded machine identifiers into sealed failure evidence."""
+
+    projected: dict[str, str] = {}
+    for key in sorted(_SEALED_FAILURE_DETAIL_KEYS):
+        value = safe_public_machine_identifier(
+            None if details is None else details.get(key),
+            fallback=None,
+        )
+        if value is not None:
+            projected[key] = value
+    return projected
+
+
+def _raise_runtime_drain_failures(
+    *,
+    drain_errors: list[Exception],
+    coordination_error: Exception | None,
+    cleanup_errors: list[Exception],
+) -> None:
+    """Raise the most authoritative drain failure without losing diagnostics."""
+
+    cleanup_error = cleanup_errors[0] if cleanup_errors else None
+    if drain_errors:
+        # The drain command owns the coordinated operation.  Preserve its
+        # stable taxonomy even when coordination and cleanup also failed while
+        # the command was unwinding.
+        error = drain_errors[0]
+        secondary_details: dict[str, str] = {}
+        if cleanup_error is not None:
+            secondary_details["cleanup_failure_type"] = type(cleanup_error).__name__
+        if isinstance(error, LiveProductPathError):
+            for key, value in secondary_details.items():
+                error.details.setdefault(key, value)
+            raise error
+        raise LiveProductPathError(
+            "runtime_drain_command_failed",
+            "public runtime drain failed before producing a bounded response",
+            details={"failure_type": type(error).__name__, **secondary_details},
+        ) from error
+
+    if coordination_error is not None:
+        # Cleanup is a mandatory best effort to release a failed worker, but a
+        # later cleanup exception must not replace the earlier coordination
+        # blocker.  Record only its safe type alongside the primary error.
+        cleanup_details = (
+            {}
+            if cleanup_error is None
+            else {"cleanup_failure_type": type(cleanup_error).__name__}
+        )
+        if isinstance(coordination_error, LiveProductPathError):
+            for key, value in cleanup_details.items():
+                coordination_error.details.setdefault(key, value)
+            raise coordination_error
+        raise LiveProductPathError(
+            "runtime_drain_coordination_failed",
+            "public drain approval coordination failed",
+            details={
+                "failure_type": type(coordination_error).__name__,
+                **cleanup_details,
+            },
+        ) from coordination_error
+
+    if cleanup_error is not None:
+        raise LiveProductPathError(
+            "runtime_drain_coordination_cleanup_failed",
+            "failed to reject a pending approval during drain cleanup",
+            details={"failure_type": type(cleanup_error).__name__},
+        ) from cleanup_error
+
+
 @dataclass(frozen=True, slots=True)
 class PublicApiReceipt:
     sequence: int
@@ -1534,9 +1616,16 @@ class LiveAoxAttemptRunner:
                 formal=formal,
             )
         except LiveProductPathError as exc:
+            blocker: dict[str, object] = {
+                "code": exc.code,
+                "message": _safe_message(exc),
+            }
+            failure_details = _sealed_failure_details(exc.details)
+            if failure_details:
+                blocker["details"] = failure_details
             return _LiveDriveOutcome(
                 kind="failure",
-                blocker={"code": exc.code, "message": _safe_message(exc)},
+                blocker=blocker,
                 api_receipts=api.failure_receipts,
                 health=_safe_health(health) if health else {},
                 probe=probe,
@@ -1943,33 +2032,11 @@ class LiveAoxAttemptRunner:
             # owns a server-side runtime call; wait for the bounded request to
             # retire its reservation first.
             drain_thread.join()
-        if drain_errors:
-            # The drain command is the primary operation coordinated here.  A
-            # workspace GET may fail concurrently while that command unwinds;
-            # once the joined command has reported its own failure, do not
-            # misclassify the attempt as a coordination-read failure.
-            error = drain_errors[0]
-            if isinstance(error, LiveProductPathError):
-                raise error
-            raise LiveProductPathError(
-                "runtime_drain_command_failed",
-                "public runtime drain failed before producing a bounded response",
-                details={"failure_type": type(error).__name__},
-            ) from error
-        if cleanup_errors:
-            raise LiveProductPathError(
-                "runtime_drain_coordination_cleanup_failed",
-                "failed to reject a pending approval during drain cleanup",
-                details={"failure_type": type(cleanup_errors[0]).__name__},
-            ) from coordination_error
-        if coordination_error is not None:
-            if isinstance(coordination_error, LiveProductPathError):
-                raise coordination_error
-            raise LiveProductPathError(
-                "runtime_drain_coordination_failed",
-                "public drain approval coordination failed",
-                details={"failure_type": type(coordination_error).__name__},
-            ) from coordination_error
+        _raise_runtime_drain_failures(
+            drain_errors=drain_errors,
+            coordination_error=coordination_error,
+            cleanup_errors=cleanup_errors,
+        )
 
         latest_workspace = api.get_json(
             f"/v3/sessions/{session_id}/workspace",
@@ -3050,13 +3117,23 @@ class LiveAoxAttemptRunner:
 
     def _formal_prompt(self, context: AttemptRunContext) -> str:
         workflow_ref = str(context.identity["workflow_ref"])
+        execution_task_id = (
+            "aox_execution_cutover_"
+            + context.roots.hpc_workspace_label.removeprefix("aox-cutover-")
+        )
         prompt = (
             S15_AOX_HMM_FIXED_PROMPT
             + " The campaign already enforces evidence-bearing provider cache bypass; do not "
             + "pass or invent unsupported cache flags. Use the unique Host-supervised HPC "
             + f"workspace label {context.roots.hpc_workspace_label!r}. Do not read any prior "
             + "session, historical AOX output, notebook output, fixture, or golden expected result. "
-            + "The entry message authorizes exactly one workflow binding. When delegating, bind "
+            + "The entry message authorizes exactly one workflow binding. Use exactly the "
+            + "canonical task ids aox_research_pubmed_evidence, "
+            + execution_task_id
+            + ", and aox_final_source_linked_report. On every master wake, reconcile the durable "
+            + "task board and inbox against exactly that canonical set: create only a missing "
+            + "canonical member, advance any existing member, and never create another, "
+            + "suffixed, or replacement task id. When delegating, bind "
             + f"workflow_refs=[{workflow_ref!r}] only to the executor task; researcher and reporter "
             + "must omit workflow_refs or pass an empty list. The executor must use the installed "
             + "versioned callables openzyme_pipeline.aox_reference.select_hmm_reference_set, "
@@ -3080,7 +3157,10 @@ class LiveAoxAttemptRunner:
             + "Runner templates accept only the "
             + "fixed declared paths bio_tools/mafft/alignment.fasta, "
             + "bio_tools/hmmbuild/model.hmm, bio_tools/cdhit/clustered.fasta plus "
-            + "bio_tools/cdhit/clusters.csv, and bio_tools/hmmalign/aligned.fasta. Select fetched "
+            + "bio_tools/cdhit/clusters.csv, and bio_tools/hmmalign/aligned.fasta. "
+            + "For every bio_tools HPC input, pass the exact dict returned by "
+            + "ws.stage_artifact(...) unchanged; never reconstruct it, rename its keys, or "
+            + "substitute an artifact-id/digest/workspace-path dict. Select fetched "
             + "runner artifacts only through the unique fetch_refs entry whose "
             + "declared_output_path exactly matches that fixed path. Bind bio.hmmer_search to the "
             + "exact fetched hmmbuild artifact id and content digest. A scientifically derived "
@@ -3204,16 +3284,25 @@ class LiveAoxAttemptRunner:
         formal: SessionDriveResult | None,
     ) -> dict[str, Any]:
         blocker_code = str(blocker.get("code") or "live_product_path_failed")
+        blocker_record: dict[str, object] = {
+            "code": blocker_code,
+            "message": str(blocker.get("message") or blocker_code),
+        }
+        raw_blocker_details = blocker.get("details")
+        blocker_details = _sealed_failure_details(
+            raw_blocker_details
+            if isinstance(raw_blocker_details, Mapping)
+            else None
+        )
+        if blocker_details:
+            blocker_record["details"] = blocker_details
         blocker_payload = {
             "schema_id": LIVE_BLOCKER_SCHEMA_ID,
             "runner_schema_id": LIVE_RUNNER_SCHEMA_ID,
             "attempt_id": context.roots.attempt_id,
             "attempt_kind": context.roots.attempt_kind,
             "observed_at": datetime.now(UTC).isoformat(),
-            "blocker": {
-                "code": blocker_code,
-                "message": str(blocker.get("message") or blocker_code),
-            },
+            "blocker": blocker_record,
             "root_identity": context.roots.proof["root_identity"],
             "hpc_workspace_label": context.roots.hpc_workspace_label,
             "health": dict(health),
@@ -3253,16 +3342,19 @@ class LiveAoxAttemptRunner:
                 blocker_code,
                 fallback="live_product_path_failed",
             ) or "live_product_path_failed"
+            fallback_blocker: dict[str, object] = {
+                "code": safe_blocker_code,
+                "message": "[redacted-private-diagnostic]",
+            }
+            if blocker_details:
+                fallback_blocker["details"] = blocker_details
             blocker_payload = {
                 "schema_id": LIVE_BLOCKER_SCHEMA_ID,
                 "runner_schema_id": LIVE_RUNNER_SCHEMA_ID,
                 "attempt_id": context.roots.attempt_id,
                 "attempt_kind": context.roots.attempt_kind,
                 "observed_at": datetime.now(UTC).isoformat(),
-                "blocker": {
-                    "code": safe_blocker_code,
-                    "message": "[redacted-private-diagnostic]",
-                },
+                "blocker": fallback_blocker,
                 "root_identity": context.roots.proof["root_identity"],
                 "hpc_workspace_label": context.roots.hpc_workspace_label,
                 "health": {"status": "redacted"},
