@@ -15,3 +15,4 @@
 - `single-source-hpc-toolchain-contract-registry.md`：未来把 runner manifest、route policy、command template、跨层 DTO 与 verifier 的 toolchain 常量收敛到单一 versioned logical contract；当前 Goal 只落地 same-SSH-shell runner attestation，不实施该跨包迁移。
 - `immutable-hpc-sif-execution-snapshot.md`：为每次 HPC operation 建立 runner-protected immutable SIF snapshot、lease 与 execution binding，消除全局 locator 的 hash-to-open TOCTOU；当前 Goal 只保留 pre/post path hash。
 - `runner-owned-hpc-command-compiler.md`：让 runner 从 typed tool intent 编译并封存 execution plan，退役对 caller shell text 的 parser/rewriter；当前 Goal 只保留 strict direct Apptainer grammar validation。
+- `verifiable-chrome-devtools-observation-transcript.md`：未来用 versioned closed observation protocol、restricted raw call artifacts 与 MCP/sidecar authority receipts 形成可独立离线复核的 Chrome transcript；当前 Goal 只使用 trusted-operator `aox_browser_observation_receipt@2`，不把 per-call digest 扩张解释为 signed/replayable proof。
