@@ -34,7 +34,7 @@ _UNIPROT_IDENTITY_CONTRACT_ID = "uniprot_primary_sequence_identity@1"
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UNIPROT_ACCESSION_SOURCE = (
     r"(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|"
-    r"[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}){1,2}[0-9])(?:-[0-9]+)?"
+    r"[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})(?:-[0-9]+)?"
 )
 _UNIPROT_ACCESSION_PATTERN = re.compile(rf"^{_UNIPROT_ACCESSION_SOURCE}$")
 _UNIPROT_RELEASE_PATTERN = re.compile(r"^[0-9]{4}_[0-9]{2}$")

@@ -214,6 +214,28 @@ def test_join_accepts_bare_sp_tr_headers_and_preserves_requested_identity() -> N
     }
 
 
+def test_join_accepts_current_ten_character_uniprot_accession() -> None:
+    accession = "A0A378ARX6"
+    sequence = _sequence(675, "A")
+    score_csv = _hmmer_csv(
+        [(accession, "A0A378ARX6_KLEPO", "1E-12", "250")]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [(accession, accession, sequence, False)],
+        header_styles={accession: "tr"},
+    )
+
+    result = aox_sequence_join.join_score_filtered_accessions(
+        score_csv,
+        fasta,
+        metadata,
+    )
+
+    assert result.hits[0].uniprot_accession == accession
+    assert result.hits[0].primary_accession == accession
+    assert result.target_fasta() == f">{accession}\n{sequence}\n"
+
+
 def test_length_filter_is_inclusive_and_supports_healthy_empty_output() -> None:
     score_csv = _hmmer_csv(
         [

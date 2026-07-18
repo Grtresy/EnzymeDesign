@@ -338,6 +338,34 @@ def test_ebi_refprot_accepts_official_shape_and_binds_top_level_accession(
     assert len(phases) >= 2
 
 
+def test_ebi_refprot_accepts_current_ten_character_metadata_accession(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(_fixture_text(HMMER_OFFICIAL_RESULT_FIXTURE))
+    hit = payload["result"]["hits"][0]
+    hit["acc"] = None
+    hit["name"] = "087736296"
+    hit["metadata"] = {
+        "accession": "A0A378ARX6",
+        "uniprot_accession": "A0A378ARX6",
+        "uniprot_identifier": "A0A378ARX6_KLEPO",
+    }
+    response_body = json.dumps(payload)
+
+    result = _hmmer_adapter(response_body).hmmer_search(
+        hmm_artifact=_hmm_artifact(tmp_path),
+        database="refprot",
+        params={"max_hits": 1},
+        retrieved_at="2026-07-17T00:00:00+00:00",
+    )
+
+    assert result.summary["candidate_accessions"] == ["A0A378ARX6"]
+    parsed = _artifact(result, "provider_parsed/parsed_hits.csv")
+    row = next(__import__("csv").DictReader(parsed.content.splitlines()))
+    assert row["accession"] == "A0A378ARX6"
+    assert row["target"] == "A0A378ARX6_KLEPO"
+
+
 @pytest.mark.parametrize(
     "hit",
     [

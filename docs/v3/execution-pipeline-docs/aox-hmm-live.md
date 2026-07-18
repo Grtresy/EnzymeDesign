@@ -34,8 +34,8 @@ are:
 | HMM reference selection | `aox_hmm_reference_set_selection@1` | `sha256:34659d9f384af0b9d63f2d7d66f21927cd438ad222458169114835ec368ebbbf` | `sha256:8abb77c737fcf29ee659e0ae0ef7204ecc8f0f49843eb4a0098a4b5edc2666ba` |
 | coordinate reference selection | `aox_reference_selection@1` | `sha256:1923a047f4bf0ce5b70f9c1bfa16a2e6453379abd1850d7bf7654a4721bb0f49` | `sha256:8abb77c737fcf29ee659e0ae0ef7204ecc8f0f49843eb4a0098a4b5edc2666ba` |
 | scoring input assembly | `aox_scoring_input_assembly@1` | `sha256:42e9926ac2f9a8b88d3117838f919d8a966171a65265854dabb6105ef4255e85` | `sha256:8abb77c737fcf29ee659e0ae0ef7204ecc8f0f49843eb4a0098a4b5edc2666ba` |
-| pre-UniProt HMMER score filter | `hmmer_score_filtered_accessions@1` | `sha256:ed939fa871a6410cfbaae9c5dad0fa96b53c7b0e21f8351daec17d31b62278ee` | `sha256:a08e271fe92a2a1a3be13c09cf913af7639925c7d2ab8c2203a46d0e271ffc83` |
-| UniProt sequence/length join | `aox_sequence_length_join@1` | `sha256:3e26e8925da62fe50dc9f65c61fb5848af08519b2688538b07a6f8bed6c7663a` | `sha256:a0a6cf638c03b08e7baba2c2f0c273ccd73d976af205ed05676aad63c5a49948` |
+| pre-UniProt HMMER score filter | `hmmer_score_filtered_accessions@1` | `sha256:3bc1d3d3fd297a11ba495d07ce097417b5193387197242fa6784d006937c6331` | `sha256:3f98642b4fa7409d8a8cea04d1cf24c2f8c935ad00248a464ca97af7d6136112` |
+| UniProt sequence/length join | `aox_sequence_length_join@1` | `sha256:44e3081794cb2b8e8d4a39b1ee67556856d4997dfb45a963d8675e25219b3a21` | `sha256:09889e030e6550f2c54305738b63c1735b25771a023be0749ac52826bbee5a03` |
 
 The graph closure binds `cdhit_cluster_membership@1`,
 `aox_candidate_graph_nodes@1`, `aox_candidate_graph_edges@1`, and
@@ -163,7 +163,9 @@ batching and inspection strategy:
    digests;
 2. `hmmer_score_filtered_accessions@1` retains only canonical UniProt
    accessions whose provider score is strictly greater than `200` and emits
-   `hmmer_score_filtered_accessions.csv`;
+   `hmmer_score_filtered_accessions.csv`; the primary accession body must
+   satisfy UniProt's official 6- or 10-character format, while an explicit
+   isoform suffix remains identity-bearing and is never silently collapsed;
 3. only a non-empty exact artifact/accession set may be bound as the
    `bio.uniprot_fetch` source-hit input;
 4. `aox_sequence_length_join@1` joins by preserved accession identity, takes

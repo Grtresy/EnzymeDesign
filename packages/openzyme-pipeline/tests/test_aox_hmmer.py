@@ -88,6 +88,17 @@ def test_parse_and_filter_is_strictly_greater_than_200_and_sorts_accessions() ->
     assert "sequence" not in output[0]
 
 
+def test_parse_and_filter_accepts_current_ten_character_uniprot_accession() -> None:
+    source = _csv(
+        [_row(accession="A0A378ARX6", score="300", hit_index=0)]
+    )
+
+    result = aox_hmmer.parse_and_filter_csv(source)
+
+    assert result.accessions == ("A0A378ARX6",)
+    assert result.hits[0].accession == "A0A378ARX6"
+
+
 def test_metadata_binds_contract_input_output_and_cardinality() -> None:
     source = _csv([_row(accession="P12345", score="1834.7", hit_index=0)])
 
