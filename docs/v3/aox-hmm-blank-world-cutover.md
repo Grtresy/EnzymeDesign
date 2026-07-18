@@ -9,8 +9,49 @@ This document describes the operator/evidence boundary implemented by `openzyme_
 - Runtime remains single-process SQLite and the runner remains trusted-Host-only.
 - Scientific failures are fail closed; an honest no-hit/no-candidate outcome may publish a healthy empty report but cannot claim discovery.
 - The formal workflow uses `aox_motif_rule_score@1`, canonical real-sequence similarity, `cdhit_cluster_membership@1`, and digest-pinned workflow/image/SDK identities.
-- The existing cumulative MICU ledger is read before and after every attempt. Its hard limit is exactly 100,000,000 input+output tokens; it is never reset by campaign setup.
+- The target fixed MICU policy is exactly 500,000,000 cumulative input+output tokens; prior usage remains charged and campaign setup never resets it. An existing legacy ledger continues to enforce its stored 100M limit until the operator explicitly runs `uv run python -m openzyme_runtime.live_token_ledger_cli --migrate-legacy-fixed-policy`. Summary, reservation, and campaign startup never reinterpret it. That transaction raises only the exact legacy fixed policy, preserves all attempt rows, is idempotent at 500M, and rejects caller-selected lower limits. The cumulative ledger is read before and after every attempt.
 - A bounded known-positive provider/HPC probe is separate from formal artifacts. Probe artifacts cannot enter formal operations or the published report.
+
+## Current pre-live harness closure
+
+The latest non-eligible live attempt remains **NO-GO**. It exposed five narrow
+cutover-driver/harness gaps that are now explicit gates for the next campaign:
+
+- `world.inspect(sections=["capabilities"], task_id=..., limit=...)` binds a
+  teammate to its current task (a mismatch is a typed error), while preserving
+  the existing explicit master session view. The facts page is newest-first,
+  capped at 20 invocations, eight refs per related kind and 64 KiB of serialized
+  facts. It exposes invocation identity/status/timestamps and closed opaque refs,
+  never full document bodies, output payloads, evidence bodies, or source text.
+  Narrow-column repository reads, lazy section hydration and cursor pagination
+  remain the separate proposal
+  [bounded capability facts query](architecture-proposals/bounded-capability-facts-query.md);
+- every formal collector reconstructs the durable delegation request. The
+  executor must carry exactly the campaign workflow ref and complete manifest
+  snapshot, while researcher and reporter carry no workflow binding. The
+  bundle carries a closed public request projection with task/role/agent,
+  instructions digest and workflow fields but no raw instructions. The offline
+  verifier recomputes request-projection and manifest content/core digests and
+  binds the projected agent to the task assignment;
+- the formal executor is told the exact installed AOX SDK callables, provider
+  transcript suffixes, runner-owned output paths and `fetch_refs` binding rule.
+  Approximate reimplementations, positional artifact guesses and sentinel
+  outputs are forbidden;
+- a legitimate zero-record FASTA requires exact zero bytes and the typed
+  `fasta_zero_records@1` validation profile with a stable empty reason and
+  versioned derivation contract. Its catalog validation receipt is sealed and
+  recomputed offline. Generic empty FASTA or sentinel text fails;
+- a pipeline source snapshot is sealed as canonical
+  `openzyme_sealed_source_tree@1`, with safe sorted relative paths, per-file
+  bytes/digests and a recomputed tree digest. It must retain `kind=code`, and
+  every UTF-8 source file is public-safety checked after base64 decoding. A
+  source directory is never read as if it were a regular artifact file.
+
+These are small correctness fixes. The larger need for one registry that
+projects scientific callables, canonical serializers, agent-facing facts and
+receipts is proposal-only in
+[versioned scientific calculation capability projection](architecture-proposals/versioned-scientific-calculation-capability-projection.md)
+and is not implemented in this goal.
 
 ## Formal AOX scientific closure
 
@@ -50,6 +91,23 @@ fabricated: `aox_reference_only_scoring_alignment@1` materializes the verified
 AAB-only scoring input. The exact reached/omitted operation set must agree with
 the derived branch, and the isolated probe covers required capabilities omitted
 from the formal graph.
+
+The executor uses the installed functions
+`openzyme_pipeline.aox_reference.select_hmm_reference_set`,
+`select_scoring_reference`, `assemble_scoring_input`,
+`openzyme_pipeline.aox_hmmer.parse_and_filter_csv`,
+`openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions`,
+`openzyme_pipeline.aox_motif.score_aligned_fasta`, and
+`openzyme_pipeline.aox_similarity.build_similarity_graph`. Provider artifacts
+are selected through the unique declared transcript suffixes
+`/provider_parsed/proteins.fasta`, `/provider_parsed/parsed_hits.csv`,
+`/provider_parsed/sequences.fasta`, and `/provider_parsed/metadata.json`.
+MAFFT, hmmbuild, CD-HIT and HMMalign outputs are selected through the unique
+`fetch_refs[].declared_output_path` matching the runner-owned paths documented
+in [the AOX/HMM workflow guide](execution-pipeline-docs/aox-hmm-live.md). The
+fetched hmmbuild artifact id and digest, not a workspace guess, bind the HMMER
+search. A formal attempt that approximates these calculations or paths is
+ineligible even when its files look plausible.
 
 ## Clean-root preflight
 
@@ -92,13 +150,15 @@ post-foundation configuration, including:
   hmmalign/CD-HIT `tool_id` → `adapter_id`/`command_template_id`/
   `runner_contract_digest` expectation map;
 - effective MICU endpoint/model/policies/token/runtime bounds after live-budget
-  configuration;
+  configuration. Blank-world live requires an explicit
+  `context_window_tokens <= 200000`; it must not infer a third-party
+  OpenAI-compatible endpoint's context size from the model name;
 - research bounds, credential availability, opaque NCBI identity digest and
   tracing digest;
 - explicit live-test opt-ins;
 - driver approval mode, time/drain/agent bounds, browser observation bounds and,
   for `chrome-once`, the built Web UI dist digest;
-- scenario `aox_blank_world_cutover`, the exact cumulative 100,000,000-token
+- scenario `aox_blank_world_cutover`, the exact cumulative 500,000,000-token
   MICU limit and the existing ledger identity digest.
 
 The preimage never projects raw credentials, the NCBI email, or Host/runner/
@@ -285,6 +345,8 @@ An eligible positive attempt additionally requires:
 - completed MAFFT and hmmbuild receipts, plus reached HMMalign/CD-HIT receipts
   or a byte-derived branch that requires their formal omission;
 - exactly one durable researcher, executor and reporter task, each explicitly completed;
+- exactly one durable delegation receipt per role, with the executor bound to
+  the exact campaign workflow manifest and researcher/reporter unbound;
 - at least one approved controlled operation with the same operation identity;
 - one canonical entry message, root-bound Host launch receipt, workspace/event digests, a non-empty final response and a published report;
 - ledger-observed MICU attempt/token growth;
@@ -340,7 +402,9 @@ The verifier makes no network request. It rejects non-canonical/duplicate-key/no
 - similarity nodes/edges/manifest from sealed candidates and CD-HIT membership;
 - controlled one-bit fault proof, exact NCBI source, versioned reference-set
   derivation, failed MAFFT consumer, runner-contract expectation, and sealed
-  negative-state closure.
+  negative-state closure;
+- every `openzyme_sealed_source_tree@1` entry and tree digest, plus every
+  role-scoped workflow-manifest snapshot and delegation-request digest.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover verify \
@@ -439,7 +503,12 @@ probe and non-Chrome approvals, keeps positive 1's first formal approval
 exclusively for the browser, and continues coordinating any later serial
 approvals from that same drain. A coordination failure may
 reject a still-pending operation only to release the failed worker; it never
-approves an operation as cleanup.  The worker must join before Host teardown or
+approves an operation as cleanup. A successful drain response is not by itself
+proof that no last approval became visible: after observing worker terminal,
+the coordinator performs one public workspace GET that is known to begin after
+that response. A background drain exception retains
+`runtime_drain_command_failed`; only public coordination/cleanup failures use
+the coordination taxonomy. The worker must join before Host teardown or
 evidence collection.  Because a client timeout does not prove the synchronous
 FastAPI handler has stopped, the loopback Host also tracks every server-side
 mutation lifetime, initiates server shutdown, and waits through server retirement

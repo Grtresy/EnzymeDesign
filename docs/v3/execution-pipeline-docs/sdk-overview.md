@@ -21,6 +21,10 @@ Core modules:
 - `structure_tools`: request Host-supervised structure analysis operations such as fpocket.
 - `docking`: request Host-supervised docking operations such as Vina.
 - `hpc`: create logical placement workspaces and declare stage/fetch file flow for remote execution.
+- `aox_reference`, `aox_hmmer`, `aox_sequence_join`, `aox_motif`, and
+  `aox_similarity`: versioned, deterministic AOX calculations with canonical
+  result serializers. A workflow that pins these calculation identities must
+  call the installed functions rather than reimplement or approximate them.
 
 The sandbox file/command tools may run ordinary bash and Python within the isolated container. Pipeline code cannot directly use SSH, Slurm, runner config, database connections, arbitrary network clients, Host paths, local bioinformatics binaries outside the sandbox contract, or runner credentials. Network database work must go through `bio.*`; sequence-mining CLI work must go through `bio_tools.*`; structure and docking work must go through domain modules and explicit `hpc` placement when the selected route is remote/HPC.
 
@@ -49,7 +53,14 @@ adapter, and engine. Slurm fetch additionally requires an authoritative
 
 The execution plan also binds the resolved immutable sandbox image id, the digest of the exact `openzyme_pipeline` SDK source tree mounted read-only into the container, and the sandbox protocol version. The Host revalidates this runtime identity immediately before execution and after SDK materialization, and Podman is launched by immutable image id rather than the configured tag. Persistent sandbox adapter operations inherit the identity recorded by their originating `SandboxRun`; identity drift or missing provenance is a fail-closed error before provider, tool, or runner activity.
 
-When registering derived outputs, pass `format` and `metadata.required_columns` for key FASTA/HMM/CSV artifacts. The sandbox control server rejects empty files, invalid FASTA/HMM content, and CSV files missing required columns before they can enter the artifact catalog.
+When registering derived outputs, pass `format` and `metadata.required_columns`
+for key FASTA/HMM/CSV artifacts. The sandbox control server rejects empty files,
+invalid FASTA/HMM content, and CSV files missing required columns before they
+can enter the artifact catalog. The explicit
+`validation_profile="fasta_zero_records@1"` exception accepts only an exact
+zero-byte sequence FASTA with a stable `empty_result_reason` and versioned
+`derivation_contract_id`; it never accepts sentinel bytes and does not replace
+workflow-specific scientific branch verification.
 
 Before dry-run or execution, snapshot the source that should be bound to the plan:
 

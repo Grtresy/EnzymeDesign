@@ -135,7 +135,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - waiting approval 的 canonical 信号是 approval card / `workspace.pending_approvals`；后端不得把 pending approval 投影成“执行已完成”类 assistant message
 - approved execution pipeline completion 不直接进入 chat；Host 记录 invocation/run/artifact/activity 后只排队 executor wakeup signal。scheduler 恢复 executor；executor 读取 workspace evidence，并通过 `task.finish` 与 protocol result 显式写入业务结果，再排队 `agent:master` wakeup。master 由 scheduler 恢复后，基于 restore context 和 `protocol.thread(correlation_id)` 决定是否向用户汇报工具级结果摘要。`Pipeline sandbox completed` 只能作为内部 wrapper/run metadata，不得包装为 `Execution finished: ...` 发送给用户。
 - `workspace.runtime_state` 与 `runtime.consistency.warning` 只表达 diagnostic/projection：`agent_turn_failed`、`runtime_signal_failed`、`runtime_attention` 或 `outcome_unconsumed` / `capability_outcome_ready` 都不能自动写 task terminal state。terminal capability outcome 只作为 evidence 和 wakeup source；业务 task exit 仍只能由 `task.finish` 或已文档化机械迁移完成。
-- `world.inspect` 可把 `workspace.runtime_state`、pending approval、paused/blocked/outcome-ready、controlled operation 与 engine invocation 对应关系聚合为模型可读事实；它不能替代 `task.finish`，也不能把查询结果解释为固定下一步。
+- `world.inspect` 可把 `workspace.runtime_state`、pending approval、paused/blocked/outcome-ready、controlled operation 与 engine invocation 对应关系聚合为模型可读事实；它不能替代 `task.finish`，也不能把查询结果解释为固定下一步。teammate 的 `capabilities` section 绑定当前 task，master 保留既有显式 session-wide 权限；newest-first facts page 最多 20 个 invocation、每类 8 个 closed opaque refs、serialized facts 64 KiB，只返回状态、时间、`output_ref` 与 document/artifact/evidence/source/gap counts，不复用 UI rich projection，也不内联 `documents`、`output_document`、`output_payload`、evidence 正文、source refs 或 gaps。当前 repository hydration 成本尚未有界，后续窄列/lazy/cursor 重构按独立架构提案推进。
 - streaming events 继续存在，但不再是刷新恢复聊天内容的唯一来源
 - UI 刷新后必须可以仅靠 workspace projection 恢复 conversation timeline
 
@@ -144,6 +144,7 @@ role surface 由同一个 router 判定：master 即使注册了 engine runtimes
 - 每次 master / teammate 发起 tool-calling provider 调用前，harness 必须按模型 profile 估算完整待发送 payload：system prompt、messages、tools schema 和待回灌 tool observation。
 - 默认阈值是 context window 的 `80% / 85% / 90%`：达到 80% 记录 `llm.context_budget.warning`；达到 85% 写入 bounded auto compaction 并刷新 restore context；达到 90% 返回结构化 `context_budget_exceeded`，不得调用 provider。
 - GLM-5.1 默认 profile 为 `context_window_tokens=200000`、默认输出预留 `65536`、最大输出 `131072`。未知模型必须使用显式 env override，否则使用保守 fallback 并在事件中标记 profile unknown。
+- 第三方 OpenAI-compatible endpoint 不得仅凭 model name 继承另一个 provider 的 context profile。AOX blank-world live effective config 要求显式 `context_window_tokens`，并将当前 campaign ceiling 保守限制为 `200000`；缺失或更大的声明在创建 attempt 前 fail closed。provider tokenizer 不可用时仍可用本地保守估算，但不得重新启用 model-name 的 `1050000` 假设。
 - auto compaction 默认写入 `session` scope；有 focused lane 时同时写入 `lane` scope；`task` scope compaction 仍保留显式 tool 或高价值触发。
 - auto compaction 后必须重建待发送 provider payload：重新读取 restore context、重建 system prompt 与 seed messages，再追加本轮已经 budgeted 的 tool observations。provider 调用必须使用这个 rebuilt payload，不能继续使用 compaction 前的 in-memory messages。
 - rebuilt payload 通过 structured / tool-calling invoker 交给 `LlmInvocationRuntime`。invoker 负责构造 payload 与 provider adapter 兼容层；runtime 只负责 provider 调用治理，包括 limiter、timeout、retry/backoff、`Retry-After`、taxonomy 与 debug attempt 记录。runtime 不触发 compaction，也不重建 restore context。

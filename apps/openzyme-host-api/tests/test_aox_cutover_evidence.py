@@ -5,10 +5,12 @@ import csv
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
@@ -31,9 +33,14 @@ from openzyme_host_api.aox_cutover_evidence import (
     KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS,
 )
 from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
+from openzyme_host_api.aox_cutover_evidence import project_formal_delegation_request
+from openzyme_host_api.aox_cutover_evidence import SEALED_SOURCE_TREE_SCHEMA_ID
+from openzyme_host_api.aox_cutover_evidence import seal_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import seal_campaign_decision
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import VerificationResult
+from openzyme_host_api.aox_cutover_evidence import typed_empty_artifact_validation_receipt
+from openzyme_host_api.aox_cutover_evidence import verify_sealed_source_tree_envelope
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import build_attempt_bundle
 from openzyme_pipeline import aox_hmmer
@@ -191,7 +198,7 @@ def _effective_config(
             "browser_completion_hold_seconds": 60.0,
             "browser_observation_submission_timeout_seconds": 180.0,
             "ui_dist_digest": None,
-            "micu_hard_limit_tokens": 100_000_000,
+            "micu_hard_limit_tokens": 500_000_000,
             "micu_ledger_identity_digest": (
                 ledger_identity_digest or _digest("persistent-ledger")
             ),
@@ -202,14 +209,59 @@ def _effective_config(
 def _identity(
     ledger_identity_digest: str | None = None,
 ) -> dict[str, str]:
+    workflow = next(
+        manifest
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
     return {
         "git_commit": "a" * 40,
         "config_digest": canonical_digest(_effective_config(ledger_identity_digest)),
-        "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        "workflow_ref": workflow.selection_ref,
         "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
         "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
         "image_digest": _digest("image"),
         "sdk_digest": _digest("sdk"),
+    }
+
+
+def _delegation_workflow_receipt(
+    *,
+    task_id: str,
+    role: str,
+) -> dict[str, object]:
+    workflow = next(
+        manifest
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    workflow_refs = [workflow.selection_ref] if role == "executor" else []
+    workflow_manifests = [workflow.to_dict()] if role == "executor" else []
+    agent_id = f"agent_{role}"
+    display_name = role.capitalize()
+    payload = {
+        "task_id": task_id,
+        "instructions": f"Complete the canonical {role} task.",
+        "role": role,
+        "agent_id": agent_id,
+        "nickname": role,
+        "display_name": display_name,
+        "handle": f"@{role}",
+        "workflow_refs": workflow_refs,
+        "workflow_manifests": workflow_manifests,
+    }
+    document_id = f"doc_delegate_{task_id}"
+    projection = project_formal_delegation_request(
+        payload,
+        document_id=document_id,
+    )
+    return {
+        "assigned_ref": agent_id,
+        "delegation_request_ref": document_id,
+        "delegation_request_digest": canonical_digest(projection),
+        "delegation_request": projection,
+        "workflow_refs": workflow_refs,
+        "workflow_manifests": workflow_manifests,
     }
 
 
@@ -367,9 +419,9 @@ def _ledger_snapshot(
     }
     return {
         "ledger_identity_digest": _digest("persistent-ledger"),
-        "hard_limit_tokens": 100_000_000,
+        "hard_limit_tokens": 500_000_000,
         "charged_tokens": charged_tokens,
-        "remaining_tokens": 100_000_000 - charged_tokens,
+        "remaining_tokens": 500_000_000 - charged_tokens,
         "hard_limit_overage_tokens": 0,
         "attempt_count": attempt_count,
         "estimated_attempt_count": 0,
@@ -391,6 +443,147 @@ def _write_artifact(root: Path, relative_path: str, content: bytes) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _source_tree_digest(files: dict[str, bytes]) -> str:
+    entries = [
+        {
+            "relative_path": relative_path,
+            "content_digest": _digest_bytes(content),
+            "size_bytes": len(content),
+        }
+        for relative_path, content in sorted(files.items())
+    ]
+    return _digest_bytes(
+        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def test_sealed_source_tree_envelope_round_trips_sorted_files(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    files = {
+        "z.py": b"Z = 1\n",
+        "openzyme_pipeline/a.py": b"A = 1\n",
+        "openzyme_pipeline/enz\N{LATIN SMALL LETTER Y WITH DIAERESIS}me.py": b"ACTIVITY = 1\n",
+    }
+    for relative_path, content in files.items():
+        path = source_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    expected_digest = _source_tree_digest(files)
+
+    sealed = seal_source_tree_envelope(
+        source_root,
+        expected_source_tree_digest=expected_digest,
+    )
+    decoded = verify_sealed_source_tree_envelope(
+        sealed,
+        expected_source_tree_digest=expected_digest,
+    )
+
+    assert decoded["schema_id"] == SEALED_SOURCE_TREE_SCHEMA_ID
+    assert decoded["source_tree_digest"] == expected_digest
+    assert [item["relative_path"] for item in decoded["files"]] == sorted(files)
+    assert sealed == canonical_json_bytes(decoded) + b"\n"
+
+
+def test_sealed_source_tree_encoder_rejects_empty_symlink_and_nonregular_entries(
+    tmp_path: Path,
+) -> None:
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    with pytest.raises(CutoverEvidenceError) as empty_error:
+        seal_source_tree_envelope(
+            empty_root,
+            expected_source_tree_digest=_digest("empty"),
+        )
+    assert empty_error.value.code == "sealed_source_tree_empty"
+
+    symlink_root = tmp_path / "symlink"
+    symlink_root.mkdir()
+    target = tmp_path / "target.py"
+    target.write_text("unsafe = True\n", encoding="utf-8")
+    (symlink_root / "linked.py").symlink_to(target)
+    with pytest.raises(CutoverEvidenceError) as symlink_error:
+        seal_source_tree_envelope(
+            symlink_root,
+            expected_source_tree_digest=_digest("symlink"),
+        )
+    assert symlink_error.value.code == "sealed_source_tree_entry_invalid"
+
+    fifo_root = tmp_path / "fifo"
+    fifo_root.mkdir()
+    os.mkfifo(fifo_root / "named-pipe")
+    with pytest.raises(CutoverEvidenceError) as fifo_error:
+        seal_source_tree_envelope(
+            fifo_root,
+            expected_source_tree_digest=_digest("fifo"),
+        )
+    assert fifo_error.value.code == "sealed_source_tree_entry_invalid"
+
+
+def test_sealed_source_tree_decoder_rejects_unsafe_path_and_file_tamper(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "main.py").write_bytes(b"print('safe')\n")
+    expected_digest = _source_tree_digest({"main.py": b"print('safe')\n"})
+    sealed = seal_source_tree_envelope(
+        source_root,
+        expected_source_tree_digest=expected_digest,
+    )
+    envelope = json.loads(sealed)
+
+    unsafe = json.loads(sealed)
+    unsafe["files"][0]["relative_path"] = "../main.py"
+    with pytest.raises(CutoverEvidenceError) as unsafe_error:
+        verify_sealed_source_tree_envelope(
+            canonical_json_bytes(unsafe) + b"\n",
+            expected_source_tree_digest=expected_digest,
+        )
+    assert unsafe_error.value.code == "sealed_source_tree_path_invalid"
+
+    envelope["files"][0]["content_base64"] = base64.b64encode(
+        b"print('tampered')\n"
+    ).decode("ascii")
+    with pytest.raises(CutoverEvidenceError) as tamper_error:
+        verify_sealed_source_tree_envelope(
+            canonical_json_bytes(envelope) + b"\n",
+            expected_source_tree_digest=expected_digest,
+        )
+    assert tamper_error.value.code == "sealed_source_tree_file_digest_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_code"),
+    [
+        (b"SOURCE = '/home/operator/private.py'\n", "public_projection_host_path"),
+        (
+            b"api_key = 'sk-examplecredential123456'\n",
+            "public_projection_secret_value",
+        ),
+    ],
+)
+def test_sealed_source_tree_rejects_private_decoded_source(
+    tmp_path: Path,
+    content: bytes,
+    expected_code: str,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "main.py").write_bytes(content)
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        seal_source_tree_envelope(
+            source_root,
+            expected_source_tree_digest=_source_tree_digest({"main.py": content}),
+        )
+
+    assert error.value.code == expected_code
+    assert content.decode("utf-8").strip() not in str(error.value)
 
 
 def _refresh_operation_identity(
@@ -619,6 +812,36 @@ def _replace_artifact_bytes(
     return digest
 
 
+def _attach_typed_empty_validation(
+    evidence: dict[str, object],
+    *,
+    artifact_id: str,
+    reason: str,
+    derivation_contract_id: str,
+) -> None:
+    artifact = next(
+        item for item in evidence["artifacts"] if item["artifact_id"] == artifact_id
+    )
+    validation = {
+        "status": "passed",
+        "format": "fasta",
+        "required_columns": [],
+        "validation_profile": "fasta_zero_records@1",
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation_contract_id,
+    }
+    artifact["registration_validation"] = typed_empty_artifact_validation_receipt(
+        kind="sequence",
+        metadata={
+            "format": "fasta",
+            "validation_profile": "fasta_zero_records@1",
+            "empty_result_reason": reason,
+            "derivation_contract_id": derivation_contract_id,
+            "validation": validation,
+        },
+    )
+
+
 def _reference_only_alignment() -> bytes:
     alignment = aox_motif.score_aligned_fasta(GOLDEN_ALIGNMENT.read_bytes()).alignment
     reference = next(
@@ -737,12 +960,32 @@ def _known_positive_probe_fixture(
         f"{len(alpha_globin)}\n"
     ).encode("ascii")
     hmmalign_alignment = uniprot_fasta
+    source_file_content = b"# known-positive probe source snapshot\n"
+    source_file_digest = _digest_bytes(source_file_content)
+    source_snapshot_digest = canonical_digest(
+        [
+            {
+                "relative_path": "openzyme_pipeline/probe.py",
+                "content_digest": source_file_digest,
+                "size_bytes": len(source_file_content),
+            }
+        ]
+    )
     source_snapshot = (
         canonical_json_bytes(
             {
-                "schema_id": "sandbox_source_snapshot@1",
-                "package": "openzyme_pipeline",
-                "purpose": "independent_globin_provider_hpc_probe",
+                "schema_id": SEALED_SOURCE_TREE_SCHEMA_ID,
+                "source_tree_digest": source_snapshot_digest,
+                "files": [
+                    {
+                        "relative_path": "openzyme_pipeline/probe.py",
+                        "size_bytes": len(source_file_content),
+                        "content_digest": source_file_digest,
+                        "content_base64": base64.b64encode(
+                            source_file_content
+                        ).decode("ascii"),
+                    }
+                ],
             }
         )
         + b"\n"
@@ -790,7 +1033,6 @@ def _known_positive_probe_fixture(
         sandbox_workspace_id=sandbox_workspace_id,
         hpc_workspace_label=hpc_workspace_label,
     )
-    source_snapshot_digest = _digest("probe-source-tree")
     source_snapshot_artifact_digest = digests["art_probe_source_snapshot"]
     provenance = {
         "art_probe_source_snapshot": {
@@ -821,7 +1063,7 @@ def _known_positive_probe_fixture(
         "art_probe_hmmalign_alignment": {"tool": "hmmalign"},
     }
     artifact_kind = {
-        "art_probe_source_snapshot": "source_snapshot",
+        "art_probe_source_snapshot": "code",
         "art_probe_ncbi_raw": "provider_evidence",
         "art_probe_ncbi_fasta": "sequence",
         "art_probe_mafft_alignment": "sequence",
@@ -1275,6 +1517,18 @@ def _apply_hmmer_upstream_empty_fixture(
         evidence,
         artifact_id="art_candidates",
         content=candidate_bytes,
+    )
+    _attach_typed_empty_validation(
+        evidence,
+        artifact_id="art_target_sequences",
+        reason=reason,
+        derivation_contract_id=AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID,
+    )
+    _attach_typed_empty_validation(
+        evidence,
+        artifact_id="art_candidates",
+        reason=reason,
+        derivation_contract_id="aox_motif_candidate_filter@1",
     )
     membership_digest = _replace_artifact_bytes(
         artifact_root,
@@ -2832,18 +3086,27 @@ def _valid_evidence(
                 "role": "researcher",
                 "status": "completed",
                 "business_exit": "agent_explicit",
+                **_delegation_workflow_receipt(
+                    task_id="task_research", role="researcher"
+                ),
             },
             {
                 "task_id": "task_execute",
                 "role": "executor",
                 "status": "completed" if attempt_kind == "positive" else "failed",
                 "business_exit": "agent_explicit",
+                **_delegation_workflow_receipt(
+                    task_id="task_execute", role="executor"
+                ),
             },
             {
                 "task_id": "task_report",
                 "role": "reporter",
                 "status": "completed" if attempt_kind == "positive" else "failed",
                 "business_exit": "agent_explicit",
+                **_delegation_workflow_receipt(
+                    task_id="task_report", role="reporter"
+                ),
             },
         ],
         "artifacts": artifacts,
@@ -3107,6 +3370,10 @@ def _namespace_evidence(
         approval["operation_identity_digest"] = operation_identities[
             approval["operation_id"]
         ]
+    for task in namespaced["tasks"]:
+        task["delegation_request_digest"] = canonical_digest(
+            task["delegation_request"]
+        )
     product_path = namespaced["product_path"]
     public_api_receipts = _public_api_receipts(product_path["session_id"])
     product_path["public_api_receipts"] = public_api_receipts
@@ -3562,6 +3829,7 @@ def _apply_derived_reference_fault_fixture(
                 "finish_payload_digest": canonical_digest(finish_payload),
                 "finished_by": assigned_ref,
                 "evidence_refs": evidence_refs,
+                **_delegation_workflow_receipt(task_id=task_id, role=role),
             }
         )
     evidence["tasks"] = sorted(task_records, key=lambda item: str(item["task_id"]))
@@ -4263,7 +4531,7 @@ def test_micu_snapshot_is_read_only_safe_and_keeps_the_fixed_ceiling(
 
     assert not ledger.exists()
     assert "path" not in snapshot
-    assert snapshot["hard_limit_tokens"] == 100_000_000
+    assert snapshot["hard_limit_tokens"] == 500_000_000
     assert snapshot["charged_tokens"] == 0
     assert str(tmp_path) not in json.dumps(snapshot, sort_keys=True)
 
@@ -5682,6 +5950,76 @@ def test_eligible_positive_rejects_empty_provider_chain(tmp_path: Path) -> None:
     assert error.value.code == "required_provider_chain_missing"
 
 
+def test_delegation_workflow_binding_is_executor_scoped_and_offline_verified(
+    tmp_path: Path,
+) -> None:
+    def leak_binding_to_researcher(evidence: dict[str, object]) -> None:
+        tasks = [dict(item) for item in evidence["tasks"]]
+        executor = next(item for item in tasks if item["role"] == "executor")
+        researcher = next(item for item in tasks if item["role"] == "researcher")
+        researcher["workflow_refs"] = list(executor["workflow_refs"])
+        researcher["workflow_manifests"] = list(executor["workflow_manifests"])
+        evidence["tasks"] = tasks
+
+    with pytest.raises(CutoverEvidenceError) as build_error:
+        _build_bundle(tmp_path / "build", mutate_evidence=leak_binding_to_researcher)
+    assert build_error.value.code == "delegation_workflow_binding_invalid"
+
+    _, bundle_path, artifact_root = _build_bundle(tmp_path / "offline")
+    envelope = json.loads(bundle_path.read_text(encoding="utf-8"))
+    executor = next(
+        task
+        for task in envelope["payload"]["tasks"]
+        if task["role"] == "executor"
+    )
+    executor["workflow_manifests"][0]["summary"] = "attacker-rewritten summary"
+    executor["delegation_request"]["workflow_manifests"][0]["summary"] = (
+        "attacker-rewritten summary"
+    )
+    executor["delegation_request_digest"] = canonical_digest(
+        executor["delegation_request"]
+    )
+    executor["record_digest"] = canonical_digest(
+        {key: value for key, value in executor.items() if key != "record_digest"}
+    )
+    envelope["bundle_digest"] = canonical_digest(envelope["payload"])
+    bundle_path.chmod(0o600)
+    bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "delegation_workflow_manifest_invalid"
+        for issue in result.issues
+    )
+
+
+def test_delegation_request_projection_tamper_is_rejected_after_outer_rehash(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    envelope = json.loads(bundle_path.read_text(encoding="utf-8"))
+    executor = next(
+        task
+        for task in envelope["payload"]["tasks"]
+        if task["role"] == "executor"
+    )
+    executor["delegation_request_ref"] = "doc_attacker_rewritten"
+    executor["delegation_request"]["document_id"] = "doc_attacker_rewritten"
+    executor["delegation_request_digest"] = canonical_digest(
+        executor["delegation_request"]
+    )
+    envelope["bundle_digest"] = canonical_digest(envelope["payload"])
+    bundle_path.chmod(0o600)
+    bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(issue.code == "record_digest_mismatch" for issue in result.issues)
+
+
 def test_required_pubmed_receipt_must_bind_real_pmid_artifact(tmp_path: Path) -> None:
     def change_declared_pmid(evidence: dict[str, object]) -> None:
         provider = next(
@@ -5699,7 +6037,7 @@ def test_required_pubmed_receipt_must_bind_real_pmid_artifact(tmp_path: Path) ->
 
 def test_micu_overage_or_breach_cannot_enter_attempt_bundle(tmp_path: Path) -> None:
     breached = _ledger_snapshot(
-        charged_tokens=100_000_000,
+        charged_tokens=500_000_000,
         attempt_count=2,
     )
     breached["hard_limit_overage_tokens"] = 1
@@ -6212,6 +6550,128 @@ def test_known_positive_probe_rejects_snapshot_sandbox_lineage_tamper(
     )
 
 
+def test_offline_verifier_recomputes_sandbox_source_tree_envelope(
+    tmp_path: Path,
+) -> None:
+    payload, bundle_path, artifact_root = _build_bundle(tmp_path)
+    snapshot = next(
+        item
+        for item in payload["artifacts"]
+        if item["origin"] == "sandbox_run"
+    )
+    snapshot_path = artifact_root / str(snapshot["relative_path"])
+    source_envelope = json.loads(snapshot_path.read_bytes())
+    tampered_content = b"# tampered but externally re-sealed\n"
+    source_envelope["files"][0].update(
+        {
+            "content_base64": base64.b64encode(tampered_content).decode("ascii"),
+            "content_digest": _digest_bytes(tampered_content),
+            "size_bytes": len(tampered_content),
+        }
+    )
+    source_envelope["source_tree_digest"] = canonical_digest(
+        [
+            {
+                "relative_path": source_envelope["files"][0]["relative_path"],
+                "content_digest": _digest_bytes(tampered_content),
+                "size_bytes": len(tampered_content),
+            }
+        ]
+    )
+    tampered_bytes = canonical_json_bytes(source_envelope) + b"\n"
+    snapshot_path.write_bytes(tampered_bytes)
+
+    def reseal_outer_envelope(bundle: dict[str, object]) -> None:
+        payload_record = next(
+            item
+            for item in bundle["payload"]["artifacts"]
+            if item["artifact_id"] == snapshot["artifact_id"]
+        )
+        payload_record["content_digest"] = _digest_bytes(tampered_bytes)
+        payload_record["size_bytes"] = len(tampered_bytes)
+        bundle["bundle_digest"] = canonical_digest(bundle["payload"])
+
+    _rewrite_envelope(bundle_path, reseal_outer_envelope)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "sealed_source_tree_digest_mismatch"
+        and issue.identity
+        == f"artifact:{snapshot['artifact_id']}:source_tree"
+        for issue in result.issues
+    )
+
+
+def test_offline_verifier_scans_decoded_source_after_outer_reseal(
+    tmp_path: Path,
+) -> None:
+    payload, bundle_path, artifact_root = _build_bundle(tmp_path)
+    snapshot = next(
+        item for item in payload["artifacts"] if item["origin"] == "sandbox_run"
+    )
+    snapshot_path = artifact_root / str(snapshot["relative_path"])
+    source_envelope = json.loads(snapshot_path.read_bytes())
+    private_source = b"SOURCE = '/home/operator/private.py'\n"
+    source_envelope["files"][0].update(
+        {
+            "content_base64": base64.b64encode(private_source).decode("ascii"),
+            "content_digest": _digest_bytes(private_source),
+            "size_bytes": len(private_source),
+        }
+    )
+    tree_digest = _source_tree_digest(
+        {str(source_envelope["files"][0]["relative_path"]): private_source}
+    )
+    source_envelope["source_tree_digest"] = tree_digest
+    tampered_bytes = canonical_json_bytes(source_envelope) + b"\n"
+    snapshot_path.write_bytes(tampered_bytes)
+
+    def reseal_outer_envelope(bundle: dict[str, object]) -> None:
+        record = next(
+            item
+            for item in bundle["payload"]["artifacts"]
+            if item["artifact_id"] == snapshot["artifact_id"]
+        )
+        record["content_digest"] = _digest_bytes(tampered_bytes)
+        record["size_bytes"] = len(tampered_bytes)
+        record["provenance"]["source_snapshot_digest"] = tree_digest
+        record["provenance_digest"] = canonical_digest(record["provenance"])
+        bundle["bundle_digest"] = canonical_digest(bundle["payload"])
+
+    _rewrite_envelope(bundle_path, reseal_outer_envelope)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "public_projection_host_path"
+        for issue in result.issues
+    )
+
+
+def test_offline_verifier_rejects_source_snapshot_kind_drift(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift_kind(bundle: dict[str, object]) -> None:
+        snapshot = next(
+            item
+            for item in bundle["payload"]["artifacts"]
+            if item["origin"] == "sandbox_run"
+        )
+        snapshot["kind"] = "result"
+        bundle["bundle_digest"] = canonical_digest(bundle["payload"])
+
+    _rewrite_envelope(bundle_path, drift_kind)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "sealed_source_tree_kind_invalid" for issue in result.issues
+    )
+
+
 def test_required_aox_dag_rejects_missing_digest_edge(tmp_path: Path) -> None:
     def remove_hmm_input(evidence: dict[str, object]) -> None:
         operation = next(
@@ -6332,6 +6792,46 @@ def test_hmmer_upstream_empty_is_accepted_only_from_recomputed_artifacts(
     assert receipt_payload["schema_id"] == "provider_upstream_empty_receipt@1"
     assert "request_digest" not in receipt_payload
     assert "response_digest" not in receipt_payload
+    for role in ("target_sequences", "candidates"):
+        artifact = artifact_by_id[chain["artifact_roles"][role]]
+        receipt = artifact["registration_validation"]
+        assert receipt == {
+            **receipt,
+            "schema_id": "openzyme_typed_empty_artifact_validation@1",
+            "kind": "sequence",
+            "format": "fasta",
+            "validation_profile": "fasta_zero_records@1",
+            "empty_result_reason": "no_hmmer_hits",
+        }
+
+
+def test_offline_verifier_rejects_missing_typed_empty_registration_receipt(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        scientific_branch="hmmer_upstream_empty",
+    )
+
+    def remove_receipt(bundle: dict[str, object]) -> None:
+        artifact = next(
+            item
+            for item in bundle["payload"]["artifacts"]
+            if item["artifact_id"] == "art_target_sequences"
+        )
+        artifact.pop("registration_validation")
+        bundle["bundle_digest"] = canonical_digest(bundle["payload"])
+
+    _rewrite_envelope(bundle_path, remove_receipt)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "typed_empty_artifact_validation_invalid"
+        and issue.identity
+        == "artifact:art_target_sequences:registration_validation"
+        for issue in result.issues
+    )
 
 
 def test_self_claimed_hmmer_empty_cannot_override_nonempty_derived_accessions(
@@ -6666,7 +7166,7 @@ def test_campaign_derives_go_only_with_required_chrome_proof(
     expected_record_count: int,
 ) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
     ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
     campaign_config = _effective_config(str(ledger_identity))
     if approval_mode == "chrome-once":
@@ -6761,7 +7261,7 @@ def test_campaign_derives_go_only_with_required_chrome_proof(
 
 def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
     ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
     campaign_config = _effective_config(str(ledger_identity))
     campaign_config["driver"]["approval_mode"] = "chrome-once"
@@ -6894,7 +7394,7 @@ def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
     tmp_path: Path,
 ) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
-    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=500_000_000)
     ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
     campaign_identity = _identity(str(ledger_identity))
     campaign_config = _effective_config(str(ledger_identity))

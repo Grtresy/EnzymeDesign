@@ -24,6 +24,8 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import build_conversation_projection
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
+from openzyme_core.workflow_knowledge import default_workflow_registry
+from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
@@ -47,7 +49,10 @@ from .aox_cutover_evidence import assert_public_safe_payload
 from .aox_cutover_evidence import aox_hpc_workspace_id
 from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import controlled_operation_digest
+from .aox_cutover_evidence import project_formal_delegation_request
 from .aox_cutover_evidence import sandbox_calculation_digest
+from .aox_cutover_evidence import seal_source_tree_envelope
+from .aox_cutover_evidence import typed_empty_artifact_validation_receipt
 from .app import HostApiDependencies
 from .app import create_app
 from .evals import S15_AOX_HMM_FIXED_DELIVERABLES
@@ -1783,7 +1788,12 @@ class LiveAoxAttemptRunner:
                 )
 
             while True:
-                if drain_done.is_set():
+                # A failed drain has no bounded response whose post-response
+                # workspace projection needs observing.  Let the stable
+                # command-failure branch below report the original exception
+                # instead of allowing a follow-up GET failure to mask it as a
+                # coordination error.
+                if drain_done.is_set() and drain_errors:
                     break
                 if time.monotonic() >= deadline:
                     raise LiveProductPathError(
@@ -1795,6 +1805,12 @@ class LiveAoxAttemptRunner:
                         },
                     )
 
+                # The workspace response below must be known to have started
+                # after a bounded drain response before it can prove that the
+                # response exposed no new approval.  Reading the Event after
+                # the GET would leave a race where the drain publishes
+                # ``waiting_approval`` between the snapshot and the check.
+                drain_was_done = drain_done.is_set()
                 latest_workspace = api.get_json(
                     f"/v3/sessions/{session_id}/workspace",
                     _timeout_seconds=max(0.001, deadline - time.monotonic()),
@@ -1861,6 +1877,15 @@ class LiveAoxAttemptRunner:
                     if browser_approval_receipt is not None:
                         break
                 if not acted:
+                    # A bounded drain may return ``waiting_approval`` after the
+                    # approval and continuation have become durable.  Always
+                    # inspect the post-response workspace once before leaving
+                    # this coordination seam so that the approval can be
+                    # resolved and the next drain can resume the continuation.
+                    if drain_was_done:
+                        break
+                    if drain_done.is_set():
+                        continue
                     remaining = max(0.0, deadline - time.monotonic())
                     drain_done.wait(
                         timeout=min(self.browser_poll_interval_seconds, remaining)
@@ -1918,6 +1943,19 @@ class LiveAoxAttemptRunner:
             # owns a server-side runtime call; wait for the bounded request to
             # retire its reservation first.
             drain_thread.join()
+        if drain_errors:
+            # The drain command is the primary operation coordinated here.  A
+            # workspace GET may fail concurrently while that command unwinds;
+            # once the joined command has reported its own failure, do not
+            # misclassify the attempt as a coordination-read failure.
+            error = drain_errors[0]
+            if isinstance(error, LiveProductPathError):
+                raise error
+            raise LiveProductPathError(
+                "runtime_drain_command_failed",
+                "public runtime drain failed before producing a bounded response",
+                details={"failure_type": type(error).__name__},
+            ) from error
         if cleanup_errors:
             raise LiveProductPathError(
                 "runtime_drain_coordination_cleanup_failed",
@@ -1932,15 +1970,6 @@ class LiveAoxAttemptRunner:
                 "public drain approval coordination failed",
                 details={"failure_type": type(coordination_error).__name__},
             ) from coordination_error
-        if drain_errors:
-            error = drain_errors[0]
-            if isinstance(error, LiveProductPathError):
-                raise error
-            raise LiveProductPathError(
-                "runtime_drain_command_failed",
-                "public runtime drain failed before producing a bounded response",
-                details={"failure_type": type(error).__name__},
-            ) from error
 
         latest_workspace = api.get_json(
             f"/v3/sessions/{session_id}/workspace",
@@ -3020,12 +3049,45 @@ class LiveAoxAttemptRunner:
         )
 
     def _formal_prompt(self, context: AttemptRunContext) -> str:
+        workflow_ref = str(context.identity["workflow_ref"])
         prompt = (
             S15_AOX_HMM_FIXED_PROMPT
             + " The campaign already enforces evidence-bearing provider cache bypass; do not "
             + "pass or invent unsupported cache flags. Use the unique Host-supervised HPC "
             + f"workspace label {context.roots.hpc_workspace_label!r}. Do not read any prior "
-            + "session, historical AOX output, notebook output, fixture, or golden expected result."
+            + "session, historical AOX output, notebook output, fixture, or golden expected result. "
+            + "The entry message authorizes exactly one workflow binding. When delegating, bind "
+            + f"workflow_refs=[{workflow_ref!r}] only to the executor task; researcher and reporter "
+            + "must omit workflow_refs or pass an empty list. The executor must use the installed "
+            + "versioned callables openzyme_pipeline.aox_reference.select_hmm_reference_set, "
+            + "openzyme_pipeline.aox_reference.select_scoring_reference, "
+            + "openzyme_pipeline.aox_reference.assemble_scoring_input, "
+            + "openzyme_pipeline.aox_hmmer.parse_and_filter_csv, "
+            + "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions, "
+            + "openzyme_pipeline.aox_motif.score_aligned_fasta, and "
+            + "openzyme_pipeline.aox_similarity.build_similarity_graph with their canonical "
+            + "serializers; never reimplement or approximate a pinned calculation. Follow the "
+            + "stable signature table in the pinned AOX/HMM SOP and supply every bound "
+            + "expected_*_digest. In particular, call join_score_filtered_accessions("
+            + "score_filtered_csv, uniprot_fasta, uniprot_metadata_json, ...) and "
+            + "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...) using bytes "
+            + "in that positional order; do not guess keyword aliases or serialize result "
+            + "internals by hand. Provider "
+            + "outputs must be selected from the unique result_summary.transcript_manifest.files "
+            + "entry ending in /provider_parsed/proteins.fasta for NCBI, "
+            + "/provider_parsed/parsed_hits.csv for EBI HMMER, and both "
+            + "/provider_parsed/sequences.fasta and /provider_parsed/metadata.json for UniProt. "
+            + "Runner templates accept only the "
+            + "fixed declared paths bio_tools/mafft/alignment.fasta, "
+            + "bio_tools/hmmbuild/model.hmm, bio_tools/cdhit/clustered.fasta plus "
+            + "bio_tools/cdhit/clusters.csv, and bio_tools/hmmalign/aligned.fasta. Select fetched "
+            + "runner artifacts only through the unique fetch_refs entry whose "
+            + "declared_output_path exactly matches that fixed path. Bind bio.hmmer_search to the "
+            + "exact fetched hmmbuild artifact id and content digest. A scientifically derived "
+            + "zero-record FASTA is an exact zero-byte file registered with "
+            + "validation_profile='fasta_zero_records@1', a stable empty_result_reason, and a "
+            + "versioned derivation_contract_id; never write sentinel headers, placeholder "
+            + "residues, fake clusters, or fabricated graph rows."
         )
         if context.roots.attempt_kind == "fault":
             prompt += (
@@ -3780,10 +3842,11 @@ def _artifact_bytes(
     artifact: SessionArtifactRecord,
 ) -> bytes:
     source = Path(artifact.storage_uri)
-    if not source.is_file() or source.is_symlink():
+    metadata = dict(artifact.metadata or {})
+    if source.is_symlink():
         raise LiveProductPathError(
             "catalog_artifact_blob_invalid",
-            "cutover evidence requires a sealed regular-file catalog artifact",
+            "cutover evidence rejects symbolic-link catalog artifacts",
             details={"artifact_id": artifact.artifact_id},
         )
     resolved_source = source.resolve()
@@ -3794,8 +3857,39 @@ def _artifact_bytes(
             "catalog artifact is outside the attempt-scoped immutable blob root",
             details={"artifact_id": artifact.artifact_id},
         )
+    if source.is_dir():
+        if (
+            artifact.kind is not ArtifactKind.CODE
+            or metadata.get("semantic_type") != "pipeline_source_snapshot"
+            or metadata.get("format") != "source_tree"
+        ):
+            raise LiveProductPathError(
+                "catalog_artifact_blob_invalid",
+                "only typed pipeline source snapshots may use directory blobs",
+                details={"artifact_id": artifact.artifact_id},
+            )
+        expected_tree_digest = str(metadata.get("source_tree_digest") or "")
+        try:
+            return seal_source_tree_envelope(
+                source,
+                expected_source_tree_digest=expected_tree_digest,
+            )
+        except CutoverEvidenceError as exc:
+            raise LiveProductPathError(
+                exc.code,
+                "pipeline source snapshot cannot be sealed as self-verifying evidence",
+                details={
+                    "artifact_id": artifact.artifact_id,
+                    **dict(exc.details),
+                },
+            ) from exc
+    if not source.is_file():
+        raise LiveProductPathError(
+            "catalog_artifact_blob_invalid",
+            "cutover evidence requires a regular-file or typed source-tree artifact",
+            details={"artifact_id": artifact.artifact_id},
+        )
     content = source.read_bytes()
-    metadata = dict(artifact.metadata or {})
     expected = str(
         metadata.get("content_digest") or metadata.get("sealed_digest") or ""
     )
@@ -3831,6 +3925,25 @@ def _copy_catalog_artifact(
             )
         return existing
     content = _artifact_bytes(context, artifact)
+    registration_validation: dict[str, object] | None = None
+    if artifact.kind is ArtifactKind.SEQUENCE and content == b"":
+        try:
+            registration_validation = typed_empty_artifact_validation_receipt(
+                kind=artifact.kind.value,
+                metadata=dict(artifact.metadata or {}),
+            )
+        except CutoverEvidenceError as exc:
+            raise LiveProductPathError(
+                exc.code,
+                "zero-record FASTA lacks a reproducible catalog validation receipt",
+                details={"artifact_id": artifact.artifact_id},
+            ) from exc
+    elif dict(artifact.metadata or {}).get("validation_profile") is not None:
+        raise LiveProductPathError(
+            "typed_empty_artifact_validation_invalid",
+            "typed-empty validation profile is attached to a nonempty or non-sequence artifact",
+            details={"artifact_id": artifact.artifact_id},
+        )
     safe_name = _safe_id(PurePosixPath(artifact.relative_path).name)
     relative_path = f"{scope}/catalog/{_safe_id(artifact.artifact_id)}/{safe_name}"
     _write_sealed_bytes(context.roots.artifact_root, relative_path, content)
@@ -3841,6 +3954,11 @@ def _copy_catalog_artifact(
             "scope": scope,
             "origin": origin,
             "kind": artifact.kind.value,
+            **(
+                {}
+                if registration_validation is None
+                else {"registration_validation": registration_validation}
+            ),
             "provenance": {
                 **dict(provenance),
                 "catalog_artifact_id": artifact.artifact_id,
@@ -4777,6 +4895,106 @@ def _task_receipts(
             details={"observed_roles": sorted(role_ids)},
         )
     return sorted(receipts, key=lambda item: str(item["task_id"])), role_ids
+
+
+def _bind_delegation_workflow_receipts(
+    context: AttemptRunContext,
+    *,
+    task_receipts: list[dict[str, object]],
+    documents: tuple[object, ...],
+) -> list[dict[str, object]]:
+    workflow_ref = str(context.identity.get("workflow_ref") or "")
+    try:
+        expected_manifest = (
+            default_workflow_registry().resolve(workflow_ref).manifest.to_dict()
+        )
+    except ValueError as exc:
+        raise LiveProductPathError(
+            "formal_workflow_binding_invalid",
+            "formal workflow identity does not resolve to the pinned local manifest",
+        ) from exc
+    required_roles = {"researcher", "executor", "reporter"}
+    expected_task_ids = {
+        str(receipt.get("task_id") or "")
+        for receipt in task_receipts
+        if str(receipt.get("role") or "") in required_roles
+    }
+    delegation_documents: list[object] = []
+    for document in documents:
+        if getattr(document, "document_kind", None) != "delegation_request":
+            continue
+        payload = dict(getattr(document, "payload", None) or {})
+        if (
+            str(payload.get("task_id") or "") in expected_task_ids
+            or str(payload.get("role") or "") in required_roles
+        ):
+            delegation_documents.append(document)
+    if len(delegation_documents) != len(required_roles):
+        raise LiveProductPathError(
+            "formal_delegation_workflow_binding_missing",
+            "formal tasks require exactly one durable delegation request each",
+            details={"observed_count": len(delegation_documents)},
+        )
+
+    bound: list[dict[str, object]] = []
+    for receipt in task_receipts:
+        task_id = str(receipt.get("task_id") or "")
+        role = str(receipt.get("role") or "")
+        matches = [
+            document
+            for document in delegation_documents
+            if str(
+                dict(getattr(document, "payload", None) or {}).get("task_id") or ""
+            )
+            == task_id
+        ]
+        if len(matches) != 1:
+            raise LiveProductPathError(
+                "formal_delegation_workflow_binding_ambiguous",
+                "formal task does not resolve to exactly one durable delegation request",
+                details={"task_id": task_id, "match_count": len(matches)},
+            )
+        document = matches[0]
+        payload = dict(getattr(document, "payload", None) or {})
+        document_id = str(getattr(document, "document_id", "") or "")
+        try:
+            request_projection = project_formal_delegation_request(
+                payload,
+                document_id=document_id,
+            )
+        except CutoverEvidenceError as exc:
+            raise LiveProductPathError(
+                "formal_delegation_workflow_binding_invalid",
+                "formal delegation request does not match the closed durable schema",
+                details={"task_id": task_id, "role": role},
+            ) from exc
+        workflow_refs = payload.get("workflow_refs")
+        workflow_manifests = payload.get("workflow_manifests")
+        expected_refs = [workflow_ref] if role == "executor" else []
+        expected_manifests = [expected_manifest] if role == "executor" else []
+        if (
+            payload.get("task_id") != task_id
+            or payload.get("role") != role
+            or payload.get("agent_id") != receipt.get("assigned_ref")
+            or workflow_refs != expected_refs
+            or workflow_manifests != expected_manifests
+        ):
+            raise LiveProductPathError(
+                "formal_delegation_workflow_binding_invalid",
+                "formal workflow binding must be exact and executor-scoped",
+                details={"task_id": task_id, "role": role},
+            )
+        bound.append(
+            {
+                **receipt,
+                "delegation_request_ref": document_id,
+                "delegation_request_digest": canonical_digest(request_projection),
+                "delegation_request": request_projection,
+                "workflow_refs": list(expected_refs),
+                "workflow_manifests": list(expected_manifests),
+            }
+        )
+    return sorted(bound, key=lambda item: str(item["task_id"]))
 
 
 def _durable_events_by_session(
@@ -6232,6 +6450,11 @@ def _collect_positive_evidence(
         agents=agents,
         documents=documents,
     )
+    task_records = _bind_delegation_workflow_receipts(
+        context,
+        task_receipts=task_records,
+        documents=documents,
+    )
     if pubmed_engine_invocation["task_id"] != task_ids_by_role["researcher"]:
         raise LiveProductPathError(
             "pubmed_research_task_mismatch",
@@ -7411,6 +7634,11 @@ def _collect_fault_evidence(
         agents=agents,
         documents=documents,
         consumer_task_id=consumer_task_id,
+    )
+    task_records = _bind_delegation_workflow_receipts(
+        context,
+        task_receipts=task_records,
+        documents=documents,
     )
     source_snapshot_artifact_id = str(
         getattr(sandbox_run, "source_snapshot_artifact_id", "") or ""

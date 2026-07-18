@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,8 +16,10 @@ from fastapi import FastAPI
 import httpx
 import pytest
 
+from openzyme_domain import ArtifactKind
 from openzyme_domain import ControlledOperation
 from openzyme_domain import ControlledOperationStatus
+from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionReportDraftRecord
 from openzyme_domain import SessionReportDraftStatus
 from openzyme_domain import SessionReportRecord
@@ -239,6 +242,95 @@ class _FailingDrainJsonClient:
         del json, headers
         assert route == "/v3/sessions/sess_failed/runtime/drain"
         raise RuntimeError("private background failure detail")
+
+
+class _ConcurrentDrainAndWorkspaceFailureJsonClient:
+    """Synchronize a workspace failure behind a failed drain unwind."""
+
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self, *, drain_thread_name: str) -> None:
+        self.drain_thread_name = drain_thread_name
+        self.workspace_get_started = threading.Event()
+        self.drain_failure_started = threading.Event()
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route == "/v3/sessions/sess_concurrent_failure/workspace"
+        self.workspace_get_started.set()
+        assert self.drain_failure_started.wait(timeout=2.0)
+        drain_thread = next(
+            (
+                thread
+                for thread in threading.enumerate()
+                if thread.name == self.drain_thread_name
+            ),
+            None,
+        )
+        assert drain_thread is not None
+        drain_thread.join(timeout=2.0)
+        assert not drain_thread.is_alive()
+        raise RuntimeError("private workspace failure detail")
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del json, headers
+        assert route == (
+            "/v3/sessions/sess_concurrent_failure/runtime/drain"
+        )
+        assert self.workspace_get_started.wait(timeout=2.0)
+        self.drain_failure_started.set()
+        raise RuntimeError("private concurrent drain failure detail")
+
+
+class _DrainReturnsPendingApprovalJsonClient:
+    """Expose an approval in the same bounded response that yields for it."""
+
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self, approval_id: str) -> None:
+        self.approval_id = approval_id
+        self.pending = False
+        self.drain_returned = threading.Event()
+        self.resolve_calls: list[tuple[str, str, bool]] = []
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route == "/v3/sessions/sess_post_response/workspace"
+        return _JsonResponse(
+            {
+                "pending_approvals": (
+                    [{"approval_id": self.approval_id}] if self.pending else []
+                )
+            }
+        )
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del headers
+        if route == "/v3/sessions/sess_post_response/runtime/drain":
+            self.pending = True
+            self.drain_returned.set()
+            return _JsonResponse({"status": "waiting_approval"})
+
+        expected_route = f"/v3/approvals/{self.approval_id}/resolve"
+        assert route == expected_route
+        decision = str(json.get("decision") or "")
+        self.resolve_calls.append(
+            (self.approval_id, decision, self.drain_returned.is_set())
+        )
+        self.pending = False
+        return _JsonResponse(
+            {"approval_id": self.approval_id, "decision": decision}
+        )
 
 
 def _one_pixel_grayscale_png(
@@ -917,6 +1009,339 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
 
     assert "campaign already enforces evidence-bearing provider cache bypass" in prompt
     assert "do not pass or invent unsupported cache flags" in prompt
+    assert f"workflow_refs=[{_identity()['workflow_ref']!r}] only to the executor" in prompt
+    assert "researcher and reporter must omit workflow_refs" in prompt
+    assert "openzyme_pipeline.aox_reference.select_hmm_reference_set" in prompt
+    assert "openzyme_pipeline.aox_reference.select_scoring_reference" in prompt
+    assert "openzyme_pipeline.aox_reference.assemble_scoring_input" in prompt
+    assert "openzyme_pipeline.aox_hmmer.parse_and_filter_csv" in prompt
+    assert "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions" in prompt
+    assert "openzyme_pipeline.aox_motif.score_aligned_fasta" in prompt
+    assert "openzyme_pipeline.aox_similarity.build_similarity_graph" in prompt
+    assert "/provider_parsed/proteins.fasta" in prompt
+    assert "/provider_parsed/parsed_hits.csv" in prompt
+    assert "/provider_parsed/sequences.fasta" in prompt
+    assert "/provider_parsed/metadata.json" in prompt
+    assert "bio_tools/mafft/alignment.fasta" in prompt
+    assert "bio_tools/hmmbuild/model.hmm" in prompt
+    assert "bio_tools/cdhit/clustered.fasta" in prompt
+    assert "bio_tools/cdhit/clusters.csv" in prompt
+    assert "bio_tools/hmmalign/aligned.fasta" in prompt
+    assert "unique fetch_refs entry" in prompt
+    assert "exact fetched hmmbuild artifact id and content digest" in prompt
+    assert "validation_profile='fasta_zero_records@1'" in prompt
+    assert (
+        "join_score_filtered_accessions(score_filtered_csv, uniprot_fasta, "
+        "uniprot_metadata_json, ...)" in prompt
+    )
+    assert (
+        "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...)"
+        in prompt
+    )
+    assert "supply every bound expected_*_digest" in prompt
+    assert "never reimplement or approximate" in prompt
+
+
+def test_formal_delegation_workflow_binding_is_exact_and_executor_scoped(
+    tmp_path: Path,
+) -> None:
+    workflow = next(
+        manifest
+        for manifest in live.default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    identity = {**_identity(), "workflow_ref": workflow.selection_ref}
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites={
+            **_allowed_prerequisites(),
+            "workflow_ref": workflow.selection_ref,
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=identity,
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+    task_receipts = [
+        {
+            "task_id": f"task_{role}",
+            "role": role,
+            "status": "completed",
+            "business_exit": "agent_explicit",
+            "assigned_ref": f"agent_{role}",
+        }
+        for role in ("researcher", "executor", "reporter")
+    ]
+    documents = tuple(
+        SimpleNamespace(
+            document_id=f"doc_{role}",
+            document_kind="delegation_request",
+            payload={
+                "task_id": f"task_{role}",
+                "instructions": f"Complete the canonical {role} task.",
+                "role": role,
+                "agent_id": f"agent_{role}",
+                "nickname": role,
+                "display_name": role.capitalize(),
+                "handle": f"@{role}",
+                "workflow_refs": [workflow.selection_ref]
+                if role == "executor"
+                else [],
+                "workflow_manifests": [workflow.to_dict()]
+                if role == "executor"
+                else [],
+            },
+        )
+        for role in ("researcher", "executor", "reporter")
+    )
+
+    bound = live._bind_delegation_workflow_receipts(
+        context,
+        task_receipts=task_receipts,
+        documents=documents,
+    )
+
+    by_role = {str(item["role"]): item for item in bound}
+    assert by_role["executor"]["workflow_refs"] == [workflow.selection_ref]
+    assert by_role["executor"]["workflow_manifests"] == [workflow.to_dict()]
+    assert by_role["researcher"]["workflow_refs"] == []
+    assert by_role["reporter"]["workflow_refs"] == []
+    assert all(item["delegation_request_ref"] for item in bound)
+    assert all(item["delegation_request_digest"] for item in bound)
+    assert all(
+        item["delegation_request"]["document_id"]
+        == item["delegation_request_ref"]
+        and item["delegation_request"]["agent_id"] == item["assigned_ref"]
+        and live.canonical_digest(item["delegation_request"])
+        == item["delegation_request_digest"]
+        for item in bound
+    )
+
+    drifted = list(documents)
+    drifted[0] = SimpleNamespace(
+        document_id="doc_researcher",
+        document_kind="delegation_request",
+        payload={
+            **dict(documents[0].payload),
+            "workflow_refs": [workflow.selection_ref],
+            "workflow_manifests": [workflow.to_dict()],
+        },
+    )
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._bind_delegation_workflow_receipts(
+            context,
+            task_receipts=task_receipts,
+            documents=tuple(drifted),
+        )
+    assert error.value.code == "formal_delegation_workflow_binding_invalid"
+
+
+def test_catalog_source_snapshot_directory_is_sealed_as_self_verifying_envelope(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source_root = roots.blob_root / "sealed" / "source" / "snapshot"
+    files = {
+        "openzyme_pipeline/__init__.py": b"from .worker import run\n",
+        "openzyme_pipeline/worker.py": b"def run():\n    return 1\n",
+    }
+    for relative_path, content in files.items():
+        path = source_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    tree_digest = live.canonical_digest(
+        [
+            {
+                "relative_path": relative_path,
+                "content_digest": "sha256:"
+                + hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+            for relative_path, content in sorted(files.items())
+        ]
+    )
+    artifact = SimpleNamespace(
+        artifact_id="art_source_snapshot",
+        storage_uri=str(source_root),
+        kind=ArtifactKind.CODE,
+        metadata={
+            "semantic_type": "pipeline_source_snapshot",
+            "format": "source_tree",
+            "source_tree_digest": tree_digest,
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+
+    sealed = live._artifact_bytes(context, artifact)
+    envelope = cutover_evidence.verify_sealed_source_tree_envelope(
+        sealed,
+        expected_source_tree_digest=tree_digest,
+    )
+
+    assert envelope["schema_id"] == "openzyme_sealed_source_tree@1"
+    assert [item["relative_path"] for item in envelope["files"]] == sorted(files)
+
+
+def test_catalog_source_snapshot_directory_rejects_metadata_digest_drift(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source_root = roots.blob_root / "sealed" / "source" / "snapshot"
+    source_root.mkdir(parents=True)
+    (source_root / "main.py").write_text("value = 1\n", encoding="utf-8")
+    artifact = SimpleNamespace(
+        artifact_id="art_source_snapshot",
+        storage_uri=str(source_root),
+        kind=ArtifactKind.CODE,
+        metadata={
+            "semantic_type": "pipeline_source_snapshot",
+            "format": "source_tree",
+            "source_tree_digest": _digest("wrong-tree"),
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._artifact_bytes(context, artifact)
+
+    assert error.value.code == "sealed_source_tree_digest_mismatch"
+
+
+def test_catalog_source_snapshot_directory_requires_code_kind(
+    tmp_path: Path,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source_root = roots.blob_root / "sealed" / "source" / "snapshot"
+    source_root.mkdir(parents=True)
+    content = b"value = 1\n"
+    (source_root / "main.py").write_bytes(content)
+    artifact = SimpleNamespace(
+        artifact_id="art_source_snapshot",
+        storage_uri=str(source_root),
+        kind=ArtifactKind.RESULT,
+        metadata={
+            "semantic_type": "pipeline_source_snapshot",
+            "format": "source_tree",
+            "source_tree_digest": live.canonical_digest(
+                [
+                    {
+                        "relative_path": "main.py",
+                        "content_digest": "sha256:"
+                        + hashlib.sha256(content).hexdigest(),
+                        "size_bytes": len(content),
+                    }
+                ]
+            ),
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._artifact_bytes(context, artifact)
+
+    assert error.value.code == "catalog_artifact_blob_invalid"
+
+
+def test_catalog_copy_seals_typed_zero_fasta_registration_receipt(
+    tmp_path: Path,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source = roots.blob_root / "sealed" / "empty-target.fasta"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"")
+    reason = "no_hmmer_hits"
+    derivation = "aox_upstream_empty_materialization@1"
+    validation = {
+        "status": "passed",
+        "format": "fasta",
+        "required_columns": [],
+        "validation_profile": "fasta_zero_records@1",
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation,
+    }
+    artifact = SessionArtifactRecord(
+        artifact_id="art_empty_target",
+        session_id="session_test",
+        task_id="task_test",
+        lane_id="lane_test",
+        invocation_id=None,
+        run_id="run_test",
+        kind=ArtifactKind.SEQUENCE,
+        storage_uri=str(source),
+        relative_path="aox_hmm/target.fasta",
+        created_at="2026-07-18T00:00:00+00:00",
+        metadata={
+            "content_digest": "sha256:" + hashlib.sha256(b"").hexdigest(),
+            "format": "fasta",
+            "validation_profile": "fasta_zero_records@1",
+            "empty_result_reason": reason,
+            "derivation_contract_id": derivation,
+            "validation": validation,
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+
+    copy = live._copy_catalog_artifact(
+        context,
+        artifact,
+        scope="formal",
+        origin="operation",
+        provenance={"operation_id": "op_empty"},
+        cache={},
+    )
+
+    assert copy.content == b""
+    assert copy.record["registration_validation"] == {
+        **copy.record["registration_validation"],
+        "schema_id": "openzyme_typed_empty_artifact_validation@1",
+        "kind": "sequence",
+        "format": "fasta",
+        "validation_profile": "fasta_zero_records@1",
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation,
+        "catalog_validation_digest": live.canonical_digest(validation),
+    }
 
 
 def test_public_driver_route_surface_rejects_debug_shortcut() -> None:
@@ -1315,6 +1740,95 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
     )
 
 
+def test_runtime_drain_resolves_approval_exposed_by_waiting_response(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_id = "approval_after_bounded_drain"
+    raw_client = _DrainReturnsPendingApprovalJsonClient(approval_id)
+    api = live._PublicHostClient(raw_client)
+
+    coordination = runner._coordinate_runtime_drain(
+        api,
+        object(),  # type: ignore[arg-type]
+        session_id="sess_post_response",
+        drain_number=2,
+        started=time.monotonic(),
+        pre_event_cursor=0,
+        prior_approval_ids=frozenset(),
+        browser_gate_enabled=False,
+        browser_approval_receipt=None,
+        fault_enabled=False,
+        fault_blob_root=None,
+        fault_receipt=None,
+    )
+
+    assert raw_client.drain_returned.is_set()
+    assert raw_client.resolve_calls == [(approval_id, "approved", True)]
+    assert coordination.approval_ids == (approval_id,)
+    assert coordination.workspace == {"pending_approvals": []}
+    assert all(
+        not thread.is_alive() or thread.name != "aox-cutover-drain-2"
+        for thread in threading.enumerate()
+    )
+
+
+def test_later_drain_auto_approves_after_chrome_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_id = "approval_after_chrome_drain"
+    raw_client = _DrainReturnsPendingApprovalJsonClient(approval_id)
+    api = live._PublicHostClient(raw_client)
+    chrome_receipt = {
+        "schema_id": live.BROWSER_APPROVAL_RECEIPT_SCHEMA_ID,
+        "approval_id": "approval_chrome_first",
+    }
+
+    def unexpected_browser_handoff(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("a later drain must not request a second Chrome approval")
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_wait_for_browser_approval",
+        unexpected_browser_handoff,
+    )
+
+    coordination = runner._coordinate_runtime_drain(
+        api,
+        object(),  # type: ignore[arg-type]
+        session_id="sess_post_response",
+        drain_number=3,
+        started=time.monotonic(),
+        pre_event_cursor=0,
+        prior_approval_ids=frozenset({"approval_chrome_first"}),
+        browser_gate_enabled=True,
+        browser_approval_receipt=chrome_receipt,
+        fault_enabled=False,
+        fault_blob_root=None,
+        fault_receipt=None,
+    )
+
+    assert raw_client.resolve_calls == [(approval_id, "approved", True)]
+    assert coordination.approval_ids == (approval_id,)
+    assert coordination.browser_approval_receipt is chrome_receipt
+    assert coordination.workspace == {"pending_approvals": []}
+
+
 def test_runtime_drain_wraps_background_exception_as_stable_failure(
     tmp_path: Path,
 ) -> None:
@@ -1349,6 +1863,54 @@ def test_runtime_drain_wraps_background_exception_as_stable_failure(
     assert isinstance(error.value.__cause__, RuntimeError)
     assert all(
         not thread.is_alive() or thread.name != "aox-cutover-drain-7"
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_failure_wins_over_concurrent_workspace_failure(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 10
+    drain_thread_name = f"aox-cutover-drain-{drain_number}"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _ConcurrentDrainAndWorkspaceFailureJsonClient(
+        drain_thread_name=drain_thread_name
+    )
+    api = live._PublicHostClient(raw_client)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_concurrent_failure",
+            drain_number=drain_number,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+        )
+
+    assert raw_client.workspace_get_started.is_set()
+    assert raw_client.drain_failure_started.is_set()
+    assert error.value.code == "runtime_drain_command_failed"
+    assert error.value.details == {"failure_type": "RuntimeError"}
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert str(error.value.__cause__) == (
+        "private concurrent drain failure detail"
+    )
+    assert "workspace failure" not in str(error.value)
+    assert all(
+        not thread.is_alive() or thread.name != drain_thread_name
         for thread in threading.enumerate()
     )
 

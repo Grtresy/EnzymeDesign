@@ -13,7 +13,8 @@ from urllib.parse import quote
 from urllib.parse import urlparse
 
 
-LIVE_MICU_TOKEN_HARD_LIMIT = 100_000_000
+LIVE_MICU_TOKEN_HARD_LIMIT = 500_000_000
+_LEGACY_LIVE_MICU_TOKEN_HARD_LIMIT = 100_000_000
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_LIVE_MICU_TOKEN_LEDGER_PATH = (
     _REPO_ROOT / ".openzyme/live_micu_token_ledger.sqlite3"
@@ -43,6 +44,10 @@ class LiveMicuTokenBudgetExceededError(RuntimeError):
 
 class LiveMicuTokenReservationConfigurationError(ValueError):
     """Raised when a metered live call lacks a bounded output reservation."""
+
+
+class LiveMicuTokenPolicyMigrationError(RuntimeError):
+    """Raised when the explicit fixed-policy ledger migration cannot apply."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +339,79 @@ def configured_live_micu_token_ledger_path() -> Path:
     return path if path.is_absolute() else _REPO_ROOT / path
 
 
+def migrate_legacy_live_micu_token_policy(
+    path: Path | str,
+) -> dict[str, Any]:
+    """Explicitly migrate the canonical fixed 100M policy to the fixed 500M policy.
+
+    Historical rows and charged usage are untouched.  The operation is
+    idempotent at 500M and refuses every other stored limit.  In particular,
+    normal ledger construction and read-only summaries never invoke this
+    migration, so caller-selected lower limits remain fail-closed until an
+    operator explicitly authorizes this exact transition.
+    """
+
+    ledger_path = Path(path)
+    if not ledger_path.exists():
+        raise LiveMicuTokenPolicyMigrationError(
+            "live MICU token ledger does not exist for policy migration"
+        )
+    connection = sqlite3.connect(ledger_path, timeout=30.0, isolation_level=None)
+    migrated = False
+    try:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            state = connection.execute(
+                "SELECT hard_limit_tokens FROM live_micu_token_state WHERE id = 1"
+            ).fetchone()
+            connection.execute(
+                "SELECT COUNT(*) FROM live_micu_token_attempts"
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise LiveMicuTokenPolicyMigrationError(
+                "live MICU token ledger does not have the canonical ledger schema"
+            ) from exc
+        if state is None:
+            raise LiveMicuTokenPolicyMigrationError(
+                "live MICU token ledger state is missing"
+            )
+        stored_limit = int(state[0])
+        if stored_limit == LIVE_MICU_TOKEN_HARD_LIMIT:
+            connection.commit()
+        elif stored_limit != _LEGACY_LIVE_MICU_TOKEN_HARD_LIMIT:
+            raise LiveMicuTokenPolicyMigrationError(
+                "live MICU token ledger is not on the exact legacy fixed 100M policy"
+            )
+        else:
+            cursor = connection.execute(
+                """
+                UPDATE live_micu_token_state
+                SET hard_limit_tokens = ?
+                WHERE id = 1 AND hard_limit_tokens = ?
+                """,
+                (
+                    LIVE_MICU_TOKEN_HARD_LIMIT,
+                    _LEGACY_LIVE_MICU_TOKEN_HARD_LIMIT,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LiveMicuTokenPolicyMigrationError(
+                    "live MICU token ledger policy changed during migration"
+                )
+            connection.commit()
+            migrated = True
+    except Exception:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+    summary = summarize_live_micu_token_ledger(ledger_path)
+    summary["policy_migrated"] = migrated
+    return summary
+
+
 def is_micu_provider_url(base_url: str | None) -> bool:
     hostname = urlparse(base_url or "").hostname
     normalized = (hostname or "").lower().rstrip(".")
@@ -603,8 +681,20 @@ def main(argv: list[str] | None = None) -> None:
         default=0,
         help="include up to this many recent attempt records in the read-only output",
     )
+    parser.add_argument(
+        "--migrate-legacy-fixed-policy",
+        action="store_true",
+        help=(
+            "explicitly migrate an existing exact legacy fixed 100M policy to "
+            "the compiled-in 500M policy without changing usage rows"
+        ),
+    )
     args = parser.parse_args(argv)
-    summary = summarize_live_micu_token_ledger(args.path)
+    summary = (
+        migrate_legacy_live_micu_token_policy(args.path)
+        if args.migrate_legacy_fixed_policy
+        else summarize_live_micu_token_ledger(args.path)
+    )
     if args.attempts > 0:
         summary["attempts"] = LiveMicuTokenLedger(args.path).list_attempts(
             limit=args.attempts
@@ -627,12 +717,14 @@ __all__ = [
     "LIVE_MICU_TOKEN_HARD_LIMIT",
     "LiveMicuTokenBudgetExceededError",
     "LiveMicuTokenLedger",
+    "LiveMicuTokenPolicyMigrationError",
     "LiveMicuTokenReservation",
     "LiveMicuTokenReservationConfigurationError",
     "UsageTokenCounts",
     "configured_live_micu_token_ledger_path",
     "estimate_llm_request_tokens",
     "is_micu_provider_url",
+    "migrate_legacy_live_micu_token_policy",
     "summarize_live_micu_token_ledger",
     "usage_token_counts",
 ]

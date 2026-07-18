@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import shutil
 import tempfile
 from typing import Any
@@ -28,6 +29,11 @@ WORKSPACE_INPUT = PurePosixPath("/workspace/input")
 WORKSPACE_OUTPUT = PurePosixPath("/workspace/output")
 WORKSPACE_SRC = PurePosixPath("/workspace/src")
 WORKSPACE_DIRECTORIES = ("src", "input", "work", "output", "logs", "manifest")
+FASTA_ZERO_RECORDS_VALIDATION_PROFILE = "fasta_zero_records@1"
+_EMPTY_RESULT_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_DERIVATION_CONTRACT_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
+)
 
 
 class ArtifactBoundaryError(RuntimeError):
@@ -394,6 +400,50 @@ def _validate_fasta(path: Path) -> None:
         raise ArtifactBoundaryError("artifact_validation_failed", "FASTA artifact is missing records or sequences")
 
 
+def _validate_zero_record_fasta(
+    path: Path,
+    *,
+    kind: ArtifactKind,
+    format_value: str | None,
+    metadata: dict[str, Any],
+) -> dict[str, str]:
+    normalized_format = None if format_value in {None, ""} else str(format_value).lower()
+    reason = metadata.get("empty_result_reason")
+    derivation_contract_id = metadata.get("derivation_contract_id")
+    if kind is not ArtifactKind.SEQUENCE or normalized_format not in {
+        "fa",
+        "faa",
+        "fasta",
+    }:
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "fasta_zero_records@1 requires kind=sequence and format=fasta",
+        )
+    if not isinstance(reason, str) or _EMPTY_RESULT_REASON_PATTERN.fullmatch(
+        reason
+    ) is None:
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "fasta_zero_records@1 requires one stable empty-result reason",
+        )
+    if not isinstance(
+        derivation_contract_id, str
+    ) or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation_contract_id) is None:
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "fasta_zero_records@1 requires one versioned derivation contract",
+        )
+    if not path.is_file() or path.read_bytes() != b"":
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "fasta_zero_records@1 requires an exact zero-byte regular file",
+        )
+    return {
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation_contract_id,
+    }
+
+
 def _validate_hmm(path: Path) -> None:
     _validate_nonempty(path)
     if not path.is_file():
@@ -433,14 +483,27 @@ def _run_validator(
     *,
     kind: ArtifactKind,
     format_value: str | None,
+    validation_profile: str | None,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    del kind
     normalized_format = None if format_value in {None, ""} else str(format_value).lower()
     required_columns_raw = metadata.get("required_columns") or ()
     required_columns = tuple(str(item) for item in required_columns_raw)
+    profile_details: dict[str, str] = {}
     try:
-        if normalized_format in {None, "txt", "text", "log", "md", "markdown", "pdb", "pdbqt", "py", "python", "fpocket"}:
+        if validation_profile is not None:
+            if validation_profile != FASTA_ZERO_RECORDS_VALIDATION_PROFILE:
+                raise ArtifactBoundaryError(
+                    "artifact_validator_missing",
+                    f"no artifact validation profile is registered for {validation_profile!r}",
+                )
+            profile_details = _validate_zero_record_fasta(
+                path,
+                kind=kind,
+                format_value=format_value,
+                metadata=metadata,
+            )
+        elif normalized_format in {None, "txt", "text", "log", "md", "markdown", "pdb", "pdbqt", "py", "python", "fpocket"}:
             _validate_nonempty(path)
         elif normalized_format in {"fa", "faa", "fasta"}:
             _validate_fasta(path)
@@ -457,11 +520,19 @@ def _run_validator(
             )
     except UnicodeError as exc:
         raise ArtifactBoundaryError("artifact_validation_failed", "artifact is not valid UTF-8 text") from exc
-    return {
+    result: dict[str, Any] = {
         "status": "passed",
         "format": normalized_format,
         "required_columns": list(required_columns),
     }
+    if validation_profile is not None:
+        result.update(
+            {
+                "validation_profile": validation_profile,
+                **profile_details,
+            }
+        )
+    return result
 
 
 def _blob_store_root(blob_store_root: Path | None) -> Path:
@@ -585,6 +656,7 @@ class ArtifactBoundaryService:
         path: str,
         kind: str | ArtifactKind = ArtifactKind.RESULT,
         format: str | None = None,
+        validation_profile: str | None = None,
         metadata: dict[str, Any] | None = None,
         invocation_id: str | None = None,
         run_id: str | None = None,
@@ -600,6 +672,25 @@ class ArtifactBoundaryService:
         kind_value = kind if isinstance(kind, ArtifactKind) else ArtifactKind(str(kind))
         if format is not None:
             metadata_payload["format"] = str(format)
+        metadata_validation_profile = metadata_payload.get("validation_profile")
+        if (
+            metadata_validation_profile == FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+            and validation_profile != FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "fasta_zero_records@1 must be selected through validation_profile",
+            )
+        if (
+            validation_profile is not None
+            and metadata_validation_profile not in {None, "", validation_profile}
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "artifact validation_profile conflicts with metadata",
+            )
+        if validation_profile is not None:
+            metadata_payload["validation_profile"] = str(validation_profile)
         public_path = _public_path(path, default=WORKSPACE_OUTPUT / "artifact")
         workspace_path = self._workspace_path(sandbox_workspace_id)
         source_path = _resolve_workspace_host_path(
@@ -620,6 +711,7 @@ class ArtifactBoundaryService:
             source_path,
             kind=kind_value,
             format_value=metadata_payload.get("format"),
+            validation_profile=validation_profile,
             metadata=metadata_payload,
         )
         metadata_digest = _json_digest(metadata_payload)
@@ -1264,6 +1356,11 @@ def register_artifact_boundary_tools(registry: ToolRegistryProtocol) -> None:
                 format=None
                 if invocation.arguments.get("format") is None
                 else str(invocation.arguments.get("format")),
+                validation_profile=(
+                    None
+                    if invocation.arguments.get("validation_profile") is None
+                    else str(invocation.arguments.get("validation_profile"))
+                ),
                 metadata=dict(invocation.arguments.get("metadata") or {}),
             )
         except (ArtifactBoundaryError, ValueError) as exc:
@@ -1312,6 +1409,7 @@ def register_artifact_boundary_tools(registry: ToolRegistryProtocol) -> None:
 __all__ = [
     "ArtifactBoundaryError",
     "ArtifactBoundaryService",
+    "FASTA_ZERO_RECORDS_VALIDATION_PROFILE",
     "MaterializationResult",
     "RegisterResult",
     "SourceSnapshotResult",

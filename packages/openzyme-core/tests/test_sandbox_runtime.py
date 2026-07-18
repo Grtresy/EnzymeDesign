@@ -445,6 +445,70 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
 
 
+def test_sandbox_sdk_forwards_typed_zero_record_fasta_profile(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "attempt-blobs",
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/register_empty.py",
+        content=(
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "target = Path('output/target.fasta')\n"
+            "target.parent.mkdir(parents=True, exist_ok=True)\n"
+            "target.write_bytes(b'')\n"
+            "print(artifacts.register(\n"
+            "    '/workspace/output/target.fasta',\n"
+            "    kind='sequence',\n"
+            "    format='fasta',\n"
+            "    validation_profile='fasta_zero_records@1',\n"
+            "    metadata={\n"
+            "        'empty_result_reason': 'no_candidates_after_length_filter',\n"
+            "        'derivation_contract_id': 'aox_sequence_length_join@1',\n"
+            "    },\n"
+            ")[\"artifact\"][\"artifact_id\"])\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/register_empty.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    target = next(
+        artifact
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+        if artifact.relative_path == "target.fasta"
+    )
+    assert Path(target.storage_uri).read_bytes() == b""
+    assert target.metadata["validation"] == {
+        "status": "passed",
+        "format": "fasta",
+        "required_columns": [],
+        "validation_profile": "fasta_zero_records@1",
+        "empty_result_reason": "no_candidates_after_length_filter",
+        "derivation_contract_id": "aox_sequence_length_join@1",
+    }
+
+
 def _wait_for_pending_approval(
     repositories: CoreRepositories,
     session_id: str,

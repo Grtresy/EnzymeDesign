@@ -43,7 +43,14 @@ def _resolve_output_path(path: str) -> Path:
     return resolved
 
 
-def register(path: str, *, kind: str = "result", format: str | None = None, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def register(
+    path: str,
+    *,
+    kind: str = "result",
+    format: str | None = None,
+    validation_profile: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved = _resolve_output_path(path)
     return dict(
         call(
@@ -52,17 +59,33 @@ def register(path: str, *, kind: str = "result", format: str | None = None, meta
                 "path": str(resolved),
                 "kind": kind,
                 "format": format,
+                "validation_profile": validation_profile,
                 "metadata": dict(metadata or {}),
             },
         )
     )
 
 
-def register_many(paths: list[str], *, kind: str = "result", format: str | None = None, metadata: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def register_many(
+    paths: list[str],
+    *,
+    kind: str = "result",
+    format: str | None = None,
+    validation_profile: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for path in paths:
         resolved = _resolve_output_path(path)
-        items.append({"path": str(resolved), "kind": kind, "format": format, "metadata": dict(metadata or {})})
+        items.append(
+            {
+                "path": str(resolved),
+                "kind": kind,
+                "format": format,
+                "validation_profile": validation_profile,
+                "metadata": dict(metadata or {}),
+            }
+        )
     return list(call("artifacts.register_many", {"items": items}))
 
 

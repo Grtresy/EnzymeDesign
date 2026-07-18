@@ -27,6 +27,20 @@
 6. artifact catalog 登记当前运行的 normalized sealed outputs 和 lineage；
 7. 三个 teammate 分别显式写入 task 业务终态，reporter 通过 `report.publish` 发布报告，master 产生非空 final response。
 
+collector 不只相信 task projection：它从三份 durable delegation request
+重建 role-scoped binding，要求 executor 精确携带 campaign workflow ref 与
+完整 manifest snapshot，researcher/reporter 必须为空绑定；offline verifier
+复算不含 raw instructions 的 closed request projection、manifest content/core
+digest，并把 projected agent 与 task assignment 绑定。`world.inspect(sections=["capabilities"], task_id=..., limit=...)`
+只返回 task-filtered、limit/byte-bounded invocation facts/opaque refs，不把文档正文、tool output 或 evidence body 内联回 agent context。
+
+pipeline source snapshot 作为 `openzyme_sealed_source_tree@1` canonical
+envelope 封存，只接受 `kind=code`，并对 base64 解码后的 UTF-8 源码再次执行
+public-safety 检查，而不是把目录当普通文件读取。科学 empty FASTA 也不是通用
+空文件例外：只有 exact zero bytes、`fasta_zero_records@1`、稳定 empty reason
+与版本化 derivation contract 同时成立时可登记；attempt bundle 封存并离线
+复算 catalog validation receipt；sentinel header/text 直接 fail closed。
+
 Runtime idle、max steps、tool success、protocol message 或 capability terminal 都不代表 task completed。缺真实 provider/backend、runner output、approval continuation、artifact closure 或 published report 时必须显式失败，不用 Host-local binary、deterministic adapter、cached payload 或 synthetic output fallback。
 
 ## 纠正后的科学数据链
@@ -45,6 +59,13 @@ provider aggregate 上的 missing/extra/duplicate/mismatch 全部 fail closed；
 - `aox_scoring_input_assembly@1` 把 AAB 放在首位，再按 target id 字典序追加 post-UniProt target，生成 `AOX_scoring_input.fasta`。
 
 `AAB57849.1` 不得进入 13-reference HMM training；13-reference model FASTA 也不得冒充 motif 坐标 reference。
+
+executor 必须调用已安装的 `openzyme_pipeline.aox_reference`、
+`aox_hmmer`、`aox_sequence_join`、`aox_motif` 和 `aox_similarity` 中的版本化
+函数，不近似重写。provider bytes 通过声明的 `/provider_parsed/...` transcript
+suffix 选择；MAFFT/hmmbuild/CD-HIT/HMMalign bytes 通过 runner-owned canonical
+path 对应的唯一 `fetch_refs[].declared_output_path` 选择，并用真实 fetched HMM
+artifact id/digest 绑定 HMMER search。
 
 ### HMMER → UniProt → identity-preserving join
 
@@ -107,9 +128,9 @@ probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal
 
 ## Blank-world campaign 验收
 
-每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 100M 账本，不在 campaign 初始化时重置。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
+每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 500M 账本；历史 usage 不清零，campaign 初始化也不得重置。旧固定 100M policy 只迁移 policy ceiling，全部历史 attempt/charged token 原样保留，显式 lower limit 不被抬高。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
 
-`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@1` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、现有累计 100M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
+`run-live` 在构造 runner/campaign 和创建任何 root 前先从 clean checkout、digest-pinned workflow、`aox_motif_rule_score@1`、实际 sandbox image preflight 与 Pipeline SDK source tree 计算 canonical 七字段 launch identity。`config_digest` 不是任意 operator 标签，而是 safe `aox_blank_world_runtime_config@1` preimage 的 canonical digest；该 preimage 绑定 single-process SQLite/trusted Host、HPC runner-config digest、runner-owned manifest digest 与 exact AOX `tool_id` → adapter/template/runner-contract expectation map、post-budget MICU/research/tracing/test opt-in、driver/Chrome bounds、现有累计 500M ledger identity，且不暴露 credential、NCBI email 或 Host/runner/ledger path。MICU/OpenAI-compatible endpoint 必须显式配置 `context_window_tokens <= 200000`，不能按模型名继承未经 endpoint 证明的百万级 context。每个 attempt root 创建前都重新执行 launch guard，checkout 或 effective config 漂移直接 fail closed；exact-nine prerequisite 顶层字段不因此增加。
 
 blank-world prerequisite 只接受 exact nine：`git_commit`、`config_digest`、`workflow_ref`、`image_digest`、`sdk_digest`、`toolchain_image_digests`、`credential_slots`、`ncbi_identity`、`prompt_accessions`。前五项必须与 launch identity 一致；toolchain map 必须精确包含 MAFFT 7.525、hmmbuild 3.4、hmmalign 3.4 和 CD-HIT 4.8.1 四个 versioned route identity，且两个 HMMER operation 绑定同一 SIF digest；credential slots 只含四个 availability boolean，LLM/NCBI 必须 ready；prompt accession 只含 formal exact-14 与固定 known-positive probe 集合。
 
@@ -124,6 +145,12 @@ GO 只由顺序固定的三次 campaign 聚合得出：
 3. fault：`derived_required_artifact_blob_byte_flip@2` 精确到达 real NCBI exact-14 `proteins.fasta` → `aox_hmm_reference_set_selection@1` → derived `AOX_ref21.fasta` → pending MAFFT seam，产生 `artifact_blob_digest_mismatch`。封存的 `aox_fault_negative_state_closure@1` 必须证明 execution task failed/blocked/cancelled、reporting 未完成/发布、无 ready/published report 或 draft、无 successful alternate consumer、无 downstream fixed deliverable、durable events 与 conversation/final failure receipt 一致；fault attempt 的 MICU 增量同样必须全部归因到本 campaign。
 
 正式 campaign 使用 `--approval-mode chrome-once` 时，只把 positive 1 的首个 formal approval 暴露给同进程 loopback Host 提供的 Web UI。driver 不调用 resolve route；它在触发该 drain 前先记录 durable event cursor，再从该 cursor 重建 resolution/continuation，避免即时浏览器批准与事后 snapshot 竞争。浏览器审批 timeout 从 handoff 发出时独立计时，同时受 attempt 总 deadline 上界约束。用户在 approval card 上批准后，driver 必须从有序 durable events 证明同一 approval、operation digest、sandbox run/workspace 和 continuation 恢复到同一 operation 的 terminal state，并在完成后保留 bounded UI observation window。handoff 对动态身份是完整的：发出 sealed page、Host/UI identity 和 receipt schema id，而 exact 23-field builder 合同由稳定 guide/code 定义。trusted operator 必须使 final target 在 hold 内不存在，hold 后使用另一个写入 config digest 的正有限 submission timeout 完成 sibling-temp/fsync/atomic-rename。当前 Host 证据只覆盖 hold polls 未观察到提前 target、post-hold mtime 与两次 stat/read 稳定，不声称证明轮询间连续缺失或 atomic/fsync provenance。该 receipt 加上 browser console 无 application error 才构成当前 trusted-operator Chrome proof；`auto` 模式不能满足这一 GO 条件。任一必需 quorum、digest、分支 closure、published report、offline verification、Chrome proof 或 MICU ledger 条件失败，campaign 只能产生最小 evidence-backed **NO-GO** blocker。
+
+同进程 coordinator 在成功 drain worker terminal 后还必须发起一次确定发生在
+response 之后的 public workspace GET，才能排除最后时刻投影出的
+`waiting_approval`。后台 drain 自身异常保持
+`runtime_drain_command_failed`；只有 workspace/approval coordination 或 cleanup
+异常才归入 coordination failure。
 
 ## 当前实施状态的表述规则
 

@@ -105,7 +105,7 @@ approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提�
 
 这些是 agent team 内部协调工具，不新增 REST endpoint，也不要求 Web UI 直接暴露操作入口。master 可用它们读取 delegation correlation thread，并在 teammate 失败或摘要不足时选择发送 follow-up、更新 task、请求用户澄清或汇报结果。`protocol.send` 只投递 message 并排队 wakeup signal，不同步运行 recipient；recipient turn 由 scheduler claim signal 后启动。配置化 Host 默认由 background runtime worker 推进 claim，debug/manual 场景也只能通过同一 scheduler claim path 推进。workspace projection 继续通过 `delegation`、`agent_traces` 与 `activity_feed` 展示用户可理解的 agent team 状态和 thread 进展，raw wakeup / unread / signal counters 默认只属于 debug 视图。
 
-`task.delegate(task_id, agent_role, agent_ref?, instructions?, correlation_id?, workflow_refs?)` 的 `workflow_refs` 是 opt-in binding。它只能选择当前 step 已授权 workflow refs 的子集；省略或空数组都表示不绑定，不能隐式继承 master 的全部 focus。role/tool/engine requirement 与 manifest digest 在 task claim 前校验，失败不产生 teammate、assignment、delegation message 或 wakeup。该参数是 agent 选择工作知识的结构化边界，不是 harness 自动匹配领域关键词或固定编排步骤的入口。
+`task.delegate(task_id, agent_role, agent_ref?, instructions?, correlation_id?, workflow_refs?)` 的 `workflow_refs` 是 opt-in binding。它只能选择当前 step 已授权 workflow refs 的子集；省略或空数组都表示不绑定，不能隐式继承 master 的全部 focus。role/tool/engine requirement 与 manifest digest 在 task claim 前校验，失败不产生 teammate、assignment、delegation message 或 wakeup。成功委派把 exact refs 和 resolved manifest snapshot 持久化在 `delegation_request` document；cutover collector 可以据此证明某个 binding 确实到达指定 teammate，而不是只出现在 entry prompt。该参数是 agent 选择工作知识的结构化边界，不是 harness 自动匹配领域关键词或固定编排步骤的入口。
 
 默认内部只读文档工具还应包括：
 
@@ -120,9 +120,18 @@ approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提�
 
 - `world.inspect`
 
-`world.inspect(sections?, task_id?, agent_id?, limit?)` 返回当前 session 的结构化事实快照，面向 master 和 teammate。它可以包含 session focus、task board、assigned/delegated task、agent roster、inbox、runtime signals、artifact catalog 安全投影、capability invocation、controlled operation、pending approval、capability outcome、runtime consistency warning、模型当前可见 tool schema、route policy、approval requirement 与输入约束。
+`world.inspect(sections?, task_id?, agent_id?, limit?)` 返回当前 session 的结构化事实快照，面向 master 和 teammate。它可以包含 session focus、task board、assigned/delegated task、agent roster、inbox、runtime signals、artifact catalog 安全投影、capability invocation、controlled operation、pending approval、capability outcome、runtime consistency warning、模型当前可见 tool schema、route policy、approval requirement 与输入约束。teammate 的 `capabilities` 查询默认绑定当前 task，显式 mismatch 返回 typed error；master 保留既有可选 `task_id` / session-wide 权限。facts page newest-first，最多返回 20 个 invocation、每类最多 8 个 closed opaque refs，serialized facts 最大 64 KiB；每项只含 invocation identity/status/time/`output_ref`、安全 refs 和 document/artifact/evidence/source/gap counts，禁止内联 UI rich documents、output payload 或 evidence 正文。当前 hard cap 仅封闭公开投影；窄列 repository query、lazy section read 与 cursor 另见 `architecture-proposals/bounded-capability-facts-query.md`，尚未实施。
 
 该工具只表达 facts / constraints / affordance metadata，不输出 `recommended_actions`，不固定 “RCSB 后必须 fpocket” 或 “所有任务必须 report” 之类 workflow，不替 agent 判断 task 是否完成。terminal capability outcome 只表示 evidence ready；业务 task terminal 仍由 agent 通过 `task.finish` 写入。
+
+`artifacts.register` 的 normal FASTA contract仍要求真实记录。显式
+`validation_profile="fasta_zero_records@1"` 只接受 `kind=sequence`、FASTA
+format、exact zero bytes、stable `empty_result_reason` 与 versioned
+`derivation_contract_id`；任何非零 sentinel 都失败。该 profile只验证
+artifact byte shape，不赋予 healthy-empty 科学语义，后者仍由 workflow collector
+和 offline verifier从 sealed upstream artifacts重算。cutover collector 还封存
+`openzyme_typed_empty_artifact_validation@1` receipt；offline verifier从 receipt
+重建 catalog validation payload/digest，并拒绝 zero-byte sequence 的 missing/drift。
 
 ### Internal Tool Result Envelope
 

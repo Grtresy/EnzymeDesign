@@ -658,6 +658,11 @@ class _ControlSocketServer:
                     path=str(params.get("path") or ""),
                     kind=str(params.get("kind") or "result"),
                     format=None if params.get("format") in {None, ""} else str(params.get("format")),
+                    validation_profile=(
+                        None
+                        if params.get("validation_profile") in {None, ""}
+                        else str(params.get("validation_profile"))
+                    ),
                     metadata=dict(params.get("metadata") or {}),
                 ).to_payload()
             elif method == "artifacts.register_many":
@@ -672,6 +677,11 @@ class _ControlSocketServer:
                         path=str(item.get("path") or ""),
                         kind=str(item.get("kind") or "result"),
                         format=None if item.get("format") in {None, ""} else str(item.get("format")),
+                        validation_profile=(
+                            None
+                            if item.get("validation_profile") in {None, ""}
+                            else str(item.get("validation_profile"))
+                        ),
                         metadata=dict(item.get("metadata") or {}),
                     ).to_payload()
                     for item in items

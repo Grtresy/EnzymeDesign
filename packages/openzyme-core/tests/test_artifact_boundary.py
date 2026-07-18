@@ -20,6 +20,7 @@ from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
+from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
 
 def _build_repositories() -> CoreRepositories:
@@ -511,6 +512,96 @@ def test_register_validators_are_host_owned_and_cannot_be_weakened(tmp_path: Pat
             metadata={"required_columns": []},
         )
     assert bad_fasta_error.value.error_code == "artifact_validation_failed"
+
+
+def test_register_accepts_only_typed_exact_zero_byte_empty_fasta(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    workspace_path = workspace_root / workspace.sandbox_workspace_id
+    (workspace_path / "src" / "main.py").write_text(
+        "print('v1')\n", encoding="utf-8"
+    )
+    empty_fasta = workspace_path / "output" / "target.fasta"
+    empty_fasta.write_bytes(b"")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+    service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+    )
+
+    with pytest.raises(ArtifactBoundaryError) as untyped_empty:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/target.fasta",
+            kind="sequence",
+            format="fasta",
+        )
+    assert untyped_empty.value.error_code == "artifact_validation_failed"
+
+    registered = service.register(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        path="/workspace/output/target.fasta",
+        kind="sequence",
+        format="fasta",
+        validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+        metadata={
+            "empty_result_reason": "no_candidates_after_length_filter",
+            "derivation_contract_id": "aox_sequence_length_join@1",
+        },
+    )
+
+    assert registered.content_digest == _digest("")
+    assert Path(registered.artifact.storage_uri).read_bytes() == b""
+    assert registered.validation == {
+        "status": "passed",
+        "format": "fasta",
+        "required_columns": [],
+        "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+        "empty_result_reason": "no_candidates_after_length_filter",
+        "derivation_contract_id": "aox_sequence_length_join@1",
+    }
+
+    sentinel = workspace_path / "output" / "sentinel.fasta"
+    sentinel.write_text(">EMPTY\nX\n", encoding="utf-8")
+    with pytest.raises(ArtifactBoundaryError) as metadata_spoof:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/sentinel.fasta",
+            kind="sequence",
+            format="fasta",
+            metadata={
+                "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+                "empty_result_reason": "no_candidates_after_length_filter",
+                "derivation_contract_id": "aox_sequence_length_join@1",
+            },
+        )
+    assert metadata_spoof.value.error_code == "artifact_validation_failed"
+
+    with pytest.raises(ArtifactBoundaryError) as nonempty_claim:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/sentinel.fasta",
+            kind="sequence",
+            format="fasta",
+            validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+            metadata={
+                "empty_result_reason": "no_candidates_after_length_filter",
+                "derivation_contract_id": "aox_sequence_length_join@1",
+            },
+        )
+    assert nonempty_claim.value.error_code == "artifact_validation_failed"
 
 
 def test_register_commit_failure_does_not_expose_artifact_and_enqueues_gc(

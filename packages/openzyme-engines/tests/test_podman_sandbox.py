@@ -7,10 +7,72 @@ import pytest
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
+from openzyme_engines import podman_sandbox
 from openzyme_engines import PodmanPipelineSandboxRunner
+from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
 
 pytestmark = pytest.mark.podman
+
+
+def test_registered_empty_fasta_requires_typed_zero_byte_contract(
+    tmp_path: Path,
+) -> None:
+    server = podman_sandbox._ControlSocketServer(
+        socket_path=tmp_path / "control.sock",
+        input_dir=tmp_path / "input",
+        output_dir=tmp_path,
+        artifacts={},
+    )
+    empty = tmp_path / "empty.fasta"
+    empty.write_bytes(b"")
+    metadata = {
+        "format": "fasta",
+        "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+        "empty_result_reason": "no_candidates_after_motif_filter",
+        "derivation_contract_id": "aox_motif_candidate_filter@1",
+    }
+
+    server._validate_registered_output(
+        empty,
+        relative_path="aox_hmm/AOX_candidates.fasta",
+        kind=ArtifactKind.SEQUENCE,
+        validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+        metadata=metadata,
+    )
+
+    with pytest.raises(ValueError, match="registered artifact is empty"):
+        server._validate_registered_output(
+            empty,
+            relative_path="aox_hmm/AOX_candidates.fasta",
+            kind=ArtifactKind.SEQUENCE,
+            validation_profile=None,
+            metadata={"format": "fasta"},
+        )
+
+    sentinel = tmp_path / "sentinel.fasta"
+    sentinel.write_text(">EMPTY\nX\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be selected through validation_profile"):
+        server._register(
+            {
+                "path": "/workspace/output/sentinel.fasta",
+                "kind": "sequence",
+                "format": "fasta",
+                "metadata": {
+                    **metadata,
+                    "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+                },
+            }
+        )
+
+    with pytest.raises(ValueError, match="fasta_zero_records@1 artifact is invalid"):
+        server._validate_registered_output(
+            sentinel,
+            relative_path="aox_hmm/AOX_candidates.fasta",
+            kind=ArtifactKind.SEQUENCE,
+            validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
+            metadata=metadata,
+        )
 
 
 def test_podman_pipeline_runs_container_and_registers_output(tmp_path: Path) -> None:

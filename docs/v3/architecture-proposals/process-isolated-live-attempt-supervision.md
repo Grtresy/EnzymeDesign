@@ -118,7 +118,7 @@ SQLite。
    不能代替浏览器调用 resolve，也不能用 private channel写 approval。
 10. process isolation 不改变 task、approval、operation、continuation、runtime signal、report
     或 artifact 的产品 ownership；supervisor lifecycle 不是新的业务真状态。
-11. MICU 的 100M 累计 ledger 仍是 Host-owned persistent authority。父进程只能在 child
+11. MICU 的 500M 累计 ledger 仍是 Host-owned persistent authority。父进程只能在 child
     退休后读取 snapshot；fatal child 若 ledger write 状态未知，campaign 必须保守计费并
     阻止继续，直到 canonical ledger reconciliation 完成。
 12. 同一 commit/config 的第二个 positive 或 fault attempt 只有在前一个 attempt 已完成
@@ -234,7 +234,7 @@ ledger broker或当前单进程锁保护的独立 ledger authority接受 child a
 - record在provider request前/后使用现有 reservation/charge 状态，进程死亡留下明确
   in-doubt reservation；
 - parent在启动下一 attempt前调用版本化 reconciliation，按最保守可计费上界处理未知
-  request；不得重置100M累计值；
+  request；不得重置500M累计值；
 - `ledger_before`和`ledger_after`都绑定同一 authority identity。正常 eligible evidence要求
   child retirement后完整 after snapshot；fatal evidence只记录 verified lower bound、in-doubt
   ids和禁止继续原因，不伪造 exact delta。
@@ -368,7 +368,7 @@ campaign安全地拒绝GO以及父进程看到了什么”，不能声称产品t
    non-eligible evidence；没有后台writer在command返回后改变root。
 3. kill/restart测试重复运行后，attempt root和campaign reducer不出现GO、partial eligible
    bundle或重复external dispatch。
-4. MICU总账在每个crash point都不下降、不重置、不超过100M硬上限；in-doubt阻止继续而非
+4. MICU总账在每个crash point都不下降、不重置、不超过500M硬上限；in-doubt阻止继续而非
    乐观扣零。
 5. Chrome正向证明仍绑定同一child Host/operation/continuation，driver/parent没有调用
    reserved resolve route；child死亡负测不能复用receipt。

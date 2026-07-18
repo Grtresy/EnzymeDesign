@@ -19,7 +19,6 @@ from openzyme_runtime import ToolSideEffect
 from .artifact_projection import project_artifact_for_agent
 from .harness import SessionRuntimeContext
 from .harness import ToolRegistry
-from .projections import SessionProjectionBuilder
 from .runtime_consistency import RuntimeConsistencyService
 from .task_board import TaskBoardService
 
@@ -39,6 +38,59 @@ _DEFAULT_SECTIONS = (
     "affordances",
 )
 _KNOWN_SECTIONS = set(_DEFAULT_SECTIONS)
+_CAPABILITY_INVOCATION_LIMIT = 20
+_CAPABILITY_RELATED_REF_LIMIT = 8
+_CAPABILITY_FACTS_BYTE_LIMIT = 64 * 1024
+_OPAQUE_FACT_REF_MAX_LENGTH = 128
+_LOCATOR_SCHEMES = frozenset(
+    {
+        "data",
+        "file",
+        "ftp",
+        "gs",
+        "http",
+        "https",
+        "mailto",
+        "s3",
+        "ssh",
+        "storage",
+        "tel",
+        "urn",
+    }
+)
+_SENSITIVE_REF_SEGMENTS = frozenset(
+    {"apikey", "api_key", "credential", "passwd", "password", "secret", "token"}
+)
+_OPAQUE_REF_NAMESPACE_PREFIXES = (
+    "appr_",
+    "approval_",
+    "art_",
+    "artifact_",
+    "doc_",
+    "document_",
+    "eng_",
+    "evidence_",
+    "gap_",
+    "inv_",
+    "invocation_",
+    "lane_",
+    "output_",
+    "research_",
+    "run_",
+    "source_",
+    "summary_",
+    "task_",
+)
+_OPAQUE_REF_EXACT_NAMESPACES = frozenset({"pipeline", "research"})
+_CREDENTIAL_LIKE_PREFIXES = (
+    "akia",
+    "ghp_",
+    "github_pat_",
+    "sk-",
+    "sk_",
+    "xoxb-",
+    "xoxp-",
+)
 
 
 def _limit(arguments: dict[str, Any]) -> int:
@@ -94,6 +146,164 @@ def _artifact_state(artifact: SessionArtifactRecord) -> dict[str, Any]:
         "external_id": metadata.get("external_id"),
         "safe_projection": project_artifact_for_agent(artifact),
     }
+
+
+def _looks_like_host_name(value: str) -> bool:
+    lowered = value.casefold()
+    if lowered == "localhost":
+        return True
+    labels = value.split(".")
+    if len(labels) == 4 and all(label.isdigit() for label in labels):
+        return all(0 <= int(label) <= 255 for label in labels)
+    if len(labels) < 2 or not labels[-1].isalpha():
+        return False
+    return all(
+        label
+        and label[0].isalnum()
+        and label[-1].isalnum()
+        and all(char.isalnum() or char == "-" for char in label)
+        for label in labels
+    )
+
+
+def _is_system_owned_ref_namespace(value: str) -> bool:
+    lowered = value.casefold()
+    return (
+        lowered in _OPAQUE_REF_EXACT_NAMESPACES
+        or lowered.startswith(_OPAQUE_REF_NAMESPACE_PREFIXES)
+    )
+
+
+def _has_credential_like_prefix(value: str) -> bool:
+    return value.casefold().startswith(_CREDENTIAL_LIKE_PREFIXES)
+
+
+def _has_sensitive_ref_component(value: str) -> bool:
+    lowered = value.casefold()
+    boundaries = "-._:+/"
+    for marker in _SENSITIVE_REF_SEGMENTS:
+        start = lowered.find(marker)
+        while start >= 0:
+            end = start + len(marker)
+            if (
+                (start == 0 or lowered[start - 1] in boundaries)
+                and (end == len(lowered) or lowered[end] in boundaries)
+            ):
+                return True
+            start = lowered.find(marker, start + 1)
+    return False
+
+
+def _safe_engine_name(value: Any) -> str:
+    text = str(value).strip()
+    if (
+        not text
+        or len(text) > 64
+        or not text[0].isascii()
+        or not text[0].isalpha()
+        or _has_sensitive_ref_component(text)
+        or _has_credential_like_prefix(text)
+        or not all(
+            char.isascii() and (char.isalnum() or char == "_") for char in text
+        )
+    ):
+        return "unknown"
+    return text
+
+
+def _safe_fact_ref(value: Any) -> str | None:
+    """Project only closed opaque IDs, including known system-owned logical IDs."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if (
+        not text
+        or len(text) > _OPAQUE_FACT_REF_MAX_LENGTH
+        or not text[0].isalnum()
+        or _has_sensitive_ref_component(text)
+        or _has_credential_like_prefix(text)
+        or "://" in text
+        or "@" in text
+        or "\\" in text
+        or not all(
+            char.isascii() and (char.isalnum() or char in "-._:+/")
+            for char in text
+        )
+    ):
+        return None
+    namespace, separator, suffix = text.partition(":")
+    if _looks_like_host_name(namespace) or namespace.casefold() in _LOCATOR_SCHEMES:
+        return None
+    if not separator:
+        return (
+            text
+            if _is_system_owned_ref_namespace(text)
+            and "/" not in text
+            and not _looks_like_host_name(text)
+            else None
+        )
+    if not suffix or not _is_system_owned_ref_namespace(namespace):
+        return None
+    segments = suffix.replace(":", "/").split("/")
+    if any(
+        segment in {"", ".", ".."} or _has_sensitive_ref_component(segment)
+        for segment in segments
+    ):
+        return None
+    return text
+
+
+def _bounded_safe_refs(values: list[Any]) -> list[str]:
+    refs = (_safe_fact_ref(value) for value in values)
+    return [ref for ref in refs if ref is not None][:_CAPABILITY_RELATED_REF_LIMIT]
+
+
+def _safe_fact_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if (
+        not text
+        or len(text) > 40
+        or not all(
+            char.isascii() and (char.isdigit() or char in "-:+.TZ")
+            for char in text
+        )
+    ):
+        return None
+    return text
+
+
+def _serialized_json_size(value: Any) -> int:
+    return len(json.dumps(value, sort_keys=True).encode("utf-8"))
+
+
+def _task_scope_error(
+    invocation: ToolInvocation,
+    *,
+    error_code: str,
+    canonical_task_id: str | None,
+) -> ToolResult:
+    details = {
+        "actor_scope": "current_task",
+        "canonical_task_id": _safe_fact_ref(canonical_task_id),
+    }
+    return ToolResult(
+        call_id=invocation.call_id,
+        tool_name=invocation.tool_name,
+        ok=False,
+        content=json.dumps(details, sort_keys=True),
+        task_id=invocation.task_id,
+        lane_id=invocation.lane_id,
+        status=error_code,
+        summary="world.inspect task scope validation failed.",
+        error_code=error_code,
+        hint=(
+            "Teammate world inspection is bound to the current task; omit task_id "
+            "or pass the canonical current task_id."
+        ),
+        details=details,
+    )
 
 
 def _project_tool_affordance(
@@ -298,8 +508,19 @@ class WorldInspectionService:
                 "kind_counts": _status_counts(artifacts, lambda artifact: artifact.kind.value),
             }
         if "capabilities" in sections:
-            capabilities = SessionProjectionBuilder(self.context.repositories)._build_capabilities_projection(session_id)
-            payload["capabilities"] = capabilities
+            matching_invocations = [
+                invocation
+                for invocation in invocations
+                if task_id is None or invocation.task_id == task_id
+            ]
+            matching_invocations.reverse()
+            capability_facts, capability_page = self._build_capability_facts_index(
+                session_id,
+                invocations=matching_invocations,
+                requested_limit=limit,
+            )
+            payload["capabilities"] = capability_facts
+            payload["capability_facts_page"] = capability_page
         if "operations" in sections:
             payload["operations"] = {
                 "items": [
@@ -386,17 +607,125 @@ class WorldInspectionService:
         )
         return None if invocation is None else invocation.status.value
 
+    def _build_capability_facts_index(
+        self,
+        session_id: str,
+        *,
+        invocations: list[Any],
+        requested_limit: int,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        effective_limit = min(requested_limit, _CAPABILITY_INVOCATION_LIMIT)
+        candidates = invocations[:effective_limit]
+        returned_invocation_count = 0
+        for invocation in candidates:
+            documents = self.context.repositories.engine_documents.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            artifacts = self.context.repositories.artifacts.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            evidence = self.context.repositories.research_evidence.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            source_refs = (
+                self.context.repositories.research_source_refs.list_by_invocation(
+                    session_id, invocation.invocation_id
+                )
+            )
+            gaps = self.context.repositories.research_gaps.list_by_invocation(
+                session_id, invocation.invocation_id
+            )
+            engine_name = _safe_engine_name(invocation.engine_name)
+            item = {
+                "invocation_id": _safe_fact_ref(invocation.invocation_id),
+                "engine_name": engine_name,
+                "task_id": _safe_fact_ref(invocation.task_id),
+                "lane_id": _safe_fact_ref(invocation.lane_id),
+                "status": invocation.status.value,
+                "approval_id": _safe_fact_ref(invocation.approval_id),
+                "started_at": _safe_fact_timestamp(invocation.started_at),
+                "finished_at": _safe_fact_timestamp(invocation.finished_at),
+                "output_ref": _safe_fact_ref(invocation.output_ref),
+                "document_count": len(documents),
+                "document_ids": _bounded_safe_refs(
+                    [document.document_id for document in documents]
+                ),
+                "artifact_count": len(artifacts),
+                "artifact_ids": _bounded_safe_refs(
+                    [artifact.artifact_id for artifact in artifacts]
+                ),
+                "evidence_count": len(evidence),
+                "evidence_ids": _bounded_safe_refs(
+                    [record.evidence_id for record in evidence]
+                ),
+                "source_ref_count": len(source_refs),
+                "source_ref_ids": _bounded_safe_refs(
+                    [source_ref.source_ref_id for source_ref in source_refs]
+                ),
+                "gap_count": len(gaps),
+                "gap_ids": _bounded_safe_refs([gap.gap_id for gap in gaps]),
+            }
+            candidate_grouped = {
+                key: list(items) for key, items in grouped.items()
+            }
+            candidate_grouped.setdefault(engine_name, []).append(item)
+            if _serialized_json_size(candidate_grouped) > _CAPABILITY_FACTS_BYTE_LIMIT:
+                break
+            grouped = candidate_grouped
+            returned_invocation_count += 1
+        return grouped, {
+            "schema_version": "world.capability_facts.page.v1",
+            "order": "started_at_desc_invocation_id_desc",
+            "requested_limit": requested_limit,
+            "effective_invocation_limit": effective_limit,
+            "max_invocations": _CAPABILITY_INVOCATION_LIMIT,
+            "max_related_refs_per_kind": _CAPABILITY_RELATED_REF_LIMIT,
+            "max_serialized_bytes": _CAPABILITY_FACTS_BYTE_LIMIT,
+            "serialized_bytes": _serialized_json_size(grouped),
+            "matching_invocation_count": len(invocations),
+            "returned_invocation_count": returned_invocation_count,
+            "truncated": returned_invocation_count < len(invocations),
+        }
+
 
 def register_world_inspection_tools(registry: ToolRegistry) -> None:
     def inspect_handler(
         context: SessionRuntimeContext, invocation: ToolInvocation
     ) -> ToolResult:
         arguments = invocation.arguments
+        requested_task_value = arguments.get("task_id")
+        requested_task_id = (
+            None
+            if requested_task_value is None
+            else _safe_fact_ref(requested_task_value)
+        )
+        if requested_task_value is not None and requested_task_id is None:
+            return _task_scope_error(
+                invocation,
+                error_code="world_inspection_task_filter_invalid",
+                canonical_task_id=context.restore_focus.task_id or invocation.task_id,
+            )
+        effective_task_id = requested_task_id
+        if context.actor_kind == "teammate":
+            canonical_task_value = context.restore_focus.task_id or invocation.task_id
+            canonical_task_id = _safe_fact_ref(canonical_task_value)
+            if canonical_task_id is None:
+                return _task_scope_error(
+                    invocation,
+                    error_code="world_inspection_current_task_missing",
+                    canonical_task_id=None,
+                )
+            if requested_task_id is not None and requested_task_id != canonical_task_id:
+                return _task_scope_error(
+                    invocation,
+                    error_code="world_inspection_task_scope_mismatch",
+                    canonical_task_id=canonical_task_id,
+                )
+            effective_task_id = canonical_task_id
         payload = WorldInspectionService(context).inspect(
             sections=_sections(arguments),
-            task_id=None
-            if arguments.get("task_id") is None
-            else str(arguments.get("task_id")),
+            task_id=effective_task_id,
             agent_id=None
             if arguments.get("agent_id") is None
             else str(arguments.get("agent_id")),

@@ -272,7 +272,7 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
     assert first.settings.llm.max_tokens == 1_024
     assert first.settings.llm.timeout == 45.0
     assert first.settings.llm.purpose_policies == {}
-    assert first.payload["driver"]["micu_hard_limit_tokens"] == 100_000_000
+    assert first.payload["driver"]["micu_hard_limit_tokens"] == 500_000_000
     assert first.payload["host"]["storage_profile"] == "single_process_sqlite"
     runner_expectations = first.payload["execution"]["aox_runner_contract_expectations"]
     assert runner_expectations["schema_id"] == "aox_runner_contract_expectations@1"
@@ -300,6 +300,8 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
             "invalid_nested_range",
             "effective_config.driver.browser_approval_timeout_seconds",
         ),
+        ("missing_context_window", "effective_config.llm.context_window_tokens"),
+        ("unsafe_context_window", "effective_config.llm.context_window_tokens"),
     ),
 )
 def test_effective_config_closed_schema_rejects_tamper(
@@ -324,6 +326,10 @@ def test_effective_config_closed_schema_rejects_tamper(
         payload["llm"].pop("model")
     elif tamper == "extra_nested":
         payload["research"]["credential_slots"]["legacy"] = False
+    elif tamper == "missing_context_window":
+        payload["llm"]["context_window_tokens"] = None
+    elif tamper == "unsafe_context_window":
+        payload["llm"]["context_window_tokens"] = 1_050_000
     else:
         payload["driver"]["browser_approval_timeout_seconds"] = 0.0
 

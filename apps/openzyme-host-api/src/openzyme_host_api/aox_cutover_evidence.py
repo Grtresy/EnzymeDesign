@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 import base64
+import binascii
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 import zlib
 
+from openzyme_core.workflow_knowledge import workflow_manifest_content_sha256
 from openzyme_pipeline import aox_reference
 from openzyme_research import safe_public_locator
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
@@ -26,6 +28,11 @@ from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 
 ATTEMPT_BUNDLE_SCHEMA_ID = "aox_blank_world_attempt_bundle@1"
 CAMPAIGN_DECISION_SCHEMA_ID = "aox_blank_world_campaign_decision@1"
+SEALED_SOURCE_TREE_SCHEMA_ID = "openzyme_sealed_source_tree@1"
+FORMAL_DELEGATION_REQUEST_SCHEMA_ID = "aox_formal_delegation_request@1"
+TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID = (
+    "openzyme_typed_empty_artifact_validation@1"
+)
 KNOWN_POSITIVE_PROBE_SCHEMA_ID = "aox_known_positive_probe@2"
 KNOWN_POSITIVE_PROBE_ID = "independent_globin_provider_hpc_probe"
 KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS = ("NP_000509.1", "NP_000549.1")
@@ -62,6 +69,44 @@ _AOX_FIXED_DELIVERABLES = frozenset(
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ATTEMPT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$")
 _ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_EMPTY_RESULT_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_DERIVATION_CONTRACT_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
+)
+_DELEGATION_REQUEST_PAYLOAD_KEYS = {
+    "task_id",
+    "instructions",
+    "role",
+    "agent_id",
+    "nickname",
+    "display_name",
+    "handle",
+    "workflow_refs",
+    "workflow_manifests",
+}
+_DELEGATION_REQUEST_PROJECTION_KEYS = {
+    "schema_id",
+    "document_id",
+    "document_kind",
+    "task_id",
+    "instructions_digest",
+    "role",
+    "agent_id",
+    "nickname",
+    "display_name",
+    "handle",
+    "workflow_refs",
+    "workflow_manifests",
+}
+_TYPED_EMPTY_ARTIFACT_VALIDATION_KEYS = {
+    "schema_id",
+    "kind",
+    "format",
+    "validation_profile",
+    "empty_result_reason",
+    "derivation_contract_id",
+    "catalog_validation_digest",
+}
 _PUBLIC_API_RECEIPT_KEYS = {
     "sequence",
     "method",
@@ -615,6 +660,512 @@ def canonical_json_bytes(payload: object) -> bytes:
 
 def canonical_digest(payload: object) -> str:
     return _sha256(canonical_json_bytes(payload))
+
+
+def project_formal_delegation_request(
+    payload: Mapping[str, object],
+    *,
+    document_id: str,
+) -> dict[str, object]:
+    """Close one durable delegation request into a public, offline receipt."""
+
+    request = dict(payload)
+    string_keys = (
+        "task_id",
+        "instructions",
+        "role",
+        "agent_id",
+        "nickname",
+        "display_name",
+        "handle",
+    )
+    if (
+        set(request) != _DELEGATION_REQUEST_PAYLOAD_KEYS
+        or not isinstance(document_id, str)
+        or not document_id
+        or any(
+            not isinstance(request.get(key), str) or not str(request[key])
+            for key in string_keys
+        )
+        or not isinstance(request.get("workflow_refs"), list)
+        or any(
+            not isinstance(item, str) or not item
+            for item in request.get("workflow_refs") or []
+        )
+        or not isinstance(request.get("workflow_manifests"), list)
+        or any(
+            not isinstance(item, dict)
+            for item in request.get("workflow_manifests") or []
+        )
+    ):
+        raise CutoverEvidenceError(
+            "delegation_request_projection_invalid",
+            "durable delegation request cannot be projected through the closed schema",
+        )
+    projection = {
+        "schema_id": FORMAL_DELEGATION_REQUEST_SCHEMA_ID,
+        "document_id": document_id,
+        "document_kind": "delegation_request",
+        "task_id": request["task_id"],
+        "instructions_digest": canonical_digest(request["instructions"]),
+        "role": request["role"],
+        "agent_id": request["agent_id"],
+        "nickname": request["nickname"],
+        "display_name": request["display_name"],
+        "handle": request["handle"],
+        "workflow_refs": list(request["workflow_refs"]),
+        "workflow_manifests": [
+            dict(item) for item in request["workflow_manifests"]
+        ],
+    }
+    _assert_public_safe(projection, identity="formal_delegation_request")
+    return projection
+
+
+def typed_empty_artifact_validation_receipt(
+    *,
+    kind: str,
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    """Reproduce a strict zero-record FASTA catalog registration receipt."""
+
+    catalog_metadata = dict(metadata)
+    raw_validation = catalog_metadata.get("validation")
+    validation = dict(raw_validation) if isinstance(raw_validation, dict) else {}
+    format_value = str(catalog_metadata.get("format") or "").lower()
+    profile = catalog_metadata.get("validation_profile")
+    reason = catalog_metadata.get("empty_result_reason")
+    derivation = catalog_metadata.get("derivation_contract_id")
+    expected_validation = {
+        "status": "passed",
+        "format": format_value,
+        "required_columns": [],
+        "validation_profile": "fasta_zero_records@1",
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation,
+    }
+    if (
+        kind != "sequence"
+        or format_value not in {"fa", "faa", "fasta"}
+        or profile != "fasta_zero_records@1"
+        or not isinstance(reason, str)
+        or _EMPTY_RESULT_REASON_PATTERN.fullmatch(reason) is None
+        or not isinstance(derivation, str)
+        or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation) is None
+        or validation != expected_validation
+    ):
+        raise CutoverEvidenceError(
+            "typed_empty_artifact_validation_invalid",
+            "zero-record FASTA catalog validation is missing or does not reproduce the strict profile",
+        )
+    return {
+        "schema_id": TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID,
+        "kind": kind,
+        "format": format_value,
+        "validation_profile": profile,
+        "empty_result_reason": reason,
+        "derivation_contract_id": derivation,
+        "catalog_validation_digest": canonical_digest(validation),
+    }
+
+
+def _safe_source_tree_relative_path(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        raise CutoverEvidenceError(
+            "sealed_source_tree_path_invalid",
+            "sealed source-tree entries require safe POSIX relative paths",
+        )
+    relative = PurePosixPath(value)
+    if (
+        relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or relative.as_posix() != value
+    ):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_path_invalid",
+            "sealed source-tree entries require safe POSIX relative paths",
+        )
+    return value
+
+
+def _source_tree_digest(file_entries: list[dict[str, object]]) -> str:
+    """Match ArtifactBoundaryService's persisted source-tree digest contract."""
+
+    return _sha256(
+        json.dumps(file_entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def seal_source_tree_envelope(
+    source_root: Path,
+    *,
+    expected_source_tree_digest: str,
+) -> bytes:
+    """Encode one immutable source snapshot as canonical self-verifying JSON."""
+
+    if (
+        source_root.is_symlink()
+        or not source_root.is_dir()
+        or _DIGEST_PATTERN.fullmatch(expected_source_tree_digest) is None
+    ):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_root_invalid",
+            "source snapshot must be a real directory with a canonical tree digest",
+        )
+    files: list[dict[str, object]] = []
+    for source in sorted(
+        source_root.rglob("*"),
+        key=lambda item: item.relative_to(source_root).as_posix(),
+    ):
+        relative_path = _safe_source_tree_relative_path(
+            source.relative_to(source_root).as_posix()
+        )
+        if source.is_symlink():
+            raise CutoverEvidenceError(
+                "sealed_source_tree_entry_invalid",
+                "source snapshot contains a symbolic link",
+                details={"relative_path": relative_path},
+            )
+        if source.is_dir():
+            continue
+        if not source.is_file():
+            raise CutoverEvidenceError(
+                "sealed_source_tree_entry_invalid",
+                "source snapshot contains a non-regular entry",
+                details={"relative_path": relative_path},
+            )
+        content = source.read_bytes()
+        try:
+            source_text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            source_text = None
+        if source_text is not None:
+            _assert_public_safe(
+                source_text,
+                identity=f"sealed_source_tree:{relative_path}",
+            )
+        files.append(
+            {
+                "relative_path": relative_path,
+                "size_bytes": len(content),
+                "content_digest": _sha256(content),
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            }
+        )
+    if not files:
+        raise CutoverEvidenceError(
+            "sealed_source_tree_empty",
+            "source snapshot contains no regular files",
+        )
+    tree_material = [
+        {
+            "relative_path": str(item["relative_path"]),
+            "content_digest": str(item["content_digest"]),
+            "size_bytes": int(item["size_bytes"]),
+        }
+        for item in files
+    ]
+    actual_source_tree_digest = _source_tree_digest(tree_material)
+    if actual_source_tree_digest != expected_source_tree_digest:
+        raise CutoverEvidenceError(
+            "sealed_source_tree_digest_mismatch",
+            "source snapshot files do not reproduce the catalog tree digest",
+            details={
+                "expected": expected_source_tree_digest,
+                "actual": actual_source_tree_digest,
+            },
+        )
+    envelope = {
+        "schema_id": SEALED_SOURCE_TREE_SCHEMA_ID,
+        "source_tree_digest": actual_source_tree_digest,
+        "files": files,
+    }
+    return canonical_json_bytes(envelope) + b"\n"
+
+
+def verify_sealed_source_tree_envelope(
+    content: bytes,
+    *,
+    expected_source_tree_digest: str,
+) -> dict[str, object]:
+    """Strictly decode and recompute a sealed source-tree evidence envelope."""
+
+    try:
+        envelope = _strict_json_loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise CutoverEvidenceError(
+            "sealed_source_tree_envelope_invalid",
+            "sealed source-tree evidence is not strict UTF-8 JSON",
+        ) from exc
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) != {"schema_id", "source_tree_digest", "files"}
+        or envelope.get("schema_id") != SEALED_SOURCE_TREE_SCHEMA_ID
+        or not isinstance(envelope.get("files"), list)
+        or not envelope["files"]
+    ):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_envelope_invalid",
+            "sealed source-tree evidence has an unsupported closed schema",
+        )
+    if content != canonical_json_bytes(envelope) + b"\n":
+        raise CutoverEvidenceError(
+            "sealed_source_tree_envelope_noncanonical",
+            "sealed source-tree evidence is not canonical JSON",
+        )
+    declared_tree_digest = envelope.get("source_tree_digest")
+    if (
+        not isinstance(declared_tree_digest, str)
+        or _DIGEST_PATTERN.fullmatch(declared_tree_digest) is None
+        or _DIGEST_PATTERN.fullmatch(expected_source_tree_digest) is None
+    ):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_digest_invalid",
+            "sealed source-tree digest is not a canonical SHA-256 identity",
+        )
+    normalized_files: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+    for index, raw in enumerate(envelope["files"]):
+        if (
+            not isinstance(raw, dict)
+            or set(raw)
+            != {
+                "relative_path",
+                "size_bytes",
+                "content_digest",
+                "content_base64",
+            }
+        ):
+            raise CutoverEvidenceError(
+                "sealed_source_tree_file_invalid",
+                "sealed source-tree file entry has an unsupported closed schema",
+                details={"index": index},
+            )
+        relative_path = _safe_source_tree_relative_path(raw.get("relative_path"))
+        size_bytes = raw.get("size_bytes")
+        content_digest = raw.get("content_digest")
+        content_base64 = raw.get("content_base64")
+        if (
+            relative_path in seen_paths
+            or isinstance(size_bytes, bool)
+            or not isinstance(size_bytes, int)
+            or size_bytes < 0
+            or not isinstance(content_digest, str)
+            or _DIGEST_PATTERN.fullmatch(content_digest) is None
+            or not isinstance(content_base64, str)
+        ):
+            raise CutoverEvidenceError(
+                "sealed_source_tree_file_invalid",
+                "sealed source-tree file identity is malformed or duplicated",
+                details={"index": index},
+            )
+        seen_paths.add(relative_path)
+        try:
+            file_content = base64.b64decode(content_base64, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise CutoverEvidenceError(
+                "sealed_source_tree_file_invalid",
+                "sealed source-tree file bytes are not canonical base64",
+                details={"relative_path": relative_path},
+            ) from exc
+        if (
+            base64.b64encode(file_content).decode("ascii") != content_base64
+            or len(file_content) != size_bytes
+            or _sha256(file_content) != content_digest
+        ):
+            raise CutoverEvidenceError(
+                "sealed_source_tree_file_digest_mismatch",
+                "sealed source-tree file bytes do not reproduce size and digest",
+                details={"relative_path": relative_path},
+            )
+        try:
+            source_text = file_content.decode("utf-8")
+        except UnicodeDecodeError:
+            source_text = None
+        if source_text is not None:
+            _assert_public_safe(
+                source_text,
+                identity=f"sealed_source_tree:{relative_path}",
+            )
+        normalized_files.append(
+            {
+                "relative_path": relative_path,
+                "content_digest": content_digest,
+                "size_bytes": size_bytes,
+            }
+        )
+    ordered_paths = [str(item["relative_path"]) for item in normalized_files]
+    if ordered_paths != sorted(ordered_paths):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_file_order_invalid",
+            "sealed source-tree file entries are not sorted by relative path",
+        )
+    actual_tree_digest = _source_tree_digest(normalized_files)
+    if (
+        actual_tree_digest != declared_tree_digest
+        or declared_tree_digest != expected_source_tree_digest
+    ):
+        raise CutoverEvidenceError(
+            "sealed_source_tree_digest_mismatch",
+            "sealed source-tree files do not reproduce declared and provenance digests",
+            details={
+                "expected": expected_source_tree_digest,
+                "declared": declared_tree_digest,
+                "actual": actual_tree_digest,
+            },
+        )
+    return dict(envelope)
+
+
+def _validate_delegation_workflow_bindings(payload: Mapping[str, Any]) -> None:
+    tasks = [dict(item) for item in payload.get("tasks") or []]
+    by_role = {
+        str(task.get("role") or ""): task
+        for task in tasks
+        if str(task.get("role") or "") in _REQUIRED_TASK_ROLES
+    }
+    if set(by_role) != _REQUIRED_TASK_ROLES:
+        raise CutoverEvidenceError(
+            "delegation_workflow_binding_missing",
+            "workflow binding receipts require one researcher, executor, and reporter task",
+            details={"identity": "tasks.workflow_refs"},
+        )
+    workflow_ref = str(dict(payload.get("identity") or {}).get("workflow_ref") or "")
+    seen_request_refs: set[str] = set()
+    for role, task in by_role.items():
+        request_ref = task.get("delegation_request_ref")
+        request_digest = task.get("delegation_request_digest")
+        request_projection_raw = task.get("delegation_request")
+        request_projection = (
+            dict(request_projection_raw)
+            if isinstance(request_projection_raw, dict)
+            else {}
+        )
+        workflow_refs = task.get("workflow_refs")
+        workflow_manifests = task.get("workflow_manifests")
+        expected_refs = [workflow_ref] if role == "executor" else []
+        if (
+            not isinstance(request_ref, str)
+            or not request_ref
+            or request_ref in seen_request_refs
+            or not isinstance(request_digest, str)
+            or _DIGEST_PATTERN.fullmatch(request_digest) is None
+            or set(request_projection) != _DELEGATION_REQUEST_PROJECTION_KEYS
+            or request_projection.get("schema_id")
+            != FORMAL_DELEGATION_REQUEST_SCHEMA_ID
+            or request_projection.get("document_kind") != "delegation_request"
+            or request_projection.get("document_id") != request_ref
+            or request_projection.get("task_id") != task.get("task_id")
+            or request_projection.get("role") != role
+            or not isinstance(request_projection.get("instructions_digest"), str)
+            or _DIGEST_PATTERN.fullmatch(
+                str(request_projection.get("instructions_digest") or "")
+            )
+            is None
+            or any(
+                not isinstance(request_projection.get(key), str)
+                or not str(request_projection.get(key) or "")
+                for key in ("agent_id", "nickname", "display_name", "handle")
+            )
+            or task.get("assigned_ref") != request_projection.get("agent_id")
+            or request_projection.get("workflow_refs") != workflow_refs
+            or request_projection.get("workflow_manifests") != workflow_manifests
+            or canonical_digest(request_projection) != request_digest
+            or workflow_refs != expected_refs
+            or not isinstance(workflow_manifests, list)
+        ):
+            raise CutoverEvidenceError(
+                "delegation_workflow_binding_invalid",
+                "durable delegation workflow receipts are malformed or not executor-scoped",
+                details={"identity": f"task:{task.get('task_id')}:workflow_refs"},
+            )
+        seen_request_refs.add(request_ref)
+        _assert_public_safe(
+            request_projection,
+            identity=f"task:{task.get('task_id')}:delegation_request",
+        )
+        if role != "executor":
+            if workflow_manifests:
+                raise CutoverEvidenceError(
+                    "delegation_workflow_binding_invalid",
+                    "researcher and reporter delegation must not inherit workflow manifests",
+                    details={
+                        "identity": f"task:{task.get('task_id')}:workflow_manifests"
+                    },
+                )
+            continue
+        if len(workflow_manifests) != 1 or not isinstance(
+            workflow_manifests[0], dict
+        ):
+            raise CutoverEvidenceError(
+                "delegation_workflow_manifest_invalid",
+                "executor delegation requires exactly one pinned workflow manifest snapshot",
+                details={"identity": f"task:{task.get('task_id')}:workflow_manifests"},
+            )
+        manifest = dict(workflow_manifests[0])
+        expected_manifest_keys = {
+            "workflow_id",
+            "version",
+            "content_sha256",
+            "title",
+            "summary",
+            "capability_requirements",
+            "tool_requirements",
+            "knowledge_refs",
+            "manifest_path",
+            "selection_ref",
+        }
+        core_manifest = {
+            key: manifest.get(key)
+            for key in (
+                "workflow_id",
+                "version",
+                "content_sha256",
+                "title",
+                "summary",
+                "capability_requirements",
+                "tool_requirements",
+                "knowledge_refs",
+            )
+        }
+        expected_selection_ref = (
+            f"workflow:{manifest.get('workflow_id')}@{manifest.get('version')}"
+            f"#{manifest.get('content_sha256')}"
+        )
+        knowledge_refs = manifest.get("knowledge_refs")
+        manifest_path = manifest.get("manifest_path")
+        if (
+            set(manifest) != expected_manifest_keys
+            or manifest.get("selection_ref") != workflow_ref
+            or expected_selection_ref != workflow_ref
+            or workflow_manifest_content_sha256(core_manifest)
+            != manifest.get("content_sha256")
+            or not isinstance(manifest_path, str)
+            or not manifest_path
+            or PurePosixPath(manifest_path).is_absolute()
+            or any(
+                part in {"", ".", ".."}
+                for part in PurePosixPath(manifest_path).parts
+            )
+            or not isinstance(knowledge_refs, list)
+            or not knowledge_refs
+            or any(
+                not isinstance(reference, dict)
+                or set(reference) != {"doc_id", "version", "content_sha256"}
+                or not str(reference.get("doc_id") or "")
+                or not str(reference.get("version") or "")
+                or _DIGEST_PATTERN.fullmatch(
+                    str(reference.get("content_sha256") or "")
+                )
+                is None
+                for reference in knowledge_refs
+            )
+        ):
+            raise CutoverEvidenceError(
+                "delegation_workflow_manifest_invalid",
+                "executor delegation manifest snapshot does not reproduce the campaign workflow ref",
+                details={"identity": f"task:{task.get('task_id')}:workflow_manifests"},
+            )
 
 
 def controlled_operation_digest(material: Mapping[str, object]) -> str:
@@ -5374,7 +5925,41 @@ def _validate_attempt_semantics(
         )
     ):
         _validate_effective_config_attestation(payload)
+        _validate_delegation_workflow_bindings(payload)
     artifacts = [dict(item) for item in payload.get("artifacts") or []]
+    for artifact in artifacts:
+        if artifact.get("origin") != "sandbox_run":
+            continue
+        artifact_id = str(artifact.get("artifact_id") or "")
+        provenance = dict(artifact.get("provenance") or {})
+        path = _resolve_artifact_path(
+            artifact_root,
+            str(artifact.get("relative_path") or ""),
+        )
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise CutoverEvidenceError(
+                "sealed_source_tree_artifact_unreadable",
+                "sandbox source-tree evidence bytes are unavailable",
+                details={"identity": f"artifact:{artifact_id}:source_tree"},
+            ) from exc
+        try:
+            verify_sealed_source_tree_envelope(
+                content,
+                expected_source_tree_digest=str(
+                    provenance.get("source_snapshot_digest") or ""
+                ),
+            )
+        except CutoverEvidenceError as exc:
+            raise CutoverEvidenceError(
+                exc.code,
+                "sandbox source-tree evidence is not self-verifying",
+                details={
+                    "identity": f"artifact:{artifact_id}:source_tree",
+                    **dict(exc.details),
+                },
+            ) from exc
     formal_ids = {
         item["artifact_id"] for item in artifacts if item.get("scope") == "formal"
     }
@@ -5869,6 +6454,80 @@ def _verify_artifacts(
                     actual=len(content),
                 )
             )
+        typed_empty_raw = record.get("registration_validation")
+        is_zero_sequence = record.get("kind") == "sequence" and content == b""
+        if is_zero_sequence:
+            receipt = dict(typed_empty_raw) if isinstance(typed_empty_raw, dict) else {}
+            format_value = str(receipt.get("format") or "").lower()
+            reason = receipt.get("empty_result_reason")
+            derivation = receipt.get("derivation_contract_id")
+            reconstructed_validation = {
+                "status": "passed",
+                "format": format_value,
+                "required_columns": [],
+                "validation_profile": "fasta_zero_records@1",
+                "empty_result_reason": reason,
+                "derivation_contract_id": derivation,
+            }
+            outcome_reason = dict(payload.get("scientific_outcome") or {}).get(
+                "empty_result_reason"
+            )
+            if (
+                set(receipt) != _TYPED_EMPTY_ARTIFACT_VALIDATION_KEYS
+                or receipt.get("schema_id")
+                != TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID
+                or receipt.get("kind") != "sequence"
+                or format_value not in {"fa", "faa", "fasta"}
+                or receipt.get("validation_profile") != "fasta_zero_records@1"
+                or not isinstance(reason, str)
+                or _EMPTY_RESULT_REASON_PATTERN.fullmatch(reason) is None
+                or not isinstance(derivation, str)
+                or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation) is None
+                or receipt.get("catalog_validation_digest")
+                != canonical_digest(reconstructed_validation)
+                or reason != outcome_reason
+            ):
+                issues.append(
+                    VerificationIssue(
+                        code="typed_empty_artifact_validation_invalid",
+                        identity=f"artifact:{artifact_id}:registration_validation",
+                        message="zero-record FASTA lacks a reproducible strict registration receipt",
+                    )
+                )
+        elif typed_empty_raw is not None:
+            issues.append(
+                VerificationIssue(
+                    code="typed_empty_artifact_validation_invalid",
+                    identity=f"artifact:{artifact_id}:registration_validation",
+                    message="typed-empty registration receipt is attached to a nonempty or non-sequence artifact",
+                )
+            )
+        if record.get("origin") == "sandbox_run":
+            if record.get("kind") != "code":
+                issues.append(
+                    VerificationIssue(
+                        code="sealed_source_tree_kind_invalid",
+                        identity=f"artifact:{artifact_id}:kind",
+                        message="sandbox source-tree evidence must retain kind=code",
+                    )
+                )
+            try:
+                verify_sealed_source_tree_envelope(
+                    content,
+                    expected_source_tree_digest=str(
+                        provenance.get("source_snapshot_digest") or ""
+                    ),
+                )
+            except CutoverEvidenceError as exc:
+                issues.append(
+                    VerificationIssue(
+                        code=exc.code,
+                        identity=f"artifact:{artifact_id}:source_tree",
+                        message="sandbox source-tree envelope is not self-verifying",
+                        expected=exc.details.get("expected"),
+                        actual=exc.details.get("actual"),
+                    )
+                )
     return artifact_map
 
 
@@ -8263,6 +8922,11 @@ def _verify_fault_negative_state_closure(
                 "finish_payload_digest",
                 "finished_by",
                 "evidence_refs",
+                "delegation_request_ref",
+                "delegation_request_digest",
+                "delegation_request",
+                "workflow_refs",
+                "workflow_manifests",
             )
         }
         for item in payload.get("tasks") or []
@@ -8633,7 +9297,7 @@ def _validate_ledger_snapshot(
     if limit != LIVE_MICU_TOKEN_HARD_LIMIT:
         raise CutoverEvidenceError(
             "micu_ledger_limit_invalid",
-            "MICU ledger hard limit must remain exactly 100M",
+            "MICU ledger hard limit must remain exactly 500M",
             details={"identity": f"micu_ledger.{snapshot_name}"},
         )
     if (
@@ -9034,12 +9698,19 @@ __all__ = [
     "CutoverEvidenceError",
     "evaluate_campaign",
     "FAULT_ARTIFACT_BYTE_FLIP_ID",
+    "FORMAL_DELEGATION_REQUEST_SCHEMA_ID",
     "inject_artifact_byte_flip",
     "KNOWN_POSITIVE_PROBE_SCHEMA_ID",
+    "project_formal_delegation_request",
     "safe_micu_ledger_snapshot",
+    "SEALED_SOURCE_TREE_SCHEMA_ID",
+    "seal_source_tree_envelope",
     "seal_campaign_decision",
     "seal_attempt_bundle",
     "VerificationIssue",
     "VerificationResult",
+    "TYPED_EMPTY_ARTIFACT_VALIDATION_SCHEMA_ID",
+    "typed_empty_artifact_validation_receipt",
+    "verify_sealed_source_tree_envelope",
     "verify_attempt_bundle",
 ]

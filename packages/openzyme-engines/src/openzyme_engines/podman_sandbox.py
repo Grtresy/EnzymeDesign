@@ -21,6 +21,7 @@ from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import PodmanContainerLease
+from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
 from .execution import ExecutionArtifactRef
 from .execution import ExecutionOutcome
@@ -490,9 +491,33 @@ class _ControlSocketServer:
         kind = ArtifactKind(str(params.get("kind") or "result"))
         metadata = dict(params.get("metadata") or {})
         output_format = params.get("format")
+        validation_profile = params.get("validation_profile")
         if output_format is not None:
             metadata["format"] = str(output_format)
-        self._validate_registered_output(host_path, relative_path=relative_path, metadata=metadata)
+        metadata_validation_profile = metadata.get("validation_profile")
+        if (
+            metadata_validation_profile == FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+            and validation_profile != FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+        ):
+            raise ValueError(
+                "fasta_zero_records@1 must be selected through validation_profile"
+            )
+        if (
+            validation_profile is not None
+            and metadata_validation_profile not in {None, "", validation_profile}
+        ):
+            raise ValueError("artifact validation_profile conflicts with metadata")
+        if validation_profile is not None:
+            metadata["validation_profile"] = str(validation_profile)
+        self._validate_registered_output(
+            host_path,
+            relative_path=relative_path,
+            kind=kind,
+            validation_profile=(
+                None if validation_profile is None else str(validation_profile)
+            ),
+            metadata=metadata,
+        )
         self.registered.append(_RegisteredOutput(host_path=host_path, relative_path=relative_path, kind=kind, metadata=metadata))
         return {
             "artifact_id": f"pipeline:{len(self.registered)}:{relative_path}",
@@ -502,12 +527,41 @@ class _ControlSocketServer:
             "metadata": metadata,
         }
 
-    def _validate_registered_output(self, path: Path, *, relative_path: str, metadata: dict[str, Any]) -> None:
+    def _validate_registered_output(
+        self,
+        path: Path,
+        *,
+        relative_path: str,
+        kind: ArtifactKind,
+        validation_profile: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
         output_format = str(metadata.get("format") or "").lower()
         required_columns = [str(column) for column in list(metadata.get("required_columns") or [])]
-        if not output_format and not required_columns:
+        if validation_profile is None and not output_format and not required_columns:
             return
         content = path.read_text(encoding="utf-8", errors="replace")
+        if validation_profile is not None:
+            reason = metadata.get("empty_result_reason")
+            derivation_contract_id = metadata.get("derivation_contract_id")
+            if (
+                validation_profile != FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+                or kind is not ArtifactKind.SEQUENCE
+                or output_format not in {"fasta", "fa", "faa"}
+                or not isinstance(reason, str)
+                or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason) is None
+                or not isinstance(derivation_contract_id, str)
+                or re.fullmatch(
+                    r"[a-z][a-z0-9_.-]*@[1-9][0-9]*",
+                    derivation_contract_id,
+                )
+                is None
+                or content != ""
+            ):
+                raise ValueError(
+                    f"registered fasta_zero_records@1 artifact is invalid: {relative_path}"
+                )
+            return
         if not content.strip():
             raise ValueError(f"registered artifact is empty: {relative_path}")
         if output_format in {"fasta", "fa", "faa"} and not content.lstrip().startswith(">"):

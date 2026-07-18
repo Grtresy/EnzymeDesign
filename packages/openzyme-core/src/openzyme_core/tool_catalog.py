@@ -249,6 +249,10 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "path": {"type": "string"},
                     "kind": {"type": "string"},
                     "format": {"type": "string"},
+                    "validation_profile": {
+                        "type": "string",
+                        "enum": ["fasta_zero_records@1"],
+                    },
                     "metadata": {"type": "object"},
                 },
                 "required": ["sandbox_workspace_id", "path"],

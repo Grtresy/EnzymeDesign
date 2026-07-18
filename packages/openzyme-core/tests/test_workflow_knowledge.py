@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:9ce730d28df9dd17a31484fc270e43b2cd8ecd7476b7fc53e3c5799f4bc43737"
+        "sha256:56aae2c605660b9495931f9d3f7fdefbeb06bb0316cba76b8a480029a4030eee"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:f3cdf28e41a7f1dff3b5321b463b1bce983e5e3b4bbf66bc550b91bca4e4c52d"
+            "sha256:39004c956dd3c1b31050a41847e76af76873eba408262b7a530202b0d4640608"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"
@@ -147,6 +147,25 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "Scientific fail-closed matrix",
         "workflow graph",
         "execution order",
+        "openzyme_pipeline.aox_reference.select_hmm_reference_set",
+        "openzyme_pipeline.aox_reference.select_scoring_reference",
+        "openzyme_pipeline.aox_reference.assemble_scoring_input",
+        "openzyme_pipeline.aox_hmmer.parse_and_filter_csv",
+        "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions",
+        "openzyme_pipeline.aox_motif.score_aligned_fasta",
+        "openzyme_pipeline.aox_similarity.build_similarity_graph",
+        "expected_score_filtered_csv_digest",
+        "expected_uniprot_fasta_digest",
+        "expected_uniprot_metadata_digest",
+        "expected_candidate_fasta_digest",
+        "expected_membership_digest",
+        "bio_tools/mafft/alignment.fasta",
+        "bio_tools/hmmbuild/model.hmm",
+        "bio_tools/cdhit/clustered.fasta",
+        "bio_tools/cdhit/clusters.csv",
+        "bio_tools/hmmalign/aligned.fasta",
+        '`validation_profile="fasta_zero_records@1"`',
+        "exact zero-byte regular file",
     ):
         assert required_identity in sop
 

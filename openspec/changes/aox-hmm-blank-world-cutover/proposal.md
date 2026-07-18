@@ -28,4 +28,4 @@ OpenZyme V3 已经具备严格的 artifact、sandbox、approval、provider 与 H
 - 影响 `packages/openzyme-{research,runtime,core,engines,pipeline,tools,execution}` 的科学合同、provider adapter、执行与 artifact evidence。
 - 影响 `apps/openzyme-host-api` 的 foundation、eval/live gate、证据聚合、API projection，以及 Web UI 的 approval/report/evidence 呈现。
 - 影响 AOX/HMM workflow pack、S15 文档、主架构文档、live pytest markers 与 campaign 命令。
-- 真实运行继续依赖现有 MICU 100M 持久账本、NCBI identity、UniProt/EBI/PubMed 网络能力、可信 Host-only HPC runner 和 immutable sandbox/toolchain identity。
+- 真实运行继续依赖现有 MICU 500M 持久账本（历史 usage 不重置）、NCBI identity、UniProt/EBI/PubMed 网络能力、可信 Host-only HPC runner 和 immutable sandbox/toolchain identity。

@@ -47,7 +47,12 @@
 - [x] 6.4 Add tamper tests for artifact bytes, provenance, operation, report, and bundle fields plus secret/path leakage tests.
 - [x] 6.5 Implement and verify `aox_known_positive_probe@2` with the fixed two-NCBI/two-UniProt globin identities and exact six provider/HPC operations, raw-response digests, isolated task/workspace/sandbox/source/artifact identities, and no probe flow into formal AOX results; distinguish healthy empty result from discovery.
 - [x] 6.6 Implement a campaign driver that enforces two independent positive attempts on one commit/config identity followed by one controlled required-chain fault attempt and derives GO only from all three verified digests.
-- [x] 6.7 Integrate the existing persistent MICU 100M ledger without reset and record pre/post snapshots for every real attempt.
+- [x] 6.7 Integrate the persistent MICU 500M ledger without reset, migrate the exact legacy 100M fixed policy while preserving all prior usage, keep caller-selected lower limits durable, and record pre/post snapshots for every real attempt.
+- [x] 6.8 Bound `world.inspect.capabilities` to task-filtered invocation facts and capped refs so large tool outputs cannot overflow the agent context.
+- [x] 6.9 Seal typed pipeline source directories as canonical self-verifying `openzyme_sealed_source_tree@1` envelopes and verify their internal/tree provenance offline.
+- [x] 6.10 Add the strict `fasta_zero_records@1` artifact profile so only derived exact-zero FASTA can represent a healthy empty result and sentinels remain invalid.
+- [x] 6.11 Bind formal evidence to exact durable role-scoped delegation/workflow receipts, publish the installed scientific callable/provider/fetch map, and reject approximation or path guessing.
+- [x] 6.12 Require explicit bounded MICU context configuration and close the post-drain-response `waiting_approval` visibility race without changing stable failure taxonomy.
 
 ## 7. Architecture and operator documentation
 
@@ -57,8 +62,8 @@
 
 ## 8. Verification and cutover decision
 
-- [x] 8.1 Run scoring/provider/harness/execution/campaign focused tests and ruff, then fix every regression without weakening scientific gates.
-- [x] 8.2 Run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
+- [x] 8.1 Re-run scoring/provider/harness/execution/campaign focused tests and ruff after the pre-live harness closure, then fix every regression without weakening scientific gates.
+- [x] 8.2 Re-run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
 - [ ] 8.3 Preflight NCBI/PubMed/EBI/UniProt, MICU, image/SDK, HPC runner/toolchain, and Chrome availability while recording exact blocker evidence.
 - [ ] 8.4 Run positive attempt 1 from clean roots and require published report plus passed offline verification.
 - [ ] 8.5 Run positive attempt 2 from different clean roots on the identical commit/config and require published report plus passed offline verification.

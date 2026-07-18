@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ProcessPoolExecutor
 import json
+import sqlite3
 
 import pytest
 from pydantic import BaseModel
@@ -13,7 +14,10 @@ from openzyme_runtime.live_token_ledger import LIVE_MICU_TOKEN_HARD_LIMIT
 from openzyme_runtime.live_token_ledger import is_micu_provider_url
 from openzyme_runtime.live_token_ledger import LiveMicuTokenBudgetExceededError
 from openzyme_runtime.live_token_ledger import LiveMicuTokenLedger
+from openzyme_runtime.live_token_ledger import LiveMicuTokenPolicyMigrationError
 from openzyme_runtime.live_token_ledger import LiveMicuTokenReservationConfigurationError
+from openzyme_runtime.live_token_ledger import main as live_token_ledger_main
+from openzyme_runtime.live_token_ledger import migrate_legacy_live_micu_token_policy
 from openzyme_runtime.live_token_ledger import summarize_live_micu_token_ledger
 from openzyme_runtime.llm_invocation import LlmInvocationRuntime
 
@@ -132,6 +136,159 @@ def test_ledger_persists_and_reconciles_without_storing_request_content(tmp_path
     assert entries[0]["created_at"]
     assert entries[0]["updated_at"]
     assert "prompt" not in json.dumps(entries).lower()
+
+
+def test_existing_ledger_limit_can_only_decrease_without_resetting_usage(tmp_path) -> None:
+    path = tmp_path / "lowered-limit.sqlite3"
+    first = LiveMicuTokenLedger(path, hard_limit_tokens=1_000)
+    first.reserve_attempt(
+        scenario="live_llm",
+        purpose="preserve-history",
+        kind="tool_calling",
+        model="test-model",
+        attempt=1,
+        estimated_input_tokens=40,
+        reserved_output_tokens=60,
+    )
+
+    lowered = LiveMicuTokenLedger(path, hard_limit_tokens=200)
+    lowered.reserve_attempt(
+        scenario="live_llm",
+        purpose="persist-lower-limit",
+        kind="tool_calling",
+        model="test-model",
+        attempt=2,
+        estimated_input_tokens=1,
+        reserved_output_tokens=1,
+    )
+    summary = lowered.summary()
+    assert summary["hard_limit_tokens"] == 200
+    assert summary["charged_tokens"] == 102
+    assert summary["remaining_tokens"] == 98
+
+    attempted_raise = LiveMicuTokenLedger(path, hard_limit_tokens=1_000)
+    assert attempted_raise.summary()["hard_limit_tokens"] == 200
+    assert attempted_raise.summary()["charged_tokens"] == 102
+
+
+def test_legacy_fixed_hundred_million_policy_migrates_without_resetting_usage(
+    tmp_path,
+) -> None:
+    path = tmp_path / "legacy-fixed-limit.sqlite3"
+    legacy = LiveMicuTokenLedger(path, hard_limit_tokens=100_000_000)
+    legacy.reserve_attempt(
+        scenario="live_llm",
+        purpose="legacy-policy",
+        kind="tool_calling",
+        model="test-model",
+        attempt=1,
+        estimated_input_tokens=40,
+        reserved_output_tokens=60,
+    )
+    assert legacy.summary()["hard_limit_tokens"] == 100_000_000
+
+    read_only_before_migration = summarize_live_micu_token_ledger(path)
+    assert read_only_before_migration["hard_limit_tokens"] == 100_000_000
+    assert read_only_before_migration["charged_tokens"] == 100
+
+    # Constructing or using the new default ledger must not reinterpret an
+    # existing caller-selected lower limit as the new repository ceiling.
+    current = LiveMicuTokenLedger(path)
+    current.reserve_attempt(
+        scenario="live_llm",
+        purpose="default-does-not-auto-migrate",
+        kind="tool_calling",
+        model="test-model",
+        attempt=2,
+        estimated_input_tokens=1,
+        reserved_output_tokens=1,
+    )
+    with sqlite3.connect(path) as connection:
+        stored_limit_before = connection.execute(
+            "SELECT hard_limit_tokens FROM live_micu_token_state WHERE id = 1"
+        ).fetchone()[0]
+        attempts_before = connection.execute(
+            "SELECT * FROM live_micu_token_attempts ORDER BY id"
+        ).fetchall()
+    assert stored_limit_before == 100_000_000
+
+    migrated = migrate_legacy_live_micu_token_policy(path)
+    assert migrated["policy_migrated"] is True
+    assert migrated["hard_limit_tokens"] == LIVE_MICU_TOKEN_HARD_LIMIT
+    assert migrated["charged_tokens"] == 102
+    assert migrated["attempt_count"] == 2
+
+    with sqlite3.connect(path) as connection:
+        stored_limit_after = connection.execute(
+            "SELECT hard_limit_tokens FROM live_micu_token_state WHERE id = 1"
+        ).fetchone()[0]
+        attempts_after = connection.execute(
+            "SELECT * FROM live_micu_token_attempts ORDER BY id"
+        ).fetchall()
+    assert stored_limit_after == LIVE_MICU_TOKEN_HARD_LIMIT
+    assert attempts_after == attempts_before
+
+    idempotent = migrate_legacy_live_micu_token_policy(path)
+    assert idempotent["policy_migrated"] is False
+    assert idempotent["charged_tokens"] == 102
+
+
+def test_policy_migration_rejects_noncanonical_limit_without_mutation(tmp_path) -> None:
+    path = tmp_path / "caller-lowered-limit.sqlite3"
+    ledger = LiveMicuTokenLedger(path, hard_limit_tokens=200_000_000)
+    ledger.reserve_attempt(
+        scenario="live_llm",
+        purpose="caller-lowered-limit",
+        kind="tool_calling",
+        model="test-model",
+        attempt=1,
+        estimated_input_tokens=40,
+        reserved_output_tokens=60,
+    )
+    with sqlite3.connect(path) as connection:
+        before = list(connection.iterdump())
+
+    with pytest.raises(
+        LiveMicuTokenPolicyMigrationError,
+        match="not on the exact legacy fixed 100M policy",
+    ):
+        migrate_legacy_live_micu_token_policy(path)
+
+    with sqlite3.connect(path) as connection:
+        after = list(connection.iterdump())
+    assert after == before
+
+
+def test_policy_migration_cli_is_explicit_and_preserves_attempts(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "cli-migration.sqlite3"
+    ledger = LiveMicuTokenLedger(path, hard_limit_tokens=100_000_000)
+    ledger.reserve_attempt(
+        scenario="live_llm",
+        purpose="cli-migration",
+        kind="tool_calling",
+        model="test-model",
+        attempt=1,
+        estimated_input_tokens=40,
+        reserved_output_tokens=60,
+    )
+
+    live_token_ledger_main(["--path", str(path)])
+    read_only_output = json.loads(capsys.readouterr().out)
+    assert read_only_output["hard_limit_tokens"] == 100_000_000
+    assert "policy_migrated" not in read_only_output
+
+    live_token_ledger_main(
+        ["--path", str(path), "--migrate-legacy-fixed-policy", "--attempts", "1"]
+    )
+    migrated_output = json.loads(capsys.readouterr().out)
+    assert migrated_output["policy_migrated"] is True
+    assert migrated_output["hard_limit_tokens"] == LIVE_MICU_TOKEN_HARD_LIMIT
+    assert migrated_output["charged_tokens"] == 100
+    assert migrated_output["attempt_count"] == 1
+    assert len(migrated_output["attempts"]) == 1
 
 
 def test_ledger_begin_immediate_prevents_concurrent_oversubscription(tmp_path) -> None:
@@ -464,7 +621,7 @@ def test_structured_and_tool_invokers_record_attempts_without_network(tmp_path) 
         assert b"Use tools." not in contents
 
 
-def test_hard_limit_cannot_be_constructed_above_one_hundred_million(tmp_path) -> None:
+def test_hard_limit_cannot_be_constructed_above_five_hundred_million(tmp_path) -> None:
     ledger = LiveMicuTokenLedger(
         tmp_path / "hard-limit.sqlite3",
         hard_limit_tokens=LIVE_MICU_TOKEN_HARD_LIMIT * 2,

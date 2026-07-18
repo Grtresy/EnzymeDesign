@@ -57,6 +57,15 @@ source = artifacts.snapshot_code(
 
 `snapshot_code` creates an immutable `ArtifactKind.CODE` record with `sandbox_workspace_id`, entrypoint, `source_tree_digest`, file digest manifest, and parent snapshot metadata. `sandbox.exec`, approvals, SDK operations, backend runs, and output provenance must bind to this snapshot. If the executor edits `/workspace/src` after a run starts, the existing run keeps its original snapshot; formal output from new source requires a new `sandbox.exec` / snapshot.
 
+Cutover evidence does not treat that directory-backed catalog record as an
+ordinary file. The collector converts a typed
+`semantic_type=pipeline_source_snapshot` / `format=source_tree` directory into
+canonical `openzyme_sealed_source_tree@1` JSON: sorted relative paths, exact
+sizes, per-file digests and base64 bytes plus the original `source_tree_digest`.
+Both bundle construction and the offline verifier decode every file and
+recompute the tree digest. Symlinks, non-regular entries, empty trees, unsafe
+paths, duplicate/unsorted rows or a provenance mismatch fail closed.
+
 ## Registering Outputs
 
 Only files under `/workspace/output` or SDK-fetched outputs can be registered.
@@ -98,7 +107,35 @@ Fetched outputs must be declared, actually returned as readable content by the r
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
 
-Built-in validators always enforce non-empty output plus format checks for FASTA, HMM, CSV, JSON, and text-like outputs. `metadata.required_columns` can only tighten CSV validation; it cannot bypass the built-in validator.
+Built-in validators normally enforce non-empty output plus format checks for
+FASTA, HMM, CSV, JSON, and text-like outputs. `metadata.required_columns` can
+only tighten CSV validation; it cannot bypass the built-in validator.
+
+The sole current typed exception is a scientifically derived zero-record FASTA:
+
+```python
+artifacts.register(
+    path="/workspace/output/target.fasta",
+    kind="sequence",
+    format="fasta",
+    validation_profile="fasta_zero_records@1",
+    metadata={
+        "empty_result_reason": "no_candidates_after_length_filter",
+        "derivation_contract_id": "aox_sequence_length_join@1",
+    },
+)
+```
+
+This profile accepts only an exact zero-byte regular file, `kind=sequence`, a
+FASTA format, one stable lowercase reason and one versioned derivation contract.
+Without the profile, zero bytes remain invalid; with it, any whitespace,
+header-only file, sentinel residue or other non-zero content remains invalid.
+The byte validator does not decide that the scientific branch was legitimate:
+the workflow-specific collector/offline verifier must still recompute the
+upstream derivation and omitted-operation closure. For AOX cutover evidence,
+the collector also seals `openzyme_typed_empty_artifact_validation@1` from the
+catalog metadata and exact validation result; the offline verifier reconstructs
+that validation digest and rejects every zero-byte sequence without it.
 
 Do not register arbitrary absolute host paths. Dry-run must reject them.
 

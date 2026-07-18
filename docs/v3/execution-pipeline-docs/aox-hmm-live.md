@@ -75,6 +75,147 @@ operations. The agent may batch, inspect, retry within the bounded policy, or
 stop at a proven empty prerequisite without asking the harness to invent an
 alternate route.
 
+### Pinned SDK calculation and runner projection
+
+The calculation identities above are executable contracts, not prose that may
+be approximated. When a branch reaches one of them, executor source MUST import
+and call the installed `openzyme_pipeline.aox_*` implementation and write the
+result through its canonical serializer. Reimplementing the formula, replacing
+it with percent identity, or emitting schema-shaped hand-written rows is a
+scientific contract violation. This fixes calculation identity only; the agent
+remains free to choose legal batching, ordering, inspection, retry and source
+layout.
+
+| scientific output | installed callable | canonical serializer(s) |
+|---|---|---|
+| 13-record HMM reference | `openzyme_pipeline.aox_reference.select_hmm_reference_set` | `result.to_fasta()`, `result.metadata_json()` |
+| coordinate reference | `openzyme_pipeline.aox_reference.select_scoring_reference` | `result.to_fasta()`, `result.metadata_json()` |
+| reference-plus-target scoring input | `openzyme_pipeline.aox_reference.assemble_scoring_input` | `result.to_fasta()`, `result.metadata_json()` |
+| HMMER score-filtered accessions | `openzyme_pipeline.aox_hmmer.parse_and_filter_csv` | `result.to_csv()`, `result.metadata()` |
+| UniProt identity/length join | `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions` | `result.hits_csv()`, `result.target_fasta()`, `result.metadata()` |
+| motif reference-coordinate score | `openzyme_pipeline.aox_motif.score_aligned_fasta` | `result.to_csv()`, `result.metadata()` |
+| candidate similarity graph | `openzyme_pipeline.aox_similarity.build_similarity_graph` | `result.nodes_csv()`, `result.edges_csv()`, `result.manifest_json()` |
+
+The following is the stable minimum call map for executor-authored source. The
+first positional arguments are bytes read from the exact materialized or
+fetched artifacts. For a cutover-eligible run, every shown `expected_*_digest`
+MUST be supplied from the bound artifact or pinned contract rather than omitted
+because the Python default is `None`.
+
+```python
+aox_reference.select_hmm_reference_set(
+    ncbi_fasta,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_input_digest,
+)
+# -> result.to_fasta(), result.metadata_json()
+
+aox_reference.select_scoring_reference(
+    ncbi_fasta,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_input_digest,
+)
+# -> result.to_fasta(), result.metadata_json()
+
+aox_reference.assemble_scoring_input(
+    scoring_reference_fasta,
+    post_uniprot_target_fasta,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_scoring_reference_input_digest,
+    expected_target_input_digest,
+)
+# -> result.to_fasta(), result.metadata_json()
+
+aox_hmmer.parse_and_filter_csv(
+    parsed_hits_csv,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_input_digest,
+)
+# -> result.to_csv(), result.metadata()
+
+aox_sequence_join.join_score_filtered_accessions(
+    score_filtered_csv,
+    uniprot_fasta,
+    uniprot_metadata_json,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_hmmer_contract_id,
+    expected_hmmer_contract_digest,
+    expected_hmmer_implementation_digest,
+    expected_score_filtered_csv_digest,
+    expected_uniprot_fasta_digest,
+    expected_uniprot_metadata_digest,
+)
+# -> result.hits_csv(), result.target_fasta(), result.metadata()
+
+aox_motif.score_aligned_fasta(
+    scoring_alignment_fasta,
+    *,
+    expected_contract_id,
+    expected_contract_digest,
+    expected_implementation_digest,
+    expected_input_digest,
+)
+# -> result.to_csv(), result.metadata()
+
+aox_similarity.build_similarity_graph(
+    candidate_fasta,
+    cdhit_membership_csv,
+    *,
+    threshold_ppm,
+    empty_result_reason,
+    expected_calculation_id,
+    expected_calculation_digest,
+    expected_implementation_digest,
+    expected_candidate_fasta_digest,
+    expected_membership_digest,
+)
+# -> result.nodes_csv(), result.edges_csv(), result.manifest_json()
+```
+
+Use `empty_result_reason=None` for a non-empty graph and the reached stable
+reason for an empty graph. Do not guess alternative keyword names, pass provider
+metadata in place of its JSON bytes, or serialize dataclass internals by hand.
+
+Provider files are selected from the unique
+`result_summary.transcript_manifest.files` entry whose `relative_path` has the
+required suffix: NCBI `/provider_parsed/proteins.fasta`, EBI HMMER
+`/provider_parsed/parsed_hits.csv`, and UniProt
+`/provider_parsed/sequences.fasta` plus `/provider_parsed/metadata.json`. Do not
+select positional `artifact_ids`, `adapter_result_envelope` lists, or a file
+with merely a similar basename.
+
+The runner templates likewise own their output paths. The caller declares the
+exact path set below, calls `hpc.fetch_outputs`, and selects each artifact from
+the unique `fetch_refs` row whose `declared_output_path` is equal to the fixed
+path. The normalized `aox_hmm/*` deliverables are later derived or copied from
+these fetched artifacts; they are not caller-defined runner paths.
+
+| SDK operation | exact runner output path set |
+|---|---|
+| `bio_tools.mafft` | `bio_tools/mafft/alignment.fasta` |
+| `bio_tools.hmmbuild` | `bio_tools/hmmbuild/model.hmm` |
+| `bio_tools.cdhit` | `bio_tools/cdhit/clustered.fasta`, `bio_tools/cdhit/clusters.csv` |
+| `bio_tools.hmmalign` | `bio_tools/hmmalign/aligned.fasta` |
+
+`bio.hmmer_search(database="refprot")` must bind the exact fetched hmmbuild
+artifact id and its exact `content_digest`; a copied filename or model-shaped
+bytes without that artifact/digest edge cannot satisfy the operation identity.
+
 ## Required provider quorum
 
 Cutover eligibility requires one terminal, cache-bypassed aggregate receipt for
@@ -217,6 +358,21 @@ states that no candidates were discovered. Operational success remains
 separate from scientific discovery. A failed probe, provider error, schema
 drift, hidden failed operation, or incomplete evidence is `failed`/`degraded`,
 never a healthy empty result.
+
+A zero-record FASTA is represented only by an exact zero-byte regular file and
+registered with `validation_profile="fasta_zero_records@1"`. Its metadata must
+contain one stable `empty_result_reason` and the versioned
+`derivation_contract_id` that actually produced the empty branch, such as
+`aox_upstream_empty_materialization@1`, `aox_sequence_length_join@1`,
+`aox_motif_candidate_filter@1`, or `canonical_empty_cluster_membership@1`.
+Without that explicit profile the normal FASTA validator still requires real
+records. Header-only files, whitespace, `>EMPTY\nX`, `NO_*` text, placeholder
+clusters, self-loop graph rows, and any other non-zero sentinel are invalid.
+The profile proves only the byte shape and typed derivation claim; the offline
+AOX verifier still recomputes the sealed catalog validation receipt, branch and
+provenance before accepting it as healthy empty. A zero-byte sequence without
+`openzyme_typed_empty_artifact_validation@1`, or with a receipt reason that
+differs from the scientific outcome, is ineligible.
 
 ## Known-positive probe contract
 

@@ -554,6 +554,16 @@ def normalize_aox_blank_world_runtime_config(
         path="effective_config.llm.context_window_tokens",
         minimum=1,
     )
+    if context_window is None:
+        raise AoxRuntimeConfigSchemaError(
+            "effective_config.llm.context_window_tokens",
+            "must be an explicit conservative provider override for blank-world live cutover",
+        )
+    if context_window > 200_000:
+        raise AoxRuntimeConfigSchemaError(
+            "effective_config.llm.context_window_tokens",
+            "must not exceed the 200000-token conservative blank-world live ceiling",
+        )
     default_output = _optional_integer(
         llm["default_output_tokens"],
         path="effective_config.llm.default_output_tokens",

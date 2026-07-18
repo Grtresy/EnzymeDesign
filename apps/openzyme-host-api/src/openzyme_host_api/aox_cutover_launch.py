@@ -712,10 +712,10 @@ def build_aox_cutover_effective_config(
             "aox_launch_live_hpc_disabled",
             "AOX cutover requires explicit live HPC opt-in",
         )
-    if LIVE_MICU_TOKEN_HARD_LIMIT != 100_000_000:
+    if LIVE_MICU_TOKEN_HARD_LIMIT != 500_000_000:
         raise AoxCutoverLaunchError(
             "aox_launch_micu_limit_invalid",
-            "AOX cutover requires the fixed cumulative 100M MICU ceiling",
+            "AOX cutover requires the fixed cumulative 500M MICU ceiling",
         )
     if not effective.llm.enabled or not is_micu_provider_url(effective.llm.base_url):
         raise AoxCutoverLaunchError(
