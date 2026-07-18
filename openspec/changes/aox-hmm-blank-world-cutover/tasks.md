@@ -58,7 +58,7 @@
 ## 8. Verification and cutover decision
 
 - [x] 8.1 Run scoring/provider/harness/execution/campaign focused tests and ruff, then fix every regression without weakening scientific gates.
-- [ ] 8.2 Run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
+- [x] 8.2 Run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
 - [ ] 8.3 Preflight NCBI/PubMed/EBI/UniProt, MICU, image/SDK, HPC runner/toolchain, and Chrome availability while recording exact blocker evidence.
 - [ ] 8.4 Run positive attempt 1 from clean roots and require published report plus passed offline verification.
 - [ ] 8.5 Run positive attempt 2 from different clean roots on the identical commit/config and require published report plus passed offline verification.

@@ -231,6 +231,16 @@ def apply_live_llm_test_budget(settings: OpenZymeSettings) -> OpenZymeSettings:
     )
 
 
+def resolve_configured_foundation_settings(
+    settings: OpenZymeSettings,
+) -> OpenZymeSettings:
+    """Resolve the exact settings consumed by the configured Host foundation."""
+
+    if settings.test.enable_live_e2e and settings.llm.enabled:
+        return apply_live_llm_test_budget(settings)
+    return settings
+
+
 def build_model_factory_from_settings(
     settings: OpenZymeSettings,
     limiter_registry: LimiterRegistry | None = None,
@@ -417,9 +427,9 @@ def build_configured_foundation(
     settings: OpenZymeSettings | None = None,
     token_scenario_override: str | None = None,
 ) -> RuntimeFoundation:
-    effective_settings = settings or get_settings()
-    if effective_settings.test.enable_live_e2e and effective_settings.llm.enabled:
-        effective_settings = apply_live_llm_test_budget(effective_settings)
+    effective_settings = resolve_configured_foundation_settings(
+        settings or get_settings()
+    )
     limiter_registry = LimiterRegistry(dict(effective_settings.limits.provider_limits))
     research_adapter = _build_research_adapter(effective_settings)
     bio_research_service = _build_bio_research_service(effective_settings)

@@ -19,6 +19,7 @@ from openzyme_host_api.foundation import build_model_factory_from_env
 from openzyme_host_api.foundation import build_model_factory_from_settings
 from openzyme_host_api.foundation import DeterministicExecutionAdapter
 from openzyme_host_api.foundation import DeterministicResearchAdapter
+from openzyme_host_api.foundation import resolve_configured_foundation_settings
 from openzyme_host_api.foundation import UnavailableExecutionAdapter
 from openzyme_host_api.eval_support import DeterministicLocalModelFactory
 from openzyme_research import ResearchUnit
@@ -128,6 +129,36 @@ def test_configured_foundation_fails_closed_without_live_integrations() -> None:
     assert {"pubmed.search", "semantic_scholar.search"}.issubset(tool_names)
     assert "web.search" not in tool_names
     assert isinstance(foundation.model_factory, OpenAICompatibleChatModelFactory)
+
+
+def test_configured_foundation_and_launch_resolve_one_effective_live_budget() -> None:
+    base = _settings()
+    configured = replace(
+        base,
+        test=replace(
+            base.test,
+            enable_live_e2e=True,
+            live_llm=replace(
+                base.test.live_llm,
+                max_tokens=1_234,
+                timeout=67.0,
+                max_retries=2,
+                structured_output_method="json_schema",
+                structured_output_retry_backoff_seconds=1.5,
+            ),
+        ),
+    )
+
+    effective = resolve_configured_foundation_settings(configured)
+    foundation = build_configured_foundation(settings=configured)
+
+    assert foundation.settings == effective
+    assert effective.llm.max_tokens == 1_234
+    assert effective.llm.timeout == 67.0
+    assert effective.llm.max_retries == 2
+    assert effective.llm.structured_output_method == "json_schema"
+    assert effective.llm.structured_output_retry_backoff_seconds == 1.5
+    assert effective.llm.purpose_policies == {}
 
 
 def test_configured_foundation_wires_ncbi_identity_without_tavily() -> None:

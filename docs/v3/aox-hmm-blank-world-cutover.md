@@ -63,7 +63,78 @@ Every attempt creates a new attempt root containing initially empty, distinct lo
 
 The public root proof contains only stable names, counts, identities and cache policy, never Host paths. `provider_cache_mode=bypass`, `evidence_cache_reuse=false` and `sqlite_preexisting=false` are mandatory. Existing attempt roots, symlinks, preloaded scientific files and unknown prerequisite fields are rejected.
 
-Allowed prerequisite fields are closed to code/config identity only: commit, config/workflow/image/SDK digests, toolchain image digests, credential slot names, NCBI identity and prompt accessions. Credentials themselves and scientific bytes are forbidden.
+`run-live` resolves one canonical launch snapshot before it constructs the runner,
+campaign, or any attempt root. The declared campaign identity is an exact closed
+seven-field object:
+
+- `git_commit`;
+- `config_digest`;
+- `workflow_ref`;
+- `scoring_contract_digest`;
+- `scoring_implementation_digest`;
+- `image_digest`;
+- `sdk_digest`.
+
+The launcher derives those values from the clean canonical checkout, the
+digest-pinned workflow registry selection, `aox_motif_rule_score@1`, the actual
+Pipeline SDK source tree and the Podman sandbox runtime preflight. It compares
+the derived object with the declaration field for field; a dirty checkout,
+missing/mutable identity, or mismatch stops before root creation.
+
+`config_digest` is the canonical JSON digest of the complete safe preimage
+`aox_blank_world_runtime_config@1`. That preimage records the effective
+post-foundation configuration, including:
+
+- trusted `local-dev`, single-process SQLite, disabled background runtime and
+  principal count;
+- HPC backend plus runner-config file digest, provider limits, and the
+  runner-owned manifest digest together with the exact closed MAFFT/hmmbuild/
+  hmmalign/CD-HIT `tool_id` → `adapter_id`/`command_template_id`/
+  `runner_contract_digest` expectation map;
+- effective MICU endpoint/model/policies/token/runtime bounds after live-budget
+  configuration;
+- research bounds, credential availability, opaque NCBI identity digest and
+  tracing digest;
+- explicit live-test opt-ins;
+- driver approval mode, time/drain/agent bounds, browser observation bounds and,
+  for `chrome-once`, the built Web UI dist digest;
+- scenario `aox_blank_world_cutover`, the exact cumulative 100,000,000-token
+  MICU limit and the existing ledger identity digest.
+
+The preimage never projects raw credentials, the NCBI email, or Host/runner/
+ledger paths. It is sealed in each launch receipt and recomputed by the offline
+verifier. Before every attempt root is created, the campaign launch guard
+recomputes the checkout and effective configuration; any drift fails closed.
+
+`allowed_prerequisites` is also an exact closed object, with exactly these nine
+top-level fields and no extras:
+
+1. `git_commit`;
+2. `config_digest`;
+3. `workflow_ref`;
+4. `image_digest`;
+5. `sdk_digest`;
+6. `toolchain_image_digests`;
+7. `credential_slots`;
+8. `ncbi_identity`;
+9. `prompt_accessions`.
+
+The first five must equal the corresponding launch identity fields.
+`credential_slots` contains exactly the boolean keys `llm`, `ncbi`,
+`semantic_scholar`, and `tavily`, with `llm=true` and `ncbi=true` mandatory;
+it never contains credential values. `ncbi_identity` is an opaque digest.
+`prompt_accessions` contains exactly the formal exact-14 NCBI set and the
+known-positive NCBI/UniProt probe sets described below. `toolchain_image_digests`
+contains exactly:
+
+- `mafft_7.525.hpc_apptainer_sif:v1`;
+- `hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1`;
+- `hmmer_3.4.hmmalign.hpc_apptainer_sif:v1`;
+- `cdhit_4.8.1.hpc_apptainer_sif:v1`.
+
+The hmmbuild and hmmalign values must identify the same immutable HMMER SIF
+bytes. Credentials, private locators and scientific bytes are forbidden from
+the prerequisite object.
 
 Before the first session or model/provider call, the campaign reads the public
 Host runtime-health preflight, requires its canonical immutable sandbox image
@@ -84,6 +155,48 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover preflight \
 ```
 
 `local_paths` in this command's stdout are operator-only launch inputs. They must not be copied into workspace/events/report/evidence projections.
+
+## Runner-issued toolchain identity
+
+Every cutover-eligible MAFFT, hmmbuild, hmmalign and CD-HIT operation must carry
+`mcp_hpc_toolchain_runtime_identity@1` issued by the runner. The runner-owned
+manifest binds the tool, adapter, command template, contract digest and private
+SIF locator; a caller cannot submit a locator, runtime request or runtime
+identity override. For the current narrow contract, the SSH runner executes the
+runner-owned SIF by its resolved pathname in one login shell, hashes that same
+pathname immediately before and after the payload, requires both digests to be
+identical, removes the private markers from public stdout, and returns the
+closed attestation:
+
+- `attestation_scope=same_ssh_login_shell_pre_exec` (the existing closed schema
+  name; the runner wrapper still enforces both internal pre- and post-payload
+  hashes before emitting it);
+- `execution_mode=ssh`;
+- exact tool, adapter and command-template ids;
+- `runner_contract_digest`;
+- the single observed `image_digest`, emitted only when the internal pre/post
+  digests are equal.
+
+The Host preserves only this closed public projection across runner adapter,
+engine, controlled operation and evidence collector. The collector and offline
+verifier compare its image digest with the exact `toolchain_image_digests`
+prerequisite for that route. Missing, malformed, caller-injected or mismatched
+attestation fails closed.
+
+This proves direct execution of one pathname whose bytes did not change across
+the payload; it does not prove an immutable inode/content-addressed execution
+snapshot. That stronger guarantee is deferred to the separate
+[immutable HPC SIF execution snapshot](architecture-proposals/immutable-hpc-sif-execution-snapshot.md)
+proposal and is not implemented by this Goal.
+
+Slurm remains a supported runner execution mechanism in general, but it does
+not currently attest the SIF from inside the same scheduled job execution.
+Submission/preflight metadata is therefore not reinterpreted as runtime
+identity: any AOX cutover tool operation selected as Slurm, or otherwise lacking
+the same-shell SSH attestation, is not cutover-eligible. The larger plan to
+consolidate parallel toolchain contract definitions is deferred to
+[single-source HPC toolchain contract registry](architecture-proposals/single-source-hpc-toolchain-contract-registry.md)
+and is not implemented by this Goal.
 
 ## Attempt bundle
 
@@ -147,7 +260,9 @@ The verifier makes no network request. It rejects non-canonical/duplicate-key/no
 - report content/formal scope/claim artifact references;
 - exact `aox_motif_rule_score@1` CSV from the sealed alignment;
 - similarity nodes/edges/manifest from sealed candidates and CD-HIT membership;
-- controlled one-bit fault proof and its source/terminal failure operations.
+- controlled one-bit fault proof, exact NCBI source, versioned reference-set
+  derivation, failed MAFFT consumer, runner-contract expectation, and sealed
+  negative-state closure.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover verify \
@@ -159,17 +274,40 @@ Exit code is `0` only for a structurally and scientifically verified attempt; ve
 
 ## Controlled fault attempt
 
-The required fault contract is `sealed_provider_artifact_byte_flip@1`. A qualifying fault attempt must actually flip one bit in a sealed required-provider artifact and record:
+The required fault contract is
+`derived_required_artifact_blob_byte_flip@2`. The only qualifying seam is the
+real required chain `bio.ncbi_fetch_proteins` exact-14 `proteins.fasta` →
+`aox_hmm_reference_set_selection@1` → `aox_hmm/AOX_ref21.fasta` → pending
+MAFFT. The Host flips one bit in the derived `AOX_ref21.fasta` blob after the
+versioned selection has reproduced it and before approving its MAFFT consumer.
+The attempt records:
 
+- exact source artifact/digest and completed NCBI operation/request identity;
+- derivation id, contract digest, implementation digest, input and pre-fault
+  output digest;
 - target artifact and relative path;
 - byte offset;
 - before/after content digests;
-- source operation that emitted the before digest;
-- the terminal `failed`/`recovery_failed` validation operation that observed the after digest;
-- exact `artifact_content_digest_mismatch` failure code;
-- a non-eligible failure report/outcome.
+- the exact pending `bio_tools.mafft` operation and its effective-config runner
+  contract expectation;
+- terminal `failed`/`recovery_failed` consumer with exact
+  `artifact_blob_digest_mismatch`;
+- `aox_fault_negative_state_closure@1`, sealing explicit task business exits,
+  report/draft states, conversation digests, ordered durable events, every
+  direct target consumer, and observed fixed-deliverable paths;
+- a non-eligible failure report/outcome backed by that closure artifact.
 
-The offline verifier reverses the recorded bit to recompute the before digest and verifies both operation references. Setting `expected_failure_observed=true` without the bytes and failed operation is not evidence.
+The offline verifier reverses the recorded bit, recomputes the reference
+selection from the sealed NCBI source, verifies the exact MAFFT identity and
+effective runner expectation, and requires the execution task to fail/block/
+cancel while reporting cannot complete or publish. It rejects any ready or
+published report/draft, any successful alternate consumer, any downstream
+fixed deliverable, any undeclared file in the authorized artifact root, or a
+final assistant response that does not carry the structured fields
+`failure_code=artifact_blob_digest_mismatch status=failed` (absence of an
+assistant response is allowed). Setting `expected_failure_observed=true`
+without this byte, lineage, MICU attribution and negative-state closure is not
+evidence.
 
 ## Campaign reducer and GO rule
 
@@ -194,24 +332,52 @@ Attempt bundles, driver-failure evidence and the decision use atomic no-replace 
 Real campaign entry point:
 
 ```bash
+install -d -m 700 /tmp/openzyme-aox-browser-handoff
 uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --campaign-root /tmp/openzyme-aox-cutover/<campaign-id> \
   --identity /tmp/aox-campaign-identity.json \
   --allowed-prerequisites /tmp/aox-allowed-prerequisites.json \
-  --approval-mode auto
+  --approval-mode chrome-once \
+  --browser-observation-receipt \
+    /tmp/openzyme-aox-browser-handoff/<campaign-id>.json
 ```
 
-Use `--approval-mode manual` for the Chrome-observed positive attempt. The
-command runs positive 1, positive 2 and the controlled fault in order; any
-missing receipt, failed offline verification, identity mismatch or MICU ledger
-violation produces NO-GO and exit code `2`.
+`chrome-once` exposes positive 1 through the Web UI served by the same-process
+loopback Host and waits for the first formal approval card. The campaign driver
+does not call the approval resolve route for that gate: the operator uses the
+public Web UI, which resolves the canonical approval, and the driver observes
+ordered durable resolution/continuation events before allowing the same
+`operation_id`, operation digest, sandbox run/workspace and continuation to
+reach terminal state. The launch receipt seals this lineage and the built UI
+dist digest. The event cursor is captured before the drain that exposes the
+handoff, so an immediate browser resolution is reconstructed from durable
+events instead of racing a later snapshot. The independent approval deadline
+starts when the handoff is emitted and is capped by the attempt-wide deadline;
+after formal completion the driver keeps a bounded UI observation window.
+The final observation target must remain absent during that entire window; the
+operator writes a sibling temporary file, fsyncs it, and atomically renames it
+only after the handoff's `receipt_not_before_unix_ns`. The sealed
+`aox_browser_observation_receipt@2` binds the challenge, same page/Host/UI dist,
+terminal page state, DevTools transcript, zero application console errors, a
+fully decodable PNG, and Host acceptance timing. Public API receipts use the
+closed seven-field form including `response_semantic_digest`. The last public
+workspace GET and full `after_cursor=0,replay=true` event GET are copied into
+bundle-level attestation artifacts; they are not registered back into product
+state. Browser approval evidence is valid only for `chrome-once` positive 1.
+
+Use `--approval-mode auto` only when collecting a non-Chrome campaign that is
+expected to remain short of the Chrome GO criterion. The command runs positive
+1, positive 2 and the controlled fault in order; any missing receipt, failed
+offline verification, identity mismatch or MICU ledger violation produces
+NO-GO and exit code `2`.
 
 ## Current acceptance boundary
 
 Offline unit/eval success proves implementation behavior only. Local Live cutover becomes GO only after the real public product path also demonstrates:
 
 - two clean-root positive runs with published reports and passed offline verification;
-- one reached controlled provider-artifact fault with no eligible report/success;
+- one reached derived AOX-reference fault with exact NCBI→selection→MAFFT
+  lineage and sealed negative-state closure;
 - at least one Chrome-observed approval resume of the same operation plus consistent workspace/events/report/evidence and a clean console;
 - focused, frontend, non-live, mainline, eval and live provider/LLM/HPC gates;
 - a sealed decision from the real attempt digests and final cumulative MICU usage.

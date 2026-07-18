@@ -12,6 +12,8 @@ from .aox_cutover_evidence import evaluate_campaign
 from .aox_cutover_evidence import safe_micu_ledger_snapshot
 from .aox_cutover_evidence import seal_campaign_decision
 from .aox_cutover_evidence import verify_attempt_bundle
+from .aox_cutover_launch import AoxCutoverDriverConfig
+from .aox_cutover_launch import prepare_aox_cutover_launch
 
 
 def _json_object(path: Path) -> dict[str, object]:
@@ -45,11 +47,7 @@ def _print(payload: object) -> None:
 
 
 def _preflight(args: argparse.Namespace) -> int:
-    prerequisites = (
-        {}
-        if args.allowed_prerequisites is None
-        else _json_object(args.allowed_prerequisites)
-    )
+    prerequisites = _json_object(args.allowed_prerequisites)
     roots = create_blank_world_roots(
         args.campaign_root,
         attempt_kind=args.attempt_kind,
@@ -118,22 +116,43 @@ def _run_live(args: argparse.Namespace) -> int:
         if args.ledger_path is None
         else args.ledger_path
     )
-    runner = LiveAoxAttemptRunner(
-        settings=settings,
-        ledger_path=ledger_path,
+    driver = AoxCutoverDriverConfig(
         approval_mode=args.approval_mode,
         timeout_seconds=args.timeout_seconds,
         max_drains=args.max_drains,
         max_signals_per_drain=args.max_signals_per_drain,
         max_steps_per_agent=args.max_steps_per_agent,
+        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
+        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
+    )
+    launch = prepare_aox_cutover_launch(
+        settings=settings,
+        driver=driver,
+        ledger_path=ledger_path,
+        declared_identity=identity,
+        declared_prerequisites=prerequisites,
+    )
+    runner = LiveAoxAttemptRunner(
+        settings=launch.effective_settings,
+        ledger_path=ledger_path,
+        effective_config=launch.effective_config,
+        approval_mode=args.approval_mode,
+        timeout_seconds=args.timeout_seconds,
+        max_drains=args.max_drains,
+        max_signals_per_drain=args.max_signals_per_drain,
+        max_steps_per_agent=args.max_steps_per_agent,
+        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
+        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
+        browser_observation_receipt_path=args.browser_observation_receipt,
     )
     campaign = AoxCutoverCampaign(
         campaign_root=args.campaign_root,
-        identity=identity,
+        identity=launch.identity,
         ledger_path=ledger_path,
         positive_runner=runner,
         fault_runner=runner,
-        allowed_prerequisites=prerequisites,
+        allowed_prerequisites=launch.allowed_prerequisites,
+        launch_guard=launch.assert_unchanged,
     )
     records, decision = campaign.run()
     _print(
@@ -173,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("positive", "fault"),
     )
     preflight.add_argument("--attempt-id")
-    preflight.add_argument("--allowed-prerequisites", type=Path)
+    preflight.add_argument("--allowed-prerequisites", required=True, type=Path)
     preflight.set_defaults(handler=_preflight)
 
     verify = subparsers.add_parser(
@@ -235,8 +254,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_live.add_argument(
         "--approval-mode",
-        choices=("auto", "manual"),
+        choices=("auto", "chrome-once"),
         default="auto",
+        help=(
+            "chrome-once exposes positive 1 through the same-process loopback Host "
+            "and waits for the first formal approval from the Web UI"
+        ),
+    )
+    run_live.add_argument(
+        "--browser-approval-timeout-seconds",
+        type=float,
+        default=300.0,
+        help=(
+            "independent Chrome approval deadline measured from the emitted handoff; "
+            "it never extends the total attempt deadline"
+        ),
+    )
+    run_live.add_argument(
+        "--browser-completion-hold-seconds",
+        type=float,
+        default=60.0,
+        help="bounded UI observation window after the Chrome-gated positive completes",
+    )
+    run_live.add_argument(
+        "--browser-observation-receipt",
+        type=Path,
+        help=(
+            "append-only Chrome DevTools MCP observation JSON written in response "
+            "to the live handoff challenge; required by chrome-once positive 1"
+        ),
     )
     run_live.add_argument("--timeout-seconds", type=float, default=1_800.0)
     run_live.add_argument("--max-drains", type=int, default=120)

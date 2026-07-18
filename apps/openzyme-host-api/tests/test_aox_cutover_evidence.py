@@ -10,8 +10,11 @@ from pathlib import Path
 import pytest
 
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
+from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
+from openzyme_host_api.aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from openzyme_host_api.aox_cutover_evidence import AttemptRunRecord
+from openzyme_host_api.aox_cutover_evidence import aox_hpc_workspace_id
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import canonical_json_bytes
 from openzyme_host_api.aox_cutover_evidence import controlled_operation_digest
@@ -23,7 +26,9 @@ from openzyme_host_api.aox_cutover_evidence import inject_artifact_byte_flip
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_ID
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS
 from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_SCHEMA_ID
-from openzyme_host_api.aox_cutover_evidence import KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS
+from openzyme_host_api.aox_cutover_evidence import (
+    KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS,
+)
 from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
 from openzyme_host_api.aox_cutover_evidence import seal_campaign_decision
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
@@ -35,6 +40,7 @@ from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
 from openzyme_pipeline import aox_sequence_join
 from openzyme_pipeline import aox_similarity
+from openzyme_runtime import DEFAULT_PROVIDER_LIMITS
 from openzyme_runtime import LiveMicuTokenLedger
 
 
@@ -86,16 +92,255 @@ def _digest_bytes(value: bytes) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
-def _identity() -> dict[str, str]:
+def _effective_config(
+    ledger_identity_digest: str | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_id": "aox_blank_world_runtime_config@1",
+        "host": {
+            "deployment_profile": "local-dev",
+            "storage_profile": "single_process_sqlite",
+            "background_runtime_enabled": False,
+            "debug_enabled": False,
+            "principal_count": 0,
+        },
+        "execution": {
+            "backend": "hpc",
+            "hpc_runner_config_digest": _digest("hpc-runner-config"),
+            "aox_runner_contract_expectations": {
+                "schema_id": "aox_runner_contract_expectations@1",
+                "manifest_digest": _digest("runner-contract-manifest"),
+                "contracts": {
+                    contract["tool_id"]: {
+                        "adapter_id": contract["adapter_id"],
+                        "command_template_id": contract["command_template_id"],
+                        "runner_contract_digest": _digest(
+                            f"{tool_name}-runner-contract"
+                        ),
+                    }
+                    for tool_name, contract in AOX_TOOLCHAIN_RUNTIME_CONTRACTS.items()
+                },
+            },
+        },
+        "limits": dict(DEFAULT_PROVIDER_LIMITS),
+        "llm": {
+            "enabled": True,
+            "model": "micu-test-model",
+            "base_url_endpoint": "https://www.micuapi.ai/v1",
+            "extra_body_digest": _digest("llm-extra-body"),
+            "default_headers_digest": _digest("llm-default-headers"),
+            "use_responses_api": True,
+            "max_tokens": 1_024,
+            "timeout": 45.0,
+            "max_retries": 3,
+            "temperature": 0.0,
+            "structured_output_method": "function_calling",
+            "structured_output_retry_backoff_seconds": 0.5,
+            "purpose_policies": {},
+            "context_window_tokens": 200_000,
+            "default_output_tokens": 4_000,
+            "context_warn_ratio": 0.8,
+            "context_auto_compact_ratio": 0.85,
+            "context_emergency_ratio": 0.9,
+            "tokenizer_enabled": True,
+        },
+        "research": {
+            "max_units": 3,
+            "allow_clarification": False,
+            "max_research_iterations": 3,
+            "max_react_tool_calls": 4,
+            "max_concurrent_research_units": 2,
+            "tavily_max_results": 3,
+            "tavily_topic": "general",
+            "tavily_timeout_seconds": 30.0,
+            "mcp_enabled": True,
+            "mcp_tool_allowlist": ["pubmed.search"],
+            "provider_timeout_seconds": 20.0,
+            "provider_max_attempts": 2,
+            "credential_slots": {
+                "llm": True,
+                "ncbi": True,
+                "semantic_scholar": False,
+                "tavily": False,
+            },
+            "ncbi_identity_digest": _digest("ncbi-identity"),
+        },
+        "tracing": {
+            "enabled": False,
+            "project_name_digest": _digest("tracing-project"),
+        },
+        "test_opt_in": {
+            "live_llm": True,
+            "live_tavily": False,
+            "live_hpc": True,
+            "live_e2e": True,
+            "quality_eval": False,
+            "upload_langsmith": False,
+        },
+        "driver": {
+            "scenario": "aox_blank_world_cutover",
+            "approval_mode": "auto",
+            "browser_observation_mode": "chrome_devtools_mcp_file_handoff",
+            "timeout_seconds": 1_800.0,
+            "max_drains": 120,
+            "max_signals_per_drain": 10,
+            "max_steps_per_agent": 16,
+            "browser_poll_interval_seconds": 0.5,
+            "browser_approval_timeout_seconds": 300.0,
+            "browser_completion_hold_seconds": 60.0,
+            "ui_dist_digest": None,
+            "micu_hard_limit_tokens": 100_000_000,
+            "micu_ledger_identity_digest": (
+                ledger_identity_digest or _digest("persistent-ledger")
+            ),
+        },
+    }
+
+
+def _identity(
+    ledger_identity_digest: str | None = None,
+) -> dict[str, str]:
     return {
         "git_commit": "a" * 40,
-        "config_digest": _digest("config"),
+        "config_digest": canonical_digest(_effective_config(ledger_identity_digest)),
         "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
         "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
         "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
         "image_digest": _digest("image"),
         "sdk_digest": _digest("sdk"),
     }
+
+
+def _allowed_prerequisites(
+    identity: dict[str, str] | None = None,
+) -> dict[str, object]:
+    pinned = identity or _identity()
+    hmmer_digest = _digest("hmmer-sif")
+    image_digests = {
+        contract["toolchain_id"]: (
+            hmmer_digest
+            if tool_name in {"hmmbuild", "hmmalign"}
+            else _digest(f"{tool_name}-sif")
+        )
+        for tool_name, contract in AOX_TOOLCHAIN_RUNTIME_CONTRACTS.items()
+    }
+    return {
+        "git_commit": pinned["git_commit"],
+        "config_digest": pinned["config_digest"],
+        "workflow_ref": pinned["workflow_ref"],
+        "image_digest": pinned["image_digest"],
+        "sdk_digest": pinned["sdk_digest"],
+        "toolchain_image_digests": image_digests,
+        "credential_slots": {
+            "llm": True,
+            "ncbi": True,
+            "semantic_scholar": False,
+            "tavily": False,
+        },
+        "ncbi_identity": _digest("ncbi-identity"),
+        "prompt_accessions": {
+            "formal_ncbi": list(aox_reference.NCBI_REFERENCE_ACCESSIONS),
+            "probe_ncbi": list(KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS),
+            "probe_uniprot": list(KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS),
+        },
+    }
+
+
+def _toolchain_identity_fields(tool_name: str) -> dict[str, str]:
+    contract = AOX_TOOLCHAIN_RUNTIME_CONTRACTS[tool_name]
+    image_digest = dict(_allowed_prerequisites()["toolchain_image_digests"])[
+        contract["toolchain_id"]
+    ]
+    return {
+        "toolchain_id": contract["toolchain_id"],
+        "runtime_identity_schema": "mcp_hpc_toolchain_runtime_identity@1",
+        "attestation_scope": "same_ssh_login_shell_pre_exec",
+        "execution_mode": "ssh",
+        "tool_id": contract["tool_id"],
+        "adapter_id": contract["adapter_id"],
+        "command_template_id": contract["command_template_id"],
+        "runner_contract_digest": _digest(f"{tool_name}-runner-contract"),
+        "image_digest": image_digest,
+    }
+
+
+def _public_api_receipts(
+    session_id: str = "sess_aox_live",
+) -> list[dict[str, object]]:
+    create_request = {
+        "session_id": session_id,
+        "project_id": "aox-blank-world-cutover",
+        "objective": (
+            "Run the canonical blank-world AOX/HMM product path and publish "
+            "a source-linked scientific report."
+        ),
+        "title": "AOX blank-world formal",
+    }
+    message_request = {
+        "message_digest": _digest("entry-message"),
+        "skill_keys": [_identity()["workflow_ref"]],
+    }
+    drain_request = {
+        "max_signals": 10,
+        "max_steps_per_agent": 16,
+        "auto_enqueue_ready_tasks": False,
+    }
+    return [
+        {
+            "sequence": 1,
+            "method": "POST",
+            "route": "/v3/sessions",
+            "status_code": 201,
+            "request_digest": canonical_digest(create_request),
+            "response_digest": _digest("create-session-response"),
+            "response_semantic_digest": _digest("create-session-semantic"),
+        },
+        {
+            "sequence": 2,
+            "method": "POST",
+            "route": f"/v3/sessions/{session_id}/messages",
+            "status_code": 202,
+            "request_digest": canonical_digest(message_request),
+            "response_digest": _digest("entry-message-response"),
+            "response_semantic_digest": _digest("entry-message-semantic"),
+        },
+        {
+            "sequence": 3,
+            "method": "GET",
+            "route": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+            "status_code": 200,
+            "request_digest": canonical_digest({"replay": True, "after_cursor": 0}),
+            "response_digest": _digest("events-pre-response"),
+            "response_semantic_digest": _digest("events-pre-semantic"),
+        },
+        {
+            "sequence": 4,
+            "method": "POST",
+            "route": f"/v3/sessions/{session_id}/runtime/drain",
+            "status_code": 200,
+            "request_digest": canonical_digest(drain_request),
+            "response_digest": _digest("drain-response"),
+            "response_semantic_digest": _digest("drain-semantic"),
+        },
+        {
+            "sequence": 5,
+            "method": "GET",
+            "route": f"/v3/sessions/{session_id}/workspace",
+            "status_code": 200,
+            "request_digest": canonical_digest({}),
+            "response_digest": _digest("public-final-workspace-response"),
+            "response_semantic_digest": _digest("public-final-workspace"),
+        },
+        {
+            "sequence": 6,
+            "method": "GET",
+            "route": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+            "status_code": 200,
+            "request_digest": canonical_digest({"replay": True, "after_cursor": 0}),
+            "response_digest": _digest("public-final-events-response"),
+            "response_semantic_digest": _digest("public-final-events"),
+        },
+    ]
 
 
 def _ledger_snapshot(
@@ -146,11 +391,19 @@ def _write_artifact(root: Path, relative_path: str, content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
-def _refresh_operation_identity(operation: dict[str, object]) -> None:
+def _refresh_operation_identity(
+    operation: dict[str, object],
+    *,
+    hpc_workspace_label: str | None = None,
+) -> None:
     operation["canonical_ref_kind"] = "controlled_operation"
     route_policy_id = str(operation.get("route_policy_id") or "pending.route:v1")
     route_name = route_policy_id.partition(":")[0]
-    if "." in route_name:
+    route_parts = route_name.split(".")
+    if len(route_parts) >= 3 and route_parts[-1] in {"hpc", "provider"}:
+        sdk_module = ".".join(route_parts[:-2])
+        function_name = route_parts[-2]
+    elif "." in route_name:
         sdk_module, function_name = route_name.rsplit(".", 1)
     else:
         sdk_module, function_name = "openzyme_pipeline", route_name
@@ -160,13 +413,19 @@ def _refresh_operation_identity(operation: dict[str, object]) -> None:
     source_snapshot_digest = str(
         operation.get("source_snapshot_digest") or _digest("aox-pipeline-source")
     )
+    sandbox_workspace_id = str(
+        operation.get("sandbox_workspace_id") or "sandbox_workspace_aox"
+    )
+    if selected_backend == "hpc" and hpc_workspace_label is not None:
+        operation["hpc_workspace_id"] = aox_hpc_workspace_id(
+            sandbox_workspace_id=sandbox_workspace_id,
+            hpc_workspace_label=hpc_workspace_label,
+        )
     params_digest = canonical_digest(dict(operation.get("parameters") or {}))
     operation["params_digest"] = params_digest
     material = {
         "schema_version": "s12.adapter_envelope.v1",
-        "sandbox_workspace_id": str(
-            operation.get("sandbox_workspace_id") or "sandbox_workspace_aox"
-        ),
+        "sandbox_workspace_id": sandbox_workspace_id,
         "source_snapshot_digest": source_snapshot_digest,
         "sdk_module": sdk_module,
         "function_name": function_name,
@@ -183,11 +442,18 @@ def _refresh_operation_identity(operation: dict[str, object]) -> None:
         ),
         "stage_refs": [],
         "selected_backend": selected_backend,
-        "route_reason": "workflow_selected_controlled_route",
+        "route_reason": str(
+            operation.get("route_reason") or "workflow_selected_controlled_route"
+        ),
         "route_policy_id": route_policy_id,
         "runtime_packaging_id": "openzyme_pipeline_sdk@1",
         "toolchain_id": (
-            f"{function_name}@test" if selected_backend == "hpc" else None
+            AOX_TOOLCHAIN_RUNTIME_CONTRACTS.get(
+                "cd-hit" if function_name == "cdhit" else function_name,
+                {"toolchain_id": f"{function_name}@test"},
+            )["toolchain_id"]
+            if selected_backend == "hpc"
+            else None
         ),
         "provider_config_digest": _digest("provider-config"),
         "resource_class": "network" if selected_backend == "provider_http" else "cpu",
@@ -251,9 +517,7 @@ def _refresh_sandbox_calculation_identity(operation: dict[str, object]) -> None:
             aox_reference.SCORING_INPUT_ASSEMBLY_IMPLEMENTATION_DIGEST
         )
     elif calculation_id == AOX_UPSTREAM_EMPTY_MATERIALIZATION_ID:
-        calculation_contract_digest = (
-            AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST
-        )
+        calculation_contract_digest = AOX_UPSTREAM_EMPTY_MATERIALIZATION_CONTRACT_DIGEST
     elif calculation_id == AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_ID:
         calculation_contract_digest = (
             AOX_REFERENCE_ONLY_SCORING_ALIGNMENT_CONTRACT_DIGEST
@@ -291,6 +555,9 @@ def _operation(
 ) -> dict[str, object]:
     operation: dict[str, object] = {
         "operation_id": operation_id,
+        "session_id": "sess_aox_live",
+        "sandbox_run_id": "sandbox_run_aox",
+        "sandbox_workspace_id": "sandbox_workspace_aox",
         "kind": operation_id.removeprefix("op_"),
         "scope": scope,
         "status": status,
@@ -335,9 +602,7 @@ def _replace_artifact_bytes(
     content: bytes,
 ) -> str:
     artifact = next(
-        item
-        for item in evidence["artifacts"]
-        if item["artifact_id"] == artifact_id
+        item for item in evidence["artifacts"] if item["artifact_id"] == artifact_id
     )
     digest = _write_artifact(
         artifact_root,
@@ -407,6 +672,8 @@ def _provider_raw_envelope(
 
 def _known_positive_probe_fixture(
     artifact_root: Path,
+    *,
+    hpc_workspace_label: str,
 ) -> dict[str, object]:
     beta_globin = (
         "MVHLTPEEKSAVTALWGKVNVDEVGGEALGRLLVVYPWTQRFFESFGDLSTPDAVMGNPKV"
@@ -431,21 +698,24 @@ def _known_positive_probe_fixture(
         operation="bio.ncbi_fetch_proteins",
         body=ncbi_fasta,
     )
-    uniprot_body = canonical_json_bytes(
-        {
-            "results": [
-                {
-                    "primaryAccession": accession,
-                    "sequence": {"value": sequence},
-                }
-                for accession, sequence in zip(
-                    KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS,
-                    (beta_globin, alpha_globin),
-                    strict=True,
-                )
-            ]
-        }
-    ) + b"\n"
+    uniprot_body = (
+        canonical_json_bytes(
+            {
+                "results": [
+                    {
+                        "primaryAccession": accession,
+                        "sequence": {"value": sequence},
+                    }
+                    for accession, sequence in zip(
+                        KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS,
+                        (beta_globin, alpha_globin),
+                        strict=True,
+                    )
+                ]
+            }
+        )
+        + b"\n"
+    )
     uniprot_raw, uniprot_response_digest = _provider_raw_envelope(
         provider="uniprot",
         operation="bio.uniprot_fetch",
@@ -465,13 +735,16 @@ def _known_positive_probe_fixture(
         f"{len(alpha_globin)}\n"
     ).encode("ascii")
     hmmalign_alignment = uniprot_fasta
-    source_snapshot = canonical_json_bytes(
-        {
-            "schema_id": "sandbox_source_snapshot@1",
-            "package": "openzyme_pipeline",
-            "purpose": "independent_globin_provider_hpc_probe",
-        }
-    ) + b"\n"
+    source_snapshot = (
+        canonical_json_bytes(
+            {
+                "schema_id": "sandbox_source_snapshot@1",
+                "package": "openzyme_pipeline",
+                "purpose": "independent_globin_provider_hpc_probe",
+            }
+        )
+        + b"\n"
+    )
 
     contents = {
         "art_probe_source_snapshot": (
@@ -511,7 +784,10 @@ def _known_positive_probe_fixture(
     task_id = "task_probe_globin"
     sandbox_run_id = "sandbox_run_probe_globin"
     sandbox_workspace_id = "sandbox_workspace_probe_globin"
-    hpc_workspace_id = "hpc_workspace_probe_globin"
+    hpc_workspace_id = aox_hpc_workspace_id(
+        sandbox_workspace_id=sandbox_workspace_id,
+        hpc_workspace_label=hpc_workspace_label,
+    )
     source_snapshot_digest = _digest("probe-source-tree")
     source_snapshot_artifact_digest = digests["art_probe_source_snapshot"]
     provenance = {
@@ -520,12 +796,24 @@ def _known_positive_probe_fixture(
             "sandbox_run_id": sandbox_run_id,
             "source_snapshot_digest": source_snapshot_digest,
         },
-        "art_probe_ncbi_raw": {"provider": "ncbi", "provider_artifact_kind": "provider_raw"},
-        "art_probe_ncbi_fasta": {"provider": "ncbi", "provider_artifact_kind": "provider_parsed"},
+        "art_probe_ncbi_raw": {
+            "provider": "ncbi",
+            "provider_artifact_kind": "provider_raw",
+        },
+        "art_probe_ncbi_fasta": {
+            "provider": "ncbi",
+            "provider_artifact_kind": "provider_parsed",
+        },
         "art_probe_mafft_alignment": {"tool": "mafft"},
         "art_probe_hmm_model": {"tool": "hmmbuild"},
-        "art_probe_uniprot_raw": {"provider": "uniprot", "provider_artifact_kind": "provider_raw"},
-        "art_probe_uniprot_fasta": {"provider": "uniprot", "provider_artifact_kind": "provider_parsed"},
+        "art_probe_uniprot_raw": {
+            "provider": "uniprot",
+            "provider_artifact_kind": "provider_raw",
+        },
+        "art_probe_uniprot_fasta": {
+            "provider": "uniprot",
+            "provider_artifact_kind": "provider_parsed",
+        },
         "art_probe_cdhit_fasta": {"tool": "cd-hit"},
         "art_probe_cdhit_membership": {"tool": "cd-hit"},
         "art_probe_hmmalign_alignment": {"tool": "hmmalign"},
@@ -594,7 +882,10 @@ def _known_positive_probe_fixture(
                 "backend_run_id": backend_run_id,
             }
         )
-        _refresh_operation_identity(operation)
+        _refresh_operation_identity(
+            operation,
+            hpc_workspace_label=hpc_workspace_label,
+        )
         return operation
 
     operations = [
@@ -641,18 +932,14 @@ def _known_positive_probe_fixture(
                 ("art_probe_uniprot_raw", digests["art_probe_uniprot_raw"]),
                 ("art_probe_uniprot_fasta", digests["art_probe_uniprot_fasta"]),
             ],
-            parameters={
-                "accessions": list(KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS)
-            },
+            parameters={"accessions": list(KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS)},
             route_policy_id="bio.uniprot_fetch.provider:v1",
             selected_backend="provider_http",
             backend_run_id="invocation_probe_uniprot",
         ),
         probe_operation(
             "op_probe_cdhit",
-            inputs=[
-                ("art_probe_uniprot_fasta", digests["art_probe_uniprot_fasta"])
-            ],
+            inputs=[("art_probe_uniprot_fasta", digests["art_probe_uniprot_fasta"])],
             outputs=[
                 ("art_probe_cdhit_fasta", digests["art_probe_cdhit_fasta"]),
                 (
@@ -682,9 +969,7 @@ def _known_positive_probe_fixture(
             backend_run_id="job_probe_hmmalign",
         ),
     ]
-    operation_by_id = {
-        operation["operation_id"]: operation for operation in operations
-    }
+    operation_by_id = {operation["operation_id"]: operation for operation in operations}
     provider_receipts = [
         {
             "provider_record_id": "provider_record_probe_ncbi",
@@ -716,31 +1001,28 @@ def _known_positive_probe_fixture(
     toolchain_receipts = [
         {
             "toolchain_record_id": "toolchain_record_probe_mafft",
-            "toolchain_id": "mafft@7.526",
+            **_toolchain_identity_fields("mafft"),
             "tool": "mafft",
             "operation_id": "op_probe_mafft",
             "job_id": "job_probe_mafft",
-            "image_digest": _digest("probe-mafft-image"),
             "status": "completed",
             "artifact_ids": ["art_probe_mafft_alignment"],
         },
         {
             "toolchain_record_id": "toolchain_record_probe_hmmbuild",
-            "toolchain_id": "hmmbuild@3.4",
+            **_toolchain_identity_fields("hmmbuild"),
             "tool": "hmmbuild",
             "operation_id": "op_probe_hmmbuild",
             "job_id": "job_probe_hmmbuild",
-            "image_digest": _digest("probe-hmmbuild-image"),
             "status": "completed",
             "artifact_ids": ["art_probe_hmm_model"],
         },
         {
             "toolchain_record_id": "toolchain_record_probe_cdhit",
-            "toolchain_id": "cd-hit@4.8.1",
+            **_toolchain_identity_fields("cd-hit"),
             "tool": "cd-hit",
             "operation_id": "op_probe_cdhit",
             "job_id": "job_probe_cdhit",
-            "image_digest": _digest("probe-cdhit-image"),
             "status": "completed",
             "artifact_ids": [
                 "art_probe_cdhit_fasta",
@@ -750,21 +1032,16 @@ def _known_positive_probe_fixture(
         },
         {
             "toolchain_record_id": "toolchain_record_probe_hmmalign",
-            "toolchain_id": "hmmalign@3.4",
+            **_toolchain_identity_fields("hmmalign"),
             "tool": "hmmalign",
             "operation_id": "op_probe_hmmalign",
             "job_id": "job_probe_hmmalign",
-            "image_digest": _digest("probe-hmmalign-image"),
             "status": "completed",
             "artifact_ids": ["art_probe_hmmalign_alignment"],
         },
     ]
-    provider_by_name = {
-        receipt["provider"]: receipt for receipt in provider_receipts
-    }
-    toolchain_by_tool = {
-        receipt["tool"]: receipt for receipt in toolchain_receipts
-    }
+    provider_by_name = {receipt["provider"]: receipt for receipt in provider_receipts}
+    toolchain_by_tool = {receipt["tool"]: receipt for receipt in toolchain_receipts}
     artifact_roles = {
         "source_snapshot": "art_probe_source_snapshot",
         "ncbi_raw_response": "art_probe_ncbi_raw",
@@ -836,9 +1113,7 @@ def _known_positive_probe_fixture(
                     "check_id": f"hpc_{tool_name.replace('-', '')}",
                     "category": "hpc",
                     "status": "passed",
-                    "receipt_id": toolchain_by_tool[tool_name][
-                        "toolchain_record_id"
-                    ],
+                    "receipt_id": toolchain_by_tool[tool_name]["toolchain_record_id"],
                 }
                 for tool_name in ("mafft", "hmmbuild", "cd-hit", "hmmalign")
             ),
@@ -928,18 +1203,16 @@ def _apply_hmmer_upstream_empty_fixture(
     scoring_input_result = aox_reference.assemble_scoring_input(
         scoring_reference_bytes,
         target_bytes,
-        expected_scoring_reference_input_digest=_digest_bytes(
-            scoring_reference_bytes
-        ),
+        expected_scoring_reference_input_digest=_digest_bytes(scoring_reference_bytes),
         expected_target_input_digest=_digest_bytes(target_bytes),
     )
     scoring_input_bytes = scoring_input_result.to_fasta().encode("utf-8")
     scoring_result = aox_motif.score_aligned_fasta(scoring_reference_bytes)
     scored_bytes = scoring_result.to_csv().encode("utf-8")
     candidate_bytes = b""
-    membership_bytes = (
-        ",".join(aox_similarity.MEMBERSHIP_COLUMNS) + "\n"
-    ).encode("utf-8")
+    membership_bytes = (",".join(aox_similarity.MEMBERSHIP_COLUMNS) + "\n").encode(
+        "utf-8"
+    )
     graph = aox_similarity.build_similarity_graph(
         candidate_bytes,
         membership_bytes,
@@ -1145,9 +1418,7 @@ def _apply_hmmer_upstream_empty_fixture(
         "derivation_operation_id": "op_pre_uniprot_score_filter",
         "parsed_hit_artifact_id": "art_hmmer_parsed_hits",
         "parsed_hit_artifact_digest": parsed_digest,
-        "derived_accession_artifact_id": (
-            "art_hmmer_score_filtered_accessions"
-        ),
+        "derived_accession_artifact_id": ("art_hmmer_score_filtered_accessions"),
         "derived_accession_artifact_digest": score_filtered_digest,
         "derivation_contract_digest": aox_hmmer.CONTRACT_DIGEST,
         "derivation_implementation_digest": aox_hmmer.IMPLEMENTATION_DIGEST,
@@ -1159,9 +1430,7 @@ def _apply_hmmer_upstream_empty_fixture(
         "reason": reason,
         "upstream_provider_record_id": dependency["upstream_provider_record_id"],
         "derivation_operation_id": dependency["derivation_operation_id"],
-        "derived_accession_artifact_id": dependency[
-            "derived_accession_artifact_id"
-        ],
+        "derived_accession_artifact_id": dependency["derived_accession_artifact_id"],
         "derived_accession_artifact_digest": dependency[
             "derived_accession_artifact_digest"
         ],
@@ -1265,9 +1534,7 @@ def _apply_hmmer_upstream_empty_fixture(
             "hmmer_search": "op_ebi_hmmer",
             "pre_uniprot_score_filter": "op_pre_uniprot_score_filter",
             "scoring_input_assembly": "op_scoring_input_assembly",
-            "upstream_empty_materialization": (
-                "op_upstream_empty_materialization"
-            ),
+            "upstream_empty_materialization": ("op_upstream_empty_materialization"),
             "empty_target_scoring_materialization": "op_empty_target_scoring",
             "motif_score": "op_score",
             "candidate_filter": "op_candidate_filter",
@@ -1285,9 +1552,7 @@ def _apply_hmmer_upstream_empty_fixture(
             "hmm_model": "art_hmm_model",
             "hmmer_response": "art_ebi_hmmer_response",
             "hmmer_parsed_hits": "art_hmmer_parsed_hits",
-            "hmmer_score_filtered_accessions": (
-                "art_hmmer_score_filtered_accessions"
-            ),
+            "hmmer_score_filtered_accessions": ("art_hmmer_score_filtered_accessions"),
             "post_uniprot_filtered_hits": "art_post_uniprot_filtered_hits",
             "target_sequences": "art_target_sequences",
             "scoring_alignment": "art_alignment",
@@ -1314,9 +1579,7 @@ def _apply_hmmer_upstream_empty_fixture(
                 "candidate_alignment",
                 "cdhit",
             ],
-            "empty_materialization_operation_id": (
-                "op_upstream_empty_materialization"
-            ),
+            "empty_materialization_operation_id": ("op_upstream_empty_materialization"),
             "empty_membership_operation_id": "op_empty_membership",
         },
     }
@@ -1353,7 +1616,15 @@ def _valid_evidence(
     clean_world: dict[str, object],
     run_suffix: str | None = None,
     scientific_branch: str = "nonempty",
+    effective_config: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    effective_config_payload = json.loads(
+        json.dumps(effective_config or _effective_config())
+    )
+    if attempt_kind == "fault" and effective_config is None:
+        effective_config_payload["driver"]["approval_mode"] = "chrome-once"
+        effective_config_payload["driver"]["ui_dist_digest"] = _digest("ui-dist")
+    effective_config_digest = canonical_digest(effective_config_payload)
     alignment_bytes = GOLDEN_ALIGNMENT.read_bytes()
     scoring_result = aox_motif.score_aligned_fasta(alignment_bytes)
     scored_bytes = scoring_result.to_csv().encode("utf-8")
@@ -1381,7 +1652,11 @@ def _valid_evidence(
         if attempt_kind == "positive"
         else b"# AOX/HMM fault evidence\n\nThe required-chain byte fault failed closed.\n"
     )
-    probe_fixture = _known_positive_probe_fixture(artifact_root)
+    hpc_workspace_label = str(clean_world["hpc_workspace_label"])
+    probe_fixture = _known_positive_probe_fixture(
+        artifact_root,
+        hpc_workspace_label=hpc_workspace_label,
+    )
     pubmed_request_digest = _digest("pubmed-request")
     pubmed_response_digest = _digest("pubmed-provider-response")
     pubmed_bytes = (
@@ -1611,9 +1886,7 @@ def _valid_evidence(
     scoring_input_assembly = aox_reference.assemble_scoring_input(
         scoring_reference_bytes,
         target_sequence_bytes,
-        expected_scoring_reference_input_digest=_digest_bytes(
-            scoring_reference_bytes
-        ),
+        expected_scoring_reference_input_digest=_digest_bytes(scoring_reference_bytes),
         expected_target_input_digest=_digest_bytes(target_sequence_bytes),
     )
     scoring_input_bytes = scoring_input_assembly.to_fasta().encode("utf-8")
@@ -2181,7 +2454,10 @@ def _valid_evidence(
                 "source_snapshot_digest": _digest("aox-pipeline-source"),
             }
         )
-        _refresh_operation_identity(operation)
+        _refresh_operation_identity(
+            operation,
+            hpc_workspace_label=hpc_workspace_label,
+        )
     product_report_record = {
         "report_id": "report_aox",
         "session_id": "sess_aox_live",
@@ -2428,38 +2704,34 @@ def _valid_evidence(
         "toolchain_identities": [
             {
                 "toolchain_record_id": "toolchain_record_mafft",
-                "toolchain_id": "mafft@7.526",
+                **_toolchain_identity_fields("mafft"),
                 "tool": "mafft",
                 "operation_id": "op_align",
                 "job_id": "job_mafft",
-                "image_digest": _digest("mafft-image"),
                 "status": "completed",
             },
             {
                 "toolchain_record_id": "toolchain_record_hmmbuild",
-                "toolchain_id": "hmmbuild@3.4",
+                **_toolchain_identity_fields("hmmbuild"),
                 "tool": "hmmbuild",
                 "operation_id": "op_hmmbuild",
                 "job_id": "job_hmmbuild",
-                "image_digest": _digest("hmmbuild-image"),
                 "status": "completed",
             },
             {
                 "toolchain_record_id": "toolchain_record_hmmalign",
-                "toolchain_id": "hmmalign@3.4",
+                **_toolchain_identity_fields("hmmalign"),
                 "tool": "hmmalign",
                 "operation_id": "op_hmmalign",
                 "job_id": "job_hmmalign",
-                "image_digest": _digest("hmmalign-image"),
                 "status": "completed",
             },
             {
                 "toolchain_record_id": "toolchain_record_cdhit",
-                "toolchain_id": "cd-hit@4.8.1",
+                **_toolchain_identity_fields("cd-hit"),
                 "tool": "cd-hit",
                 "operation_id": "op_cdhit",
                 "job_id": "job_cdhit",
-                "image_digest": _digest("cdhit-image"),
                 "status": "completed",
             },
         ],
@@ -2475,7 +2747,27 @@ def _valid_evidence(
             "entry_message_digest": _digest("entry-message"),
             "workspace_projection_digest": _digest("workspace-projection"),
             "event_log_digest": _digest("event-log"),
-            "runtime_config_digest": _digest("runtime-config"),
+            "public_final_workspace_digest": _digest("public-final-workspace"),
+            "public_final_workspace_response_binding": {
+                "receipt_sequence": 5,
+                "route": "/v3/sessions/sess_aox_live/workspace",
+                "response_digest": _digest("public-final-workspace-response"),
+                "response_semantic_digest": _digest("public-final-workspace"),
+            },
+            "public_final_event_stream_digest": _digest("public-final-events"),
+            "public_final_event_last_cursor": 12,
+            "public_final_event_response_binding": {
+                "receipt_sequence": 6,
+                "route": (
+                    "/v3/sessions/sess_aox_live/events?replay=1&after_cursor=0"
+                ),
+                "response_digest": _digest("public-final-events-response"),
+                "response_semantic_digest": _digest("public-final-events"),
+            },
+            "public_final_scientific_evidence_digest": _digest(
+                "public-final-scientific-evidence"
+            ),
+            "runtime_config_digest": effective_config_digest,
             "micu_scenario": "aox_blank_world_cutover",
             "micu_model": "micu-live",
             "micu_invocation_ids": ["invocation_micu_master"],
@@ -2484,9 +2776,30 @@ def _valid_evidence(
                 "reporter": "task_report",
                 "researcher": "task_research",
             },
+            "hpc_workspace_binding": {
+                "schema_id": "aox_hpc_workspace_binding@1",
+                "label": hpc_workspace_label,
+                "workspace_ids": sorted(
+                    {
+                        str(item.get("hpc_workspace_id") or "")
+                        for item in operations
+                        if item.get("selected_backend") == "hpc"
+                    }
+                ),
+            },
+            "public_api_receipts": _public_api_receipts(),
             "launch_receipt": {
                 "root_identity": clean_world["root_identity"],
                 "hpc_workspace_label": clean_world["hpc_workspace_label"],
+                "campaign_attempt_number": 3 if attempt_kind == "fault" else 1,
+                "approval_mode": (
+                    "chrome-once" if attempt_kind == "fault" else "auto"
+                ),
+                "browser_approval_receipt": None,
+                "browser_observation_receipt": None,
+                "public_api_receipt_digest": canonical_digest(_public_api_receipts()),
+                "effective_config": effective_config_payload,
+                "effective_config_digest": effective_config_digest,
                 "sqlite_initialized_fresh": True,
                 "artifact_root_bound": True,
                 "blob_root_bound": True,
@@ -2508,7 +2821,7 @@ def _valid_evidence(
                     "operation_identity_digest"
                 ],
                 "decision": "approved",
-            }
+            },
         ],
         "operations": operations,
         "tasks": [
@@ -2680,39 +2993,11 @@ def _valid_evidence(
             }
         ),
     }
-    if attempt_kind == "fault":
-        fault = inject_artifact_byte_flip(
-            artifact_root,
-            relative_path="formal/provider/ebi-hmmer-response.json",
-            byte_offset=4,
-        )
-        fault_operation = _operation(
-            "op_fault_validation",
-            inputs=[("art_ebi_hmmer_response", fault["before_digest"])],
-            status="failed",
-            failure_code="artifact_content_digest_mismatch",
-        )
-        fault_operation.update(
-            {
-                "route_policy_id": "bio_tools.hmmalign.hpc:v1",
-                "selected_backend": "hpc",
-                "backend_run_id": "job_op_fault_validation",
-                "source_snapshot_digest": _digest("aox-pipeline-source"),
-            }
-        )
-        _refresh_operation_identity(fault_operation)
-        evidence["operations"].append(fault_operation)
-        evidence["fault_injection"] = {
-            **fault,
-            "target_artifact_id": "art_ebi_hmmer_response",
-            "source_operation_id": "op_ebi_hmmer",
-            "terminal_failure_operation_id": "op_fault_validation",
-            "failure_code": "artifact_content_digest_mismatch",
-            "expected_failure_observed": True,
-        }
     if scientific_branch == "hmmer_upstream_empty":
         if attempt_kind != "positive":
-            raise ValueError("healthy-empty fixture is only valid for positive attempts")
+            raise ValueError(
+                "healthy-empty fixture is only valid for positive attempts"
+            )
         _apply_hmmer_upstream_empty_fixture(artifact_root, evidence)
     elif scientific_branch != "nonempty":
         raise ValueError(f"unknown scientific fixture branch: {scientific_branch}")
@@ -2723,6 +3008,13 @@ def _valid_evidence(
             namespaced,
             run_suffix=run_suffix,
         )
+    else:
+        _apply_derived_reference_fault_fixture(
+            artifact_root,
+            namespaced,
+            run_suffix=run_suffix,
+        )
+    _attach_public_final_snapshot_fixture(artifact_root, namespaced)
     return namespaced
 
 
@@ -2813,7 +3105,614 @@ def _namespace_evidence(
         approval["operation_identity_digest"] = operation_identities[
             approval["operation_id"]
         ]
+    product_path = namespaced["product_path"]
+    public_api_receipts = _public_api_receipts(product_path["session_id"])
+    product_path["public_api_receipts"] = public_api_receipts
+    product_path["launch_receipt"]["public_api_receipt_digest"] = canonical_digest(
+        public_api_receipts
+    )
     return namespaced
+
+
+def _attach_public_final_snapshot_fixture(
+    artifact_root: Path,
+    evidence: dict[str, object],
+) -> None:
+    product_path = evidence["product_path"]
+    session_id = str(product_path["session_id"])
+    fault = evidence.get("fault_injection")
+    closure: dict[str, object] = {}
+    if isinstance(fault, dict):
+        closure_artifact_id = str(fault["negative_state_closure_artifact_id"])
+        closure_artifact = next(
+            item
+            for item in evidence["artifacts"]
+            if item["artifact_id"] == closure_artifact_id
+        )
+        closure_document = json.loads(
+            (artifact_root / closure_artifact["relative_path"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        closure = dict(closure_document["negative_state_closure"])
+    task_items = [
+        {
+            "task_id": item.get("task_id"),
+            "kind": item.get("kind"),
+            "status": item.get("status"),
+            "assigned_ref": item.get("assigned_ref"),
+            "lane_id": item.get("lane_id"),
+        }
+        for item in (closure.get("task_receipts") or evidence.get("tasks") or [])
+    ]
+    if closure:
+        report_states = [dict(item) for item in closure.get("report_states") or []]
+        draft_states = [dict(item) for item in closure.get("draft_states") or []]
+        final_content = str(evidence["final_answer"]["content"])
+        conversation = [
+            {
+                "message_id": str(product_path["entry_message_id"]),
+                "role": "user",
+                "content": "entry-message",
+            },
+            {
+                "message_id": str(evidence["final_answer"]["message_id"]),
+                "role": "assistant",
+                "content": final_content,
+            },
+        ]
+        events = [
+            {
+                "event_id": item["event_id"],
+                "session_id": session_id,
+                "event_type": item["event_type"],
+                "schema_version": "openzyme.v3.event.v1",
+                "visibility": "public",
+                "actor_ref": item.get("actor_ref"),
+                "command_id": item.get("command_id"),
+                "created_at": "2026-07-17T00:00:20+00:00",
+                "cursor": item["cursor"],
+                "payload": {
+                    "operation_id": fault["terminal_failure_operation_id"],
+                    "failure_code": "artifact_blob_digest_mismatch",
+                },
+            }
+            for item in closure.get("durable_event_receipts") or []
+        ]
+    else:
+        report = dict(evidence.get("report") or {})
+        report_states = [
+            {
+                "report_id": report.get("report_id"),
+                "task_id": report.get("task_id"),
+                "status": report.get("status"),
+                "artifact_id": report.get("content_artifact_id"),
+            }
+        ]
+        draft_states = []
+        conversation = [
+            {
+                "message_id": str(product_path["entry_message_id"]),
+                "role": "user",
+                "content": "entry-message",
+            },
+            {
+                "message_id": str(evidence["final_answer"]["message_id"]),
+                "role": "assistant",
+                "content": str(evidence["final_answer"]["content"]),
+            },
+        ]
+        events = [
+            {
+                "event_id": "event_public_final_positive",
+                "session_id": session_id,
+                "event_type": "task.completed",
+                "schema_version": "openzyme.v3.event.v1",
+                "visibility": "public",
+                "actor_ref": "agent_reporter_aox",
+                "command_id": None,
+                "created_at": "2026-07-17T00:00:20+00:00",
+                "cursor": 1,
+                "payload": {"task_id": product_path["task_ids_by_role"]["reporter"]},
+            }
+        ]
+    scientific_operations = [
+        {
+            "operation_id": item.get("operation_id"),
+            "task_id": item.get("task_id"),
+            "sdk_module": dict(item.get("operation_identity_material") or {}).get(
+                "sdk_module"
+            ),
+            "function_name": dict(item.get("operation_identity_material") or {}).get(
+                "function_name"
+            ),
+            "selected_backend": item.get("selected_backend"),
+            "status": item.get("status"),
+            "error_code": item.get("failure_code"),
+            "operation_digest": item.get("operation_identity_digest"),
+            "input_artifact_ids": [
+                ref.get("artifact_id")
+                for ref in item.get("inputs") or []
+                if isinstance(ref, dict)
+            ],
+        }
+        for item in evidence.get("operations") or []
+        if item.get("scope") == "formal"
+    ]
+    workspace = {
+        "session": {"session_id": session_id},
+        "conversation": conversation,
+        "task_board": {"items": task_items},
+        "pending_approvals": [],
+        "report_drafts": draft_states,
+        "reports": report_states,
+        "scientific_evidence": {"operations": scientific_operations},
+    }
+    workspace_digest = canonical_digest(workspace)
+    event_digest = canonical_digest(events)
+    receipts = product_path["public_api_receipts"]
+    workspace_receipt = next(
+        item
+        for item in reversed(receipts)
+        if item["method"] == "GET"
+        and item["route"] == f"/v3/sessions/{session_id}/workspace"
+    )
+    event_receipt = next(
+        item
+        for item in reversed(receipts)
+        if item["method"] == "GET" and "/events?replay=1&after_cursor=0" in item["route"]
+    )
+    workspace_receipt["response_semantic_digest"] = workspace_digest
+    event_receipt["response_semantic_digest"] = event_digest
+    workspace_binding = {
+        "receipt_sequence": workspace_receipt["sequence"],
+        "route": workspace_receipt["route"],
+        "response_digest": workspace_receipt["response_digest"],
+        "response_semantic_digest": workspace_digest,
+    }
+    event_binding = {
+        "receipt_sequence": event_receipt["sequence"],
+        "route": event_receipt["route"],
+        "response_digest": event_receipt["response_digest"],
+        "response_semantic_digest": event_digest,
+    }
+    workspace_record = {
+        "schema_id": "aox_public_final_workspace_snapshot@1",
+        "session_id": session_id,
+        "workspace": workspace,
+        "workspace_digest": workspace_digest,
+        "response_binding": workspace_binding,
+    }
+    event_record = {
+        "schema_id": "aox_public_final_event_replay@1",
+        "session_id": session_id,
+        "replay": True,
+        "after_cursor": 0,
+        "events": events,
+        "event_count": len(events),
+        "last_cursor": max(item["cursor"] for item in events),
+        "event_stream_digest": event_digest,
+        "response_binding": event_binding,
+    }
+    workspace_bytes = canonical_json_bytes(workspace_record) + b"\n"
+    event_bytes = canonical_json_bytes(event_record) + b"\n"
+    workspace_id = f"art_public_final_workspace_{session_id}"
+    event_id = f"art_public_final_events_{session_id}"
+    workspace_path = "formal/attestation/public-final-workspace.json"
+    event_path = "formal/attestation/public-final-event-replay.json"
+    _write_artifact(artifact_root, workspace_path, workspace_bytes)
+    _write_artifact(artifact_root, event_path, event_bytes)
+    evidence["artifacts"].extend(
+        [
+            {
+                "artifact_id": workspace_id,
+                "relative_path": workspace_path,
+                "scope": "formal",
+                "origin": "attestation",
+                "kind": "workspace_projection",
+                "provenance": {
+                    "producer": "aox_public_final_workspace_snapshot@1"
+                },
+            },
+            {
+                "artifact_id": event_id,
+                "relative_path": event_path,
+                "scope": "formal",
+                "origin": "attestation",
+                "kind": "event_log",
+                "provenance": {"producer": "aox_public_final_event_replay@1"},
+            },
+        ]
+    )
+    product_path.update(
+        {
+            "public_final_workspace_digest": workspace_digest,
+            "public_final_workspace_response_binding": workspace_binding,
+            "public_final_event_stream_digest": event_digest,
+            "public_final_event_last_cursor": event_record["last_cursor"],
+            "public_final_event_response_binding": event_binding,
+            "public_final_scientific_evidence_digest": canonical_digest(
+                workspace["scientific_evidence"]
+            ),
+            "public_final_workspace_artifact_id": workspace_id,
+            "public_final_workspace_artifact_digest": _digest_bytes(workspace_bytes),
+            "public_final_event_replay_artifact_id": event_id,
+            "public_final_event_replay_artifact_digest": _digest_bytes(event_bytes),
+        }
+    )
+    product_path["launch_receipt"]["public_api_receipt_digest"] = canonical_digest(
+        receipts
+    )
+
+
+def _apply_derived_reference_fault_fixture(
+    artifact_root: Path,
+    evidence: dict[str, object],
+    *,
+    run_suffix: str | None,
+) -> None:
+    def scoped_id(value: str) -> str:
+        return value if not run_suffix else f"{value}_{run_suffix}"
+
+    source_artifact_id = scoped_id("art_ncbi_provider_sequences")
+    target_artifact_id = scoped_id("art_hmm_reference_set")
+    closure_artifact_id = scoped_id("art_fault_negative_state_closure")
+    source_operation_id = scoped_id("op_ncbi")
+    derivation_operation_id = scoped_id("op_hmm_reference_set_selection")
+    consumer_operation_id = scoped_id("op_align")
+    research_task_id = scoped_id("task_research")
+    execution_task_id = scoped_id("task_execute")
+    reporting_task_id = scoped_id("task_report")
+    session_id = scoped_id("sess_aox_live")
+    final_message_id = scoped_id("msg_final")
+
+    artifacts = [dict(item) for item in evidence["artifacts"]]
+    artifact_by_id = {str(item["artifact_id"]): item for item in artifacts}
+    source_artifact = artifact_by_id[source_artifact_id]
+    target_artifact = artifact_by_id[target_artifact_id]
+    source_content = (
+        artifact_root / str(source_artifact["relative_path"])
+    ).read_bytes()
+    source_digest = _digest_bytes(source_content)
+    derived = aox_reference.select_hmm_reference_set(
+        source_content,
+        expected_contract_id=aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID,
+        expected_contract_digest=(
+            aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+        ),
+        expected_implementation_digest=(
+            aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+        ),
+        expected_input_digest=source_digest,
+    )
+    expected_target_content = derived.to_fasta().encode("utf-8")
+    target_path = artifact_root / str(target_artifact["relative_path"])
+    assert target_path.read_bytes() == expected_target_content
+    fault = inject_artifact_byte_flip(
+        artifact_root,
+        relative_path=str(target_artifact["relative_path"]),
+        byte_offset=4,
+    )
+
+    operations = [dict(item) for item in evidence["operations"]]
+    operation_by_id = {str(item["operation_id"]): item for item in operations}
+    source_operation = operation_by_id[source_operation_id]
+    derivation_operation = operation_by_id[derivation_operation_id]
+    consumer_operation = operation_by_id[consumer_operation_id]
+    source_operation["task_id"] = research_task_id
+    source_operation["lane_id"] = scoped_id("lane_research")
+    source_operation["parameters"] = {
+        "accessions": list(aox_reference.NCBI_REFERENCE_ACCESSIONS),
+        "fields": ["definition", "organism", "length"],
+        "output_dir": "/workspace/output/bio/ncbi",
+    }
+    source_operation["outputs"] = [
+        {"artifact_id": source_artifact_id, "content_digest": source_digest}
+    ]
+    _refresh_operation_identity(source_operation)
+    derivation_operation["task_id"] = execution_task_id
+    derivation_operation["lane_id"] = scoped_id("lane_execute")
+    derivation_operation["inputs"] = [
+        {"artifact_id": source_artifact_id, "content_digest": source_digest}
+    ]
+    derivation_operation["outputs"] = [
+        {
+            "artifact_id": target_artifact_id,
+            "content_digest": fault["before_digest"],
+        }
+    ]
+    _refresh_sandbox_calculation_identity(derivation_operation)
+    consumer_operation.update(
+        {
+            "task_id": execution_task_id,
+            "lane_id": scoped_id("lane_execute"),
+            "status": "failed",
+            "terminal": True,
+            "failure_code": "artifact_blob_digest_mismatch",
+            "inputs": [
+                {
+                    "artifact_id": target_artifact_id,
+                    "content_digest": fault["before_digest"],
+                }
+            ],
+            "outputs": [],
+            "route_policy_id": "bio_tools.mafft.hpc:v1",
+            "selected_backend": "hpc",
+            "backend_run_id": scoped_id("job_mafft_fault"),
+            "source_snapshot_digest": _digest("aox-pipeline-source"),
+        }
+    )
+    _refresh_operation_identity(consumer_operation)
+    evidence["operations"] = [
+        item for item in operations if item.get("scope") == "probe"
+    ] + [source_operation, derivation_operation, consumer_operation]
+
+    probe_approvals = [
+        dict(item)
+        for item in evidence["approvals"]
+        if str(item.get("operation_id") or "").startswith("op_probe_")
+    ]
+    evidence["approvals"] = [
+        *probe_approvals,
+        {
+            "approval_id": scoped_id("approval_fault_ncbi"),
+            "operation_id": source_operation_id,
+            "operation_identity_digest": source_operation["operation_identity_digest"],
+            "decision": "approved",
+        },
+        {
+            "approval_id": scoped_id("approval_fault_mafft"),
+            "operation_id": consumer_operation_id,
+            "operation_identity_digest": consumer_operation[
+                "operation_identity_digest"
+            ],
+            "decision": "approved",
+        },
+    ]
+    evidence["provider_identities"] = [
+        item
+        for item in evidence["provider_identities"]
+        if item.get("provider") == "ncbi"
+    ]
+    ncbi_provider = evidence["provider_identities"][0]
+    ncbi_provider.update(
+        {
+            "operation_id": source_operation_id,
+            "artifact_ids": [source_artifact_id],
+            "invocation_id": source_operation["backend_run_id"],
+            "request_digest": source_operation["params_digest"],
+            "response_digest": source_digest,
+        }
+    )
+    evidence["engine_invocations"] = []
+    evidence["toolchain_identities"] = []
+
+    source_artifact["provenance"] = {
+        "operation_id": source_operation_id,
+        "provider": "ncbi",
+    }
+    target_artifact["provenance"] = {
+        "operation_id": derivation_operation_id,
+        "calculation_id": aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID,
+        "controlled_fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
+        "catalog_relative_path": "aox_hmm/AOX_ref21.fasta",
+    }
+    kept_formal_artifact_ids = {source_artifact_id, target_artifact_id}
+    for artifact in artifacts:
+        if (
+            artifact.get("scope") == "formal"
+            and artifact.get("artifact_id") not in kept_formal_artifact_ids
+        ):
+            stale_path = artifact_root / str(artifact["relative_path"])
+            if stale_path.is_file():
+                stale_path.unlink()
+    evidence["artifacts"] = [
+        item for item in artifacts if item.get("scope") == "probe"
+    ] + [source_artifact, target_artifact]
+
+    task_specs = (
+        (
+            research_task_id,
+            "researcher",
+            "research",
+            "completed",
+            "agent_researcher_aox",
+            scoped_id("lane_research"),
+            [source_artifact_id],
+        ),
+        (
+            execution_task_id,
+            "executor",
+            "execution",
+            "failed",
+            "agent_executor_aox",
+            scoped_id("lane_execute"),
+            [consumer_operation_id, target_artifact_id],
+        ),
+        (
+            reporting_task_id,
+            "reporter",
+            "reporting",
+            "blocked",
+            "agent_reporter_aox",
+            scoped_id("lane_report"),
+            [consumer_operation_id],
+        ),
+    )
+    task_records: list[dict[str, object]] = []
+    for task_id, role, kind, status, assigned_ref, lane_id, evidence_refs in task_specs:
+        finish_payload = {
+            "task_id": task_id,
+            "status": status,
+            "finished_by": assigned_ref,
+            "evidence_refs": evidence_refs,
+        }
+        task_records.append(
+            {
+                "task_id": task_id,
+                "role": role,
+                "kind": kind,
+                "status": status,
+                "business_exit": "agent_explicit",
+                "assigned_ref": assigned_ref,
+                "lane_id": lane_id,
+                "finish_ref": scoped_id(f"doc_finish_{role}"),
+                "finish_payload_digest": canonical_digest(finish_payload),
+                "finished_by": assigned_ref,
+                "evidence_refs": evidence_refs,
+            }
+        )
+    evidence["tasks"] = sorted(task_records, key=lambda item: str(item["task_id"]))
+
+    final_content = (
+        "AOX/HMM failed closed at the injected reference-set artifact seam: "
+        "failure_code=artifact_blob_digest_mismatch status=failed."
+    )
+    evidence["final_answer"] = {
+        "message_id": final_message_id,
+        "content": final_content,
+    }
+    consumer_identity = dict(consumer_operation["operation_identity_material"])
+    consumer_runner_contract_expectation = {
+        "tool_id": "bio_tools.mafft",
+        **dict(
+            evidence["product_path"]["launch_receipt"]["effective_config"]["execution"][
+                "aox_runner_contract_expectations"
+            ]["contracts"]["bio_tools.mafft"]
+        ),
+    }
+    negative_closure = {
+        "schema_id": "aox_fault_negative_state_closure@1",
+        "session_id": session_id,
+        "target_artifact_id": target_artifact_id,
+        "terminal_failure_operation_id": consumer_operation_id,
+        "task_receipts": evidence["tasks"],
+        "report_states": [],
+        "draft_states": [],
+        "conversation_receipts": [
+            {
+                "message_id": scoped_id("msg_entry"),
+                "role": "user",
+                "content_digest": _digest("entry-message"),
+            },
+            {
+                "message_id": final_message_id,
+                "role": "assistant",
+                "content_digest": _digest_bytes(final_content.encode("utf-8")),
+            },
+        ],
+        "success_claim_message_ids": [],
+        "final_assistant_failure_message_id": final_message_id,
+        "final_assistant_failure_code": "artifact_blob_digest_mismatch",
+        "final_assistant_failure_status": "failed",
+        "consumer_runner_contract_expectation": (consumer_runner_contract_expectation),
+        "durable_event_receipts": [
+            {
+                "event_id": scoped_id("event_fault_terminal"),
+                "cursor": 1,
+                "event_type": "controlled_operation.failed",
+                "actor_ref": "agent_executor_aox",
+                "command_id": scoped_id("call_fault_mafft"),
+                "payload_digest": canonical_digest(
+                    {
+                        "operation_id": consumer_operation_id,
+                        "failure_code": "artifact_blob_digest_mismatch",
+                    }
+                ),
+            }
+        ],
+        "consumer_states": [
+            {
+                "operation_id": consumer_operation_id,
+                "task_id": execution_task_id,
+                "sdk_module": consumer_identity["sdk_module"],
+                "function_name": consumer_identity["function_name"],
+                "selected_backend": consumer_operation["selected_backend"],
+                "status": consumer_operation["status"],
+                "failure_code": consumer_operation["failure_code"],
+                "operation_identity_digest": consumer_operation[
+                    "operation_identity_digest"
+                ],
+            }
+        ],
+        "successful_alternate_consumer_ids": [],
+        "observed_prefault_deliverable_paths": ["aox_hmm/AOX_ref21.fasta"],
+        "post_fault_final_deliverable_paths": [],
+        "complete_final_deliverable_set_present": False,
+    }
+    closure_payload = {
+        "schema_id": "aox_blank_world_live_blocker@1",
+        "attempt_kind": "fault",
+        "failure_code": "artifact_blob_digest_mismatch",
+        "fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
+        "target_artifact_id": target_artifact_id,
+        "source_artifact_id": source_artifact_id,
+        "source_operation_id": source_operation_id,
+        "derivation_operation_id": derivation_operation_id,
+        "derivation_id": aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID,
+        "terminal_failure_operation_id": consumer_operation_id,
+        "negative_state_closure": negative_closure,
+    }
+    closure_relative_path = "formal/fault/negative-state-closure.json"
+    closure_content = canonical_json_bytes(closure_payload) + b"\n"
+    closure_digest = _write_artifact(
+        artifact_root,
+        closure_relative_path,
+        closure_content,
+    )
+    closure_artifact = {
+        "artifact_id": closure_artifact_id,
+        "relative_path": closure_relative_path,
+        "scope": "formal",
+        "origin": "report",
+        "kind": "failure_evidence",
+        "provenance": {
+            "producer": "aox_fault_negative_state_closure@1",
+            "fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
+        },
+    }
+    evidence["artifacts"].append(closure_artifact)
+    evidence["report"] = {
+        "report_id": scoped_id("report_fault_closure"),
+        "status": "failed_evidence",
+        "cutover_eligible": False,
+        "content_artifact_id": closure_artifact_id,
+        "content_digest": closure_digest,
+        "artifact_ids": [closure_artifact_id, target_artifact_id],
+        "source_ref_ids": [],
+        "claim_source_links": [],
+    }
+    evidence["scientific_checks"] = {}
+    evidence["warnings"] = []
+    evidence["degradations"] = ["controlled_fault_injection"]
+    evidence["scientific_outcome"] = {
+        "status": "failed",
+        "failure_code": "artifact_blob_digest_mismatch",
+        "cutover_eligible": False,
+    }
+    evidence["fault_injection"] = {
+        **fault,
+        "target_artifact_id": target_artifact_id,
+        "source_artifact_id": source_artifact_id,
+        "source_artifact_digest": source_digest,
+        "source_operation_id": source_operation_id,
+        "derivation_operation_id": derivation_operation_id,
+        "derivation_id": aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_ID,
+        "derivation_contract_digest": (
+            aox_reference.HMM_REFERENCE_SET_SELECTION_CONTRACT_DIGEST
+        ),
+        "derivation_implementation_digest": (
+            aox_reference.HMM_REFERENCE_SET_SELECTION_IMPLEMENTATION_DIGEST
+        ),
+        "consumer_tool_id": "bio_tools.mafft",
+        "consumer_runner_contract_expectation": (consumer_runner_contract_expectation),
+        "terminal_failure_operation_id": consumer_operation_id,
+        "failure_code": "artifact_blob_digest_mismatch",
+        "negative_state_closure_artifact_id": closure_artifact_id,
+        "negative_state_closure_digest": closure_digest,
+        "reached_target_seam": True,
+        "expected_failure_observed": True,
+    }
 
 
 def _attach_product_receipts(
@@ -2984,6 +3883,8 @@ def _attach_product_receipts(
             "content_digest": report["content_digest"],
             "publish_events": report["publish_events"],
         },
+        "browser_approval_events": [],
+        "browser_approval_event_stream_digest": canonical_digest([]),
     }
     workspace_bytes = canonical_json_bytes(workspace_payload) + b"\n"
     event_bytes = canonical_json_bytes(event_payload) + b"\n"
@@ -3021,6 +3922,7 @@ def _attach_product_receipts(
     product_path["workspace_projection_digest"] = workspace_digest
     product_path["event_log_artifact_id"] = event_artifact_id
     product_path["event_log_digest"] = event_digest
+    product_path["browser_approval_event_stream_digest"] = canonical_digest([])
 
 
 def _build_bundle(
@@ -3032,24 +3934,31 @@ def _build_bundle(
     ledger_before: dict[str, object] | None = None,
     ledger_after: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], Path, Path]:
+    effective_config = _effective_config()
+    if attempt_kind == "fault":
+        effective_config["driver"]["approval_mode"] = "chrome-once"
+        effective_config["driver"]["ui_dist_digest"] = _digest("ui-dist")
+    identity = _identity()
+    identity["config_digest"] = canonical_digest(effective_config)
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind=attempt_kind,
         attempt_id=f"{attempt_kind}-one",
-        allowed_prerequisites={"workflow_ref": _identity()["workflow_ref"]},
+        allowed_prerequisites=_allowed_prerequisites(identity),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
         attempt_kind=attempt_kind,
         clean_world=roots.proof,
         scientific_branch=scientific_branch,
+        effective_config=effective_config,
     )
     if mutate_evidence is not None:
         mutate_evidence(evidence)
     payload = build_attempt_bundle(
         attempt_id=roots.attempt_id,
         attempt_kind=attempt_kind,
-        identity=_identity(),
+        identity=identity,
         clean_world=roots.proof,
         ledger_before=ledger_before or _ledger_snapshot(),
         ledger_after=ledger_after
@@ -3070,6 +3979,226 @@ def _rewrite_envelope(bundle_path: Path, mutate) -> None:
     bundle_path.write_bytes(canonical_json_bytes(envelope) + b"\n")
 
 
+def _rewrite_fault_closure_evidence(
+    artifact_root: Path,
+    evidence: dict[str, object],
+    mutate,
+) -> None:
+    closure_artifact = next(
+        item
+        for item in evidence["artifacts"]
+        if item["artifact_id"]
+        == evidence["fault_injection"]["negative_state_closure_artifact_id"]
+    )
+    closure_path = artifact_root / str(closure_artifact["relative_path"])
+    document = json.loads(closure_path.read_text(encoding="utf-8"))
+    mutate(document["negative_state_closure"])
+    content = canonical_json_bytes(document) + b"\n"
+    closure_path.write_bytes(content)
+    digest = _digest_bytes(content)
+    evidence["fault_injection"]["negative_state_closure_digest"] = digest
+    evidence["report"]["content_digest"] = digest
+    product_path = evidence["product_path"]
+    stale_snapshot_ids = {
+        str(product_path.get("public_final_workspace_artifact_id") or ""),
+        str(product_path.get("public_final_event_replay_artifact_id") or ""),
+    }
+    evidence["artifacts"] = [
+        item
+        for item in evidence["artifacts"]
+        if str(item.get("artifact_id") or "") not in stale_snapshot_ids
+    ]
+    _attach_public_final_snapshot_fixture(artifact_root, evidence)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("config_payload", "effective_config_attestation_invalid"),
+        ("config_digest", "effective_config_attestation_invalid"),
+        ("ledger_identity", "micu_ledger_identity_changed"),
+        ("approval_decision", "approval_chain_invalid"),
+    ),
+)
+def test_launch_attestation_tamper_fails_closed(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_launch_attestation(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        launch = payload["product_path"]["launch_receipt"]
+        if tamper == "config_payload":
+            launch["effective_config"]["llm"]["enabled"] = False
+        elif tamper == "config_digest":
+            launch["effective_config_digest"] = _digest("tampered-config")
+        elif tamper == "ledger_identity":
+            payload["micu_ledger"]["before"]["ledger_identity_digest"] = _digest(
+                "tampered-ledger"
+            )
+        else:
+            approval = next(
+                item
+                for item in payload["approvals"]
+                if item["operation_id"] == "op_hmmbuild"
+            )
+            approval["decision"] = "rejected"
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_launch_attestation)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(issue.code == expected_code for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_identity"),
+    (
+        ("missing_top_level", "effective_config"),
+        ("extra_top_level", "effective_config"),
+        ("missing_nested", "effective_config.llm"),
+        ("extra_nested", "effective_config.host"),
+        ("invalid_nested_type", "effective_config.limits.global"),
+        (
+            "invalid_nested_range",
+            "effective_config.research.provider_timeout_seconds",
+        ),
+        (
+            "extra_runner_contract_field",
+            "effective_config.execution.aox_runner_contract_expectations.contracts.bio_tools.mafft",
+        ),
+    ),
+)
+def test_effective_config_closed_schema_tamper_is_rejected_offline(
+    tmp_path: Path,
+    tamper: str,
+    expected_identity: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_effective_config(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        launch = payload["product_path"]["launch_receipt"]
+        config = launch["effective_config"]
+        if tamper == "missing_top_level":
+            config.pop("tracing")
+        elif tamper == "extra_top_level":
+            config["legacy_compatibility"] = True
+        elif tamper == "missing_nested":
+            config["llm"].pop("model")
+        elif tamper == "extra_nested":
+            config["host"]["legacy_mode"] = False
+        elif tamper == "invalid_nested_type":
+            config["limits"]["global"] = True
+        elif tamper == "invalid_nested_range":
+            config["research"]["provider_timeout_seconds"] = 0.0
+        else:
+            config["execution"]["aox_runner_contract_expectations"]["contracts"][
+                "bio_tools.mafft"
+            ]["legacy_template"] = "fallback"
+        config_digest = canonical_digest(config)
+        launch["effective_config_digest"] = config_digest
+        payload["product_path"]["runtime_config_digest"] = config_digest
+        payload["identity"]["config_digest"] = config_digest
+        payload["identity"]["identity_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in payload["identity"].items()
+                if key != "identity_digest"
+            }
+        )
+        prerequisites = payload["clean_world"]["allowed_prerequisites"]
+        prerequisites["config_digest"] = config_digest
+        payload["clean_world"]["allowed_prerequisite_digest"] = canonical_digest(
+            prerequisites
+        )
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_effective_config)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "effective_config_attestation_invalid"
+        and issue.identity == expected_identity
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("tamper", ("digest", "sequence", "route"))
+def test_public_api_receipt_chain_tamper_fails_offline_verification(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_public_receipts(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        product_path = payload["product_path"]
+        receipts = product_path["public_api_receipts"]
+        launch = product_path["launch_receipt"]
+        if tamper == "digest":
+            receipts[0]["response_digest"] = _digest("tampered-response")
+        elif tamper == "sequence":
+            receipts[1]["sequence"] = 9
+            launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        else:
+            receipts[0]["route"] = "/v3/internal/driver-shortcut"
+            launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_public_receipts)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "public_api_receipt_attestation_invalid"
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("image_digest", _digest("tampered-toolchain-image")),
+        ("attestation_scope", "preflight_only"),
+        ("tool_id", "bio_tools.compatibility_fallback"),
+        ("adapter_id", "bio_tools.compatibility_fallback"),
+        ("command_template_id", "compatibility_template_v1"),
+        ("runner_contract_digest", _digest("tampered-runner-contract")),
+    ),
+)
+def test_formal_toolchain_runtime_identity_tamper_fails_offline_verification(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_toolchain_identity(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        receipt = next(
+            item for item in payload["toolchain_identities"] if item["tool"] == "mafft"
+        )
+        receipt[field] = value
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_toolchain_identity)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "toolchain_operation_receipt_mismatch" for issue in result.issues
+    )
+
+
 def test_blank_world_preflight_creates_unique_empty_roots_without_public_paths(
     tmp_path: Path,
 ) -> None:
@@ -3077,7 +4206,7 @@ def test_blank_world_preflight_creates_unique_empty_roots_without_public_paths(
         tmp_path / "campaign",
         attempt_kind="positive",
         attempt_id="positive-clean",
-        allowed_prerequisites={"git_commit": "a" * 40},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
 
     assert not roots.sqlite_path.exists()
@@ -3102,7 +4231,7 @@ def test_blank_world_preflight_rejects_preloaded_science(tmp_path: Path) -> None
             tmp_path / "campaign",
             attempt_kind="positive",
             attempt_id="positive-preloaded",
-            allowed_prerequisites={},
+            allowed_prerequisites=_allowed_prerequisites(),
         )
 
     assert error.value.code == "preloaded_science_detected"
@@ -3120,7 +4249,7 @@ def test_blank_world_preflight_rejects_science_in_allowed_prerequisites(
             allowed_prerequisites={"alignment_fasta": ">cached\nMPEPTIDE\n"},
         )
 
-    assert error.value.code == "allowed_prerequisite_field_forbidden"
+    assert error.value.code == "allowed_prerequisite_schema_invalid"
 
 
 def test_micu_snapshot_is_read_only_safe_and_keeps_the_fixed_ceiling(
@@ -3179,6 +4308,592 @@ def test_sandbox_preflight_identity_tamper_fails_offline_verification(
     )
 
 
+def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
+    toolchain = next(
+        item for item in payload["toolchain_identities"] if item["tool"] == "hmmbuild"
+    )
+    operation = next(
+        item
+        for item in payload["operations"]
+        if item["operation_id"] == toolchain["operation_id"]
+    )
+    approval = next(
+        item
+        for item in payload["approvals"]
+        if item["operation_id"] == toolchain["operation_id"]
+    )
+    product_path = payload["product_path"]
+    session_id = str(product_path["session_id"])
+    approval_id = str(approval["approval_id"])
+    operation_id = str(operation["operation_id"])
+    operation_digest = str(operation["operation_identity_digest"])
+    continuation_id = "continuation_browser_001"
+    pre_workspace = {
+        "pending_approvals": [
+            {
+                "approval_id": approval_id,
+                "operation": {
+                    "operation_id": operation_id,
+                    "operation_digest": operation_digest,
+                },
+            }
+        ],
+        "scientific_evidence": {"operations": []},
+    }
+    post_workspace = {
+        "pending_approvals": [],
+        "scientific_evidence": {
+            "operations": [
+                {
+                    "operation_id": operation_id,
+                    "operation_digest": operation_digest,
+                    "approval_id": approval_id,
+                    "approval_state": "approved",
+                    "status": "waiting_approval",
+                }
+            ]
+        },
+    }
+    resolution_event = {
+        "event_id": "event_browser_resolution",
+        "session_id": session_id,
+        "event_type": "approval.resolved",
+        "schema_version": "openzyme.v3.event.v1",
+        "visibility": "public",
+        "actor_ref": "local-user",
+        "command_id": "command_browser_resolution",
+        "created_at": "2026-07-17T00:00:10+00:00",
+        "cursor": 11,
+        "payload": {
+            "approval_id": approval_id,
+            "decision": "approved",
+            "actor_ref": "local-user",
+        },
+    }
+    continuation_event = {
+        "event_id": "event_browser_continuation",
+        "session_id": session_id,
+        "event_type": "sdk_controlled_operation.approval_resolved",
+        "schema_version": "openzyme.v3.event.v1",
+        "visibility": "public",
+        "actor_ref": None,
+        "command_id": None,
+        "created_at": "2026-07-17T00:00:11+00:00",
+        "cursor": 12,
+        "payload": {
+            "approval_id": approval_id,
+            "operation_id": operation_id,
+            "operation_digest": operation_digest,
+            "continuation_id": continuation_id,
+            "decision": "approved",
+        },
+    }
+
+    def closed_event(event: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema_id": "aox_browser_durable_event@1",
+            **event,
+            "payload_digest": canonical_digest(event["payload"]),
+        }
+
+    event_records = [resolution_event, continuation_event]
+    receipts = _public_api_receipts(session_id)[:4]
+    receipts.extend(
+        [
+            {
+                "sequence": 5,
+                "method": "GET",
+                "route": f"/v3/sessions/{session_id}/workspace",
+                "status_code": 200,
+                "request_digest": canonical_digest({}),
+                "response_digest": _digest("browser-pre-workspace-response"),
+                "response_semantic_digest": canonical_digest(pre_workspace),
+            },
+            {
+                "sequence": 6,
+                "method": "GET",
+                "route": (
+                    f"/v3/sessions/{session_id}/events?replay=1&after_cursor=10"
+                ),
+                "status_code": 200,
+                "request_digest": canonical_digest(
+                    {"replay": True, "after_cursor": 10}
+                ),
+                "response_digest": _digest("browser-events-response"),
+                "response_semantic_digest": canonical_digest(event_records),
+            },
+            {
+                "sequence": 7,
+                "method": "GET",
+                "route": f"/v3/sessions/{session_id}/workspace",
+                "status_code": 200,
+                "request_digest": canonical_digest({}),
+                "response_digest": _digest("browser-post-workspace-response"),
+                "response_semantic_digest": canonical_digest(post_workspace),
+            },
+            {
+                "sequence": 8,
+                "method": "GET",
+                "route": f"/v3/sessions/{session_id}/workspace",
+                "status_code": 200,
+                "request_digest": canonical_digest({}),
+                "response_digest": _digest("public-final-workspace-response"),
+                "response_semantic_digest": product_path[
+                    "public_final_workspace_digest"
+                ],
+            },
+            {
+                "sequence": 9,
+                "method": "GET",
+                "route": (
+                    f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0"
+                ),
+                "status_code": 200,
+                "request_digest": canonical_digest(
+                    {"replay": True, "after_cursor": 0}
+                ),
+                "response_digest": _digest("public-final-events-response"),
+                "response_semantic_digest": product_path[
+                    "public_final_event_stream_digest"
+                ],
+            },
+        ]
+    )
+    product_path["public_api_receipts"] = receipts
+    product_path["public_final_workspace_response_binding"] = {
+        "receipt_sequence": 8,
+        "route": f"/v3/sessions/{session_id}/workspace",
+        "response_digest": _digest("public-final-workspace-response"),
+        "response_semantic_digest": product_path["public_final_workspace_digest"],
+    }
+    product_path["public_final_event_response_binding"] = {
+        "receipt_sequence": 9,
+        "route": f"/v3/sessions/{session_id}/events?replay=1&after_cursor=0",
+        "response_digest": _digest("public-final-events-response"),
+        "response_semantic_digest": product_path[
+            "public_final_event_stream_digest"
+        ],
+    }
+    receipt = {
+        "schema_id": "aox_browser_approval_receipt@2",
+        "approval_mode": "chrome-once",
+        "ui_channel": "same_process_loopback_web_ui",
+        "host_process_id": 1234,
+        "session_id": session_id,
+        "approval_id": approval_id,
+        "operation_id": operation_id,
+        "operation_digest": operation_digest,
+        "sandbox_workspace_id": operation["operation_identity_material"][
+            "sandbox_workspace_id"
+        ],
+        "sandbox_run_id": operation["sandbox_run_id"],
+        "page_url": (
+            "loopback://same-process/ui/?project_id=aox-blank-world-cutover"
+        ),
+        "served_ui_dist_digest": _digest("ui-dist"),
+        "observation_challenge": _digest("browser-observation-challenge"),
+        "pre_workspace_snapshot": pre_workspace,
+        "pre_workspace_digest": canonical_digest(pre_workspace),
+        "pre_workspace_response_binding": {
+            "receipt_sequence": 5,
+            "route": f"/v3/sessions/{session_id}/workspace",
+            "response_digest": _digest("browser-pre-workspace-response"),
+            "response_semantic_digest": canonical_digest(pre_workspace),
+        },
+        "pre_event_cursor": 10,
+        "resolution_event_id": "event_browser_resolution",
+        "resolution_event_cursor": 11,
+        "resolution_actor_ref": "local-user",
+        "resolution_command_id": "command_browser_resolution",
+        "resolution_event_record": closed_event(resolution_event),
+        "continuation_event_id": "event_browser_continuation",
+        "continuation_event_cursor": 12,
+        "continuation_id": continuation_id,
+        "continuation_event_record": closed_event(continuation_event),
+        "event_response_bindings": [
+            {
+                "receipt_sequence": 6,
+                "route": (
+                    f"/v3/sessions/{session_id}/events?replay=1&after_cursor=10"
+                ),
+                "response_digest": _digest("browser-events-response"),
+                "response_semantic_digest": canonical_digest(event_records),
+                "event_records": event_records,
+                "event_records_digest": canonical_digest(event_records),
+            }
+        ],
+        "post_workspace_snapshot": post_workspace,
+        "post_workspace_digest": canonical_digest(post_workspace),
+        "post_workspace_response_binding": {
+            "receipt_sequence": 7,
+            "route": f"/v3/sessions/{session_id}/workspace",
+            "response_digest": _digest("browser-post-workspace-response"),
+            "response_semantic_digest": canonical_digest(post_workspace),
+        },
+        "post_operation_status": "waiting_approval",
+        "driver_resolve_route_absent": True,
+    }
+    page_target_id = "chrome-page-aox-001"
+    png_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    screenshot_digest = _digest_bytes(png_bytes)
+    page_state = {
+        "session_id": session_id,
+        "approval_id": approval_id,
+        "operation_id": operation_id,
+        "operation_digest": operation_digest,
+        "approval_present": False,
+        "operation_status": operation["status"],
+        "final_master_response_id": product_path["final_master_response_id"],
+        "report_id": payload["report"]["report_id"],
+        "report_status": payload["report"]["status"],
+        "scientific_evidence_digest": product_path[
+            "public_final_scientific_evidence_digest"
+        ],
+        "workspace_digest": product_path["public_final_workspace_digest"],
+        "workspace_response_binding": product_path[
+            "public_final_workspace_response_binding"
+        ],
+        "event_stream_digest": product_path["public_final_event_stream_digest"],
+        "event_last_cursor": product_path["public_final_event_last_cursor"],
+        "event_response_binding": product_path[
+            "public_final_event_response_binding"
+        ],
+    }
+    transcript = [
+        {
+            "sequence": sequence,
+            "tool": "chrome_devtools_mcp",
+            "method": method,
+            "page_target_id": page_target_id,
+            "request_digest": _digest(f"chrome-{method}-request"),
+            "response_digest": _digest(f"chrome-{method}-response"),
+        }
+        for sequence, method in enumerate(
+            ("list_console_messages", "evaluate_script", "take_screenshot"),
+            start=1,
+        )
+    ]
+    command_id = "chrome-observation-command-001"
+    command_digest = canonical_digest(
+        {
+            "tool": "chrome_devtools_mcp",
+            "command_id": command_id,
+            "page_target_id": page_target_id,
+            "observation_challenge": receipt["observation_challenge"],
+            "action": "observe_console_page_state_and_screenshot",
+        }
+    )
+    response_digest = canonical_digest(
+        {
+            "page_state": page_state,
+            "console_entries": [],
+            "application_error_count": 0,
+            "devtools_transcript_digest": canonical_digest(transcript),
+            "screenshot_digest": screenshot_digest,
+        }
+    )
+    payload["product_path"]["launch_receipt"]["browser_observation_receipt"] = {
+        "schema_id": "aox_browser_observation_receipt@2",
+        "observation_mode": "chrome_devtools_mcp_file_handoff",
+        "observation_challenge": receipt["observation_challenge"],
+        "session_id": session_id,
+        "approval_id": approval_id,
+        "operation_id": operation_id,
+        "page_url": receipt["page_url"],
+        "host_process_id": 1234,
+        "served_ui_dist_digest": _digest("ui-dist"),
+        "page_target_id": page_target_id,
+        "observation_window_seconds": 60.0,
+        "console_entries": [],
+        "console_entries_digest": canonical_digest([]),
+        "application_error_count": 0,
+        "page_state": page_state,
+        "page_state_digest": canonical_digest(page_state),
+        "devtools_command_receipt": {
+            "command_id": command_id,
+            "tool": "chrome_devtools_mcp",
+            "command_digest": command_digest,
+            "response_digest": response_digest,
+            "page_target_id": page_target_id,
+        },
+        "devtools_transcript": transcript,
+        "devtools_transcript_digest": canonical_digest(transcript),
+        "screenshot_png_base64": base64.b64encode(png_bytes).decode("ascii"),
+        "screenshot_digest": screenshot_digest,
+        "screenshot_width": 1,
+        "screenshot_height": 1,
+        "host_observation_hold_seconds": 60.0,
+        "host_observation_hold_satisfied": True,
+        "host_observation_ready_at_unix_ns": 1_000_000_000_000,
+        "host_observation_not_before_unix_ns": 1_060_000_000_000,
+        "host_observation_accepted_at_unix_ns": 1_060_000_000_001,
+    }
+    return receipt
+
+
+def _attach_browser_receipt_artifacts(
+    payload: dict[str, object],
+    *,
+    artifact_root: Path,
+    browser_receipt: dict[str, object],
+) -> None:
+    launch = payload["product_path"]["launch_receipt"]
+    launch["browser_approval_receipt"] = browser_receipt
+    launch["public_api_receipt_digest"] = canonical_digest(
+        payload["product_path"]["public_api_receipts"]
+    )
+    browser_events = [
+        browser_receipt["resolution_event_record"],
+        browser_receipt["continuation_event_record"],
+    ]
+    event_artifact = next(
+        item
+        for item in payload["artifacts"]
+        if item["artifact_id"] == payload["product_path"]["event_log_artifact_id"]
+    )
+    event_path = artifact_root / event_artifact["relative_path"]
+    event_payload = json.loads(event_path.read_text(encoding="utf-8"))
+    event_payload["browser_approval_events"] = browser_events
+    event_payload["browser_approval_event_stream_digest"] = canonical_digest(
+        browser_events
+    )
+    event_bytes = canonical_json_bytes(event_payload) + b"\n"
+    event_path.write_bytes(event_bytes)
+    event_artifact["content_digest"] = _digest_bytes(event_bytes)
+    event_artifact["size_bytes"] = len(event_bytes)
+    if "record_digest" in event_artifact:
+        event_artifact["record_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in event_artifact.items()
+                if key != "record_digest"
+            }
+        )
+    payload["product_path"]["event_log_digest"] = _digest_bytes(event_bytes)
+    payload["product_path"]["browser_approval_event_stream_digest"] = (
+        canonical_digest(browser_events)
+    )
+    for artifact_id_key, binding_key, digest_key in (
+        (
+            "public_final_workspace_artifact_id",
+            "public_final_workspace_response_binding",
+            "public_final_workspace_artifact_digest",
+        ),
+        (
+            "public_final_event_replay_artifact_id",
+            "public_final_event_response_binding",
+            "public_final_event_replay_artifact_digest",
+        ),
+    ):
+        attestation_artifact = next(
+            item
+            for item in payload["artifacts"]
+            if item["artifact_id"] == payload["product_path"][artifact_id_key]
+        )
+        attestation_path = artifact_root / attestation_artifact["relative_path"]
+        attestation_payload = json.loads(
+            attestation_path.read_text(encoding="utf-8")
+        )
+        attestation_payload["response_binding"] = payload["product_path"][
+            binding_key
+        ]
+        attestation_bytes = canonical_json_bytes(attestation_payload) + b"\n"
+        attestation_path.write_bytes(attestation_bytes)
+        attestation_digest = _digest_bytes(attestation_bytes)
+        attestation_artifact["content_digest"] = attestation_digest
+        attestation_artifact["size_bytes"] = len(attestation_bytes)
+        if "record_digest" in attestation_artifact:
+            attestation_artifact["record_digest"] = canonical_digest(
+                {
+                    key: value
+                    for key, value in attestation_artifact.items()
+                    if key != "record_digest"
+                }
+            )
+        payload["product_path"][digest_key] = attestation_digest
+
+
+def _enable_chrome_once_receipt(
+    payload: dict[str, object],
+    *,
+    artifact_root: Path,
+) -> None:
+    launch = payload["product_path"]["launch_receipt"]
+    launch["approval_mode"] = "chrome-once"
+    launch["campaign_attempt_number"] = 1
+    config = json.loads(json.dumps(launch["effective_config"]))
+    config["driver"]["approval_mode"] = "chrome-once"
+    config["driver"]["ui_dist_digest"] = _digest("ui-dist")
+    config_digest = canonical_digest(config)
+    launch["effective_config"] = config
+    launch["effective_config_digest"] = config_digest
+    payload["product_path"]["runtime_config_digest"] = config_digest
+    payload["identity"]["config_digest"] = config_digest
+    payload["identity"]["identity_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in payload["identity"].items()
+            if key != "identity_digest"
+        }
+    )
+    clean_world = payload["clean_world"]
+    clean_world["allowed_prerequisites"]["config_digest"] = config_digest
+    clean_world["allowed_prerequisite_digest"] = canonical_digest(
+        clean_world["allowed_prerequisites"]
+    )
+    workspace_artifact = next(
+        item
+        for item in payload["artifacts"]
+        if item["artifact_id"]
+        == payload["product_path"]["workspace_projection_artifact_id"]
+    )
+    workspace_path = artifact_root / workspace_artifact["relative_path"]
+    workspace_payload = json.loads(workspace_path.read_text(encoding="utf-8"))
+    workspace_payload["runtime_config_digest"] = config_digest
+    workspace_bytes = canonical_json_bytes(workspace_payload) + b"\n"
+    workspace_path.write_bytes(workspace_bytes)
+    workspace_digest = _digest_bytes(workspace_bytes)
+    workspace_artifact["content_digest"] = workspace_digest
+    workspace_artifact["size_bytes"] = len(workspace_bytes)
+    workspace_artifact["record_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in workspace_artifact.items()
+            if key != "record_digest"
+        }
+    )
+    payload["product_path"]["workspace_projection_digest"] = workspace_digest
+    browser_receipt = _browser_approval_receipt(payload)
+    _attach_browser_receipt_artifacts(
+        payload,
+        artifact_root=artifact_root,
+        browser_receipt=browser_receipt,
+    )
+
+
+def test_chrome_once_same_operation_receipt_verifies_offline(tmp_path: Path) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def attach_receipt(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        _enable_chrome_once_receipt(payload, artifact_root=artifact_root)
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, attach_receipt)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed, result.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_code"),
+    (
+        ("missing", "browser_approval_receipt_missing"),
+        ("operation_digest", "browser_approval_receipt_invalid"),
+    ),
+)
+def test_chrome_once_receipt_tamper_fails_offline_verification(
+    tmp_path: Path,
+    tamper: str,
+    expected_code: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_receipt(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        _enable_chrome_once_receipt(payload, artifact_root=artifact_root)
+        launch = payload["product_path"]["launch_receipt"]
+        if tamper == "missing":
+            launch["browser_approval_receipt"] = None
+        else:
+            launch["browser_approval_receipt"][tamper] = _digest("drift")
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_receipt)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(issue.code == expected_code for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("accepted_before_window_end", "window_duration_drift"),
+)
+def test_chrome_observation_host_timing_tamper_fails_offline_verification(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_timing(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        _enable_chrome_once_receipt(payload, artifact_root=artifact_root)
+        receipt = payload["product_path"]["launch_receipt"][
+            "browser_observation_receipt"
+        ]
+        if tamper == "accepted_before_window_end":
+            receipt["host_observation_accepted_at_unix_ns"] = (
+                receipt["host_observation_not_before_unix_ns"] - 1
+            )
+        else:
+            receipt["host_observation_not_before_unix_ns"] += 1
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_timing)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "browser_approval_receipt_invalid"
+        for issue in result.issues
+    )
+
+
+def test_chrome_once_rejects_sealed_driver_resolve_route_receipt(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def attach_driver_shortcut(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        _enable_chrome_once_receipt(payload, artifact_root=artifact_root)
+        product_path = payload["product_path"]
+        launch = product_path["launch_receipt"]
+        browser = launch["browser_approval_receipt"]
+        receipts = product_path["public_api_receipts"]
+        receipts.append(
+            {
+                "sequence": len(receipts) + 1,
+                "method": "POST",
+                "route": f"/v3/approvals/{browser['approval_id']}/resolve",
+                "status_code": 200,
+                    "request_digest": canonical_digest({"decision": "approved"}),
+                    "response_digest": _digest("driver-approval-response"),
+                    "response_semantic_digest": _digest(
+                        "driver-approval-semantic"
+                    ),
+            }
+        )
+        launch["public_api_receipt_digest"] = canonical_digest(receipts)
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, attach_driver_shortcut)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "browser_approval_driver_shortcut_detected"
+        for issue in result.issues
+    )
+
+
 def test_nonempty_reference_chain_uses_exact_14_13_aab_plus_target_contract(
     tmp_path: Path,
 ) -> None:
@@ -3227,9 +4942,10 @@ def test_nonempty_reference_chain_uses_exact_14_13_aab_plus_target_contract(
     operations = {
         operation["operation_id"]: operation for operation in payload["operations"]
     }
-    assert {
-        item["artifact_id"] for item in operations["op_hmmalign"]["inputs"]
-    } == {"art_hmm_model", "art_scoring_input"}
+    assert {item["artifact_id"] for item in operations["op_hmmalign"]["inputs"]} == {
+        "art_hmm_model",
+        "art_scoring_input",
+    }
 
 
 @pytest.mark.parametrize(
@@ -3361,9 +5077,7 @@ def _wrap_ncbi_response_as_raw_envelope(
     provider["response_digest"] = raw_digest
     provider["artifact_ids"].append("art_ncbi_raw_response")
     ncbi_operation = next(
-        item
-        for item in evidence["operations"]
-        if item["operation_id"] == "op_ncbi"
+        item for item in evidence["operations"] if item["operation_id"] == "op_ncbi"
     )
     ncbi_operation["outputs"].append(
         {
@@ -3390,6 +5104,7 @@ def _wrap_ncbi_response_as_raw_envelope(
         item for item in evidence["artifacts"] if item.get("origin") != "attestation"
     ]
     _attach_product_receipts(artifact_root, evidence, run_suffix=None)
+    _attach_public_final_snapshot_fixture(artifact_root, evidence)
 
 
 def test_provider_response_digest_can_be_recomputed_from_raw_byte_envelope(
@@ -3475,6 +5190,375 @@ def test_fault_self_declaration_cannot_replace_byte_proof(tmp_path: Path) -> Non
 
     assert any(
         issue.code == "fault_byte_flip_proof_mismatch" for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("tamper", ("route", "accessions"))
+def test_fault_source_requires_exact_ncbi_operation_contract(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    def tamper_source(evidence: dict[str, object]) -> None:
+        operation = next(
+            item for item in evidence["operations"] if item["operation_id"] == "op_ncbi"
+        )
+        if tamper == "route":
+            operation["route_policy_id"] = "compat.fake_provider.provider:v1"
+        else:
+            operation["parameters"] = {
+                **dict(operation["parameters"]),
+                "accessions": list(aox_reference.NCBI_REFERENCE_ACCESSIONS[:-1]),
+            }
+        _refresh_operation_identity(operation)
+        approval = next(
+            item
+            for item in evidence["approvals"]
+            if item["operation_id"] == operation["operation_id"]
+        )
+        approval["operation_identity_digest"] = operation["operation_identity_digest"]
+        provider = evidence["provider_identities"][0]
+        provider["request_digest"] = operation["params_digest"]
+
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=tamper_source,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "fault_operation_attestation_invalid" for issue in result.issues
+    )
+
+
+def test_fault_consumer_requires_exact_mafft_toolchain_identity(tmp_path: Path) -> None:
+    def tamper_consumer(evidence: dict[str, object]) -> None:
+        operation = next(
+            item
+            for item in evidence["operations"]
+            if item["operation_id"] == "op_align"
+        )
+        material = dict(operation["operation_identity_material"])
+        material["toolchain_id"] = "compat_unpinned_runner:v1"
+        operation["operation_identity_material"] = material
+        operation["operation_identity_digest"] = controlled_operation_digest(material)
+        approval = next(
+            item
+            for item in evidence["approvals"]
+            if item["operation_id"] == operation["operation_id"]
+        )
+        approval["operation_identity_digest"] = operation["operation_identity_digest"]
+
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=tamper_consumer,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "fault_operation_attestation_invalid" for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("tool_id", "bio_tools.compatibility_fallback"),
+        ("adapter_id", "bio_tools.compatibility_fallback"),
+        ("command_template_id", "compatibility_template_v1"),
+        ("runner_contract_digest", _digest("wrong-runner-contract")),
+    ),
+)
+def test_fault_consumer_runner_expectation_is_closed_over_effective_config(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    def tamper_runner_expectation(evidence: dict[str, object]) -> None:
+        evidence["fault_injection"]["consumer_runner_contract_expectation"][field] = (
+            value
+        )
+
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=tamper_runner_expectation,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "fault_operation_attestation_invalid" for issue in result.issues
+    )
+
+
+def test_fault_final_assistant_must_bind_exact_failure_code(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+
+    def replace_with_success(evidence: dict[str, object]) -> None:
+        success = "The AOX/HMM workflow is complete and ready for live cutover."
+        evidence["final_answer"]["content"] = success
+
+        def mutate_closure(closure: dict[str, object]) -> None:
+            assistant = next(
+                item
+                for item in closure["conversation_receipts"]
+                if item["role"] == "assistant"
+            )
+            assistant["content_digest"] = _digest_bytes(success.encode("utf-8"))
+
+        _rewrite_fault_closure_evidence(
+            artifact_root,
+            evidence,
+            mutate_closure,
+        )
+
+    _, bundle_path, sealed_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=replace_with_success,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=sealed_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
+    )
+
+
+def test_fault_ready_draft_is_not_negative_state_closure(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+
+    def add_ready_draft(evidence: dict[str, object]) -> None:
+        def mutate_closure(closure: dict[str, object]) -> None:
+            closure["draft_states"] = [
+                {
+                    "draft_id": "draft_hidden_success",
+                    "task_id": "task_report",
+                    "status": "ready",
+                    "content_ref": "doc_hidden_success",
+                    "published_report_id": None,
+                }
+            ]
+
+        _rewrite_fault_closure_evidence(
+            artifact_root,
+            evidence,
+            mutate_closure,
+        )
+
+    _, bundle_path, sealed_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=add_ready_draft,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=sealed_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
+    )
+
+
+def test_fault_execution_task_cannot_complete(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+
+    def complete_execution(evidence: dict[str, object]) -> None:
+        task = next(item for item in evidence["tasks"] if item["role"] == "executor")
+        task["status"] = "completed"
+        task["finish_payload_digest"] = _digest("completed-execution-finish")
+
+        def mutate_closure(closure: dict[str, object]) -> None:
+            receipt = next(
+                item
+                for item in closure["task_receipts"]
+                if item["task_id"] == task["task_id"]
+            )
+            receipt.update(task)
+
+        _rewrite_fault_closure_evidence(
+            artifact_root,
+            evidence,
+            mutate_closure,
+        )
+
+    _, bundle_path, sealed_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=complete_execution,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=sealed_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
+    )
+
+
+def test_fault_alternate_target_consumer_cannot_succeed(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+
+    def add_successful_consumer(evidence: dict[str, object]) -> None:
+        fault = evidence["fault_injection"]
+        operation = _operation(
+            "op_alternate_mafft",
+            inputs=[(fault["target_artifact_id"], fault["before_digest"])],
+        )
+        operation.update(
+            {
+                "task_id": "task_execute",
+                "lane_id": "lane_execute",
+                "route_policy_id": "bio_tools.mafft.hpc:v1",
+                "selected_backend": "hpc",
+                "backend_run_id": "job_alternate_mafft",
+            }
+        )
+        _refresh_operation_identity(
+            operation,
+            hpc_workspace_label=evidence["product_path"]["hpc_workspace_binding"][
+                "label"
+            ],
+        )
+        evidence["operations"].append(operation)
+        evidence["product_path"]["hpc_workspace_binding"]["workspace_ids"] = sorted(
+            {
+                *evidence["product_path"]["hpc_workspace_binding"]["workspace_ids"],
+                operation["hpc_workspace_id"],
+            }
+        )
+        material = dict(operation["operation_identity_material"])
+        state = {
+            "operation_id": operation["operation_id"],
+            "task_id": operation["task_id"],
+            "sdk_module": material["sdk_module"],
+            "function_name": material["function_name"],
+            "selected_backend": operation["selected_backend"],
+            "status": operation["status"],
+            "failure_code": None,
+            "operation_identity_digest": operation["operation_identity_digest"],
+        }
+
+        def mutate_closure(closure: dict[str, object]) -> None:
+            closure["consumer_states"].append(state)
+            closure["consumer_states"].sort(key=lambda item: item["operation_id"])
+            closure["successful_alternate_consumer_ids"] = [operation["operation_id"]]
+
+        _rewrite_fault_closure_evidence(
+            artifact_root,
+            evidence,
+            mutate_closure,
+        )
+
+    _, bundle_path, sealed_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=add_successful_consumer,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=sealed_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
+    )
+
+
+def test_fault_closure_cannot_omit_public_task_from_final_snapshot(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+    )
+
+    def omit_task(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        fault = payload["fault_injection"]
+        closure_artifact = next(
+            item
+            for item in payload["artifacts"]
+            if item["artifact_id"] == fault["negative_state_closure_artifact_id"]
+        )
+        closure_path = artifact_root / closure_artifact["relative_path"]
+        document = json.loads(closure_path.read_text(encoding="utf-8"))
+        document["negative_state_closure"]["task_receipts"].pop()
+        content = canonical_json_bytes(document) + b"\n"
+        closure_path.write_bytes(content)
+        digest = _digest_bytes(content)
+        closure_artifact["content_digest"] = digest
+        closure_artifact["size_bytes"] = len(content)
+        closure_artifact["record_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in closure_artifact.items()
+                if key != "record_digest"
+            }
+        )
+        fault["negative_state_closure_digest"] = digest
+        payload["report"]["content_digest"] = digest
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, omit_task)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid"
+        for issue in result.issues
+    )
+
+
+def test_fault_unlisted_or_downstream_deliverable_is_rejected(tmp_path: Path) -> None:
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+    )
+    hidden = artifact_root / "formal" / "report.md"
+    hidden.write_text("# hidden success report\n", encoding="utf-8")
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
+    )
+
+
+def test_fault_declared_downstream_deliverable_is_rejected(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "campaign" / "fault-one" / "artifacts"
+
+    def add_downstream_deliverable(evidence: dict[str, object]) -> None:
+        _write_artifact(
+            artifact_root,
+            "aox_hmm/AOX_candidates.fasta",
+            b">forbidden_success\nMAAA\n",
+        )
+        evidence["artifacts"].append(
+            {
+                "artifact_id": "art_forbidden_success",
+                "relative_path": "aox_hmm/AOX_candidates.fasta",
+                "scope": "formal",
+                "origin": "attestation",
+                "kind": "sequence",
+                "provenance": {
+                    "producer": "alternate_success_path",
+                    "catalog_relative_path": "aox_hmm/AOX_candidates.fasta",
+                },
+            }
+        )
+
+    _, bundle_path, sealed_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+        mutate_evidence=add_downstream_deliverable,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=sealed_root)
+
+    assert any(
+        issue.code == "fault_negative_state_closure_invalid" for issue in result.issues
     )
 
 
@@ -3636,7 +5720,7 @@ def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) 
         tmp_path / "campaign",
         attempt_kind="positive",
         attempt_id="positive-wrong-score",
-        allowed_prerequisites={"git_commit": "a" * 40},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -3673,7 +5757,7 @@ def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
         tmp_path / "campaign",
         attempt_kind="positive",
         attempt_id="positive-wrong-graph",
-        allowed_prerequisites={"git_commit": "a" * 40},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -3722,7 +5806,7 @@ def test_bundle_rejects_artifact_symlink_even_when_target_stays_in_root(
         tmp_path / "campaign",
         attempt_kind="positive",
         attempt_id="positive-symlink",
-        allowed_prerequisites={"git_commit": "a" * 40},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     evidence = _valid_evidence(
         roots.artifact_root,
@@ -3860,13 +5944,9 @@ def test_known_positive_probe_v2_closes_the_globin_six_operation_dag(
     }
     assert len(operations) == 6
     for provider_receipt in probe["provider_receipts"]:
-        raw_artifact = probe_artifacts[
-            provider_receipt["raw_response_artifact_id"]
-        ]
+        raw_artifact = probe_artifacts[provider_receipt["raw_response_artifact_id"]]
         envelope = json.loads(
-            (artifact_root / raw_artifact["relative_path"]).read_text(
-                encoding="utf-8"
-            )
+            (artifact_root / raw_artifact["relative_path"]).read_text(encoding="utf-8")
         )
         assert envelope["schema_id"] == "provider_raw_http_response_set@1"
         assert envelope["provider"] == provider_receipt["provider"]
@@ -3911,9 +5991,7 @@ def test_known_positive_probe_rejects_raw_provider_body_digest_tamper(
         artifact_role = f"{provider}_raw_response"
         artifact_id = probe["artifact_roles"][artifact_role]
         artifact = next(
-            item
-            for item in evidence["artifacts"]
-            if item["artifact_id"] == artifact_id
+            item for item in evidence["artifacts"] if item["artifact_id"] == artifact_id
         )
         path = artifact_root / str(artifact["relative_path"])
         envelope = json.loads(path.read_text(encoding="utf-8"))
@@ -3971,9 +6049,7 @@ def test_known_positive_probe_rejects_snapshot_sandbox_lineage_tamper(
             "source_snapshot"
         ]
         snapshot = next(
-            item
-            for item in evidence["artifacts"]
-            if item["artifact_id"] == snapshot_id
+            item for item in evidence["artifacts"] if item["artifact_id"] == snapshot_id
         )
         snapshot["provenance"]["sandbox_run_id"] = "sandbox_run_unbound"
 
@@ -4061,9 +6137,7 @@ def test_hmmer_upstream_empty_is_accepted_only_from_recomputed_artifacts(
     result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
 
     assert result.passed is True
-    operations = {
-        item["operation_id"]: item for item in payload["operations"]
-    }
+    operations = {item["operation_id"]: item for item in payload["operations"]}
     assert "op_uniprot" not in operations
     assert "op_hmmalign" not in operations
     assert "op_cdhit" not in operations
@@ -4089,9 +6163,7 @@ def test_hmmer_upstream_empty_is_accepted_only_from_recomputed_artifacts(
     assert artifact_bytes("scoring_alignment") == artifact_bytes("scoring_reference")
     assert operations["op_scoring_input_assembly"]["parameters"]["target_count"] == 0
     uniprot = next(
-        item
-        for item in payload["provider_identities"]
-        if item["provider"] == "uniprot"
+        item for item in payload["provider_identities"] if item["provider"] == "uniprot"
     )
     assert uniprot == {
         **uniprot,
@@ -4110,9 +6182,7 @@ def test_hmmer_upstream_empty_is_accepted_only_from_recomputed_artifacts(
         if item["artifact_id"] == "art_uniprot_upstream_empty"
     )
     receipt_payload = json.loads(
-        (artifact_root / receipt_artifact["relative_path"]).read_text(
-            encoding="utf-8"
-        )
+        (artifact_root / receipt_artifact["relative_path"]).read_text(encoding="utf-8")
     )
     assert receipt_payload["schema_id"] == "provider_upstream_empty_receipt@1"
     assert "request_digest" not in receipt_payload
@@ -4130,9 +6200,7 @@ def test_self_claimed_hmmer_empty_cannot_override_nonempty_derived_accessions(
             "stage": "pre_uniprot_score_filter",
             "reason": "no_filtered_hmmer_accessions",
             "trigger_artifact_id": dependency["derived_accession_artifact_id"],
-            "trigger_artifact_digest": dependency[
-                "derived_accession_artifact_digest"
-            ],
+            "trigger_artifact_digest": dependency["derived_accession_artifact_digest"],
             "observed_count_before": 2,
             "observed_count_after": 0,
             "derivation_operation_id": dependency["derivation_operation_id"],
@@ -4207,9 +6275,7 @@ def test_upstream_empty_provider_receipt_rejects_tampered_skip_digest(
             dependency = evidence["scientific_checks"]["aox_chain"][
                 "provider_dependencies"
             ][0]
-            dependency["skip_receipt_digest"] = _digest(
-                "tampered-dependency-skip"
-            )
+            dependency["skip_receipt_digest"] = _digest("tampered-dependency-skip")
 
     with pytest.raises(CutoverEvidenceError) as error:
         _build_bundle(
@@ -4302,8 +6368,7 @@ def test_approval_cannot_be_reused_after_operation_route_changes(
             for item in evidence["operations"]
             if item["operation_id"] == "op_hmmbuild"
         )
-        operation["selected_backend"] = "hpc"
-        operation["route_policy_id"] = "bio_tools.score.hpc:v1"
+        operation["route_reason"] = "tampered_operator_route"
         _refresh_operation_identity(operation)
 
     _, bundle_path, artifact_root = _build_bundle(
@@ -4379,7 +6444,24 @@ def test_positive_micu_delta_must_belong_to_aox_scenario(tmp_path: Path) -> None
             ledger_after=after,
         )
 
-    assert error.value.code == "positive_micu_usage_unattributed"
+    assert error.value.code == "micu_usage_unattributed"
+
+
+def test_fault_micu_delta_must_belong_to_aox_scenario(tmp_path: Path) -> None:
+    before = _ledger_snapshot()
+    after = _ledger_snapshot(charged_tokens=20, attempt_count=2)
+    before["by_scenario"][0]["scenario"] = "unrelated_live_test"
+    after["by_scenario"][0]["scenario"] = "unrelated_live_test"
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(
+            tmp_path,
+            attempt_kind="fault",
+            ledger_before=before,
+            ledger_after=after,
+        )
+
+    assert error.value.code == "micu_usage_unattributed"
 
 
 def test_micu_group_totals_cannot_contradict_snapshot(tmp_path: Path) -> None:
@@ -4392,14 +6474,14 @@ def test_micu_group_totals_cannot_contradict_snapshot(tmp_path: Path) -> None:
     assert error.value.code == "micu_ledger_group_invalid"
 
 
-def test_fault_target_must_be_bound_to_completed_provider_receipt(
+def test_fault_source_must_be_bound_to_completed_provider_receipt(
     tmp_path: Path,
 ) -> None:
     def detach_provider_artifact(evidence: dict[str, object]) -> None:
         provider = next(
             item
             for item in evidence["provider_identities"]
-            if item["provider"] == "ebi_hmmer"
+            if item["provider"] == "ncbi"
         )
         provider["artifact_ids"] = []
 
@@ -4428,11 +6510,25 @@ def test_product_receipt_bytes_are_parsed_and_bound_offline(tmp_path: Path) -> N
     assert any(issue.code == "product_receipt_mismatch" for issue in result.issues)
 
 
-def test_campaign_derives_go_only_from_two_independent_positive_and_one_fault(
+@pytest.mark.parametrize(
+    ("approval_mode", "expected_decision", "expected_record_count"),
+    (("chrome-once", "GO", 3), ("auto", "NO-GO", 2)),
+)
+def test_campaign_derives_go_only_with_required_chrome_proof(
     tmp_path: Path,
+    approval_mode: str,
+    expected_decision: str,
+    expected_record_count: int,
 ) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
     ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
+    campaign_config = _effective_config(str(ledger_identity))
+    if approval_mode == "chrome-once":
+        campaign_config["driver"]["approval_mode"] = "chrome-once"
+        campaign_config["driver"]["ui_dist_digest"] = _digest("ui-dist")
+    campaign_identity = _identity(str(ledger_identity))
+    campaign_identity["config_digest"] = canonical_digest(campaign_config)
     invocation_count = 0
 
     def charge_micu() -> None:
@@ -4454,45 +6550,79 @@ def test_campaign_derives_go_only_from_two_independent_positive_and_one_fault(
 
     def positive_runner(context):
         charge_micu()
-        return _valid_evidence(
+        evidence = _valid_evidence(
             context.roots.artifact_root,
             attempt_kind="positive",
             clean_world=context.roots.proof,
             run_suffix=context.roots.attempt_id,
+            effective_config=campaign_config,
         )
+        if approval_mode == "chrome-once" and context.attempt_number == 1:
+            browser_receipt = _browser_approval_receipt(evidence)
+            _attach_browser_receipt_artifacts(
+                evidence,
+                artifact_root=context.roots.artifact_root,
+                browser_receipt=browser_receipt,
+            )
+        launch = evidence["product_path"]["launch_receipt"]
+        launch["campaign_attempt_number"] = context.attempt_number
+        launch["approval_mode"] = approval_mode
+        if not (approval_mode == "chrome-once" and context.attempt_number == 1):
+            launch["browser_approval_receipt"] = None
+            launch["browser_observation_receipt"] = None
+        return evidence
 
     def fault_runner(context):
-        return _valid_evidence(
+        charge_micu()
+        evidence = _valid_evidence(
             context.roots.artifact_root,
             attempt_kind="fault",
             clean_world=context.roots.proof,
             run_suffix=context.roots.attempt_id,
+            effective_config=campaign_config,
         )
+        launch = evidence["product_path"]["launch_receipt"]
+        launch["campaign_attempt_number"] = context.attempt_number
+        launch["approval_mode"] = approval_mode
+        launch["browser_approval_receipt"] = None
+        launch["browser_observation_receipt"] = None
+        return evidence
 
     campaign = AoxCutoverCampaign(
         campaign_root=tmp_path / "campaign",
-        identity=_identity(),
+        identity=campaign_identity,
         ledger_path=ledger_path,
         positive_runner=positive_runner,
         fault_runner=fault_runner,
-        allowed_prerequisites={"workflow_ref": _identity()["workflow_ref"]},
+        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
     )
 
     records, decision = campaign.run()
 
-    assert len(records) == 3
+    assert len(records) == expected_record_count
     assert all(record.verification.passed for record in records)
-    assert len({record.artifact_root.parent.name for record in records}) == 3
-    assert decision["decision"] == "GO"
+    assert (
+        len({record.artifact_root.parent.name for record in records})
+        == expected_record_count
+    )
+    assert decision["decision"] == expected_decision
     assert decision["attempt_digests"] == [record.bundle_digest for record in records]
     assert decision["decision_digest"] == canonical_digest(
         {key: value for key, value in decision.items() if key != "decision_digest"}
     )
+    if approval_mode == "auto":
+        assert decision["blocker"]["code"] == "fault_launch_attestation_invalid"
 
 
 def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
     ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
+    campaign_config = _effective_config(str(ledger_identity))
+    campaign_config["driver"]["approval_mode"] = "chrome-once"
+    campaign_config["driver"]["ui_dist_digest"] = _digest("ui-dist")
+    campaign_identity = _identity(str(ledger_identity))
+    campaign_identity["config_digest"] = canonical_digest(campaign_config)
     invocation_count = 0
 
     def charge_micu() -> None:
@@ -4514,27 +6644,50 @@ def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> No
 
     def positive_runner(context):
         charge_micu()
-        return _valid_evidence(
+        evidence = _valid_evidence(
             context.roots.artifact_root,
             attempt_kind="positive",
             clean_world=context.roots.proof,
+            effective_config=campaign_config,
         )
+        if context.attempt_number == 1:
+            browser_receipt = _browser_approval_receipt(evidence)
+            _attach_browser_receipt_artifacts(
+                evidence,
+                artifact_root=context.roots.artifact_root,
+                browser_receipt=browser_receipt,
+            )
+        launch = evidence["product_path"]["launch_receipt"]
+        launch["campaign_attempt_number"] = context.attempt_number
+        launch["approval_mode"] = "chrome-once"
+        if context.attempt_number != 1:
+            launch["browser_approval_receipt"] = None
+            launch["browser_observation_receipt"] = None
+        return evidence
 
     def fault_runner(context):
-        return _valid_evidence(
+        charge_micu()
+        evidence = _valid_evidence(
             context.roots.artifact_root,
             attempt_kind="fault",
             clean_world=context.roots.proof,
             run_suffix=context.roots.attempt_id,
+            effective_config=campaign_config,
         )
+        launch = evidence["product_path"]["launch_receipt"]
+        launch["campaign_attempt_number"] = context.attempt_number
+        launch["approval_mode"] = "chrome-once"
+        launch["browser_approval_receipt"] = None
+        launch["browser_observation_receipt"] = None
+        return evidence
 
     campaign = AoxCutoverCampaign(
         campaign_root=tmp_path / "campaign",
-        identity=_identity(),
+        identity=campaign_identity,
         ledger_path=ledger_path,
         positive_runner=positive_runner,
         fault_runner=fault_runner,
-        allowed_prerequisites={"workflow_ref": _identity()["workflow_ref"]},
+        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
     )
 
     records, decision = campaign.run()
@@ -4545,11 +6698,61 @@ def test_campaign_rejects_reused_positive_runtime_receipts(tmp_path: Path) -> No
     assert decision["blocker"]["code"] == "campaign_positive_not_independent"
 
 
+def test_campaign_launch_guard_fails_before_attempt_roots_or_runner_call(
+    tmp_path: Path,
+) -> None:
+    campaign_root = tmp_path / "campaign"
+    guard_calls = 0
+    runner_calls = 0
+
+    def launch_guard() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        raise AoxCutoverLaunchError(
+            "aox_launch_snapshot_drift",
+            "private launch detail must not enter sealed evidence",
+        )
+
+    def runner(context):
+        nonlocal runner_calls
+        runner_calls += 1
+        raise AssertionError(f"runner must not receive {context!r}")
+
+    campaign = AoxCutoverCampaign(
+        campaign_root=campaign_root,
+        identity=_identity(),
+        ledger_path=tmp_path / "persistent-ledger.sqlite3",
+        positive_runner=runner,
+        fault_runner=runner,
+        allowed_prerequisites=_allowed_prerequisites(),
+        launch_guard=launch_guard,
+    )
+
+    records, decision = campaign.run()
+
+    assert records == ()
+    assert guard_calls == 1
+    assert runner_calls == 0
+    assert decision["decision"] == "NO-GO"
+    assert decision["blocker"]["code"] == "aox_launch_snapshot_drift"
+    assert not (tmp_path / "persistent-ledger.sqlite3").exists()
+    assert campaign_root.is_dir()
+    assert all(not path.is_dir() for path in campaign_root.iterdir())
+    failure = json.loads(
+        (campaign_root / "campaign-driver-failure.json").read_text(encoding="utf-8")
+    )
+    assert failure["payload"]["failure_code"] == "aox_launch_snapshot_drift"
+    assert "private launch detail" not in json.dumps(failure, sort_keys=True)
+
+
 def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
     tmp_path: Path,
 ) -> None:
     ledger_path = tmp_path / "persistent-ledger.sqlite3"
     ledger = LiveMicuTokenLedger(ledger_path, hard_limit_tokens=100_000_000)
+    ledger_identity = safe_micu_ledger_snapshot(ledger_path)["ledger_identity_digest"]
+    campaign_identity = _identity(str(ledger_identity))
+    campaign_config = _effective_config(str(ledger_identity))
     invocation_count = 0
 
     def positive_runner(context):
@@ -4573,6 +6776,7 @@ def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
             attempt_kind="positive",
             clean_world=context.roots.proof,
             run_suffix=context.roots.attempt_id,
+            effective_config=campaign_config,
         )
 
     def fault_runner(context):
@@ -4581,11 +6785,11 @@ def test_fault_runner_exception_is_sealed_and_campaign_stays_no_go(
 
     campaign = AoxCutoverCampaign(
         campaign_root=tmp_path / "campaign",
-        identity=_identity(),
+        identity=campaign_identity,
         ledger_path=ledger_path,
         positive_runner=positive_runner,
         fault_runner=fault_runner,
-        allowed_prerequisites={"workflow_ref": _identity()["workflow_ref"]},
+        allowed_prerequisites=_allowed_prerequisites(campaign_identity),
     )
 
     records, decision = campaign.run()
@@ -4631,7 +6835,7 @@ def test_campaign_runner_failure_is_sealed_as_safe_no_go_evidence(
         ledger_path=tmp_path / "persistent-ledger.sqlite3",
         positive_runner=failing_runner,
         fault_runner=failing_runner,
-        allowed_prerequisites={"workflow_ref": _identity()["workflow_ref"]},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
 
     records, decision = campaign.run()

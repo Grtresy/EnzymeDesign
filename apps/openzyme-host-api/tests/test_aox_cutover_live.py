@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import replace
+import os
 from pathlib import Path
+import struct
+import time
+import zlib
 
+from fastapi import FastAPI
 import pytest
 
 from openzyme_domain import ControlledOperation
@@ -25,13 +31,56 @@ from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import _report_publish_receipt_is_valid
 from openzyme_pipeline import aox_motif
+from openzyme_pipeline import aox_reference
 from openzyme_runtime import OpenZymeSettings
+from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 
 
 def _digest(label: str) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def _public_receipt(
+    *,
+    sequence: int,
+    route: str,
+    semantic_value: object,
+) -> live.PublicApiReceipt:
+    return live.PublicApiReceipt(
+        sequence=sequence,
+        method="GET",
+        route=route,
+        status_code=200,
+        request_digest=_digest(f"request:{sequence}:{route}"),
+        response_digest=_digest(f"response:{sequence}:{route}"),
+        response_semantic_digest=live.canonical_digest(semantic_value),
+    )
+
+
+def _one_pixel_grayscale_png(
+    *,
+    filter_byte: int,
+    trailing_zlib_bytes: bytes = b"",
+) -> str:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+    idat = zlib.compress(bytes((filter_byte, 0))) + trailing_zlib_bytes
+    content = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", idat)
+        + chunk(b"IEND", b"")
+    )
+    return base64.b64encode(content).decode("ascii")
 
 
 def _identity() -> dict[str, str]:
@@ -43,6 +92,38 @@ def _identity() -> dict[str, str]:
         "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
         "image_digest": _digest("image"),
         "sdk_digest": _digest("sdk"),
+    }
+
+
+def _allowed_prerequisites() -> dict[str, object]:
+    identity = _identity()
+    hmmer_digest = _digest("hmmer-sif")
+    return {
+        "git_commit": identity["git_commit"],
+        "config_digest": identity["config_digest"],
+        "workflow_ref": identity["workflow_ref"],
+        "image_digest": identity["image_digest"],
+        "sdk_digest": identity["sdk_digest"],
+        "toolchain_image_digests": {
+            contract["toolchain_id"]: (
+                hmmer_digest
+                if tool_name in {"hmmbuild", "hmmalign"}
+                else _digest(f"{tool_name}-sif")
+            )
+            for tool_name, contract in live.AOX_TOOLCHAIN_RUNTIME_CONTRACTS.items()
+        },
+        "credential_slots": {
+            "llm": True,
+            "ncbi": True,
+            "semantic_scholar": False,
+            "tavily": False,
+        },
+        "ncbi_identity": _digest("ncbi-identity"),
+        "prompt_accessions": {
+            "formal_ncbi": list(aox_reference.NCBI_REFERENCE_ACCESSIONS),
+            "probe_ncbi": list(live.KNOWN_POSITIVE_PROBE_NCBI_ACCESSIONS),
+            "probe_uniprot": list(live.KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS),
+        },
     }
 
 
@@ -72,7 +153,7 @@ def _operation() -> ControlledOperation:
         "route_reason": "static_policy:v1",
         "route_policy_id": "bio_tools.mafft.hpc:v1",
         "runtime_packaging_id": "hpc_apptainer_sif.aox_hmm_2026_05_30",
-        "toolchain_id": "mafft@7.526",
+        "toolchain_id": "mafft_7.525.hpc_apptainer_sif:v1",
         "provider_config_digest": None,
         "resource_class": "hpc_batch_small",
         "resource_estimate": {
@@ -114,7 +195,7 @@ def _operation() -> ControlledOperation:
         selected_backend="hpc",
         resource_class="hpc_batch_small",
         runtime_packaging_id="hpc_apptainer_sif.aox_hmm_2026_05_30",
-        toolchain_id="mafft@7.526",
+        toolchain_id="mafft_7.525.hpc_apptainer_sif:v1",
         input_artifact_ids=("art_input",),
         stage_refs=tuple(material["stage_refs"]),
         planned_fetch_intent=dict(material["planned_fetch_intent"]),
@@ -122,6 +203,18 @@ def _operation() -> ControlledOperation:
         adapter_result_envelope={"backend_run_id": "job_001"},
         expected_outputs_summary=dict(material["expected_outputs"]),
         resource_estimate=dict(material["resource_estimate"]),
+        result_summary={
+            "toolchain_runtime_identity": {
+                "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+                "attestation_scope": "same_ssh_login_shell_pre_exec",
+                "execution_mode": "ssh",
+                "tool_id": "bio_tools.mafft",
+                "adapter_id": "bio_tools.mafft",
+                "command_template_id": "bio_tools_mafft_sif_v1",
+                "runner_contract_digest": _digest("runner-contract"),
+                "image_digest": _digest("mafft-sif"),
+            }
+        },
     )
 
 
@@ -141,6 +234,83 @@ def test_live_collector_preserves_exact_control_plane_operation_digest() -> None
     )
     assert record["operation_identity_digest"] == operation.operation_digest
     assert record["backend_run_id"] == "job_001"
+
+
+def test_public_api_receipt_normalizes_events_query_to_canonical_route() -> None:
+    client = live._PublicHostClient(object())
+
+    client._record(
+        "GET",
+        "/v3/sessions/sess_001/events?replay=1&after_cursor=7",
+        None,
+        b"data: {}\n",
+        200,
+    )
+
+    assert (
+        client.receipts[0].route
+        == "/v3/sessions/sess_001/events?replay=1&after_cursor=7"
+    )
+    assert client.receipts[0].request_digest == live.canonical_digest(
+        {"replay": True, "after_cursor": 7}
+    )
+    assert client.receipts[0].response_semantic_digest == live.canonical_digest([{}])
+
+
+def test_toolchain_collector_seals_exact_runner_attested_identity() -> None:
+    operation = _operation()
+
+    receipt = live._toolchain_receipt(
+        tool_name="mafft",
+        operation=operation,
+        operation_record={"backend_run_id": "job_001"},
+    )
+
+    assert receipt == {
+        "toolchain_record_id": "toolchain_record_op_001",
+        "toolchain_id": "mafft_7.525.hpc_apptainer_sif:v1",
+        "tool": "mafft",
+        "operation_id": "op_001",
+        "job_id": "job_001",
+        "runtime_identity_schema": "mcp_hpc_toolchain_runtime_identity@1",
+        "attestation_scope": "same_ssh_login_shell_pre_exec",
+        "execution_mode": "ssh",
+        "tool_id": "bio_tools.mafft",
+        "adapter_id": "bio_tools.mafft",
+        "command_template_id": "bio_tools_mafft_sif_v1",
+        "runner_contract_digest": _digest("runner-contract"),
+        "image_digest": _digest("mafft-sif"),
+        "status": "completed",
+    }
+
+
+def test_toolchain_collector_rejects_compatibility_or_envelope_fallback() -> None:
+    baseline = _operation()
+    runtime_identity = dict(
+        dict(baseline.result_summary or {})["toolchain_runtime_identity"]
+    )
+    operation = replace(
+        baseline,
+        result_summary={
+            "compatibility": {"image_digest": runtime_identity["image_digest"]}
+        },
+        adapter_result_envelope={
+            "backend_run_id": "job_001",
+            "bounded_summary": {
+                "compatibility": {"image_digest": runtime_identity["image_digest"]},
+                "toolchain_runtime_identity": runtime_identity,
+            },
+        },
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._toolchain_receipt(
+            tool_name="mafft",
+            operation=operation,
+            operation_record={"backend_run_id": "job_001"},
+        )
+
+    assert error.value.code == "toolchain_image_identity_missing"
 
 
 def test_live_collector_rejects_approval_identity_drift() -> None:
@@ -320,7 +490,7 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        allowed_prerequisites={},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     context = AttemptRunContext(
         roots=roots,
@@ -370,11 +540,17 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
         assert [receipt.route for receipt in api.receipts] == ["/v3/runtime/health"]
         raise live.LiveProductPathError("test_stop", "stop before session creation")
 
-    monkeypatch.setattr(live.LiveAoxAttemptRunner, "_settings_blocker", lambda self: None)
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_settings_blocker",
+        lambda self, context: None,
+    )
     monkeypatch.setattr(live, "build_configured_foundation", lambda **kwargs: object())
     monkeypatch.setattr(live, "create_app", lambda dependencies: object())
     monkeypatch.setattr(live, "TestClient", lambda app: Client())
-    monkeypatch.setattr(live.LiveAoxAttemptRunner, "_run_session", stop_at_first_session)
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner, "_run_session", stop_at_first_session
+    )
     runner = live.LiveAoxAttemptRunner(settings=settings, ledger_path=ledger_path)
 
     evidence = runner(context)
@@ -413,7 +589,7 @@ def test_live_report_collector_binds_ready_report_draft_document_and_events(
     roots = create_blank_world_roots(
         tmp_path / "campaign",
         attempt_kind="positive",
-        allowed_prerequisites={},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     context = AttemptRunContext(
         roots=roots,
@@ -546,7 +722,7 @@ def test_live_runner_seals_exact_no_go_when_live_opt_in_is_absent(
         tmp_path / "campaign",
         attempt_kind="positive",
         attempt_id="positive-no-opt-in",
-        allowed_prerequisites={},
+        allowed_prerequisites=_allowed_prerequisites(),
     )
     before = safe_micu_ledger_snapshot(ledger_path)
     runner = live.LiveAoxAttemptRunner(settings=settings, ledger_path=ledger_path)
@@ -600,3 +776,523 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
     assert args.command == "run-live"
     assert args.approval_mode == "auto"
     assert args.max_drains == 120
+    assert args.browser_completion_hold_seconds == 60.0
+
+
+def _runner_settings(ledger_path: Path) -> OpenZymeSettings:
+    settings = OpenZymeSettings.from_env()
+    return replace(
+        settings,
+        test=replace(
+            settings.test,
+            live_llm=replace(
+                settings.test.live_llm,
+                token_ledger_path=str(ledger_path),
+            ),
+        ),
+    )
+
+
+def test_same_process_loopback_host_serves_exact_app_and_stops() -> None:
+    app = FastAPI()
+
+    @app.get("/identity")
+    def identity() -> dict[str, int]:
+        return {"process_id": os.getpid()}
+
+    host = live._LoopbackHost(app=app, request_timeout_seconds=5.0)
+    with host as client:
+        response = client.get("/identity")
+        assert response.status_code == 200
+        assert response.json() == {"process_id": os.getpid()}
+        assert host.base_url.startswith("http://127.0.0.1:")
+
+    assert host._thread is not None
+    assert host._thread.is_alive() is False
+
+
+def test_chrome_once_waits_for_exact_public_resolution_events(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        approval_mode="chrome-once",
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.0,
+    )
+    operation_digest = _digest("browser-operation")
+    pending = {
+        "approval_id": "approval_browser_001",
+        "operation": {
+            "operation_id": "operation_browser_001",
+            "operation_digest": operation_digest,
+            "sandbox_workspace_id": "sandbox_workspace_browser_001",
+        },
+        "sandbox_run": {
+            "sandbox_run_id": "sandbox_run_browser_001",
+            "sandbox_workspace_id": "sandbox_workspace_browser_001",
+        },
+    }
+    pre_workspace = {
+        "pending_approvals": [pending],
+        "scientific_evidence": {
+            "operations": [
+                {
+                    "operation_id": "operation_browser_001",
+                    "operation_digest": operation_digest,
+                    "approval_id": "approval_browser_001",
+                    "approval_state": "pending",
+                    "status": "waiting_approval",
+                }
+            ]
+        },
+    }
+    post_workspace = {
+        "pending_approvals": [],
+        "scientific_evidence": {
+            "operations": [
+                {
+                    "operation_id": "operation_browser_001",
+                    "operation_digest": operation_digest,
+                    "approval_id": "approval_browser_001",
+                    "approval_state": "approved",
+                    "status": "waiting_approval",
+                }
+            ]
+        },
+    }
+    resolution_events = (
+        {
+            "cursor": 11,
+            "event_id": "event_browser_resolved",
+            "session_id": "sess_browser_001",
+            "event_type": "approval.resolved",
+            "schema_version": "openzyme.v3.event.v1",
+            "visibility": "public",
+            "actor_ref": "local-user",
+            "command_id": "command_browser_resolved",
+            "created_at": "2026-07-18T00:00:00+00:00",
+            "payload": {
+                "approval_id": "approval_browser_001",
+                "decision": "approved",
+                "actor_ref": "local-user",
+            },
+        },
+        {
+            "cursor": 12,
+            "event_id": "event_browser_continuation",
+            "session_id": "sess_browser_001",
+            "event_type": "sdk_controlled_operation.approval_resolved",
+            "schema_version": "openzyme.v3.event.v1",
+            "visibility": "public",
+            "actor_ref": None,
+            "command_id": "command_browser_continuation",
+            "created_at": "2026-07-18T00:00:01+00:00",
+            "payload": {
+                "approval_id": "approval_browser_001",
+                "operation_id": "operation_browser_001",
+                "operation_digest": operation_digest,
+                "continuation_id": "continuation_browser_001",
+                "decision": "approved",
+            },
+        },
+    )
+
+    class Api:
+        base_url = "http://127.0.0.1:54321"
+        receipts: list[live.PublicApiReceipt] = [
+            _public_receipt(
+                sequence=1,
+                route="/v3/sessions/sess_browser_001/workspace",
+                semantic_value=pre_workspace,
+            )
+        ]
+        event_reads = 0
+        response_binding = staticmethod(live._PublicHostClient.response_binding)
+
+        @classmethod
+        def get_event_records(
+            cls,
+            session_id: str,
+            *,
+            after_cursor: int = 0,
+        ) -> tuple[dict[str, object], ...]:
+            assert session_id == "sess_browser_001"
+            assert after_cursor == 10
+            cls.event_reads += 1
+            cls.receipts.append(
+                _public_receipt(
+                    sequence=len(cls.receipts) + 1,
+                    route=(
+                        "/v3/sessions/sess_browser_001/events"
+                        "?replay=1&after_cursor=10"
+                    ),
+                    semantic_value=list(resolution_events),
+                )
+            )
+            return resolution_events
+
+        @classmethod
+        def get_json(cls, route: str) -> dict[str, object]:
+            assert route == "/v3/sessions/sess_browser_001/workspace"
+            cls.receipts.append(
+                _public_receipt(
+                    sequence=len(cls.receipts) + 1,
+                    route=route,
+                    semantic_value=post_workspace,
+                )
+            )
+            return post_workspace
+
+    receipt, workspace = runner._wait_for_browser_approval(
+        Api(),  # type: ignore[arg-type]
+        session_id="sess_browser_001",
+        workspace=pre_workspace,
+        pending_approval=pending,
+        started=time.monotonic(),
+        pre_event_cursor=10,
+    )
+
+    assert workspace == post_workspace
+    assert receipt["operation_digest"] == operation_digest
+    assert receipt["driver_resolve_route_absent"] is True
+    assert receipt["resolution_event_cursor"] == 11
+    assert receipt["continuation_event_cursor"] == 12
+    operator_output = capsys.readouterr().err
+    assert '"status": "approval_required"' in operator_output
+    assert '"status": "approval_observed"' in operator_output
+
+
+def test_chrome_once_rejects_continuation_operation_identity_drift(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        approval_mode="chrome-once",
+        timeout_seconds=0.01,
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.0,
+    )
+    operation_digest = _digest("browser-operation")
+    pending = {
+        "approval_id": "approval_browser_001",
+        "operation": {
+            "operation_id": "operation_browser_001",
+            "operation_digest": operation_digest,
+            "sandbox_workspace_id": "sandbox_workspace_browser_001",
+        },
+        "sandbox_run": {
+            "sandbox_run_id": "sandbox_run_browser_001",
+        },
+    }
+    pre_workspace = {"pending_approvals": [pending]}
+
+    class Api:
+        base_url = "http://127.0.0.1:54321"
+        receipts: list[live.PublicApiReceipt] = [
+            _public_receipt(
+                sequence=1,
+                route="/v3/sessions/sess_browser_001/workspace",
+                semantic_value=pre_workspace,
+            )
+        ]
+        event_reads = 0
+        response_binding = staticmethod(live._PublicHostClient.response_binding)
+
+        @classmethod
+        def get_event_records(
+            cls,
+            session_id: str,
+            *,
+            after_cursor: int = 0,
+        ) -> tuple[dict[str, object], ...]:
+            assert session_id == "sess_browser_001"
+            cls.event_reads += 1
+            if cls.event_reads == 1:
+                records: tuple[dict[str, object], ...] = ()
+            else:
+                records = (
+                {
+                    "cursor": 1,
+                    "event_id": "event_resolved",
+                    "event_type": "approval.resolved",
+                    "payload": {
+                        "approval_id": "approval_browser_001",
+                        "decision": "approved",
+                        "actor_ref": "local-user",
+                    },
+                },
+                {
+                    "cursor": 2,
+                    "event_id": "event_continuation",
+                    "event_type": "sdk_controlled_operation.approval_resolved",
+                    "payload": {
+                        "approval_id": "approval_browser_001",
+                        "operation_id": "operation_browser_001",
+                        "operation_digest": _digest("drift"),
+                        "continuation_id": "continuation_browser_001",
+                        "decision": "approved",
+                    },
+                },
+            )
+            cls.receipts.append(
+                _public_receipt(
+                    sequence=len(cls.receipts) + 1,
+                    route=(
+                        "/v3/sessions/sess_browser_001/events"
+                        f"?replay=1&after_cursor={after_cursor}"
+                    ),
+                    semantic_value=list(records),
+                )
+            )
+            return records
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._wait_for_browser_approval(
+            Api(),  # type: ignore[arg-type]
+            session_id="sess_browser_001",
+            workspace=pre_workspace,
+            pending_approval=pending,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+        )
+
+    assert error.value.code == "browser_approval_operation_identity_drift"
+
+
+def test_chrome_once_uses_independent_handoff_timeout(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        approval_mode="chrome-once",
+        timeout_seconds=60.0,
+        browser_approval_timeout_seconds=0.005,
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.0,
+    )
+    operation_digest = _digest("browser-operation-timeout")
+    pending = {
+        "approval_id": "approval_browser_timeout",
+        "operation": {
+            "operation_id": "operation_browser_timeout",
+            "operation_digest": operation_digest,
+            "sandbox_workspace_id": "sandbox_workspace_browser_timeout",
+        },
+        "sandbox_run": {
+            "sandbox_run_id": "sandbox_run_browser_timeout",
+        },
+    }
+    pre_workspace = {"pending_approvals": [pending]}
+
+    class Api:
+        base_url = "http://127.0.0.1:54321"
+        receipts: list[live.PublicApiReceipt] = [
+            _public_receipt(
+                sequence=1,
+                route="/v3/sessions/sess_browser_timeout/workspace",
+                semantic_value=pre_workspace,
+            )
+        ]
+        response_binding = staticmethod(live._PublicHostClient.response_binding)
+
+        @classmethod
+        def get_event_records(
+            cls,
+            session_id: str,
+            *,
+            after_cursor: int = 0,
+        ) -> tuple[dict[str, object], ...]:
+            assert session_id == "sess_browser_timeout"
+            assert after_cursor == 7
+            cls.receipts.append(
+                _public_receipt(
+                    sequence=len(cls.receipts) + 1,
+                    route=(
+                        "/v3/sessions/sess_browser_timeout/events"
+                        "?replay=1&after_cursor=7"
+                    ),
+                    semantic_value=[],
+                )
+            )
+            return ()
+
+    started = time.monotonic()
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._wait_for_browser_approval(
+            Api(),  # type: ignore[arg-type]
+            session_id="sess_browser_timeout",
+            workspace=pre_workspace,
+            pending_approval=pending,
+            started=started,
+            pre_event_cursor=7,
+        )
+
+    assert error.value.code == "browser_approval_timeout"
+    assert time.monotonic() - started < 1.0
+
+
+def test_chrome_once_gate_is_scoped_to_positive_one(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        approval_mode="chrome-once",
+        browser_completion_hold_seconds=0.0,
+    )
+    campaign_root = tmp_path / "campaign"
+    contexts = []
+    for attempt_number, attempt_kind in (
+        (1, "positive"),
+        (2, "positive"),
+        (3, "fault"),
+    ):
+        roots = create_blank_world_roots(
+            campaign_root,
+            attempt_kind=attempt_kind,
+            allowed_prerequisites=_allowed_prerequisites(),
+        )
+        contexts.append(
+            AttemptRunContext(
+                roots=roots,
+                identity=_identity(),
+                ledger_before=safe_micu_ledger_snapshot(ledger_path),
+                attempt_number=attempt_number,
+            )
+        )
+
+    assert [runner._browser_gate_enabled(context) for context in contexts] == [
+        True,
+        False,
+        False,
+    ]
+    assert runner._settings_blocker(contexts[0]) == {
+        "code": "browser_observation_receipt_path_missing",
+        "message": "chrome-once requires a fresh observation receipt target before campaign start",
+    }
+
+    receipt_path = tmp_path / "browser-observation.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    runner.browser_observation_receipt_path = receipt_path
+    assert runner._settings_blocker(contexts[0]) == {
+        "code": "browser_observation_receipt_path_invalid",
+        "message": "Chrome observation target must be absent under an existing writable non-symlink directory",
+    }
+    assert all(
+        (runner._settings_blocker(context) or {}).get("code")
+        != "browser_observation_receipt_path_invalid"
+        for context in contexts[1:]
+    )
+
+
+def test_chrome_observation_rejects_receipt_written_before_hold_end(
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "browser-observation.json"
+    receipt_path.write_text("{}", encoding="utf-8")
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(tmp_path / "ledger.sqlite3"),
+        ledger_path=tmp_path / "ledger.sqlite3",
+        approval_mode="chrome-once",
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.05,
+        browser_observation_receipt_path=receipt_path,
+    )
+    operation_digest = _digest("browser-observation-operation")
+    approval = {
+        "approval_id": "approval_observation_001",
+        "operation_id": "operation_observation_001",
+        "operation_digest": operation_digest,
+    }
+    formal = live.SessionDriveResult(
+        session_id="sess_observation_001",
+        purpose="formal",
+        state="completed",
+        blocker_code=None,
+        workspace={
+            "pending_approvals": [],
+            "conversation": [
+                {
+                    "message_id": "msg_observation_final",
+                    "role": "assistant",
+                    "content": "completed",
+                }
+            ],
+            "reports": [
+                {"report_id": "report_observation_001", "status": "published"}
+            ],
+            "scientific_evidence": {
+                "operations": [
+                    {
+                        "operation_id": "operation_observation_001",
+                        "operation_digest": operation_digest,
+                        "status": "completed",
+                    }
+                ]
+            },
+        },
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=1,
+        approval_ids=("approval_observation_001",),
+        browser_approval_receipt=approval,
+    )
+    ready_started = time.monotonic()
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._wait_for_browser_observation(
+            formal,
+            observation_ready_started=ready_started,
+            observation_ready_wall_ns=time.time_ns(),
+        )
+
+    assert error.value.code == "browser_observation_receipt_too_early"
+
+
+@pytest.mark.parametrize(
+    ("filter_byte", "trailing_zlib_bytes", "valid"),
+    ((0, b"", True), (5, b"", False), (0, b"trailing", False)),
+)
+def test_browser_png_validation_is_decodable_and_bounded(
+    filter_byte: int,
+    trailing_zlib_bytes: bytes,
+    valid: bool,
+) -> None:
+    encoded = _one_pixel_grayscale_png(
+        filter_byte=filter_byte,
+        trailing_zlib_bytes=trailing_zlib_bytes,
+    )
+
+    assert (live._browser_screenshot_png(encoded) is not None) is valid
+    assert (cutover_evidence._validated_browser_png(encoded) is not None) is valid
+
+
+def test_cli_exposes_chrome_once_mode(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "run-live",
+            "--campaign-root",
+            str(tmp_path / "campaign"),
+            "--identity",
+            str(tmp_path / "identity.json"),
+            "--allowed-prerequisites",
+            str(tmp_path / "prerequisites.json"),
+            "--approval-mode",
+            "chrome-once",
+            "--browser-completion-hold-seconds",
+            "0",
+            "--browser-approval-timeout-seconds",
+            "12",
+        ]
+    )
+
+    assert args.approval_mode == "chrome-once"
+    assert args.browser_completion_hold_seconds == 0.0
+    assert args.browser_approval_timeout_seconds == 12.0

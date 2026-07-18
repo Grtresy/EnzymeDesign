@@ -1,0 +1,654 @@
+from __future__ import annotations
+
+from dataclasses import replace
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from openzyme_host_api import aox_cutover_launch as launch
+from openzyme_pipeline import aox_motif
+from openzyme_runtime import ExecutionSettings
+from openzyme_runtime import HostApiSettings
+from openzyme_runtime import HostCliSettings
+from openzyme_runtime import LiveLlmTestSettings
+from openzyme_runtime import LlmPurposePolicy
+from openzyme_runtime import LlmSettings
+from openzyme_runtime import OpenZymeSettings
+from openzyme_runtime import ResearchSettings
+from openzyme_runtime import TestSettings as RuntimeTestSettings
+from openzyme_runtime import TracingSettings
+from openzyme_runtime import V3BackgroundRuntimeSettings
+
+
+def _digest(label: str) -> str:
+    return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def _settings(*, ledger_path: Path, hpc_config_path: Path) -> OpenZymeSettings:
+    return OpenZymeSettings(
+        llm=LlmSettings(
+            api_key="llm-test-key",
+            model="micu-test-model",
+            base_url="https://www.micuapi.ai/v1",
+            extra_body={"reasoning": {"enabled": True}},
+            default_headers={"User-Agent": "openzyme-launch-test"},
+            use_responses_api=True,
+            max_tokens=9_999,
+            timeout=123.0,
+            max_retries=7,
+            temperature=0.0,
+            structured_output_method="json_schema",
+            structured_output_retry_backoff_seconds=3.0,
+            purpose_policies={
+                "master": LlmPurposePolicy(max_tokens=8_888, timeout=99.0)
+            },
+            context_window_tokens=200_000,
+            default_output_tokens=4_000,
+            tokenizer_enabled=True,
+        ),
+        research=ResearchSettings(
+            max_units=3,
+            allow_clarification=False,
+            max_research_iterations=3,
+            max_react_tool_calls=4,
+            max_concurrent_research_units=2,
+            tavily_api_key=None,
+            tavily_max_results=3,
+            tavily_topic="general",
+            mcp_enabled=True,
+            mcp_tool_allowlist=("pubmed.search",),
+            pubmed_email="ncbi@example.org",
+            pubmed_tool="openzyme-aox",
+            pubmed_api_key="ncbi-test-key",
+            semantic_scholar_api_key=None,
+            provider_timeout_seconds=20.0,
+            provider_max_attempts=2,
+        ),
+        tracing=TracingSettings(enabled=False, project_name="launch-test"),
+        host_cli=HostCliSettings(
+            base_url="http://127.0.0.1:8000",
+            project_id=None,
+            output_format="text",
+        ),
+        host_api=HostApiSettings(
+            bind_host="127.0.0.1",
+            bind_port=8000,
+            deployment_profile="local-dev",
+        ),
+        v3_background_runtime=V3BackgroundRuntimeSettings(
+            enabled=True,
+            poll_interval_seconds=2.0,
+            max_signals_per_tick=3,
+            max_steps_per_agent=12,
+            shutdown_timeout_seconds=10.0,
+        ),
+        execution=ExecutionSettings(
+            backend="hpc",
+            hpc_runner_config=str(hpc_config_path),
+        ),
+        test=RuntimeTestSettings(
+            enable_live_llm=True,
+            enable_live_tavily=False,
+            enable_live_hpc=True,
+            enable_live_e2e=True,
+            enable_quality_eval=False,
+            upload_langsmith=False,
+            live_llm=LiveLlmTestSettings(
+                max_tokens=1_024,
+                timeout=45.0,
+                max_retries=3,
+                structured_output_method="function_calling",
+                structured_output_retry_backoff_seconds=0.5,
+                token_ledger_path=str(ledger_path),
+            ),
+        ),
+    )
+
+
+def _probes(checkout: list[str] | None = None) -> launch.AoxCutoverLaunchProbes:
+    commits = checkout or ["a" * 40]
+
+    def checkout_probe(_: Path) -> str:
+        return commits[-1]
+
+    return launch.AoxCutoverLaunchProbes(
+        checkout=checkout_probe,
+        workflow_ref=lambda: f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        scoring_identity=lambda: (
+            aox_motif.CONTRACT_DIGEST,
+            aox_motif.IMPLEMENTATION_DIGEST,
+        ),
+        sandbox_runtime_identity=lambda: {
+            "image_digest": _digest("image"),
+            "pipeline_sdk_digest": _digest("sdk"),
+        },
+        source_tree_digest=lambda _: _digest("sdk"),
+    )
+
+
+def _declared_inputs(
+    settings: OpenZymeSettings,
+    *,
+    ledger_path: Path,
+    driver: launch.AoxCutoverDriverConfig,
+    probes: launch.AoxCutoverLaunchProbes,
+    repo_root: Path = launch.REPO_ROOT,
+) -> tuple[dict[str, str], dict[str, object]]:
+    effective = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=driver,
+        ledger_path=ledger_path,
+        repo_root=repo_root,
+        source_tree_digest=probes.source_tree_digest,
+    )
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": effective.digest,
+        "workflow_ref": probes.workflow_ref(),
+        "scoring_contract_digest": aox_motif.CONTRACT_DIGEST,
+        "scoring_implementation_digest": aox_motif.IMPLEMENTATION_DIGEST,
+        "image_digest": _digest("image"),
+        "sdk_digest": _digest("sdk"),
+    }
+    prerequisites = launch.build_aox_cutover_allowed_prerequisites(
+        identity=identity,
+        settings=effective.settings,
+        toolchain_image_digests={
+            key: _digest("toolchain") for key in launch.TOOLCHAIN_IDS
+        },
+    )
+    return identity, prerequisites
+
+
+def _stage_runner_contract_manifest(repo_root: Path) -> None:
+    source = launch.REPO_ROOT / launch.RUNNER_CONTRACT_MANIFEST_RELATIVE_PATH
+    destination = repo_root / launch.RUNNER_CONTRACT_MANIFEST_RELATIVE_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(source.read_bytes())
+
+
+def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("[cluster]\nssh_target='trusted-host'\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+
+    first = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=driver,
+        ledger_path=ledger,
+    )
+    second = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=driver,
+        ledger_path=ledger,
+    )
+
+    assert first.digest == second.digest
+    assert first.payload == second.payload
+    assert first.settings.llm.max_tokens == 1_024
+    assert first.settings.llm.timeout == 45.0
+    assert first.settings.llm.purpose_policies == {}
+    assert first.payload["driver"]["micu_hard_limit_tokens"] == 100_000_000
+    assert first.payload["host"]["storage_profile"] == "single_process_sqlite"
+    runner_expectations = first.payload["execution"]["aox_runner_contract_expectations"]
+    assert runner_expectations["schema_id"] == "aox_runner_contract_expectations@1"
+    assert set(runner_expectations["contracts"]) == {
+        contract["tool_id"]
+        for contract in launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS.values()
+    }
+    assert all(
+        set(contract) == {"adapter_id", "command_template_id", "runner_contract_digest"}
+        for contract in runner_expectations["contracts"].values()
+    )
+    assert str(tmp_path) not in json.dumps(first.payload, sort_keys=True)
+    assert "llm-test-key" not in json.dumps(first.payload, sort_keys=True)
+    assert "ncbi@example.org" not in json.dumps(first.payload, sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_path"),
+    (
+        ("missing_top_level", "effective_config"),
+        ("extra_top_level", "effective_config"),
+        ("missing_nested", "effective_config.llm"),
+        ("extra_nested", "effective_config.research.credential_slots"),
+        (
+            "invalid_nested_range",
+            "effective_config.driver.browser_approval_timeout_seconds",
+        ),
+    ),
+)
+def test_effective_config_closed_schema_rejects_tamper(
+    tmp_path: Path,
+    tamper: str,
+    expected_path: str,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    effective = launch.build_aox_cutover_effective_config(
+        _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+        driver=launch.AoxCutoverDriverConfig(),
+        ledger_path=ledger,
+    )
+    payload = json.loads(json.dumps(effective.payload))
+    if tamper == "missing_top_level":
+        payload.pop("limits")
+    elif tamper == "extra_top_level":
+        payload["legacy_compatibility"] = True
+    elif tamper == "missing_nested":
+        payload["llm"].pop("model")
+    elif tamper == "extra_nested":
+        payload["research"]["credential_slots"]["legacy"] = False
+    else:
+        payload["driver"]["browser_approval_timeout_seconds"] = 0.0
+
+    with pytest.raises(launch.AoxRuntimeConfigSchemaError) as error:
+        launch.normalize_aox_blank_world_runtime_config(
+            payload,
+            expected_runner_contracts=launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS,
+        )
+
+    assert error.value.path == expected_path
+
+
+def test_effective_config_normalizer_canonicalizes_numeric_durations(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    effective = launch.build_aox_cutover_effective_config(
+        _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+        driver=launch.AoxCutoverDriverConfig(timeout_seconds=1_800),
+        ledger_path=ledger,
+    )
+
+    assert effective.payload["driver"]["timeout_seconds"] == 1_800.0
+    assert type(effective.payload["driver"]["timeout_seconds"]) is float
+    assert effective.payload["driver"]["browser_observation_mode"] == (
+        "chrome_devtools_mcp_file_handoff"
+    )
+
+
+def test_effective_config_builder_maps_closed_schema_failure_to_launch_error(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    settings = replace(
+        settings,
+        llm=replace(
+            settings.llm,
+            context_warn_ratio=0.9,
+            context_auto_compact_ratio=0.85,
+        ),
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            settings,
+            driver=launch.AoxCutoverDriverConfig(),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == "aox_launch_effective_config_schema_invalid"
+    assert error.value.details == {"identity": "effective_config.llm"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("tool_id", "bio_tools.compatibility_fallback"),
+        ("adapter_id", "bio_tools.compatibility_fallback"),
+        ("command_template_id", "compatibility_template_v1"),
+    ),
+)
+def test_runner_manifest_required_identity_drift_is_rejected(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    _stage_runner_contract_manifest(tmp_path)
+    manifest_path = tmp_path / launch.RUNNER_CONTRACT_MANIFEST_RELATIVE_PATH
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mafft = next(
+        item for item in manifest["tools"] if item.get("tool_id") == "bio_tools.mafft"
+    )
+    mafft[field] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch._aox_runner_contract_expectations(tmp_path)
+
+    assert error.value.code == "aox_launch_runner_contract_manifest_drift"
+
+
+def test_effective_config_changes_for_driver_or_hpc_config_drift(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    baseline = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=launch.AoxCutoverDriverConfig(),
+        ledger_path=ledger,
+    )
+
+    changed_driver = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=launch.AoxCutoverDriverConfig(max_drains=121),
+        ledger_path=ledger,
+    )
+    hpc_config.write_text("revision=2\n", encoding="utf-8")
+    changed_hpc = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=launch.AoxCutoverDriverConfig(),
+        ledger_path=ledger,
+    )
+
+    assert changed_driver.digest != baseline.digest
+    assert changed_hpc.digest != baseline.digest
+
+
+@pytest.mark.parametrize(
+    ("setting_name", "expected_code"),
+    (
+        ("enable_live_llm", "aox_launch_live_llm_disabled"),
+        ("enable_live_hpc", "aox_launch_live_hpc_disabled"),
+    ),
+)
+def test_effective_config_rejects_disabled_live_dependencies_before_roots(
+    tmp_path: Path,
+    setting_name: str,
+    expected_code: str,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    settings = replace(
+        settings,
+        test=replace(settings.test, **{setting_name: False}),
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            settings,
+            driver=launch.AoxCutoverDriverConfig(),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == expected_code
+    assert not (tmp_path / "campaign").exists()
+
+
+def test_prepare_launch_validates_actual_identity_and_guard_detects_drift(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+    commits = ["a" * 40]
+    probes = _probes(commits)
+    _stage_runner_contract_manifest(tmp_path)
+    identity, prerequisites = _declared_inputs(
+        settings,
+        ledger_path=ledger,
+        driver=driver,
+        probes=probes,
+        repo_root=tmp_path,
+    )
+
+    snapshot = launch.prepare_aox_cutover_launch(
+        settings=settings,
+        driver=driver,
+        ledger_path=ledger,
+        declared_identity=identity,
+        declared_prerequisites=prerequisites,
+        repo_root=tmp_path,
+        probes=probes,
+    )
+    snapshot.assert_unchanged()
+    commits.append("b" * 40)
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        snapshot.assert_unchanged()
+
+    assert error.value.code == "aox_launch_snapshot_drift"
+    assert error.value.details == {"fields": ["git_commit"]}
+
+
+@pytest.mark.parametrize("removed", sorted(launch.IDENTITY_FIELDS))
+def test_identity_rejects_every_missing_field(removed: str) -> None:
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": _digest("config"),
+        "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        "scoring_contract_digest": _digest("contract"),
+        "scoring_implementation_digest": _digest("implementation"),
+        "image_digest": _digest("image"),
+        "sdk_digest": _digest("sdk"),
+    }
+    identity.pop(removed)
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.validate_aox_cutover_identity(identity)
+
+    assert error.value.code == "aox_launch_identity_schema_invalid"
+    assert removed in error.value.details["missing"]
+
+
+@pytest.mark.parametrize("removed", sorted(launch.ALLOWED_PREREQUISITE_FIELDS))
+def test_prerequisites_require_all_nine_fields_and_identity_alignment(
+    removed: str,
+) -> None:
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": _digest("config"),
+        "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        "scoring_contract_digest": _digest("contract"),
+        "scoring_implementation_digest": _digest("implementation"),
+        "image_digest": _digest("image"),
+        "sdk_digest": _digest("sdk"),
+    }
+    prerequisites = {
+        **{key: identity[key] for key in launch.IDENTITY_PREREQUISITE_FIELDS},
+        "credential_slots": {
+            "llm": True,
+            "ncbi": True,
+            "semantic_scholar": False,
+            "tavily": False,
+        },
+        "ncbi_identity": _digest("ncbi"),
+        "prompt_accessions": launch.canonical_prompt_accessions(),
+        "toolchain_image_digests": {
+            key: _digest("toolchain") for key in launch.TOOLCHAIN_IDS
+        },
+    }
+    missing = dict(prerequisites)
+    missing.pop(removed)
+    with pytest.raises(launch.AoxCutoverLaunchError) as missing_error:
+        launch.validate_aox_cutover_allowed_prerequisites(
+            missing,
+            identity=identity,
+        )
+    assert missing_error.value.code == "aox_launch_prerequisite_schema_invalid"
+    assert missing_error.value.details["missing"] == [removed]
+
+    drifted = dict(prerequisites)
+    drifted["config_digest"] = _digest("drift")
+    with pytest.raises(launch.AoxCutoverLaunchError) as drift_error:
+        launch.validate_aox_cutover_allowed_prerequisites(
+            drifted,
+            identity=identity,
+        )
+    assert drift_error.value.code == "aox_launch_prerequisite_identity_mismatch"
+
+
+def test_prerequisites_reject_unexpected_field() -> None:
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": _digest("config"),
+        "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        "scoring_contract_digest": _digest("contract"),
+        "scoring_implementation_digest": _digest("implementation"),
+        "image_digest": _digest("image"),
+        "sdk_digest": _digest("sdk"),
+    }
+    prerequisites = {
+        **{key: identity[key] for key in launch.IDENTITY_PREREQUISITE_FIELDS},
+        "credential_slots": {
+            "llm": True,
+            "ncbi": True,
+            "semantic_scholar": False,
+            "tavily": False,
+        },
+        "ncbi_identity": _digest("ncbi"),
+        "prompt_accessions": launch.canonical_prompt_accessions(),
+        "toolchain_image_digests": {
+            key: _digest("toolchain") for key in launch.TOOLCHAIN_IDS
+        },
+        "compatibility_fallback": True,
+    }
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.validate_aox_cutover_allowed_prerequisites(
+            prerequisites,
+            identity=identity,
+        )
+
+    assert error.value.code == "aox_launch_prerequisite_schema_invalid"
+    assert error.value.details["unexpected"] == ["compatibility_fallback"]
+
+
+def test_prerequisites_reject_distinct_hmmer_sif_digests() -> None:
+    identity = {
+        "git_commit": "a" * 40,
+        "config_digest": _digest("config"),
+        "workflow_ref": f"workflow:aox-hmm-live@2.0.0#{_digest('workflow')}",
+        "scoring_contract_digest": _digest("contract"),
+        "scoring_implementation_digest": _digest("implementation"),
+        "image_digest": _digest("image"),
+        "sdk_digest": _digest("sdk"),
+    }
+    prerequisites = {
+        **{key: identity[key] for key in launch.IDENTITY_PREREQUISITE_FIELDS},
+        "credential_slots": {
+            "llm": True,
+            "ncbi": True,
+            "semantic_scholar": False,
+            "tavily": False,
+        },
+        "ncbi_identity": _digest("ncbi"),
+        "prompt_accessions": launch.canonical_prompt_accessions(),
+        "toolchain_image_digests": {key: _digest(key) for key in launch.TOOLCHAIN_IDS},
+    }
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.validate_aox_cutover_allowed_prerequisites(
+            prerequisites,
+            identity=identity,
+        )
+
+    assert error.value.code == "aox_launch_hmmer_image_identity_mismatch"
+
+
+def test_prepare_launch_rejects_declared_config_digest_drift(tmp_path: Path) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+    probes = _probes()
+    _stage_runner_contract_manifest(tmp_path)
+    identity, prerequisites = _declared_inputs(
+        settings,
+        ledger_path=ledger,
+        driver=driver,
+        probes=probes,
+        repo_root=tmp_path,
+    )
+    identity["config_digest"] = _digest("operator-stale-config")
+    prerequisites["config_digest"] = identity["config_digest"]
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.prepare_aox_cutover_launch(
+            settings=settings,
+            driver=driver,
+            ledger_path=ledger,
+            declared_identity=identity,
+            declared_prerequisites=prerequisites,
+            repo_root=tmp_path,
+            probes=probes,
+        )
+
+    assert error.value.code == "aox_launch_identity_mismatch"
+    assert error.value.details == {"fields": ["config_digest"]}
+
+
+def test_prepare_launch_rejects_sandbox_sdk_identity_drift(tmp_path: Path) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+    baseline = _probes()
+    _stage_runner_contract_manifest(tmp_path)
+    identity, prerequisites = _declared_inputs(
+        settings,
+        ledger_path=ledger,
+        driver=driver,
+        probes=baseline,
+        repo_root=tmp_path,
+    )
+    drifted = replace(
+        baseline,
+        sandbox_runtime_identity=lambda: {
+            "image_digest": _digest("image"),
+            "pipeline_sdk_digest": _digest("drifted-sdk"),
+        },
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.prepare_aox_cutover_launch(
+            settings=settings,
+            driver=driver,
+            ledger_path=ledger,
+            declared_identity=identity,
+            declared_prerequisites=prerequisites,
+            repo_root=tmp_path,
+            probes=drifted,
+        )
+
+    assert error.value.code == "aox_launch_sandbox_sdk_mismatch"
+
+
+def test_clean_checkout_probe_rejects_tracked_or_untracked_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_git(_: Path, *args: str) -> str:
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        if args == ("rev-parse", "--verify", "HEAD"):
+            return "a" * 40
+        return " M tracked.py\n?? untracked.txt"
+
+    monkeypatch.setattr(launch, "_git", fake_git)
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch._probe_clean_checkout(tmp_path)
+
+    assert error.value.code == "aox_launch_worktree_dirty"
+    assert error.value.details == {"entry_count": 2}
