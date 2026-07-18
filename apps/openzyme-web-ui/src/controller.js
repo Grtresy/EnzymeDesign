@@ -6,10 +6,16 @@ import {
   upsertSessionSummary,
 } from "./state.js";
 
+const DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS = 5_000;
+
 export class WorkspaceController {
-  constructor(client, onChange = () => {}) {
+  constructor(client, onChange = () => {}, options = {}) {
     this.client = client;
     this.onChange = onChange;
+    this.workspaceReconcileIntervalMs =
+      options.workspaceReconcileIntervalMs ?? DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS;
+    this.setReconcileTimeout = options.setReconcileTimeout ?? setTimeout;
+    this.clearReconcileTimeout = options.clearReconcileTimeout ?? clearTimeout;
     this.state = buildInitialViewState();
     this.stream = null;
     this.requestVersion = 0;
@@ -17,6 +23,8 @@ export class WorkspaceController {
     this.approvalRequestVersion = 0;
     this.refreshRequestVersion = 0;
     this.refreshTimeout = null;
+    this.reconcileTimeout = null;
+    this.workspaceRefreshInFlight = null;
   }
 
   snapshot() {
@@ -36,6 +44,18 @@ export class WorkspaceController {
       clearTimeout(this.refreshTimeout);
       this.refreshTimeout = null;
     }
+    if (this.reconcileTimeout) {
+      this.clearReconcileTimeout(this.reconcileTimeout);
+      this.reconcileTimeout = null;
+    }
+    this._invalidateWorkspaceRefresh();
+  }
+
+  _invalidateWorkspaceRefresh() {
+    this.refreshRequestVersion += 1;
+    this.workspaceRefreshInFlight?.abortController?.abort();
+    this.workspaceRefreshInFlight = null;
+    this.state.refreshingWorkspace = false;
   }
 
   _beginRequest() {
@@ -125,25 +145,46 @@ export class WorkspaceController {
   }
 
   async _refreshCurrentWorkspace(sessionId, version) {
-    if (!sessionId || this.state.currentSessionId !== sessionId) {
-      return;
+    if (
+      !sessionId ||
+      this.state.currentSessionId !== sessionId ||
+      this.workspaceRefreshInFlight !== null ||
+      this.state.messageBusy ||
+      Boolean(this.state.pendingApprovalId)
+    ) {
+      return false;
     }
+    const refreshToken = {
+      sessionId,
+      version,
+      abortController:
+        typeof globalThis.AbortController === "function" ? new AbortController() : null,
+    };
+    this.workspaceRefreshInFlight = refreshToken;
     this.state.refreshingWorkspace = true;
     this._emit();
     try {
-      const response = await this.client.getV3Session(sessionId);
+      const response = await this.client.getV3Session(sessionId, {
+        signal: refreshToken.abortController?.signal,
+      });
       if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return;
+        return false;
       }
       this.state.workspace = response.workspace;
       this._syncSummaryFromWorkspace();
       this._clearErrors("session");
+      return true;
     } catch (error) {
       if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
-        return;
+        return false;
       }
       this.state.errors.session = error.message;
+      return false;
     } finally {
+      if (this.workspaceRefreshInFlight !== refreshToken) {
+        return;
+      }
+      this.workspaceRefreshInFlight = null;
       if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
         return;
       }
@@ -156,15 +197,60 @@ export class WorkspaceController {
     if (!sessionId || this.state.currentSessionId !== sessionId) {
       return;
     }
-    this.refreshRequestVersion += 1;
+    this._invalidateWorkspaceRefresh();
     const version = this.refreshRequestVersion;
     if (this.refreshTimeout) {
       clearTimeout(this.refreshTimeout);
     }
-    this.refreshTimeout = setTimeout(() => {
+    const scheduleRefresh = () => {
       this.refreshTimeout = null;
+      if (this.state.currentSessionId !== sessionId || version !== this.refreshRequestVersion) {
+        return;
+      }
+      if (
+        this.workspaceRefreshInFlight !== null ||
+        this.state.messageBusy ||
+        Boolean(this.state.pendingApprovalId)
+      ) {
+        this.refreshTimeout = setTimeout(scheduleRefresh, 150);
+        return;
+      }
       void this._refreshCurrentWorkspace(sessionId, version);
-    }, 150);
+    };
+    this.refreshTimeout = setTimeout(scheduleRefresh, 150);
+  }
+
+  _scheduleWorkspaceReconciliation(sessionId) {
+    if (
+      !sessionId ||
+      this.state.currentSessionId !== sessionId ||
+      !Number.isFinite(this.workspaceReconcileIntervalMs) ||
+      this.workspaceReconcileIntervalMs <= 0
+    ) {
+      return;
+    }
+    if (this.reconcileTimeout) {
+      this.clearReconcileTimeout(this.reconcileTimeout);
+    }
+    this.reconcileTimeout = this.setReconcileTimeout(async () => {
+      this.reconcileTimeout = null;
+      if (this.state.currentSessionId !== sessionId) {
+        return;
+      }
+      if (
+        this.workspaceRefreshInFlight === null &&
+        !this.state.messageBusy &&
+        !this.state.pendingApprovalId
+      ) {
+        this.refreshRequestVersion += 1;
+        const version = this.refreshRequestVersion;
+        await this._refreshCurrentWorkspace(sessionId, version);
+      }
+      if (this.state.currentSessionId === sessionId) {
+        this._scheduleWorkspaceReconciliation(sessionId);
+      }
+    }, this.workspaceReconcileIntervalMs);
+    this.reconcileTimeout?.unref?.();
   }
 
   _connectV3Stream(sessionId) {
@@ -173,17 +259,21 @@ export class WorkspaceController {
       if (!this.state.workspace?.session || this.state.currentSessionId !== sessionId) {
         return;
       }
+      const nextWorkspace = reduceWorkspaceWithEvent(this.state.workspace, event);
+      if (nextWorkspace !== this.state.workspace) {
+        // Any durable event reducer is newer than an already-started snapshot
+        // read.  Retire that read generation before applying the event so its
+        // late response cannot roll the UI back.
+        this._invalidateWorkspaceRefresh();
+        this.state.workspace = nextWorkspace;
+        this._syncSummaryFromWorkspace();
+        this._emit();
+      }
       if (eventRequiresWorkspaceRefresh(event)) {
         this._scheduleWorkspaceRefresh(sessionId);
       }
-      const nextWorkspace = reduceWorkspaceWithEvent(this.state.workspace, event);
-      if (nextWorkspace === this.state.workspace) {
-        return;
-      }
-      this.state.workspace = nextWorkspace;
-      this._syncSummaryFromWorkspace();
-      this._emit();
     });
+    this._scheduleWorkspaceReconciliation(sessionId);
   }
 
   async bootstrap() {
@@ -292,6 +382,7 @@ export class WorkspaceController {
       return;
     }
     const requestVersion = this._beginRequest();
+    this._disconnectStream();
     this.messageRequestVersion += 1;
     this.approvalRequestVersion += 1;
     this.state.sidebarBusy = true;
@@ -383,6 +474,7 @@ export class WorkspaceController {
     const sessionId = this.state.currentSessionId;
     this.messageRequestVersion += 1;
     const requestVersion = this.messageRequestVersion;
+    this._invalidateWorkspaceRefresh();
     this.state.messageBusy = true;
     this._clearErrors("message");
     const optimisticId = this._appendOptimisticUserMessage(trimmedMessage);
@@ -396,6 +488,7 @@ export class WorkspaceController {
         await this._refreshSessionSummaries(this.state.currentProjectId);
         return false;
       }
+      this._invalidateWorkspaceRefresh();
       this.state.workspace = response.workspace;
       this._syncSummaryFromWorkspace();
       await this._refreshSessionSummaries(this.state.currentProjectId);
@@ -422,6 +515,7 @@ export class WorkspaceController {
     const sessionId = this.state.currentSessionId;
     this.approvalRequestVersion += 1;
     const requestVersion = this.approvalRequestVersion;
+    this._invalidateWorkspaceRefresh();
     this.state.pendingApprovalId = approvalId;
     this._clearApprovalError(approvalId);
     this._emit();
@@ -434,6 +528,7 @@ export class WorkspaceController {
         await this._refreshSessionSummaries(this.state.currentProjectId);
         return false;
       }
+      this._invalidateWorkspaceRefresh();
       this.state.workspace = response.workspace;
       this._syncSummaryFromWorkspace();
       await this._refreshSessionSummaries(this.state.currentProjectId);

@@ -44,6 +44,35 @@ function buildV3ApprovalWorkspace() {
   };
 }
 
+function buildManualTimeouts() {
+  let nextId = 1;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, { callback, delay });
+      return id;
+    },
+    clearTimeout(id) {
+      pending.delete(id);
+    },
+    get size() {
+      return pending.size;
+    },
+    nextDelay() {
+      return pending.values().next().value?.delay;
+    },
+    async runNext() {
+      const next = pending.entries().next();
+      assert.equal(next.done, false, "expected a scheduled timeout");
+      const [id, scheduled] = next.value;
+      pending.delete(id);
+      await scheduled.callback();
+    },
+  };
+}
+
 test("workspace controller bootstraps with project session summaries", async () => {
   const fakeClient = {
     async listV3Sessions() {
@@ -139,6 +168,343 @@ test("selectSession loads a workspace and can switch inspector sections", async 
 
   controller.selectMobilePane("sessions");
   assert.equal(controller.state.mobilePane, "sessions");
+});
+
+test("periodic workspace reconciliation discovers a committed approval without an SSE event", async () => {
+  const timeouts = buildManualTimeouts();
+  let workspaceReads = 0;
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace(),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async getV3Session() {
+      workspaceReads += 1;
+      const workspace = buildV3ApprovalWorkspace();
+      return { session: workspace.session, workspace };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  assert.equal(controller.state.workspace.pending_approvals.length, 0);
+  assert.equal(timeouts.size, 1);
+  assert.equal(timeouts.nextDelay(), 5_000);
+
+  await timeouts.runNext();
+
+  assert.equal(workspaceReads, 1);
+  assert.equal(controller.state.workspace.pending_approvals[0].approval_id, "appr_v3_001");
+  assert.equal(timeouts.size, 1);
+});
+
+test("stale periodic workspace responses do not overwrite the currently selected session", async () => {
+  const timeouts = buildManualTimeouts();
+  let releaseStaleRead;
+  let markStaleReadStarted;
+  const staleReadStarted = new Promise((resolve) => {
+    markStaleReadStarted = resolve;
+  });
+  const staleRead = new Promise((resolve) => {
+    releaseStaleRead = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace("sess_001", "First"),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async getV3Session(sessionId) {
+      if (sessionId === "sess_001") {
+        markStaleReadStarted();
+        return staleRead;
+      }
+      const workspace = buildV3Workspace("sess_002", "Second");
+      return { session: workspace.session, workspace };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "First" });
+  const pendingStaleRefresh = timeouts.runNext();
+  await staleReadStarted;
+  assert.equal(timeouts.size, 0, "reconciliation must not overlap its in-flight read");
+
+  await controller.selectSession("sess_002", "conversation");
+  const staleWorkspace = buildV3ApprovalWorkspace();
+  releaseStaleRead({ session: staleWorkspace.session, workspace: staleWorkspace });
+  await pendingStaleRefresh;
+
+  assert.equal(controller.state.currentSessionId, "sess_002");
+  assert.equal(controller.state.workspace.session.session_id, "sess_002");
+  assert.equal(controller.state.workspace.session.title, "Second");
+  assert.equal(controller.state.workspace.pending_approvals.length, 0);
+});
+
+test("stale periodic workspace responses do not restore an approval after resolution", async () => {
+  const timeouts = buildManualTimeouts();
+  let releaseStaleRead;
+  let markStaleReadStarted;
+  const staleReadStarted = new Promise((resolve) => {
+    markStaleReadStarted = resolve;
+  });
+  const staleRead = new Promise((resolve) => {
+    releaseStaleRead = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3ApprovalWorkspace(),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async getV3Session() {
+      markStaleReadStarted();
+      return staleRead;
+    },
+    async resolveV3Approval() {
+      const workspace = buildV3Workspace();
+      return { session_id: "sess_001", workspace, events: [] };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  const pendingStaleRefresh = timeouts.runNext();
+  await staleReadStarted;
+
+  await controller.resolveApproval("appr_v3_001", "approved");
+  assert.equal(controller.state.workspace.pending_approvals.length, 0);
+
+  const staleWorkspace = buildV3ApprovalWorkspace();
+  releaseStaleRead({ session: staleWorkspace.session, workspace: staleWorkspace });
+  await pendingStaleRefresh;
+
+  assert.equal(controller.state.workspace.pending_approvals.length, 0);
+});
+
+test("stale periodic workspace responses do not overwrite a message response", async () => {
+  const timeouts = buildManualTimeouts();
+  let releaseStaleRead;
+  let markStaleReadStarted;
+  const staleReadStarted = new Promise((resolve) => {
+    markStaleReadStarted = resolve;
+  });
+  const staleRead = new Promise((resolve) => {
+    releaseStaleRead = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace(),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async getV3Session() {
+      markStaleReadStarted();
+      return staleRead;
+    },
+    async postV3Message() {
+      const workspace = buildV3Workspace();
+      workspace.conversation = [
+        { role: "user", content: "hello", event_id: "evt_user_001" },
+      ];
+      return { session_id: "sess_001", workspace, events: [] };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  const pendingStaleRefresh = timeouts.runNext();
+  await staleReadStarted;
+
+  await controller.sendMessage("hello");
+  assert.equal(controller.state.workspace.conversation[0].event_id, "evt_user_001");
+
+  const staleWorkspace = buildV3Workspace();
+  releaseStaleRead({ session: staleWorkspace.session, workspace: staleWorkspace });
+  await pendingStaleRefresh;
+
+  assert.equal(controller.state.workspace.conversation[0].event_id, "evt_user_001");
+});
+
+test("a hung old-session reconciliation cannot starve the newly selected session", async () => {
+  const timeouts = buildManualTimeouts();
+  let releaseOldRead;
+  let markOldReadStarted;
+  let oldSignal = null;
+  let newSessionReads = 0;
+  const oldReadStarted = new Promise((resolve) => {
+    markOldReadStarted = resolve;
+  });
+  const oldRead = new Promise((resolve) => {
+    releaseOldRead = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace("sess_001", "First"),
+        events: [],
+      };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+    async getV3Session(sessionId, options = {}) {
+      if (sessionId === "sess_001") {
+        oldSignal = options.signal;
+        markOldReadStarted();
+        return oldRead;
+      }
+      newSessionReads += 1;
+      const workspace = buildV3Workspace("sess_002", "Second");
+      if (newSessionReads > 1) {
+        workspace.pending_approvals = [
+          { approval_id: "appr_new_session", status: "pending" },
+        ];
+      }
+      return { session: workspace.session, workspace };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "First" });
+  const pendingOldRefresh = timeouts.runNext();
+  await oldReadStarted;
+
+  await controller.selectSession("sess_002", "conversation");
+  assert.equal(oldSignal?.aborted, true);
+  assert.equal(timeouts.size, 1);
+
+  await timeouts.runNext();
+
+  assert.equal(newSessionReads, 2);
+  assert.equal(
+    controller.state.workspace.pending_approvals[0].approval_id,
+    "appr_new_session",
+  );
+
+  const oldWorkspace = buildV3Workspace("sess_001", "First");
+  releaseOldRead({ session: oldWorkspace.session, workspace: oldWorkspace });
+  await pendingOldRefresh;
+  assert.equal(controller.state.currentSessionId, "sess_002");
+});
+
+test("a stale periodic response cannot overwrite a newer SSE approval event", async () => {
+  const timeouts = buildManualTimeouts();
+  let releaseStaleRead;
+  let markStaleReadStarted;
+  let streamHandler = null;
+  const staleReadStarted = new Promise((resolve) => {
+    markStaleReadStarted = resolve;
+  });
+  const staleRead = new Promise((resolve) => {
+    releaseStaleRead = resolve;
+  });
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async createV3Session() {
+      return {
+        session_id: "sess_001",
+        workspace: buildV3Workspace(),
+        events: [],
+      };
+    },
+    streamV3Session(_sessionId, onEvent) {
+      streamHandler = onEvent;
+      return { close() {} };
+    },
+    async getV3Session() {
+      markStaleReadStarted();
+      return staleRead;
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout: timeouts.setTimeout,
+    clearReconcileTimeout: timeouts.clearTimeout,
+  });
+
+  await controller.createSession({ project_id: "proj_001", objective: "Plan with V3" });
+  const pendingStaleRefresh = timeouts.runNext();
+  await staleReadStarted;
+
+  streamHandler?.({
+    event_id: "evt_approval_requested",
+    event_type: "approval.requested",
+    created_at: "2026-04-21T00:00:01+00:00",
+    payload: { approval_id: "appr_from_sse", status: "pending" },
+  });
+  assert.equal(
+    controller.state.workspace.pending_approvals[0].approval_id,
+    "appr_from_sse",
+  );
+
+  const staleWorkspace = buildV3Workspace();
+  releaseStaleRead({ session: staleWorkspace.session, workspace: staleWorkspace });
+  await pendingStaleRefresh;
+
+  assert.equal(
+    controller.state.workspace.pending_approvals[0].approval_id,
+    "appr_from_sse",
+  );
 });
 
 test("workspace controller selects artifact details in outputs", async () => {

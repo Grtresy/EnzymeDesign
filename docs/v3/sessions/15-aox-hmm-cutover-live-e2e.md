@@ -150,7 +150,13 @@ GO 只由顺序固定的三次 campaign 聚合得出：
 response 之后的 public workspace GET，才能排除最后时刻投影出的
 `waiting_approval`。后台 drain 自身异常保持
 `runtime_drain_command_failed`；只有 workspace/approval coordination 或 cleanup
-异常才归入 coordination failure。
+异常才归入 coordination failure。一旦 coordination 已失败，后续科学操作不再
+允许继续；coordinator 在既有 attempt deadline 内持续轮询并通过 public approval
+API reject 后来出现的 pending approval，cleanup 的瞬时 GET/resolve 失败只作为次要
+诊断并使用同一 idempotency key 重试，原始失败保持权威。Web UI 同时以五秒、
+single-flight-per-generation 的只读 workspace reconciliation 补充 SSE refresh；
+session 切换、workspace mutation 和 SSE reducer 写入必须 abort/失效旧 generation，
+阻止旧在途响应覆盖较新状态，也不能让挂起的旧 session GET 饿死新 session。
 
 ## 当前实施状态的表述规则
 

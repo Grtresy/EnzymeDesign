@@ -103,6 +103,36 @@ the failed attempt remains non-eligible. The campaign ledger closed at
 17,121,634 charged tokens against the fixed 500,000,000 limit with zero
 breaches.
 
+A fresh campaign on commit `9778da0` then crossed the earlier runner blocker
+but remained strict **NO-GO**. Its known-positive real provider/HPC probe
+completed, formal research returned ten PubMed records, and Chrome approved the
+first formal NCBI controlled operation through the canonical Web UI. During the
+same in-flight drain a later MAFFT approval became durable only after the
+public coordinator had entered its failure path. The old driver polled cleanup
+for a separate fixed 15-second window, stopped before that approval appeared,
+then waited indefinitely for the drain that was synchronously waiting for the
+unresolved approval. The pending approval was already present in the public
+workspace projection, but the Web UI remained on its last event-triggered
+snapshot because `approval.requested` is currently backfilled only after the
+drain returns. The operator terminated the hung attempt; it has no sealed
+eligible bundle and cannot be reused as either positive evidence or fault
+evidence. Its real calls remain charged: the persistent ledger is now
+19,439,010 / 500,000,000 tokens with zero breaches.
+
+The correction is deliberately local. After any coordination failure, the
+driver preserves that original failure, rejects every later unresolved
+approval through the public API, and continues reconciliation until the
+already-bound attempt deadline or drain retirement. A transient cleanup read or
+resolve error is retained only as safe secondary diagnostics and retried with
+the same idempotency key; it never authorizes continued science. The Web UI
+keeps SSE as its prompt refresh path but also performs a low-frequency,
+single-flight read of the current canonical workspace. Session/version guards
+and abortable request generations prevent an old response from overwriting a
+newly selected session, mutation response or newer SSE reducer state; a hung
+old-session read cannot starve the next session. This does
+not add a second truth store or claim bounded process supervision; permanent
+worker retirement remains the separate process-isolation proposal.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model
@@ -551,9 +581,12 @@ flight and uses the public workspace/approval routes concurrently until that
 request returns before a later sequential drain may begin. It auto-resolves
 probe and non-Chrome approvals, keeps positive 1's first formal approval
 exclusively for the browser, and continues coordinating any later serial
-approvals from that same drain. A coordination failure may
-reject a still-pending operation only to release the failed worker; it never
-approves an operation as cleanup. A successful drain response is not by itself
+approvals from that same drain. A coordination failure rejects every
+still-pending or later-published operation until the existing attempt deadline,
+solely to release the failed worker; it never approves an operation as cleanup
+or continues scientific execution. Transient cleanup reads/resolves are
+retried with stable idempotency while the original coordination blocker remains
+authoritative. A successful drain response is not by itself
 proof that no last approval became visible: after observing worker terminal,
 the coordinator performs one public workspace GET that is known to begin after
 that response. Failure arbitration happens only after the drain worker joins:
@@ -634,6 +667,14 @@ closed seven-field form including `response_semantic_digest`. The last public
 workspace GET and full `after_cursor=0,replay=true` event GET are copied into
 bundle-level attestation artifacts; they are not registered back into product
 state. Browser approval evidence is valid only for `chrome-once` positive 1.
+Because the synchronous sandbox can commit a pending approval before the drain
+returns and before its `approval.requested` event is backfilled, the Web UI also
+reconciles the currently selected public workspace every five seconds. These
+reads are single-flight per active generation and session/version guarded.
+Session switches, mutations and applied SSE reducers abort/invalidate older
+generations without allowing an old `finally` to clear a newer request; SSE
+remains the low-latency path, and neither refresh mechanism mutates approval or
+runtime state.
 
 The `approval_required` and `ready_for_completion_observation` handoffs are
 dynamic-identity-complete for the trusted Chrome operator. In addition to the

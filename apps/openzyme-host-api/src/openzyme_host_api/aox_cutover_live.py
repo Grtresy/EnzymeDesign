@@ -1983,7 +1983,13 @@ class LiveAoxAttemptRunner:
             coordination_error = exc
 
         if coordination_error is not None and not drain_done.is_set():
-            cleanup_deadline = time.monotonic() + 15.0
+            # Once the public receipt/coordination chain is invalid, no later
+            # controlled operation may continue scientific execution.  Keep
+            # rejecting approvals until the bounded drain request retires or
+            # the attempt's existing deadline is reached.  A short, separate
+            # cleanup window can expire before a synchronously waiting sandbox
+            # publishes its next durable approval and strand the drain worker.
+            cleanup_deadline = deadline
             rejected: set[str] = set()
             while not drain_done.is_set() and time.monotonic() < cleanup_deadline:
                 try:
@@ -2018,8 +2024,14 @@ class LiveAoxAttemptRunner:
                         )
                         rejected.add(approval_id)
                 except Exception as exc:
-                    cleanup_errors.append(exc)
-                    break
+                    if not cleanup_errors:
+                        cleanup_errors.append(exc)
+                    # A transient public workspace/resolve failure is only a
+                    # bounded secondary cleanup diagnostic.  Retry with the
+                    # same idempotency keys so a later approval can still be
+                    # rejected and the primary failure can converge cleanly;
+                    # retaining repeated exception objects until a long
+                    # attempt deadline would provide no additional taxonomy.
                 remaining = max(0.0, cleanup_deadline - time.monotonic())
                 drain_done.wait(
                     timeout=min(self.browser_poll_interval_seconds, remaining)

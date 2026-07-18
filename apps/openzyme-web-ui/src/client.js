@@ -49,8 +49,8 @@ export class HostApiClient {
     });
   }
 
-  getV3Session(sessionId) {
-    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`);
+  getV3Session(sessionId, options = {}) {
+    return requestJson(this.baseUrl, `/v3/sessions/${sessionId}`, options);
   }
 
   postV3Message(sessionId, payload) {

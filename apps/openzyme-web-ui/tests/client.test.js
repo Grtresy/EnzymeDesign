@@ -77,3 +77,27 @@ test("v3 mutations carry a unique idempotency key", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("v3 session reads forward an abort signal", async () => {
+  const originalFetch = globalThis.fetch;
+  let request = null;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return {
+      ok: true,
+      async json() {
+        return { session_id: "sess_001" };
+      },
+    };
+  };
+  const abortController = new AbortController();
+  try {
+    await new HostApiClient().getV3Session("sess_001", {
+      signal: abortController.signal,
+    });
+    assert.equal(request.url, "/v3/sessions/sess_001");
+    assert.equal(request.options.signal, abortController.signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -337,6 +337,75 @@ class _CoordinationCleanupFailureJsonClient:
             self.drain_finished.set()
 
 
+class _DelayedCoordinationCleanupApprovalJsonClient:
+    """Publish an approval only after failed coordination enters cleanup."""
+
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(
+        self,
+        *,
+        fail_first_cleanup_read: bool,
+        empty_cleanup_reads: int,
+    ) -> None:
+        self.fail_first_cleanup_read = fail_first_cleanup_read
+        self.empty_cleanup_reads = empty_cleanup_reads
+        self.approval_id = "approval_delayed_after_coordination_error"
+        self.primary_error = live.LiveProductPathError(
+            "browser_observation_chain_invalid",
+            "formal browser observation chain failed before a later approval",
+        )
+        self.cleanup_error = RuntimeError("private transient cleanup read detail")
+        self.release_drain = threading.Event()
+        self.drain_finished = threading.Event()
+        self.workspace_get_count = 0
+        self.cleanup_read_count = 0
+        self.resolve_calls: list[tuple[str, str]] = []
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route == "/v3/sessions/sess_delayed_cleanup/workspace"
+        self.workspace_get_count += 1
+        if self.workspace_get_count == 1:
+            raise self.primary_error
+
+        self.cleanup_read_count += 1
+        if self.fail_first_cleanup_read and self.cleanup_read_count == 1:
+            raise self.cleanup_error
+        successful_cleanup_read = self.cleanup_read_count - int(
+            self.fail_first_cleanup_read
+        )
+        if successful_cleanup_read <= self.empty_cleanup_reads:
+            return _JsonResponse({"pending_approvals": []})
+        return _JsonResponse(
+            {"pending_approvals": [{"approval_id": self.approval_id}]}
+        )
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del headers
+        if route == "/v3/sessions/sess_delayed_cleanup/runtime/drain":
+            try:
+                if not self.release_drain.wait(timeout=2.0):
+                    raise AssertionError("delayed approval was not rejected")
+                return _JsonResponse({"status": "failed"})
+            finally:
+                self.drain_finished.set()
+
+        assert route == f"/v3/approvals/{self.approval_id}/resolve"
+        decision = str(json.get("decision") or "")
+        self.resolve_calls.append((self.approval_id, decision))
+        assert decision == "rejected"
+        self.release_drain.set()
+        return _JsonResponse(
+            {"approval_id": self.approval_id, "decision": decision}
+        )
+
+
 class _DrainReturnsPendingApprovalJsonClient:
     """Expose an approval in the same bounded response that yields for it."""
 
@@ -1895,6 +1964,89 @@ def test_later_drain_auto_approves_after_chrome_receipt(
     assert coordination.workspace == {"pending_approvals": []}
 
 
+def test_same_inflight_drain_uses_chrome_once_then_auto_approves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 4
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_ids = ("approval_chrome_first", "approval_same_drain_second")
+    raw_client = _SerialApprovalJsonClient(approval_ids)
+    api = live._PublicHostClient(raw_client)
+    handoff_calls: list[str] = []
+    chrome_receipt = {
+        "schema_id": live.BROWSER_APPROVAL_RECEIPT_SCHEMA_ID,
+        "approval_id": approval_ids[0],
+    }
+
+    def resolve_first_in_browser(
+        self: live.LiveAoxAttemptRunner,
+        handoff_api: live._PublicHostClient,
+        *,
+        session_id: str,
+        workspace: dict[str, object],
+        workspace_receipt: live.PublicApiReceipt,
+        pending_approval: dict[str, object],
+        started: float,
+        pre_event_cursor: int,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        del self, workspace, workspace_receipt, started, pre_event_cursor
+        approval_id = str(pending_approval.get("approval_id") or "")
+        handoff_calls.append(approval_id)
+        handoff_api.post_json(
+            f"/v3/approvals/{approval_id}/resolve",
+            {"decision": "approved"},
+            idempotency_key=f"{session_id}:browser-approve:{approval_id}",
+        )
+        updated_workspace = handoff_api.get_json(
+            f"/v3/sessions/{session_id}/workspace"
+        )
+        return chrome_receipt, updated_workspace
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_wait_for_browser_approval",
+        resolve_first_in_browser,
+    )
+
+    try:
+        coordination = runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_serial",
+            drain_number=drain_number,
+            started=time.monotonic(),
+            pre_event_cursor=17,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=True,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+        )
+    finally:
+        raw_client.release_all()
+
+    assert handoff_calls == [approval_ids[0]]
+    assert raw_client.resolve_calls == [
+        (approval_id, "approved", True) for approval_id in approval_ids
+    ]
+    assert coordination.approval_ids == approval_ids
+    assert coordination.browser_approval_receipt is chrome_receipt
+    assert coordination.workspace == {"pending_approvals": []}
+    assert all(
+        not thread.is_alive()
+        or thread.name != f"aox-cutover-drain-{drain_number}"
+        for thread in threading.enumerate()
+    )
+
+
 def test_runtime_drain_wraps_background_exception_as_stable_failure(
     tmp_path: Path,
 ) -> None:
@@ -2023,6 +2175,117 @@ def test_runtime_drain_primary_error_wins_over_cleanup_failure(
     assert raw_client.cleanup_attempted.is_set()
     assert raw_client.drain_finished.is_set()
     assert "private cleanup failure detail" not in str(error.value)
+    assert all(
+        not thread.is_alive()
+        or thread.name != f"aox-cutover-drain-{drain_number}"
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_rejects_approval_delayed_past_old_cleanup_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 13
+    clock_lock = threading.Lock()
+    clock_value = -20.0
+
+    def stepped_monotonic() -> float:
+        nonlocal clock_value
+        with clock_lock:
+            clock_value += 20.0
+            return clock_value
+
+    monkeypatch.setattr(
+        live,
+        "time",
+        SimpleNamespace(monotonic=stepped_monotonic),
+    )
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1_000.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _DelayedCoordinationCleanupApprovalJsonClient(
+        fail_first_cleanup_read=False,
+        empty_cleanup_reads=1,
+    )
+    api = live._PublicHostClient(raw_client)
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_delayed_cleanup",
+                drain_number=drain_number,
+                started=0.0,
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=False,
+                fault_blob_root=None,
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_drain.set()
+
+    assert error.value is raw_client.primary_error
+    assert raw_client.cleanup_read_count >= 2
+    assert raw_client.resolve_calls == [(raw_client.approval_id, "rejected")]
+    assert raw_client.drain_finished.is_set()
+    assert all(
+        not thread.is_alive()
+        or thread.name != f"aox-cutover-drain-{drain_number}"
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_cleanup_read_recovers_and_rejects_later_approval(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    drain_number = 14
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    raw_client = _DelayedCoordinationCleanupApprovalJsonClient(
+        fail_first_cleanup_read=True,
+        empty_cleanup_reads=1,
+    )
+    api = live._PublicHostClient(raw_client)
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_delayed_cleanup",
+                drain_number=drain_number,
+                started=time.monotonic(),
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=False,
+                fault_blob_root=None,
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_drain.set()
+
+    assert error.value is raw_client.primary_error
+    assert error.value.details == {"cleanup_failure_type": "RuntimeError"}
+    assert raw_client.cleanup_read_count >= 3
+    assert raw_client.resolve_calls == [(raw_client.approval_id, "rejected")]
+    assert raw_client.drain_finished.is_set()
+    assert "private transient cleanup read detail" not in str(error.value)
     assert all(
         not thread.is_alive()
         or thread.name != f"aox-cutover-drain-{drain_number}"
