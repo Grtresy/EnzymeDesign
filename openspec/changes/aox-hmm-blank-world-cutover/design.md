@@ -46,6 +46,8 @@ research adapter 增加共享的 bounded HTTP invocation seam，统一 timeout�
 
 PubMed query 使用 NCBI identity，至少一个 schema-valid PMID 才满足 required quorum；DOI 只从 PubMed article identifiers 提取。Semantic Scholar/Tavily 是独立 enrichment attempt，其 429 或 retry exhaustion 在 PubMed 完整时写 `degraded`，不抹除主证据，也不触发备用 synthetic search。NCBI reference、EBI HMMER 和 UniProt 则按科学阶段被标记为 required，其失败/空结果语义由阶段合同决定。
 
+researcher 可以在同一 bounded policy 内按科学需要迭代 PubMed query；harness 不固定 query、不要求 one-call，也不按 first/latest/result-count 猜测主证据。研究 task 完成前，agent 必须在 `task.finish.evidence_refs` 中显式采用 exactly one succeeded、source-bearing PubMed `artifact:<id>`。collector、positive blocker 与 offline verifier 只以这个结构化 adoption 为 primary receipt authority，并要求 researcher task、invocation、artifact、全部数字 PMID source 的 task/lane 完全闭合；可选 `lane_id` 允许整条链一致为 `None`。零个或多个 PubMed artifact adoption 均 fail closed，report 还必须引用所选 artifact 内的 PMID/source。未采用 invocation 继续留在 canonical SQLite；把 accepted/exploratory/failed/empty/superseded 全量历史与 completeness root 封入 bundle 需要 `@2` schema，已独立提案而不在本 Goal 实施。
+
 备选方案是保留各 provider 私有 retry 并在 eval 汇总异常，但那会丢失 attempt/operation 关联且容易出现调用发生在 invocation 持久化之前的证据洞；不采用。
 
 ### 4. Sequence identity is append-only across providers

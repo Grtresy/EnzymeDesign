@@ -21,7 +21,7 @@
 
 1. master 显式创建并委派 researcher、executor 和 reporter task；
 2. `task.delegate(..., workflow_refs=[<exact aox-hmm-live ref>])` 只把 AOX workflow pack 绑定给 executor，通过受权子集、role/tool/capability 和 manifest snapshot 验证；省略或 `[]` 就是不绑定，不从 master focus 或关键词隐式继承；
-3. researcher 产生真实 PubMed/PMID 必需证据，Semantic Scholar/Tavily 只作 enrichment；
+3. researcher 可作有界迭代 PubMed 检索，但必须在 `task.finish.evidence_refs` 中用 exactly one `artifact:<id>` 明确采用唯一 succeeded、含数字 PMID 的 PubMed primary receipt；零个或多个 adoption 均 fail closed，不能按 prose/latest/首成功猜测；Semantic Scholar/Tavily 只作 enrichment；
 4. executor 在 persistent sandbox 中 author source，Host 封存 source snapshot，`sandbox.exec` 通过 `openzyme_pipeline` SDK 请求 provider/HPC；
 5. canonical approval 必须续接同一 `operation_id` / `operation_digest`，不得唤醒 agent 后重开替代 operation；
 6. artifact catalog 登记当前运行的 normalized sealed outputs 和 lineage；
@@ -149,6 +149,20 @@ driver 则在 approval 前拒绝同一 method 的第二个 operation，或已有
 前停止已确定不合格的 attempt。跨 run 显式 adopted/superseded chain 是
 [canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
 提案，本 Goal 不实现。
+
+r13 在 commit `240420676396aaa67120bc07fdc55ee443cbe69e` 上完成了 exact-six
+真实 known-positive probe；formal researcher 的四次真实 PubMed invocation 中，两次
+empty/failed、两次成功。后两者分别封存十条 citation 与定点 PMID `30530468`，属于
+合理的有界迭代检索。但 researcher `task.finish.evidence_refs` 同时列出两个 PubMed
+artifacts，仅在 summary prose 中称其中一个为 primary。旧 collector 又错误地要求整个
+session 的 PubMed source 只来自一个 invocation。没有结构化选择 authority 时，不能按
+prose/latest/首成功/结果数事后猜测；因此 operator 停止 r13，未生成 eligible bundle 或
+Chrome observation receipt，r13 永久 NO-GO。ledger 保守累计
+`33,878,587 / 500,000,000`，含仍按 reservation 计费的 `921,516` token，零 breach。
+当前小修允许多次 bounded PubMed query，但要求 researcher finish exactly-one PubMed
+artifact adoption，并由 collector/blocker/verifier 闭合 nullable task/lane lineage。完整
+invocation universe 与 disposition 的 `@2` 设计只记录在
+[canonical research evidence adoption and invocation history](../architecture-proposals/canonical-research-evidence-adoption-and-invocation-history.md)，本 Goal 不实现。
 
 每个 MAFFT/hmmbuild/hmmalign/CD-HIT cutover receipt 还必须来自 runner-issued `mcp_hpc_toolchain_runtime_identity@1`：runner-owned manifest 决定私有 SIF locator；当前 SSH 窄保证在同一 login shell 中直接用该 resolved pathname 执行，并在 payload 前后哈希同一路径，两个 digest 必须相同。Host 只逐层传递闭集 public projection，collector/verifier 将观察到的 digest 与 sealed prerequisite 精确比较；caller override、missing/mismatch 均 fail closed。该机制证明“同一路径前后未变并被直接执行”，尚不证明 immutable inode/content-addressed snapshot；后者单独记录在 [immutable HPC SIF execution snapshot](../architecture-proposals/immutable-hpc-sif-execution-snapshot.md)，不在本 Goal 实现。Slurm 本身仍可用于一般 runner 任务，但当前没有 job-internal same-execution SIF attestation，因此 Slurm execution 不能构成此 cutover identity。跨层 toolchain 定义收敛属于大改，只记录在 [single-source HPC toolchain contract registry](../architecture-proposals/single-source-hpc-toolchain-contract-registry.md)，不在本 Goal 实现。
 

@@ -3444,6 +3444,223 @@ def test_positive_blocker_preserves_formal_failure_before_browser_gate(
     }
 
 
+def _primary_pubmed_fixture(
+    *,
+    evidence_refs: list[str],
+    researcher_lane_id: str | None = None,
+    primary_lane_id: str | None = None,
+) -> tuple[
+    tuple[object, ...],
+    dict[str, object],
+    dict[str, SessionArtifactRecord],
+    list[dict[str, object]],
+    dict[str, str],
+]:
+    task_id = "task_researcher"
+    primary_id = "art_pubmed_primary"
+    exploratory_id = "art_pubmed_exploratory"
+    artifacts = {
+        primary_id: SessionArtifactRecord(
+            artifact_id=primary_id,
+            session_id="session_pubmed_selection",
+            task_id=task_id,
+            lane_id=primary_lane_id,
+            invocation_id="inv_pubmed_primary",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri="/sealed/pubmed-primary.json",
+            relative_path="pubmed-primary.json",
+            created_at="2026-07-18T00:00:00+00:00",
+            metadata={
+                "provider": "pubmed",
+                "schema_version": "provider_literature_evidence@1",
+                "provider_outcome": "completed",
+                "cutover_eligible": True,
+            },
+        ),
+        exploratory_id: SessionArtifactRecord(
+            artifact_id=exploratory_id,
+            session_id="session_pubmed_selection",
+            task_id=task_id,
+            lane_id=researcher_lane_id,
+            invocation_id="inv_pubmed_exploratory",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri="/sealed/pubmed-exploratory.json",
+            relative_path="pubmed-exploratory.json",
+            created_at="2026-07-18T00:00:01+00:00",
+            metadata={
+                "provider": "pubmed",
+                "schema_version": "provider_literature_evidence@1",
+                "provider_outcome": "completed",
+                "cutover_eligible": True,
+            },
+        ),
+    }
+    invocations = {
+        "inv_pubmed_primary": SimpleNamespace(
+            invocation_id="inv_pubmed_primary",
+            engine_name="research_tool",
+            status=SimpleNamespace(value="succeeded"),
+            task_id=task_id,
+            lane_id=primary_lane_id,
+            input_ref="doc_pubmed_primary_input",
+            output_ref="doc_pubmed_primary_output",
+        ),
+        "inv_pubmed_exploratory": SimpleNamespace(
+            invocation_id="inv_pubmed_exploratory",
+            engine_name="research_tool",
+            status=SimpleNamespace(value="succeeded"),
+            task_id=task_id,
+            lane_id=researcher_lane_id,
+            input_ref="doc_pubmed_exploratory_input",
+            output_ref="doc_pubmed_exploratory_output",
+        ),
+    }
+    sources = (
+        SimpleNamespace(
+            provider="pubmed",
+            pmid="30530468",
+            evidence_artifact_id=primary_id,
+            invocation_id="inv_pubmed_primary",
+            task_id=task_id,
+            lane_id=primary_lane_id,
+        ),
+        SimpleNamespace(
+            provider="pubmed",
+            pmid="12345678",
+            evidence_artifact_id=exploratory_id,
+            invocation_id="inv_pubmed_exploratory",
+            task_id=task_id,
+            lane_id=researcher_lane_id,
+        ),
+    )
+    task_receipts = [
+        {
+            "task_id": task_id,
+            "role": "researcher",
+            "lane_id": researcher_lane_id,
+            "evidence_refs": evidence_refs,
+        }
+    ]
+    return sources, invocations, artifacts, task_receipts, {"researcher": task_id}
+
+
+def test_primary_pubmed_selection_allows_iterative_history_and_nullable_lane() -> None:
+    fixture = _primary_pubmed_fixture(
+        evidence_refs=["artifact:art_pubmed_primary"],
+    )
+
+    selected = live._select_primary_pubmed_evidence(
+        sources=fixture[0],
+        invocations=fixture[1],
+        artifacts=fixture[2],
+        task_receipts=fixture[3],
+        task_ids_by_role=fixture[4],
+    )
+
+    assert selected.artifact.artifact_id == "art_pubmed_primary"
+    assert selected.invocation.invocation_id == "inv_pubmed_primary"
+    assert [source.pmid for source in selected.sources] == ["30530468"]
+    assert selected.researcher_task["lane_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("evidence_refs", "error_code"),
+    [
+        ([], "pubmed_primary_receipt_missing"),
+        (
+            [
+                "artifact:art_pubmed_primary",
+                "artifact:art_pubmed_exploratory",
+            ],
+            "pubmed_primary_receipt_ambiguous",
+        ),
+    ],
+)
+def test_primary_pubmed_selection_fails_closed_on_adoption_cardinality(
+    evidence_refs: list[str],
+    error_code: str,
+) -> None:
+    fixture = _primary_pubmed_fixture(evidence_refs=evidence_refs)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._select_primary_pubmed_evidence(
+            sources=fixture[0],
+            invocations=fixture[1],
+            artifacts=fixture[2],
+            task_receipts=fixture[3],
+            task_ids_by_role=fixture[4],
+        )
+
+    assert error.value.code == error_code
+
+
+def test_primary_pubmed_selection_rejects_lane_mismatch() -> None:
+    fixture = _primary_pubmed_fixture(
+        evidence_refs=["artifact:art_pubmed_primary"],
+        researcher_lane_id=None,
+        primary_lane_id="lane_unbound_to_researcher",
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._select_primary_pubmed_evidence(
+            sources=fixture[0],
+            invocations=fixture[1],
+            artifacts=fixture[2],
+            task_receipts=fixture[3],
+            task_ids_by_role=fixture[4],
+        )
+
+    assert error.value.code == "pubmed_primary_receipt_invalid"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error_code"),
+    [
+        ("failed_artifact", "pubmed_primary_receipt_invalid"),
+        ("nonnumeric_pmid", "pubmed_primary_lineage_mismatch"),
+        ("source_invocation", "pubmed_primary_lineage_mismatch"),
+    ],
+)
+def test_primary_pubmed_selection_rejects_invalid_selected_receipt(
+    mutation: str,
+    error_code: str,
+) -> None:
+    fixture = _primary_pubmed_fixture(
+        evidence_refs=["artifact:art_pubmed_primary"],
+    )
+    if mutation == "failed_artifact":
+        metadata = fixture[2]["art_pubmed_primary"].metadata
+        assert metadata is not None
+        metadata["provider_outcome"] = "failed"
+        metadata["cutover_eligible"] = False
+    elif mutation == "nonnumeric_pmid":
+        fixture[0][0].pmid = "PMID:30530468"
+    else:
+        fixture[0][0].invocation_id = "inv_pubmed_exploratory"
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._select_primary_pubmed_evidence(
+            sources=fixture[0],
+            invocations=fixture[1],
+            artifacts=fixture[2],
+            task_receipts=fixture[3],
+            task_ids_by_role=fixture[4],
+        )
+
+    assert error.value.code == error_code
+
+
+def test_aox_prompt_preserves_iterative_research_and_structured_primary_adoption() -> None:
+    prompt = live.S15_AOX_HMM_FIXED_PROMPT
+
+    assert "Bounded iterative PubMed searches are allowed" in prompt
+    assert "exactly one succeeded PubMed evidence artifact" in prompt
+    assert "including exactly one PubMed artifact:<id> in evidence_refs" in prompt
+    assert "first successful" not in prompt.casefold()
+
+
 def test_chrome_observation_uses_independent_submission_timeout(
     tmp_path: Path,
 ) -> None:

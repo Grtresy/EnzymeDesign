@@ -2263,6 +2263,8 @@ def _valid_evidence(
             "provenance": {
                 "invocation_id": "invocation_pubmed",
                 "provider": "pubmed",
+                "task_id": "task_research",
+                "lane_id": "lane_research",
             },
         },
         {
@@ -2887,6 +2889,10 @@ def _valid_evidence(
                     {
                         "source_ref_id": "source_pubmed_aox",
                         "pmid": "12345678",
+                        "task_id": "task_research",
+                        "lane_id": "lane_research",
+                        "invocation_id": "invocation_pubmed",
+                        "evidence_artifact_id": "art_pubmed_response",
                     }
                 ],
             },
@@ -3086,6 +3092,8 @@ def _valid_evidence(
                 "role": "researcher",
                 "status": "completed",
                 "business_exit": "agent_explicit",
+                "lane_id": "lane_research",
+                "evidence_refs": ["artifact:art_pubmed_response"],
                 **_delegation_workflow_receipt(
                     task_id="task_research", role="researcher"
                 ),
@@ -3334,6 +3342,10 @@ def _namespace_evidence(
             return {key: visit(item, field_name=key) for key, item in value.items()}
         if isinstance(value, list):
             return [visit(item, field_name=field_name) for item in value]
+        if isinstance(value, str) and field_name == "evidence_refs":
+            kind, separator, record_id = value.partition(":")
+            if separator and record_id.startswith(identity_prefixes):
+                return f"{kind}:{record_id}_{run_suffix}"
         if (
             isinstance(value, str)
             and field_name not in semantic_text_keys
@@ -6033,6 +6045,116 @@ def test_required_pubmed_receipt_must_bind_real_pmid_artifact(tmp_path: Path) ->
         _build_bundle(tmp_path, mutate_evidence=change_declared_pmid)
 
     assert error.value.code == "pubmed_artifact_identity_mismatch"
+
+
+def test_pubmed_primary_artifact_must_be_selected_by_researcher_task(
+    tmp_path: Path,
+) -> None:
+    def remove_primary_selection(evidence: dict[str, object]) -> None:
+        researcher = next(
+            item for item in evidence["tasks"] if item["role"] == "researcher"
+        )
+        researcher["evidence_refs"] = []
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=remove_primary_selection)
+
+    assert error.value.code == "pubmed_primary_task_binding_invalid"
+
+
+def test_pubmed_primary_artifact_must_close_through_selected_invocation(
+    tmp_path: Path,
+) -> None:
+    def drift_primary_artifact_role(evidence: dict[str, object]) -> None:
+        evidence["scientific_checks"]["aox_chain"]["artifact_roles"][
+            "literature_evidence"
+        ] = "art_ncbi_provider_sequences"
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=drift_primary_artifact_role)
+
+    assert error.value.code == "pubmed_primary_lineage_invalid"
+
+
+def test_pubmed_invocation_must_belong_to_researcher_task(tmp_path: Path) -> None:
+    def move_invocation_to_executor(evidence: dict[str, object]) -> None:
+        invocation = evidence["engine_invocations"][0]
+        invocation["task_id"] = "task_execute"
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=move_invocation_to_executor)
+
+    assert error.value.code == "pubmed_invocation_task_mismatch"
+
+
+def test_pubmed_invocation_allows_matching_absent_research_lane(tmp_path: Path) -> None:
+    def remove_optional_lane(evidence: dict[str, object]) -> None:
+        researcher = next(
+            item for item in evidence["tasks"] if item["role"] == "researcher"
+        )
+        researcher["lane_id"] = None
+        evidence["engine_invocations"][0]["lane_id"] = None
+        primary = next(
+            item
+            for item in evidence["artifacts"]
+            if item["artifact_id"] == "art_pubmed_response"
+        )
+        primary["provenance"]["lane_id"] = None
+        pubmed = next(
+            item
+            for item in evidence["provider_identities"]
+            if item["provider"] == "pubmed"
+        )
+        pubmed["source_refs"][0]["lane_id"] = None
+
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        mutate_evidence=remove_optional_lane,
+    )
+
+    assert verify_attempt_bundle(bundle_path, artifact_root=artifact_root).passed is True
+
+
+def test_pubmed_invocation_lane_must_match_researcher_task(tmp_path: Path) -> None:
+    def drift_invocation_lane(evidence: dict[str, object]) -> None:
+        evidence["engine_invocations"][0]["lane_id"] = None
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=drift_invocation_lane)
+
+    assert error.value.code == "pubmed_invocation_lane_mismatch"
+
+
+def test_pubmed_primary_artifact_scope_must_match_researcher(tmp_path: Path) -> None:
+    def drift_artifact_task(evidence: dict[str, object]) -> None:
+        primary = next(
+            item
+            for item in evidence["artifacts"]
+            if item["artifact_id"] == "art_pubmed_response"
+        )
+        primary["provenance"]["task_id"] = "task_execute"
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=drift_artifact_task)
+
+    assert error.value.code == "pubmed_primary_artifact_scope_mismatch"
+
+
+def test_pubmed_primary_source_scope_must_match_researcher(tmp_path: Path) -> None:
+    def drift_source_artifact(evidence: dict[str, object]) -> None:
+        pubmed = next(
+            item
+            for item in evidence["provider_identities"]
+            if item["provider"] == "pubmed"
+        )
+        pubmed["source_refs"][0]["evidence_artifact_id"] = (
+            "art_ncbi_provider_sequences"
+        )
+
+    with pytest.raises(CutoverEvidenceError) as error:
+        _build_bundle(tmp_path, mutate_evidence=drift_source_artifact)
+
+    assert error.value.code == "pubmed_primary_source_scope_mismatch"
 
 
 def test_micu_overage_or_breach_cannot_enter_attempt_bundle(tmp_path: Path) -> None:

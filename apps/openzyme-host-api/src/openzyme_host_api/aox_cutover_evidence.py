@@ -3662,11 +3662,16 @@ def _validate_required_live_chain(
             for item in invocation.get("artifact_refs") or []
             if isinstance(item, dict)
         ]
+        lane_id = invocation.get("lane_id")
         if (
             invocation.get("engine_name") != "research_tool"
             or invocation.get("status") != "succeeded"
             or not str(invocation.get("task_id") or "")
-            or not str(invocation.get("lane_id") or "")
+            or "lane_id" not in invocation
+            or (
+                lane_id is not None
+                and (not isinstance(lane_id, str) or not lane_id)
+            )
             or not str(invocation.get("input_ref") or "")
             or not str(invocation.get("output_ref") or "")
             or not str(invocation.get("started_at") or "")
@@ -3938,6 +3943,110 @@ def _validate_required_live_chain(
             "required_task_chain_missing",
             "eligible AOX evidence requires one durable researcher, executor, and reporter task",
             details={"identity": "tasks"},
+        )
+    researcher_task = next(
+        task for task in tasks if task.get("role") == "researcher"
+    )
+    scientific_chain = dict(
+        dict(payload.get("scientific_checks") or {}).get("aox_chain") or {}
+    )
+    artifact_roles = dict(scientific_chain.get("artifact_roles") or {})
+    primary_artifact_id = str(artifact_roles.get("literature_evidence") or "")
+    provider_artifact_ids = {
+        str(item) for item in pubmed_provider.get("artifact_ids") or [] if str(item)
+    }
+    invocation_artifact_ids = {
+        str(item.get("artifact_id") or "")
+        for item in pubmed_invocation.get("artifact_refs") or []
+        if isinstance(item, dict) and str(item.get("artifact_id") or "")
+    }
+    if (
+        scientific_chain.get("literature_provider_record_id")
+        != pubmed_provider.get("provider_record_id")
+        or not primary_artifact_id
+        or provider_artifact_ids != {primary_artifact_id}
+        or invocation_artifact_ids != {primary_artifact_id}
+    ):
+        raise CutoverEvidenceError(
+            "pubmed_primary_lineage_invalid",
+            "the selected PubMed artifact must close exactly through its aggregate provider and invocation receipts",
+            details={"identity": "scientific_checks.aox_chain.literature_evidence"},
+        )
+    researcher_evidence_refs = researcher_task.get("evidence_refs")
+    primary_evidence_ref = f"artifact:{primary_artifact_id}"
+    if (
+        not isinstance(researcher_evidence_refs, list)
+        or any(not isinstance(item, str) for item in researcher_evidence_refs)
+        or primary_evidence_ref not in researcher_evidence_refs
+    ):
+        raise CutoverEvidenceError(
+            "pubmed_primary_task_binding_invalid",
+            "the researcher task.finish receipt must select the primary PubMed artifact",
+            details={"identity": f"task:{researcher_task.get('task_id')}:evidence_refs"},
+        )
+    if pubmed_invocation.get("task_id") != researcher_task.get("task_id"):
+        raise CutoverEvidenceError(
+            "pubmed_invocation_task_mismatch",
+            "the selected PubMed invocation must belong to the researcher task",
+            details={"identity": "provider_identities.pubmed.invocation_id"},
+        )
+    researcher_lane_id = researcher_task.get("lane_id")
+    if (
+        "lane_id" not in researcher_task
+        or (
+            researcher_lane_id is not None
+            and (
+                not isinstance(researcher_lane_id, str)
+                or not researcher_lane_id
+            )
+        )
+        or pubmed_invocation.get("lane_id") != researcher_lane_id
+    ):
+        raise CutoverEvidenceError(
+            "pubmed_invocation_lane_mismatch",
+            "the selected PubMed invocation lane must exactly match the researcher task lane, including an absent lane",
+            details={"identity": "provider_identities.pubmed.invocation_id"},
+        )
+    primary_artifact = artifacts.get(primary_artifact_id)
+    primary_provenance = (
+        {}
+        if primary_artifact is None
+        else dict(primary_artifact.get("provenance") or {})
+    )
+    if (
+        primary_artifact is None
+        or primary_provenance.get("provider") != "pubmed"
+        or primary_provenance.get("invocation_id")
+        != pubmed_invocation.get("invocation_id")
+        or primary_provenance.get("task_id") != researcher_task.get("task_id")
+        or "lane_id" not in primary_provenance
+        or primary_provenance.get("lane_id") != researcher_lane_id
+    ):
+        raise CutoverEvidenceError(
+            "pubmed_primary_artifact_scope_mismatch",
+            "the selected PubMed artifact must preserve exact researcher invocation scope",
+            details={"identity": f"artifact:{primary_artifact_id}"},
+        )
+    if any(
+        not {
+            "source_ref_id",
+            "pmid",
+            "task_id",
+            "lane_id",
+            "invocation_id",
+            "evidence_artifact_id",
+        }.issubset(source_ref)
+        or source_ref.get("task_id") != researcher_task.get("task_id")
+        or source_ref.get("lane_id") != researcher_lane_id
+        or source_ref.get("invocation_id")
+        != pubmed_invocation.get("invocation_id")
+        or source_ref.get("evidence_artifact_id") != primary_artifact_id
+        for source_ref in pubmed_source_refs
+    ):
+        raise CutoverEvidenceError(
+            "pubmed_primary_source_scope_mismatch",
+            "every selected PubMed source must preserve exact task, lane, invocation, and artifact lineage",
+            details={"identity": "provider_identities.pubmed.source_refs"},
         )
     product_path = dict(payload.get("product_path") or {})
     campaign_identity = dict(payload.get("identity") or {})

@@ -21,6 +21,7 @@
 - [x] 3.4 Establish invocation/operation state before provider I/O, terminate it on every outcome, convert typed failures to LLM-readable tool results, and seal licensed/safe provider evidence through the artifact boundary.
 - [x] 3.5 Wire Host settings so PubMed/Semantic Scholar remain usable without Tavily and secrets/private URLs never enter errors, evidence, or public projections.
 - [x] 3.6 Add tests for 429/`Retry-After`, transient recovery, non-retryable status, empty-vs-schema drift, required-vs-enrichment quorum, terminal invocation, real sealing, repository round-trip, and safe projection.
+- [x] 3.7 Preserve bounded iterative PubMed strategy while requiring exactly one primary artifact adoption in researcher `task.finish`, close nullable task/invocation/artifact/source lineage in collector/blocker/offline verifier, and defer complete invocation-history sealing to its own architecture proposal.
 
 ## 4. AOX provider and toolchain identity chain
 

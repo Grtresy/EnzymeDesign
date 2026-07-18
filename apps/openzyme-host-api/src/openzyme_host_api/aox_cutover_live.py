@@ -637,6 +637,14 @@ class CatalogArtifactCopy:
 
 
 @dataclass(frozen=True, slots=True)
+class PrimaryPubmedEvidence:
+    sources: tuple[object, ...]
+    invocation: object
+    artifact: SessionArtifactRecord
+    researcher_task: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class MicuAttemptReceipt:
     record_id: int
     scenario: str
@@ -3063,50 +3071,43 @@ class LiveAoxAttemptRunner:
             }
         with provider.read() as scope:
             repositories = scope.repositories
-            pubmed_sources = [
-                source
-                for source in repositories.research_source_refs.list_by_session(
+            sources = tuple(
+                repositories.research_source_refs.list_by_session(formal.session_id)
+            )
+            invocations = {
+                invocation.invocation_id: invocation
+                for invocation in repositories.invocations.list_by_session(
                     formal.session_id
                 )
-                if source.provider == "pubmed" and str(source.pmid or "").isdigit()
-            ]
-            invocation_ids = {source.invocation_id for source in pubmed_sources}
-            invocations = [
-                invocation
-                for invocation_id in sorted(invocation_ids)
-                if (invocation := repositories.invocations.get(invocation_id))
-                is not None
-            ]
+            }
             artifacts = {
                 artifact.artifact_id: artifact
                 for artifact in repositories.artifacts.list_by_session(
                     formal.session_id
                 )
             }
-        if not pubmed_sources:
-            return {
-                "code": "required_pubmed_evidence_missing",
-                "message": "formal path has no persisted real PMID evidence",
-            }
-        if (
-            len(invocation_ids) != 1
-            or len(invocations) != 1
-            or invocations[0].engine_name != "research_tool"
-            or invocations[0].status.value != "succeeded"
-            or not invocations[0].input_ref
-            or not invocations[0].output_ref
-            or any(
-                not source.evidence_artifact_id
-                or source.evidence_artifact_id not in artifacts
-                for source in pubmed_sources
+            tasks = tuple(repositories.tasks.list_by_session(formal.session_id))
+            agents = tuple(repositories.agents.list_by_session(formal.session_id))
+            documents = tuple(
+                repositories.engine_documents.list_by_session(formal.session_id)
             )
-        ):
+        try:
+            task_receipts, task_ids_by_role = _task_receipts(
+                tasks=tasks,
+                agents=agents,
+                documents=documents,
+            )
+            _select_primary_pubmed_evidence(
+                sources=sources,
+                invocations=invocations,
+                artifacts=artifacts,
+                task_receipts=task_receipts,
+                task_ids_by_role=task_ids_by_role,
+            )
+        except LiveProductPathError as exc:
             return {
-                "code": "required_pubmed_engine_invocation_missing",
-                "message": (
-                    "PubMed provenance does not close through one terminal research-tool "
-                    "invocation and sealed evidence artifact"
-                ),
+                "code": exc.code,
+                "message": _safe_message(exc),
             }
         return None
 
@@ -4985,6 +4986,22 @@ def _pubmed_receipts(
             "PubMed source rows do not share one cache-bypassed provider receipt",
         )
     evidence_artifact = _require_artifact(artifacts, next(iter(evidence_ids)))
+    invocation_task_id = getattr(invocation, "task_id", None)
+    invocation_lane_id = getattr(invocation, "lane_id", None)
+    if (
+        evidence_artifact.invocation_id != invocation_id
+        or evidence_artifact.task_id != invocation_task_id
+        or evidence_artifact.lane_id != invocation_lane_id
+        or any(
+            getattr(source, "task_id", None) != invocation_task_id
+            or getattr(source, "lane_id", None) != invocation_lane_id
+            for source in source_rows
+        )
+    ):
+        raise LiveProductPathError(
+            "pubmed_primary_lineage_mismatch",
+            "PubMed task, invocation, artifact, and source lineage is inconsistent",
+        )
     evidence_copy = _copy_catalog_artifact(
         context,
         evidence_artifact,
@@ -4994,6 +5011,8 @@ def _pubmed_receipts(
             "invocation_id": invocation_id,
             "engine_name": "research_tool",
             "provider": "pubmed",
+            "task_id": invocation_task_id,
+            "lane_id": invocation_lane_id,
         },
         cache=copies,
     )
@@ -5018,6 +5037,12 @@ def _pubmed_receipts(
             "title": str(getattr(source, "title", "") or ""),
             "locator": str(getattr(source, "locator", "") or ""),
             "doi": getattr(source, "doi", None),
+            "task_id": getattr(source, "task_id", None),
+            "lane_id": getattr(source, "lane_id", None),
+            "invocation_id": str(getattr(source, "invocation_id")),
+            "evidence_artifact_id": str(
+                getattr(source, "evidence_artifact_id")
+            ),
         }
         for source in source_rows
     ]
@@ -5039,8 +5064,10 @@ def _pubmed_receipts(
         "invocation_id": invocation_id,
         "engine_name": "research_tool",
         "status": "succeeded",
-        "task_id": str(getattr(invocation, "task_id") or ""),
-        "lane_id": str(getattr(invocation, "lane_id") or ""),
+        "task_id": str(invocation_task_id or ""),
+        "lane_id": (
+            None if invocation_lane_id is None else str(invocation_lane_id)
+        ),
         "input_ref": input_ref,
         "input_document_digest": canonical_digest(getattr(input_document, "payload")),
         "output_ref": output_ref,
@@ -5049,10 +5076,10 @@ def _pubmed_receipts(
         "finished_at": str(getattr(invocation, "finished_at") or ""),
         "artifact_refs": [_artifact_ref(evidence_copy)],
     }
-    if not invocation_record["task_id"] or not invocation_record["lane_id"]:
+    if not invocation_record["task_id"]:
         raise LiveProductPathError(
             "pubmed_engine_invocation_scope_missing",
-            "PubMed research invocation is not bound to its delegated task and lane",
+            "PubMed research invocation is not bound to its delegated task",
         )
     return provider_record, invocation_record, evidence_copy
 
@@ -5142,6 +5169,117 @@ def _task_receipts(
             details={"observed_roles": sorted(role_ids)},
         )
     return sorted(receipts, key=lambda item: str(item["task_id"])), role_ids
+
+
+def _select_primary_pubmed_evidence(
+    *,
+    sources: tuple[object, ...],
+    invocations: Mapping[str, object],
+    artifacts: Mapping[str, SessionArtifactRecord],
+    task_receipts: list[dict[str, object]],
+    task_ids_by_role: Mapping[str, str],
+) -> PrimaryPubmedEvidence:
+    """Select the one PubMed artifact explicitly adopted by the researcher.
+
+    Iterative provider calls remain part of durable control-plane history.  The
+    cutover receipt is selected only through the researcher's structured
+    ``task.finish.evidence_refs``; timestamps, result counts, and prose are never
+    selection authorities.
+    """
+
+    researcher_task_id = str(task_ids_by_role.get("researcher") or "")
+    researcher_tasks = [
+        receipt
+        for receipt in task_receipts
+        if receipt.get("role") == "researcher"
+        and receipt.get("task_id") == researcher_task_id
+    ]
+    if len(researcher_tasks) != 1:
+        raise LiveProductPathError(
+            "pubmed_primary_receipt_missing",
+            "canonical researcher task receipt is unavailable for PubMed adoption",
+        )
+    researcher_task = researcher_tasks[0]
+    adopted_artifacts: list[SessionArtifactRecord] = []
+    for evidence_ref in researcher_task.get("evidence_refs") or []:
+        ref = str(evidence_ref)
+        if not ref.startswith("artifact:"):
+            continue
+        artifact = artifacts.get(ref.removeprefix("artifact:"))
+        if artifact is None:
+            continue
+        metadata = dict(artifact.metadata or {})
+        if metadata.get("provider") == "pubmed":
+            adopted_artifacts.append(artifact)
+    if not adopted_artifacts:
+        raise LiveProductPathError(
+            "pubmed_primary_receipt_missing",
+            "researcher task.finish did not adopt a PubMed evidence artifact",
+        )
+    if len(adopted_artifacts) != 1:
+        raise LiveProductPathError(
+            "pubmed_primary_receipt_ambiguous",
+            "researcher task.finish adopted more than one PubMed evidence artifact",
+            details={"adopted_count": len(adopted_artifacts)},
+        )
+
+    artifact = adopted_artifacts[0]
+    metadata = dict(artifact.metadata or {})
+    if (
+        metadata.get("schema_version") != "provider_literature_evidence@1"
+        or metadata.get("provider_outcome") != "completed"
+        or metadata.get("cutover_eligible") is not True
+        or artifact.task_id != researcher_task_id
+        or artifact.lane_id != researcher_task.get("lane_id")
+        or not artifact.invocation_id
+    ):
+        raise LiveProductPathError(
+            "pubmed_primary_receipt_invalid",
+            "adopted PubMed artifact is not a cutover-eligible researcher receipt",
+            details={"artifact_id": artifact.artifact_id},
+        )
+
+    invocation = invocations.get(str(artifact.invocation_id))
+    if (
+        invocation is None
+        or getattr(invocation, "engine_name", None) != "research_tool"
+        or getattr(getattr(invocation, "status", None), "value", None)
+        != "succeeded"
+        or getattr(invocation, "task_id", None) != researcher_task_id
+        or getattr(invocation, "lane_id", None) != researcher_task.get("lane_id")
+        or not getattr(invocation, "input_ref", None)
+        or not getattr(invocation, "output_ref", None)
+    ):
+        raise LiveProductPathError(
+            "pubmed_primary_lineage_mismatch",
+            "adopted PubMed artifact does not close through its researcher invocation",
+            details={"artifact_id": artifact.artifact_id},
+        )
+
+    selected_sources = tuple(
+        source
+        for source in sources
+        if getattr(source, "provider", None) == "pubmed"
+        and getattr(source, "evidence_artifact_id", None) == artifact.artifact_id
+    )
+    if not selected_sources or any(
+        not str(getattr(source, "pmid", "") or "").isdigit()
+        or getattr(source, "invocation_id", None) != artifact.invocation_id
+        or getattr(source, "task_id", None) != researcher_task_id
+        or getattr(source, "lane_id", None) != researcher_task.get("lane_id")
+        for source in selected_sources
+    ):
+        raise LiveProductPathError(
+            "pubmed_primary_lineage_mismatch",
+            "adopted PubMed artifact lacks numeric PMID sources with exact lineage",
+            details={"artifact_id": artifact.artifact_id},
+        )
+    return PrimaryPubmedEvidence(
+        sources=selected_sources,
+        invocation=invocation,
+        artifact=artifact,
+        researcher_task=researcher_task,
+    )
 
 
 def _bind_delegation_workflow_receipts(
@@ -5970,6 +6108,23 @@ def _collect_positive_evidence(
             repositories,
             formal.session_id,
         )
+    task_records, task_ids_by_role = _task_receipts(
+        tasks=tasks,
+        agents=agents,
+        documents=documents,
+    )
+    primary_pubmed = _select_primary_pubmed_evidence(
+        sources=sources,
+        invocations=invocations,
+        artifacts=artifacts,
+        task_receipts=task_records,
+        task_ids_by_role=task_ids_by_role,
+    )
+    task_records = _bind_delegation_workflow_receipts(
+        context,
+        task_receipts=task_records,
+        documents=documents,
+    )
     formal_hpc_workspace_ids = _require_attempt_hpc_workspace_binding(
         context,
         operations,
@@ -6591,23 +6746,7 @@ def _collect_positive_evidence(
         ],
     )
 
-    pubmed_source_rows = tuple(
-        source for source in sources if getattr(source, "provider", None) == "pubmed"
-    )
-    pubmed_invocation_ids = {
-        str(getattr(source, "invocation_id")) for source in pubmed_source_rows
-    }
-    if len(pubmed_invocation_ids) != 1:
-        raise LiveProductPathError(
-            "pubmed_engine_invocation_ambiguous",
-            "PubMed source evidence does not resolve to one engine invocation",
-        )
-    pubmed_invocation = invocations.get(next(iter(pubmed_invocation_ids)))
-    if pubmed_invocation is None:
-        raise LiveProductPathError(
-            "pubmed_engine_invocation_missing",
-            "PubMed source evidence references a missing engine invocation",
-        )
+    pubmed_invocation = primary_pubmed.invocation
     document_by_id = {
         str(getattr(document, "document_id")): document for document in documents
     }
@@ -6624,7 +6763,7 @@ def _collect_positive_evidence(
         )
     pubmed_provider, pubmed_engine_invocation, literature_evidence = _pubmed_receipts(
         context,
-        sources=sources,
+        sources=primary_pubmed.sources,
         invocation=pubmed_invocation,
         input_document=pubmed_input_document,
         output_document=pubmed_output_document,
@@ -6692,20 +6831,14 @@ def _collect_positive_evidence(
         _approval_record(operation, approvals)
         for operation in operation_by_role.values()
     ]
-    task_records, task_ids_by_role = _task_receipts(
-        tasks=tasks,
-        agents=agents,
-        documents=documents,
-    )
-    task_records = _bind_delegation_workflow_receipts(
-        context,
-        task_receipts=task_records,
-        documents=documents,
-    )
-    if pubmed_engine_invocation["task_id"] != task_ids_by_role["researcher"]:
+    if (
+        pubmed_engine_invocation["task_id"] != task_ids_by_role["researcher"]
+        or pubmed_engine_invocation["lane_id"]
+        != primary_pubmed.researcher_task.get("lane_id")
+    ):
         raise LiveProductPathError(
             "pubmed_research_task_mismatch",
-            "PubMed invocation is not owned by the formal researcher task",
+            "PubMed invocation is not owned by the exact formal researcher scope",
         )
 
     scoring_result = aox_motif.score_aligned_fasta(scoring_alignment.content)

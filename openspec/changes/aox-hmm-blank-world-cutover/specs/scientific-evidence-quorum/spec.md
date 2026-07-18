@@ -11,6 +11,21 @@ The AOX/HMM cutover workflow SHALL require at least one real PubMed record suppo
 - **WHEN** PubMed fails, returns a malformed response, or returns no evidence for the bounded AOX query set
 - **THEN** the workflow records the provider failure or empty result and cannot become cutover eligible
 
+### Requirement: Explicit primary PubMed evidence adoption
+The researcher MAY perform multiple bounded PubMed invocations while refining a scientific query. Before completing the research task, it SHALL adopt exactly one succeeded, cutover-eligible PubMed evidence artifact by including exactly one PubMed `artifact:<id>` in `task.finish.evidence_refs`. The selected artifact, its succeeded research invocation, every selected numeric-PMID source ref, and the researcher task SHALL share exact task and lane identity; a lane MAY be `None` only when it is `None` throughout the chain. The collector and verifier MUST NOT infer primary status from timestamps, first success, result count, natural-language summary, or report prose.
+
+#### Scenario: Iterative searches adopt one primary receipt
+- **WHEN** bounded research produces multiple PubMed invocations and the researcher adopts exactly one succeeded source-bearing PubMed artifact
+- **THEN** only that artifact/invocation/source set supplies the canonical required provider receipt, while other invocations remain durable control-plane history
+
+#### Scenario: Primary adoption is missing or ambiguous
+- **WHEN** researcher `task.finish.evidence_refs` contains zero or more than one PubMed evidence artifact
+- **THEN** collection fails closed with missing or ambiguous primary evidence and no cutover-eligible bundle is produced
+
+#### Scenario: Nullable lane lineage is exact
+- **WHEN** researcher task, selected invocation, selected artifact, and every selected source all carry `lane_id=None`
+- **THEN** the optional lane scope is valid; any missing field, empty-string lane, or unequal lane value fails offline verification
+
 ### Requirement: Explicit enrichment degradation
 Semantic Scholar and Tavily SHALL be enrichment providers rather than required quorum members. Retry exhaustion, rate limiting, absence, or empty results from an enrichment provider MUST be recorded as structured `degraded` evidence and MUST NOT erase valid PubMed evidence or be replaced by synthetic hits.
 

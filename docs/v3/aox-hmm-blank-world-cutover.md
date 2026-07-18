@@ -212,6 +212,39 @@ model and verifier schema. That larger design is proposal-only in
 [canonical scientific chain adoption and attempt closure](architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
 and is not implemented in this goal.
 
+The r13 campaign pinned commit
+`240420676396aaa67120bc07fdc55ee443cbe69e`, config digest
+`sha256:d7020635712833f3301970dabbbb8b3947f633fe4a27bebd7d34855a150919e6`,
+and workflow
+`workflow:aox-hmm-live@2.0.0#sha256:3f04d785f96c7a33fdc85d653d8b02cf13cd45e452b786b2b258197d06de831d`.
+Its independent known-positive probe completed the exact six real
+NCBI/UniProt/MAFFT/hmmbuild/CD-HIT/HMMalign operations once each. The formal
+researcher then used a reasonable bounded sequence of four real PubMed calls:
+two typed empty/failures and two successes containing respectively ten records
+and the targeted PMID `30530468`. However, its successful `task.finish` listed
+both succeeded PubMed artifacts in `evidence_refs`; only free-form summary prose
+called one of them primary. The then-current collector incorrectly required all
+session PubMed sources to resolve to one invocation, while the product contract
+had no structured authority for choosing between the two accepted refs. The
+operator stopped the attempt rather than infer intent or spend further external
+resources. r13 is permanently **NO-GO**: it has no eligible sealed bundle and no
+Chrome observation receipt, and none of its roots, sessions, artifacts or
+browser state may be reused. The persistent ledger conservatively charges
+`33,878,587 / 500,000,000` tokens with zero breaches; this includes the
+interrupted r13 reservation of `921,516` tokens, which is not silently released
+or reclassified as actual usage.
+
+The small corrective contract preserves research strategy freedom: bounded
+iterative PubMed calls remain valid, but researcher `task.finish.evidence_refs`
+must explicitly adopt exactly one succeeded PubMed artifact. Collector,
+positive blocker and offline verifier use only that artifact and require exact
+task/invocation/artifact/source lineage; nullable lane identity is accepted only
+when equal end to end. They never select by latest timestamp, first success,
+record count or prose. Sealing the complete invocation universe together with
+accepted/exploratory/failed/empty/superseded dispositions and a completeness
+root is a larger `@2` change recorded, but not implemented here, in
+[canonical research evidence adoption and invocation history](architecture-proposals/canonical-research-evidence-adoption-and-invocation-history.md).
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model

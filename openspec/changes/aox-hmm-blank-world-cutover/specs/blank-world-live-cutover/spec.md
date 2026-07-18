@@ -64,6 +64,10 @@ The collector SHALL reconstruct exactly one durable delegation request for each 
 - **WHEN** required prerequisites and real operations succeed
 - **THEN** the workspace proves researcher, executor, and reporter participation; required literature; every operation required by the artifact-derived formal branch plus isolated full-capability probe coverage; explicit task finishes; normalized sealed artifacts; a published report; and a final master response
 
+#### Scenario: Bind the primary literature receipt to the product path
+- **WHEN** the researcher completes after bounded iterative PubMed searches
+- **THEN** the primary PubMed provider receipt is selected only by exactly one PubMed artifact in researcher `task.finish.evidence_refs`, the report cites a PMID/source from it, and collector plus offline verifier close its task/invocation/artifact/source lineage without requiring a non-null lane
+
 #### Scenario: Reject seeded success
 - **WHEN** a test manually seeds tasks, approvals, runs, artifacts, reports, deterministic adapters, notebook output, or fixture scientific records
 - **THEN** the attempt is marked fixture/non-cutover and cannot count toward the campaign

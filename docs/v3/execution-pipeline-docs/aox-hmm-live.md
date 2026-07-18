@@ -332,6 +332,22 @@ controlled-operation, request/response and sealed-artifact digests:
   `provider_io_performed=false` without fabricating an invocation, request, or
   response digest.
 
+The researcher may perform bounded iterative PubMed searches; the harness does
+not force one query, stop at the first success, or infer a preferred result by
+timestamp or result count. Before `task.finish`, the researcher MUST explicitly
+adopt exactly one succeeded, source-bearing PubMed evidence artifact by placing
+exactly one `artifact:<id>` for provider `pubmed` in `evidence_refs`. Zero or
+multiple adopted PubMed artifacts is ambiguous and fails closed. The selected
+artifact, its one succeeded research invocation, numeric-PMID source refs, and
+the researcher task MUST have identical task/lane lineage; `lane_id=None` is
+valid only when it is identical across the whole chain. Natural-language use of
+"primary" is not authority. The reporter MUST cite a PMID/source from this
+selected artifact. Other exploratory, empty, failed, or superseded invocations
+remain durable control-plane history, but the current `@1` cutover bundle seals
+only the explicitly adopted provider receipt. A future complete-history proof
+is proposal-only in [canonical research evidence adoption and invocation
+history](../architecture-proposals/canonical-research-evidence-adoption-and-invocation-history.md).
+
 Semantic Scholar and Tavily are enrichment only. Their rate limit, absence, or
 bounded retry exhaustion is recorded as `degraded` and disclosed in the
 report; it does not erase complete PubMed evidence. Conversely, enrichment
