@@ -7790,6 +7790,38 @@ class ExecutionEngine:
             )
         return expected_outputs
 
+    def _require_canonical_bio_tool_outputs(
+        self,
+        method: str,
+        declared_outputs: list[dict[str, Any]],
+    ) -> None:
+        expected_paths = sorted(
+            str(item["path"])
+            for item in self._planned_bio_tool_expected_outputs(method)
+        )
+        declared_paths = sorted(
+            str(item.get("path") or "") for item in declared_outputs
+        )
+        if declared_paths == expected_paths:
+            return
+        raise PipelineSdkFailure(
+            error_type="bio_tool_output_contract_mismatch",
+            message=(
+                f"{method} expected_outputs do not match its fixed runner template."
+            ),
+            hint=(
+                "Declare exactly these workspace-relative output paths: "
+                + ", ".join(expected_paths)
+            ),
+            stage="hpc_output_validation",
+            retryable=False,
+            sdk_method=method,
+            details={
+                "declared_paths": declared_paths,
+                "expected_paths": expected_paths,
+            },
+        )
+
     def _require_bio_route_policy(self, method: str) -> dict[str, Any]:
         route_policy_id = BIO_PROVIDER_ROUTE_POLICY_IDS.get(method)
         policy = dict(S12_ROUTE_POLICIES.get(str(route_policy_id)) or {})
@@ -9330,6 +9362,7 @@ class ExecutionEngine:
             params.get("placement"), sdk_method=method
         )
         declared_outputs = self._require_declared_outputs(params, sdk_method=method)
+        self._require_canonical_bio_tool_outputs(method, declared_outputs)
         runner_params = self._bio_tool_runner_params(method=method, params=params)
         stage_refs: list[dict[str, Any]] = []
         artifacts_by_slot: dict[str, SessionArtifactRecord] = {}

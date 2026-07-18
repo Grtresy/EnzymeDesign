@@ -310,6 +310,20 @@ response-body digests rather than a parsed-FASTA digest presented as a provider
 response digest. EBI HMMER is not duplicated in the probe because every formal
 branch already reaches it.
 
+Because the four runner-owned tool templates produce fixed paths, the probe
+prompt exposes their exact output contracts: `bio_tools/mafft/alignment.fasta`,
+`bio_tools/hmmbuild/model.hmm`, both `bio_tools/cdhit/clustered.fasta` and
+`bio_tools/cdhit/clusters.csv`, and `bio_tools/hmmalign/aligned.fasta`. The Host
+rejects any different declared path set before HPC dispatch with a
+LLM-readable `bio_tool_output_contract_mismatch`; it never rewrites agent code
+or treats a predictably missing path as a toolchain health failure.
+The probe selects each provider FASTA through the unique
+`result_summary.transcript_manifest.files[].relative_path` suffix and never
+from positional adapter ID lists. It calls `ws.fetch_outputs` for all four HPC
+run handles, including terminal HMMalign, then selects each registered output
+through the unique exact `fetch_refs[].declared_output_path`; those fetches
+register evidence but do not add controlled operations.
+
 Probe task, operation, invocation and artifact identities must be disjoint from
 the formal path. Probe artifacts cannot be selected as formal inputs or cited
 by the formal report. Until a real attempt emits this implemented schema and

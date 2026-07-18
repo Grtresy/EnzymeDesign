@@ -2530,6 +2530,136 @@ def test_pipeline_dry_run_lists_bio_tool_operations_and_rejects_direct_cli() -> 
     )
 
 
+def test_bio_tool_rejects_outputs_impossible_for_fixed_runner_before_dispatch() -> (
+    None
+):
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    fasta_artifact_id = _save_fasta_artifact(
+        repositories,
+        "art_impossible_mafft_output",
+    )
+    workspace = _workspace_payload("impossible_mafft_output")
+    staged_fasta = _stage_payload(
+        repositories,
+        fasta_artifact_id,
+        workspace,
+        "inputs/sequences.fasta",
+    )
+    impossible_output = {
+        "path": "work/mafft/ncbi_alignment.fasta",
+        "kind": "sequence",
+        "format": "fasta",
+    }
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_impossible_mafft_output",
+        "from openzyme_pipeline import bio_tools, hpc\n"
+        "ws = hpc.workspace('probe')\n"
+        f"fasta = ws.stage_artifact('{fasta_artifact_id}', workspace_path='inputs/sequences.fasta')\n"
+        "bio_tools.mafft(input_fasta=fasta, placement=ws, "
+        f"expected_outputs={[impossible_output]!r})\n",
+    )
+    sandbox = BioSandboxRunner(
+        (
+            (
+                "bio_tools.mafft",
+                {
+                    "input_fasta": staged_fasta,
+                    "placement": workspace,
+                    "expected_outputs": [impossible_output],
+                    "params": {},
+                },
+            ),
+        )
+    )
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(
+        repositories,
+        runner,
+        sandbox_runner=sandbox,
+    )
+
+    first = engine.start_pipeline(
+        session_id="sess_001",
+        task_id="task_001",
+        invocation_id="inv_impossible_mafft_output",
+        code_artifact_id=code_artifact_id,
+        inputs={"artifact_ids": [fasta_artifact_id]},
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+    result = engine.continue_after_approval(
+        invocation_id="inv_impossible_mafft_output",
+        resolution="approved",
+    )
+
+    assert result.invocation.status is EngineInvocationStatus.FAILED
+    assert result.parsed_result is not None
+    error = result.parsed_result.structured_findings["error"]
+    assert error["type"] == "bio_tool_output_contract_mismatch"
+    assert error["stage"] == "hpc_output_validation"
+    assert error["retryable"] is False
+    assert error["details"] == {
+        "declared_paths": ["work/mafft/ncbi_alignment.fasta"],
+        "expected_paths": ["bio_tools/mafft/alignment.fasta"],
+    }
+    assert "bio_tools/mafft/alignment.fasta" in error["hint"]
+    assert runner.payloads == []
+
+
+@pytest.mark.parametrize(
+    ("method", "declared_paths", "expected_paths"),
+    (
+        (
+            "bio_tools.cdhit",
+            ["bio_tools/cdhit/clustered.fasta"],
+            [
+                "bio_tools/cdhit/clustered.fasta",
+                "bio_tools/cdhit/clusters.csv",
+            ],
+        ),
+        (
+            "bio_tools.mafft",
+            [
+                "bio_tools/mafft/alignment.fasta",
+                "bio_tools/mafft/extra.fasta",
+            ],
+            ["bio_tools/mafft/alignment.fasta"],
+        ),
+        (
+            "bio_tools.hmmbuild",
+            [
+                "bio_tools/hmmbuild/model.hmm",
+                "bio_tools/hmmbuild/model.hmm",
+            ],
+            ["bio_tools/hmmbuild/model.hmm"],
+        ),
+    ),
+    ids=("missing", "extra", "duplicate"),
+)
+def test_bio_tool_fixed_output_contract_rejects_noncanonical_path_sets(
+    method: str,
+    declared_paths: list[str],
+    expected_paths: list[str],
+) -> None:
+    engine = ExecutionEngine(_build_repositories(), CapturingSuccessRunner())
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._require_canonical_bio_tool_outputs(
+            method,
+            [{"path": path} for path in declared_paths],
+        )
+
+    failure = exc_info.value
+    assert failure.error_type == "bio_tool_output_contract_mismatch"
+    assert failure.stage == "hpc_output_validation"
+    assert failure.details == {
+        "declared_paths": sorted(declared_paths),
+        "expected_paths": sorted(expected_paths),
+    }
+
+
 def test_pipeline_execute_after_dry_run_uses_distinct_idempotency_and_links_approval() -> (
     None
 ):

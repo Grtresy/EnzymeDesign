@@ -230,6 +230,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - `bio.uniprot_fetch(accessions=[...], output_dir="/workspace/output/...", fields=[...], batch_size=...)`：Host 托管 UniProt sequence/metadata 批量拉取，支持分页/partial warning
 - `bio.hmmer_search(hmm_artifact_id=..., database="refprot", output_dir="/workspace/output/...", params=...)`：Host 托管 EBI HMMER REST 搜索，登记 raw hits JSON 与 parsed hits CSV
 - `bio_tools.cdhit(...)` / `bio_tools.mafft(...)` / `bio_tools.hmmbuild(...)` / `bio_tools.hmmalign(...)` / `bio_tools.hmmer_search_cli(...)`：Host 托管 AOX/HMM 生信工具链；pipeline 不直接 shell/subprocess 调 MAFFT、CD-HIT 或 HMMER binary。Session 14 先启用 `cdhit` / `mafft` / `hmmbuild` / `hmmalign` 的 HPC route，`hmmer_search_cli` 保留 public SDK 名称但固定返回 `unsupported_in_s14`
+- 上述已启用 bio-tool 的 runner template 产生固定 canonical output path set；Host 在 runner/HPC dispatch 前精确校验 `expected_outputs` 路径集合。任意缺失、额外、重复或自定义路径返回 LLM-readable `bio_tool_output_contract_mismatch` 及 exact expected/declared paths，不消耗 HPC job，也不替 agent 静默改写声明
 - `preprocess.convert_format(...)`
 - `preprocess.prepare_receptor(...)`
 - `preprocess.prepare_ligand(...)`

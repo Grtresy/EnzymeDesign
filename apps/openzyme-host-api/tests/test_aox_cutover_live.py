@@ -856,6 +856,69 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
     assert evidence["scientific_outcome"]["blocker_code"] == "test_stop"
 
 
+def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    prompt = runner._probe_prompt(
+        AttemptRunContext(
+            roots=roots,
+            identity=_identity(),
+            ledger_before=safe_micu_ledger_snapshot(ledger_path),
+            attempt_number=1,
+        )
+    )
+
+    assert "campaign already enforces provider cache bypass" in prompt
+    assert "do not invent unsupported cache flags" in prompt
+    assert "result_summary.transcript_manifest.files" in prompt
+    assert "/provider_parsed/proteins.fasta" in prompt
+    assert "/provider_parsed/sequences.fasta" in prompt
+    assert "adapter_result_envelope ID lists" in prompt
+    assert "bio_tools/mafft/alignment.fasta" in prompt
+    assert "bio_tools/hmmbuild/model.hmm" in prompt
+    assert "bio_tools/cdhit/clustered.fasta" in prompt
+    assert "bio_tools/cdhit/clusters.csv" in prompt
+    assert "bio_tools/hmmalign/aligned.fasta" in prompt
+    assert "all four run handles, including the terminal HMMalign" in prompt
+    assert "unique fetch_refs entry whose declared_output_path" in prompt
+    assert "never by registered_artifact_ids or artifacts list order" in prompt
+
+
+def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+
+    prompt = runner._formal_prompt(
+        AttemptRunContext(
+            roots=roots,
+            identity=_identity(),
+            ledger_before=safe_micu_ledger_snapshot(ledger_path),
+            attempt_number=1,
+        )
+    )
+
+    assert "campaign already enforces evidence-bearing provider cache bypass" in prompt
+    assert "do not pass or invent unsupported cache flags" in prompt
+
+
 def test_public_driver_route_surface_rejects_debug_shortcut() -> None:
     class Response:
         status_code = 200
