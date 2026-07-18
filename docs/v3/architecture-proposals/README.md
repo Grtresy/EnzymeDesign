@@ -6,6 +6,7 @@
 
 当前提案：
 
+- `request-lineage-workflow-authority.md`：用 versioned durable authority binding 与 opaque causal link 让显式 workflow selection 在同一 user request 的后续 master wake 中可验证延续，同时禁止把 raw `skill_keys` 复制进 signal、扫描 latest/all conversation 或跨 request 隐式 union；当前 Goal 只修 admission 到 exact first drain。
 - `role-scoped-workflow-composition.md`：把一个显式 workflow 选择拆成可验证的 role-scoped knowledge bindings，同时避免固定 agent 拓扑。
 - `unified-provider-evidence-broker.md`：统一 direct/deep-research/execution provider mechanics 与证据 envelope，同时保留各调用面的 canonical owner 和 agent 策略自由。
 - `generic-scientific-campaign-attestation.md`：把跨 workflow 的 clean-root、snapshot、offline verifier 与 GO/NO-GO reducer 收敛为 Host-owned 证明服务，不形成第二套 control plane。
