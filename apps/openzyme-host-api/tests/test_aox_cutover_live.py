@@ -6,10 +6,13 @@ import json
 import os
 from pathlib import Path
 import struct
+import threading
 import time
+from types import SimpleNamespace
 import zlib
 
 from fastapi import FastAPI
+import httpx
 import pytest
 
 from openzyme_domain import ControlledOperation
@@ -62,6 +65,180 @@ def _public_receipt(
         response_digest=_digest(f"response:{sequence}:{route}"),
         response_semantic_digest=live.canonical_digest(semantic_value),
     )
+
+
+class _ReceiptAwareFake:
+    """Small fake-side mirror of the driver's thread-local receipt contract."""
+
+    def __init__(
+        self,
+        initial_receipts: tuple[live.PublicApiReceipt, ...] = (),
+    ) -> None:
+        self._receipt_lock = threading.Lock()
+        self._receipts = list(initial_receipts)
+        self._thread_state = threading.local()
+        if initial_receipts:
+            self._thread_state.last_receipt = initial_receipts[-1]
+
+    @property
+    def receipts(self) -> tuple[live.PublicApiReceipt, ...]:
+        with self._receipt_lock:
+            return tuple(self._receipts)
+
+    @property
+    def last_receipt(self) -> live.PublicApiReceipt:
+        receipt = getattr(self._thread_state, "last_receipt", None)
+        if not isinstance(receipt, live.PublicApiReceipt):
+            raise live.LiveProductPathError(
+                "public_api_response_receipt_missing",
+                "current fake API thread has no response receipt",
+            )
+        return receipt
+
+    def _append_receipt(self, receipt: live.PublicApiReceipt) -> None:
+        with self._receipt_lock:
+            self._receipts.append(receipt)
+        self._thread_state.last_receipt = receipt
+
+
+class _JsonResponse:
+    def __init__(self, payload: object, *, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.content = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8")
+
+    def json(self) -> object:
+        return self._payload
+
+
+class _OutOfOrderJsonClient:
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self) -> None:
+        self.routes = (
+            "/v3/sessions/sess_receipt_first/workspace",
+            "/v3/sessions/sess_receipt_second/workspace",
+        )
+        self.started = {route: threading.Event() for route in self.routes}
+        self.release = {route: threading.Event() for route in self.routes}
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route in self.started
+        self.started[route].set()
+        if not self.release[route].wait(timeout=2.0):
+            raise AssertionError(f"test did not release {route}")
+        return _JsonResponse({"route": route})
+
+
+class _SerialApprovalJsonClient:
+    base_url = "http://127.0.0.1:54321"
+
+    def __init__(self, approval_ids: tuple[str, ...]) -> None:
+        self.approval_ids = approval_ids
+        self._condition = threading.Condition()
+        self._current_index: int | None = None
+        self._force_release = False
+        self._drain_inflight = False
+        self.drain_started = threading.Event()
+        self.resolve_calls: list[tuple[str, str, bool]] = []
+        self.call_order: list[str] = []
+
+    def get(self, route: str) -> _JsonResponse:
+        assert route == "/v3/sessions/sess_serial/workspace"
+        with self._condition:
+            ready = self._condition.wait_for(
+                lambda: self._current_index is not None or self._force_release,
+                timeout=2.0,
+            )
+            if not ready:
+                raise AssertionError("blocking drain never exposed its first approval")
+            pending: list[dict[str, object]] = []
+            if (
+                not self._force_release
+                and self._current_index is not None
+                and self._current_index < len(self.approval_ids)
+            ):
+                pending = [
+                    {"approval_id": self.approval_ids[self._current_index]}
+                ]
+        return _JsonResponse({"pending_approvals": pending})
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del headers
+        if route == "/v3/sessions/sess_serial/runtime/drain":
+            with self._condition:
+                self._current_index = 0
+                self._drain_inflight = True
+                self.drain_started.set()
+                self._condition.notify_all()
+                finished = self._condition.wait_for(
+                    lambda: self._force_release
+                    or (
+                        self._current_index is not None
+                        and self._current_index >= len(self.approval_ids)
+                    ),
+                    timeout=2.0,
+                )
+                self._drain_inflight = False
+                if not finished:
+                    raise AssertionError("serial approvals were not resolved")
+            return _JsonResponse({"status": "completed"})
+
+        prefix = "/v3/approvals/"
+        suffix = "/resolve"
+        assert route.startswith(prefix) and route.endswith(suffix)
+        approval_id = route[len(prefix) : -len(suffix)]
+        decision = str(json.get("decision") or "")
+        with self._condition:
+            assert self._current_index is not None
+            assert self._current_index < len(self.approval_ids)
+            assert approval_id == self.approval_ids[self._current_index]
+            self.call_order.append(f"resolve:{approval_id}:{decision}")
+            self.resolve_calls.append(
+                (approval_id, decision, self._drain_inflight)
+            )
+            self._current_index += 1
+            if decision != "approved":
+                self._force_release = True
+            self._condition.notify_all()
+        return _JsonResponse(
+            {"approval_id": approval_id, "decision": decision}
+        )
+
+    def release_all(self) -> None:
+        with self._condition:
+            self._force_release = True
+            self._condition.notify_all()
+
+
+class _FailingDrainJsonClient:
+    base_url = "http://127.0.0.1:54321"
+
+    def post(
+        self,
+        route: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _JsonResponse:
+        del json, headers
+        assert route == "/v3/sessions/sess_failed/runtime/drain"
+        raise RuntimeError("private background failure detail")
 
 
 def _one_pixel_grayscale_png(
@@ -260,6 +437,118 @@ def test_public_api_receipt_normalizes_events_query_to_canonical_route() -> None
         {"replay": True, "after_cursor": 7}
     )
     assert client.receipts[0].response_semantic_digest == live.canonical_digest([{}])
+
+
+def test_public_api_receipts_reserve_at_start_and_seal_in_sequence_order() -> None:
+    raw_client = _OutOfOrderJsonClient()
+    client = live._PublicHostClient(raw_client)
+    results: dict[str, tuple[dict[str, object], live.PublicApiReceipt]] = {}
+    errors: dict[str, BaseException] = {}
+    finished = {route: threading.Event() for route in raw_client.routes}
+
+    def request(route: str) -> None:
+        try:
+            payload = client.get_json(route)
+            results[route] = (payload, client.last_receipt)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors[route] = exc
+        finally:
+            finished[route].set()
+
+    first_route, second_route = raw_client.routes
+    first = threading.Thread(target=request, args=(first_route,))
+    second = threading.Thread(target=request, args=(second_route,))
+    first.start()
+    try:
+        assert raw_client.started[first_route].wait(timeout=1.0)
+        second.start()
+        assert raw_client.started[second_route].wait(timeout=1.0)
+
+        raw_client.release[second_route].set()
+        assert finished[second_route].wait(timeout=1.0)
+        assert [receipt.sequence for receipt in client.receipts] == [2]
+        with pytest.raises(live.LiveProductPathError) as inflight:
+            client.sealed_receipts
+        assert inflight.value.code == "public_api_receipt_chain_incomplete"
+        with pytest.raises(live.LiveProductPathError) as main_thread:
+            client.last_receipt
+        assert main_thread.value.code == "public_api_response_receipt_missing"
+
+        raw_client.release[first_route].set()
+        assert finished[first_route].wait(timeout=1.0)
+    finally:
+        for release in raw_client.release.values():
+            release.set()
+        first.join(timeout=2.0)
+        if second.ident is not None:
+            second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == {}
+    assert [receipt.sequence for receipt in client.sealed_receipts] == [1, 2]
+    assert results[first_route][0] == {"route": first_route}
+    assert results[first_route][1].sequence == 1
+    assert results[first_route][1].route == first_route
+    assert results[second_route][0] == {"route": second_route}
+    assert results[second_route][1].sequence == 2
+    assert results[second_route][1].route == second_route
+    assert results[first_route][1].response_semantic_digest == live.canonical_digest(
+        results[first_route][0]
+    )
+    assert results[second_route][1].response_semantic_digest == live.canonical_digest(
+        results[second_route][0]
+    )
+
+
+def test_public_api_transport_failure_preserves_completed_failure_receipts() -> None:
+    class CompletedThenDisconnectedClient:
+        base_url = "http://127.0.0.1:54321"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, route: str) -> _JsonResponse:
+            self.calls.append(route)
+            if route == "/v3/runtime/health":
+                return _JsonResponse({"status": "ready"})
+            assert route == "/v3/sessions/sess_transport/workspace"
+            raise httpx.ConnectError(
+                "deterministic connection failure",
+                request=httpx.Request("GET", f"{self.base_url}{route}"),
+            )
+
+    raw_client = CompletedThenDisconnectedClient()
+    client = live._PublicHostClient(raw_client)
+
+    assert client.get_json("/v3/runtime/health") == {"status": "ready"}
+    with pytest.raises(live.LiveProductPathError) as transport_error:
+        client.get_json("/v3/sessions/sess_transport/workspace")
+
+    assert transport_error.value.code == "host_public_api_transport_failed"
+    assert transport_error.value.details == {
+        "route": "/v3/sessions/sess_transport/workspace",
+        "failure_type": "ConnectError",
+    }
+    completed = client.failure_receipts
+    assert [receipt.sequence for receipt in completed] == [1]
+    assert [receipt.route for receipt in completed] == ["/v3/runtime/health"]
+    assert client.failure_receipts == completed
+    assert transport_error.value.code == "host_public_api_transport_failed"
+
+    with pytest.raises(live.LiveProductPathError) as sealing_error:
+        client.sealed_receipts
+
+    assert sealing_error.value.code == "public_api_receipt_chain_incomplete"
+    assert sealing_error.value.details == {
+        "inflight_count": 0,
+        "failed_count": 1,
+    }
+    assert client.failure_receipts == completed
+    assert raw_client.calls == [
+        "/v3/runtime/health",
+        "/v3/sessions/sess_transport/workspace",
+    ]
 
 
 def test_toolchain_collector_seals_exact_runner_attested_identity() -> None:
@@ -522,6 +811,9 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
 
         def __exit__(self, *args: object) -> None:
             del args
+            assert not (
+                roots.artifact_root / "formal/live-product-path-blocker.json"
+            ).exists()
 
         @staticmethod
         def get(route: str) -> Response:
@@ -552,7 +844,7 @@ def test_live_runner_registers_sandbox_identity_before_first_session(
     )
     monkeypatch.setattr(live, "build_configured_foundation", lambda **kwargs: object())
     monkeypatch.setattr(live, "create_app", lambda dependencies: object())
-    monkeypatch.setattr(live, "TestClient", lambda app: Client())
+    monkeypatch.setattr(live, "_LoopbackHost", lambda **kwargs: Client())
     monkeypatch.setattr(
         live.LiveAoxAttemptRunner, "_run_session", stop_at_first_session
     )
@@ -798,6 +1090,357 @@ def _runner_settings(ledger_path: Path) -> OpenZymeSettings:
     )
 
 
+def _minimal_fault_injection_receipt() -> live.FaultInjectionReceipt:
+    return live.FaultInjectionReceipt(
+        source_artifact_id="art_source",
+        source_artifact_digest=_digest("source-artifact"),
+        target_artifact_id="art_target",
+        target_relative_path="aox_hmm/AOX_ref21.fasta",
+        source_operation_id="op_source",
+        terminal_failure_operation_id="op_target",
+        derivation_id="aox_hmm_reference_set_selection@1",
+        derivation_contract_digest=_digest("derivation-contract"),
+        derivation_implementation_digest=_digest("derivation-implementation"),
+        consumer_tool_id="bio_tools.mafft",
+        byte_offset=4,
+        before_digest=_digest("before-fault"),
+        after_digest=_digest("after-fault"),
+        failure_code="artifact_blob_digest_mismatch",
+    )
+
+
+def test_live_runner_preserves_transport_blocker_when_receipt_chain_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        attempt_id="positive-transport-failure",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+
+    class TransportFailingClient:
+        base_url = "http://127.0.0.1:54321"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def __enter__(self) -> TransportFailingClient:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+            assert not (
+                roots.artifact_root / "formal/live-product-path-blocker.json"
+            ).exists()
+
+        def get(self, route: str) -> _JsonResponse:
+            self.calls.append(route)
+            assert route == "/v3/runtime/health"
+            raise httpx.ConnectError(
+                "deterministic loopback transport failure",
+                request=httpx.Request("GET", f"{self.base_url}{route}"),
+            )
+
+    raw_client = TransportFailingClient()
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_settings_blocker",
+        lambda self, context: None,
+    )
+    monkeypatch.setattr(live, "build_configured_foundation", lambda **kwargs: object())
+    monkeypatch.setattr(live, "create_app", lambda dependencies: object())
+    monkeypatch.setattr(live, "_LoopbackHost", lambda **kwargs: raw_client)
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+    )
+
+    evidence = runner(context)
+
+    assert evidence["scientific_outcome"] == {
+        "status": "failed",
+        "failure_code": "host_public_api_transport_failed",
+        "blocker_code": "host_public_api_transport_failed",
+        "cutover_eligible": False,
+    }
+    assert evidence["report"]["cutover_eligible"] is False
+    assert evidence["product_path"]["public_api_receipt_digest"] == (
+        live.canonical_digest([])
+    )
+    blocker_payload = json.loads(
+        (
+            roots.artifact_root / "formal/live-product-path-blocker.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert blocker_payload["blocker"]["code"] == (
+        "host_public_api_transport_failed"
+    )
+    assert blocker_payload["public_api_receipts"] == []
+    assert raw_client.calls == ["/v3/runtime/health"]
+
+
+def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_ids = ("approval_serial_1", "approval_serial_2", "approval_serial_3")
+    raw_client = _SerialApprovalJsonClient(approval_ids)
+    api = live._PublicHostClient(raw_client)
+
+    try:
+        coordination = runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_serial",
+            drain_number=1,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+        )
+    finally:
+        raw_client.release_all()
+
+    assert raw_client.drain_started.is_set()
+    assert coordination.approval_ids == approval_ids
+    assert coordination.workspace == {"pending_approvals": []}
+    assert coordination.browser_approval_receipt is None
+    assert coordination.fault_receipt is None
+    assert raw_client.resolve_calls == [
+        (approval_id, "approved", True) for approval_id in approval_ids
+    ]
+    assert coordination.workspace_response_binding["route"] == (
+        "/v3/sessions/sess_serial/workspace"
+    )
+    assert coordination.workspace_response_binding[
+        "response_semantic_digest"
+    ] == live.canonical_digest(coordination.workspace)
+    sealed = api.sealed_receipts
+    assert [receipt.sequence for receipt in sealed] == list(
+        range(1, len(sealed) + 1)
+    )
+    drain_receipts = [
+        receipt
+        for receipt in sealed
+        if receipt.route == "/v3/sessions/sess_serial/runtime/drain"
+    ]
+    assert len(drain_receipts) == 1
+    assert drain_receipts[0].sequence == 1
+    assert all(
+        not thread.is_alive() or thread.name != "aox-cutover-drain-1"
+        for thread in threading.enumerate()
+    )
+
+
+def test_runtime_drain_wraps_background_exception_as_stable_failure(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    api = live._PublicHostClient(_FailingDrainJsonClient())
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._coordinate_runtime_drain(
+            api,
+            object(),  # type: ignore[arg-type]
+            session_id="sess_failed",
+            drain_number=7,
+            started=time.monotonic(),
+            pre_event_cursor=0,
+            prior_approval_ids=frozenset(),
+            browser_gate_enabled=False,
+            browser_approval_receipt=None,
+            fault_enabled=False,
+            fault_blob_root=None,
+            fault_receipt=None,
+        )
+
+    assert error.value.code == "runtime_drain_command_failed"
+    assert error.value.details == {"failure_type": "RuntimeError"}
+    assert "private background failure detail" not in str(error.value)
+    assert isinstance(error.value.__cause__, RuntimeError)
+    assert all(
+        not thread.is_alive() or thread.name != "aox-cutover-drain-7"
+        for thread in threading.enumerate()
+    )
+
+
+def test_fault_injection_invariant_failure_rejects_pending_without_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    approval_id = "approval_fault_invariant"
+    raw_client = _SerialApprovalJsonClient((approval_id,))
+    api = live._PublicHostClient(raw_client)
+
+    def fail_target_invariant(
+        self: live.LiveAoxAttemptRunner,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        approval_id: str,
+        blob_root: Path,
+    ) -> live.FaultInjectionReceipt | None:
+        del self, provider, session_id, blob_root
+        raw_client.call_order.append(f"inject:{approval_id}")
+        raise live.LiveProductPathError(
+            "fault_target_digest_binding_invalid",
+            "fault target invariant failed before approval",
+        )
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_inject_before_hpc_approval",
+        fail_target_invariant,
+    )
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_serial",
+                drain_number=8,
+                started=time.monotonic(),
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=True,
+                fault_blob_root=tmp_path / "blobs",
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_all()
+
+    assert error.value.code == "fault_target_digest_binding_invalid"
+    assert raw_client.resolve_calls == [(approval_id, "rejected", True)]
+    assert not any(
+        decision == "approved"
+        for _, decision, _ in raw_client.resolve_calls
+    )
+    assert raw_client.call_order == [
+        f"inject:{approval_id}",
+        f"resolve:{approval_id}:rejected",
+    ]
+    assert all(
+        not thread.is_alive() or thread.name != "aox-cutover-drain-8"
+        for thread in threading.enumerate()
+    )
+
+
+def test_fault_path_rejects_approval_after_target_injection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+        timeout_seconds=1.0,
+        browser_poll_interval_seconds=0.001,
+    )
+    before_target = "approval_before_fault_target"
+    fault_target = "approval_fault_target"
+    after_target = "approval_after_fault_target"
+    approval_ids = (before_target, fault_target, after_target)
+    raw_client = _SerialApprovalJsonClient(approval_ids)
+    api = live._PublicHostClient(raw_client)
+    receipt = _minimal_fault_injection_receipt()
+
+    def inject_target_only(
+        self: live.LiveAoxAttemptRunner,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        approval_id: str,
+        blob_root: Path,
+    ) -> live.FaultInjectionReceipt | None:
+        del self, provider, session_id, blob_root
+        raw_client.call_order.append(f"inject:{approval_id}")
+        if approval_id == before_target:
+            return None
+        if approval_id == fault_target:
+            return receipt
+        raise AssertionError("additional approval must fail before reinjection")
+
+    monkeypatch.setattr(
+        live.LiveAoxAttemptRunner,
+        "_inject_before_hpc_approval",
+        inject_target_only,
+    )
+
+    try:
+        with pytest.raises(live.LiveProductPathError) as error:
+            runner._coordinate_runtime_drain(
+                api,
+                object(),  # type: ignore[arg-type]
+                session_id="sess_serial",
+                drain_number=9,
+                started=time.monotonic(),
+                pre_event_cursor=0,
+                prior_approval_ids=frozenset(),
+                browser_gate_enabled=False,
+                browser_approval_receipt=None,
+                fault_enabled=True,
+                fault_blob_root=tmp_path / "blobs",
+                fault_receipt=None,
+            )
+    finally:
+        raw_client.release_all()
+
+    assert error.value.code == "fault_path_additional_approval_forbidden"
+    assert error.value.details == {"approval_id": after_target}
+    assert raw_client.resolve_calls == [
+        (before_target, "approved", True),
+        (fault_target, "approved", True),
+        (after_target, "rejected", True),
+    ]
+    assert raw_client.call_order == [
+        f"inject:{before_target}",
+        f"resolve:{before_target}:approved",
+        f"inject:{fault_target}",
+        f"resolve:{fault_target}:approved",
+        f"resolve:{after_target}:rejected",
+    ]
+    assert all(
+        not thread.is_alive() or thread.name != "aox-cutover-drain-9"
+        for thread in threading.enumerate()
+    )
+
+
 def test_same_process_loopback_host_serves_exact_app_and_stops() -> None:
     app = FastAPI()
 
@@ -814,6 +1457,116 @@ def test_same_process_loopback_host_serves_exact_app_and_stops() -> None:
 
     assert host._thread is not None
     assert host._thread.is_alive() is False
+
+
+def test_loopback_host_retires_if_ready_record_emission_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    host = live._LoopbackHost(app=app, request_timeout_seconds=5.0)
+
+    def fail_ready_record(payload: object) -> None:
+        del payload
+        raise RuntimeError("operator stream unavailable")
+
+    monkeypatch.setattr(live, "_emit_operator_record", fail_ready_record)
+
+    with pytest.raises(RuntimeError, match="operator stream unavailable"):
+        host.__enter__()
+
+    assert host._thread is not None
+    assert host._thread.is_alive() is False
+
+
+def test_loopback_host_retires_server_thread_after_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingServer:
+        started = False
+        should_exit = False
+        force_exit = False
+
+        def __init__(self, config: object) -> None:
+            del config
+
+        @staticmethod
+        def run(*, sockets: object) -> None:
+            del sockets
+            raise RuntimeError("loopback startup failed")
+
+    monkeypatch.setattr(live.uvicorn, "Server", FailingServer)
+    host = live._LoopbackHost(app=FastAPI(), request_timeout_seconds=5.0)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        host.__enter__()
+
+    assert error.value.code == "browser_approval_host_start_failed"
+    assert error.value.details == {"failure_type": "RuntimeError"}
+    assert host._thread is not None
+    assert host._thread.is_alive() is False
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+def test_loopback_host_retires_server_mutation_after_client_timeout(
+    method: str,
+) -> None:
+    app = FastAPI()
+    handler_started = threading.Event()
+    handler_finished = threading.Event()
+
+    def blocking_mutation(session_id: str) -> dict[str, str]:
+        handler_started.set()
+        time.sleep(0.15)
+        handler_finished.set()
+        return {"session_id": session_id}
+
+    app.add_api_route(
+        "/v3/sessions/{session_id}/mutation",
+        blocking_mutation,
+        methods=[method],
+    )
+    host = live._LoopbackHost(
+        app=app,
+        request_timeout_seconds=0.02,
+        shutdown_timeout_seconds=1.0,
+    )
+    with host as client:
+        with pytest.raises(httpx.ReadTimeout):
+            client.request(method, "/v3/sessions/sess_slow/mutation")
+        assert handler_started.wait(timeout=1.0)
+        assert handler_finished.is_set() is False
+
+    assert handler_finished.is_set() is True
+    assert host._thread is not None
+    assert host._thread.is_alive() is False
+
+
+def test_loopback_host_never_returns_while_server_thread_remains_alive() -> None:
+    host = live._LoopbackHost(
+        app=FastAPI(),
+        request_timeout_seconds=1.0,
+        shutdown_timeout_seconds=0.001,
+    )
+    server = SimpleNamespace(should_exit=False, force_exit=False)
+    host._server = server
+    finished = threading.Event()
+
+    def linger_past_grace() -> None:
+        time.sleep(0.05)
+        finished.set()
+
+    thread = threading.Thread(target=linger_past_grace, daemon=False)
+    host._thread = thread
+    thread.start()
+
+    started = time.monotonic()
+    host._retire_server_thread()
+
+    assert time.monotonic() - started >= 0.04
+    assert finished.is_set() is True
+    assert thread.is_alive() is False
+    assert server.should_exit is True
+    assert server.force_exit is True
 
 
 def test_chrome_once_waits_for_exact_public_resolution_events(
@@ -907,31 +1660,34 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
         },
     )
 
-    class Api:
+    workspace_receipt = _public_receipt(
+        sequence=1,
+        route="/v3/sessions/sess_browser_001/workspace",
+        semantic_value=pre_workspace,
+    )
+
+    class Api(_ReceiptAwareFake):
         base_url = "http://127.0.0.1:54321"
-        receipts: list[live.PublicApiReceipt] = [
-            _public_receipt(
-                sequence=1,
-                route="/v3/sessions/sess_browser_001/workspace",
-                semantic_value=pre_workspace,
-            )
-        ]
-        event_reads = 0
         response_binding = staticmethod(live._PublicHostClient.response_binding)
 
-        @classmethod
+        def __init__(self) -> None:
+            super().__init__((workspace_receipt,))
+            self.event_reads = 0
+
         def get_event_records(
-            cls,
+            self,
             session_id: str,
             *,
             after_cursor: int = 0,
+            _timeout_seconds: float | None = None,
         ) -> tuple[dict[str, object], ...]:
+            del _timeout_seconds
             assert session_id == "sess_browser_001"
             assert after_cursor == 10
-            cls.event_reads += 1
-            cls.receipts.append(
+            self.event_reads += 1
+            self._append_receipt(
                 _public_receipt(
-                    sequence=len(cls.receipts) + 1,
+                    sequence=len(self.receipts) + 1,
                     route=(
                         "/v3/sessions/sess_browser_001/events"
                         "?replay=1&after_cursor=10"
@@ -941,22 +1697,29 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
             )
             return resolution_events
 
-        @classmethod
-        def get_json(cls, route: str) -> dict[str, object]:
+        def get_json(
+            self,
+            route: str,
+            *,
+            _timeout_seconds: float | None = None,
+        ) -> dict[str, object]:
+            del _timeout_seconds
             assert route == "/v3/sessions/sess_browser_001/workspace"
-            cls.receipts.append(
+            self._append_receipt(
                 _public_receipt(
-                    sequence=len(cls.receipts) + 1,
+                    sequence=len(self.receipts) + 1,
                     route=route,
                     semantic_value=post_workspace,
                 )
             )
             return post_workspace
 
+    api = Api()
     receipt, workspace = runner._wait_for_browser_approval(
-        Api(),  # type: ignore[arg-type]
+        api,  # type: ignore[arg-type]
         session_id="sess_browser_001",
         workspace=pre_workspace,
+        workspace_receipt=workspace_receipt,
         pending_approval=pending,
         started=time.monotonic(),
         pre_event_cursor=10,
@@ -1010,28 +1773,31 @@ def test_chrome_once_rejects_continuation_operation_identity_drift(
     }
     pre_workspace = {"pending_approvals": [pending]}
 
-    class Api:
+    workspace_receipt = _public_receipt(
+        sequence=1,
+        route="/v3/sessions/sess_browser_001/workspace",
+        semantic_value=pre_workspace,
+    )
+
+    class Api(_ReceiptAwareFake):
         base_url = "http://127.0.0.1:54321"
-        receipts: list[live.PublicApiReceipt] = [
-            _public_receipt(
-                sequence=1,
-                route="/v3/sessions/sess_browser_001/workspace",
-                semantic_value=pre_workspace,
-            )
-        ]
-        event_reads = 0
         response_binding = staticmethod(live._PublicHostClient.response_binding)
 
-        @classmethod
+        def __init__(self) -> None:
+            super().__init__((workspace_receipt,))
+            self.event_reads = 0
+
         def get_event_records(
-            cls,
+            self,
             session_id: str,
             *,
             after_cursor: int = 0,
+            _timeout_seconds: float | None = None,
         ) -> tuple[dict[str, object], ...]:
+            del _timeout_seconds
             assert session_id == "sess_browser_001"
-            cls.event_reads += 1
-            if cls.event_reads == 1:
+            self.event_reads += 1
+            if self.event_reads == 1:
                 records: tuple[dict[str, object], ...] = ()
             else:
                 records = (
@@ -1056,11 +1822,11 @@ def test_chrome_once_rejects_continuation_operation_identity_drift(
                         "continuation_id": "continuation_browser_001",
                         "decision": "approved",
                     },
-                },
-            )
-            cls.receipts.append(
+                    },
+                )
+            self._append_receipt(
                 _public_receipt(
-                    sequence=len(cls.receipts) + 1,
+                    sequence=len(self.receipts) + 1,
                     route=(
                         "/v3/sessions/sess_browser_001/events"
                         f"?replay=1&after_cursor={after_cursor}"
@@ -1070,11 +1836,13 @@ def test_chrome_once_rejects_continuation_operation_identity_drift(
             )
             return records
 
+    api = Api()
     with pytest.raises(live.LiveProductPathError) as error:
         runner._wait_for_browser_approval(
-            Api(),  # type: ignore[arg-type]
+            api,  # type: ignore[arg-type]
             session_id="sess_browser_001",
             workspace=pre_workspace,
+            workspace_receipt=workspace_receipt,
             pending_approval=pending,
             started=time.monotonic(),
             pre_event_cursor=0,
@@ -1111,29 +1879,32 @@ def test_chrome_once_uses_independent_handoff_timeout(
     }
     pre_workspace = {"pending_approvals": [pending]}
 
-    class Api:
+    workspace_receipt = _public_receipt(
+        sequence=1,
+        route="/v3/sessions/sess_browser_timeout/workspace",
+        semantic_value=pre_workspace,
+    )
+
+    class Api(_ReceiptAwareFake):
         base_url = "http://127.0.0.1:54321"
-        receipts: list[live.PublicApiReceipt] = [
-            _public_receipt(
-                sequence=1,
-                route="/v3/sessions/sess_browser_timeout/workspace",
-                semantic_value=pre_workspace,
-            )
-        ]
         response_binding = staticmethod(live._PublicHostClient.response_binding)
 
-        @classmethod
+        def __init__(self) -> None:
+            super().__init__((workspace_receipt,))
+
         def get_event_records(
-            cls,
+            self,
             session_id: str,
             *,
             after_cursor: int = 0,
+            _timeout_seconds: float | None = None,
         ) -> tuple[dict[str, object], ...]:
+            del _timeout_seconds
             assert session_id == "sess_browser_timeout"
             assert after_cursor == 7
-            cls.receipts.append(
+            self._append_receipt(
                 _public_receipt(
-                    sequence=len(cls.receipts) + 1,
+                    sequence=len(self.receipts) + 1,
                     route=(
                         "/v3/sessions/sess_browser_timeout/events"
                         "?replay=1&after_cursor=7"
@@ -1143,12 +1914,14 @@ def test_chrome_once_uses_independent_handoff_timeout(
             )
             return ()
 
+    api = Api()
     started = time.monotonic()
     with pytest.raises(live.LiveProductPathError) as error:
         runner._wait_for_browser_approval(
-            Api(),  # type: ignore[arg-type]
+            api,  # type: ignore[arg-type]
             session_id="sess_browser_timeout",
             workspace=pre_workspace,
+            workspace_receipt=workspace_receipt,
             pending_approval=pending,
             started=started,
             pre_event_cursor=7,

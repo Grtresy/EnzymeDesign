@@ -19,7 +19,6 @@ import time
 from typing import Any, Iterator, Literal
 import zlib
 
-from fastapi.testclient import TestClient
 import httpx
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import build_conversation_projection
@@ -424,6 +423,26 @@ class SessionDriveResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _DrainCoordinationResult:
+    workspace: dict[str, Any]
+    workspace_response_binding: dict[str, object]
+    approval_ids: tuple[str, ...]
+    browser_approval_receipt: dict[str, object] | None
+    fault_receipt: FaultInjectionReceipt | None
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveDriveOutcome:
+    kind: Literal["failure", "fault", "positive"]
+    api_receipts: tuple[PublicApiReceipt, ...]
+    health: dict[str, object]
+    probe: SessionDriveResult | None
+    formal: SessionDriveResult | None
+    fault: FaultInjectionReceipt | None = None
+    blocker: dict[str, object] | None = None
+
+
 def _terminal_browser_page_state(
     formal: SessionDriveResult,
 ) -> dict[str, object]:
@@ -541,6 +560,38 @@ class MicuAttemptReceipt:
 
 
 @dataclass(slots=True)
+class _HostMutationTracker:
+    """Track server-side mutation lifetime across client disconnects."""
+
+    app: Any
+    _condition: threading.Condition = field(
+        default_factory=threading.Condition,
+        init=False,
+        repr=False,
+    )
+    _active: int = field(default=0, init=False)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        method = str(scope.get("method") or "") if isinstance(scope, dict) else ""
+        tracked = method in {"POST", "PUT", "PATCH", "DELETE"}
+        if tracked:
+            with self._condition:
+                self._active += 1
+                self._condition.notify_all()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if tracked:
+                with self._condition:
+                    self._active -= 1
+                    self._condition.notify_all()
+
+    def wait_until_idle(self) -> None:
+        with self._condition:
+            self._condition.wait_for(lambda: self._active == 0)
+
+
+@dataclass(slots=True)
 class _LoopbackHost:
     """Expose one attempt app to the driver and Chrome without a second Host."""
 
@@ -552,6 +603,7 @@ class _LoopbackHost:
     _server: uvicorn.Server | None = None
     _thread: threading.Thread | None = None
     _client: httpx.Client | None = None
+    _mutation_tracker: _HostMutationTracker | None = None
     _failure: BaseException | None = None
     base_url: str = ""
 
@@ -564,9 +616,11 @@ class _LoopbackHost:
         self._socket = listener
         port = int(listener.getsockname()[1])
         self.base_url = f"http://127.0.0.1:{port}"
+        tracker = _HostMutationTracker(self.app)
+        self._mutation_tracker = tracker
         server = uvicorn.Server(
             uvicorn.Config(
-                self.app,
+                tracker,
                 host="127.0.0.1",
                 port=port,
                 log_level="warning",
@@ -586,13 +640,14 @@ class _LoopbackHost:
         thread = threading.Thread(
             target=run,
             name="aox-cutover-loopback-host",
-            daemon=True,
+            daemon=False,
         )
         self._thread = thread
         thread.start()
         deadline = time.monotonic() + self.startup_timeout_seconds
         while not server.started:
             if self._failure is not None or not thread.is_alive():
+                self._retire_server_thread()
                 self._close_listener()
                 raise LiveProductPathError(
                     "browser_approval_host_start_failed",
@@ -606,28 +661,39 @@ class _LoopbackHost:
                     },
                 )
             if time.monotonic() >= deadline:
-                server.should_exit = True
-                thread.join(timeout=self.shutdown_timeout_seconds)
+                self._retire_server_thread()
                 self._close_listener()
                 raise LiveProductPathError(
                     "browser_approval_host_start_timeout",
                     "same-process loopback Host did not become ready in time",
                 )
             time.sleep(0.05)
-        client = httpx.Client(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(self.request_timeout_seconds),
-        )
-        self._client = client
-        _emit_operator_record(
-            {
-                "schema_id": MANUAL_APPROVAL_HOST_SCHEMA_ID,
-                "status": "ready",
-                "process_id": os.getpid(),
-                "ui_url": (f"{self.base_url}/ui/?project_id=aox-blank-world-cutover"),
-            }
-        )
-        return client
+        try:
+            client = httpx.Client(
+                base_url=self.base_url,
+                timeout=httpx.Timeout(self.request_timeout_seconds),
+            )
+            self._client = client
+            _emit_operator_record(
+                {
+                    "schema_id": MANUAL_APPROVAL_HOST_SCHEMA_ID,
+                    "status": "ready",
+                    "process_id": os.getpid(),
+                    "ui_url": (
+                        f"{self.base_url}/ui/?project_id=aox-blank-world-cutover"
+                    ),
+                }
+            )
+            return client
+        except BaseException:
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except BaseException:
+                    pass
+            self._retire_server_thread()
+            self._close_listener()
+            raise
 
     def __exit__(
         self,
@@ -636,23 +702,47 @@ class _LoopbackHost:
         traceback: object | None,
     ) -> bool:
         del exc, traceback
-        if self._client is not None:
-            self._client.close()
         if self._server is not None:
             self._server.should_exit = True
-        if self._thread is not None:
-            self._thread.join(timeout=self.shutdown_timeout_seconds)
-            if self._thread.is_alive() and self._server is not None:
-                self._server.force_exit = True
-                self._thread.join(timeout=2.0)
-        still_alive = self._thread is not None and self._thread.is_alive()
+        client_close_failure: BaseException | None = None
+        if self._client is not None:
+            try:
+                self._client.close()
+            except BaseException as close_exc:
+                client_close_failure = close_exc
+        if self._mutation_tracker is not None:
+            self._mutation_tracker.wait_until_idle()
+        self._retire_server_thread()
+        if self._mutation_tracker is not None:
+            self._mutation_tracker.wait_until_idle()
         self._close_listener()
-        if still_alive and exc_type is None:
+        if client_close_failure is not None and exc_type is None:
             raise LiveProductPathError(
-                "browser_approval_host_shutdown_failed",
-                "same-process loopback Host did not stop cleanly",
-            )
+                "browser_approval_host_client_close_failed",
+                "loopback Host client failed to close before server retirement",
+                details={"failure_type": type(client_close_failure).__name__},
+            ) from client_close_failure
         return False
+
+    def _retire_server_thread(self) -> None:
+        """Do not return mutable attempt state while the Host can still write.
+
+        The finite shutdown timeout is only a graceful-shutdown allowance.
+        Python cannot safely kill a stuck in-process server thread, so after
+        requesting Uvicorn's force-exit path this boundary deliberately waits
+        without a timeout.  Bounded fatal retirement requires the separately
+        documented process-isolated attempt supervisor.
+        """
+
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._thread is None:
+            return
+        self._thread.join(timeout=self.shutdown_timeout_seconds)
+        if self._thread.is_alive() and self._server is not None:
+            self._server.force_exit = True
+        if self._thread.is_alive():
+            self._thread.join()
 
     def _close_listener(self) -> None:
         if self._socket is not None:
@@ -673,17 +763,103 @@ class _PublicHostClient:
 
     def __init__(self, client: Any) -> None:
         self._client = client
-        self.receipts: list[PublicApiReceipt] = []
+        self._receipts: list[PublicApiReceipt] = []
+        self._receipt_lock = threading.Lock()
+        self._next_receipt_sequence = 1
+        self._inflight_sequences: set[int] = set()
+        self._failed_sequences: set[int] = set()
+        self._thread_state = threading.local()
+
+    @property
+    def receipts(self) -> tuple[PublicApiReceipt, ...]:
+        with self._receipt_lock:
+            return tuple(sorted(self._receipts, key=lambda item: item.sequence))
+
+    @property
+    def sealed_receipts(self) -> tuple[PublicApiReceipt, ...]:
+        with self._receipt_lock:
+            if self._inflight_sequences or self._failed_sequences:
+                raise LiveProductPathError(
+                    "public_api_receipt_chain_incomplete",
+                    "public API receipt chain has unfinished or failed requests",
+                    details={
+                        "inflight_count": len(self._inflight_sequences),
+                        "failed_count": len(self._failed_sequences),
+                    },
+                )
+            receipts = tuple(sorted(self._receipts, key=lambda item: item.sequence))
+        if [item.sequence for item in receipts] != list(
+            range(1, len(receipts) + 1)
+        ):
+            raise LiveProductPathError(
+                "public_api_receipt_chain_incomplete",
+                "public API receipt chain has an unfinalized sequence gap",
+            )
+        return receipts
+
+    @property
+    def failure_receipts(self) -> tuple[PublicApiReceipt, ...]:
+        """Return completed responses for a non-eligible failure artifact.
+
+        Failed request sequences remain absent so the artifact cannot be
+        mistaken for a closed eligible chain, while the original blocker can be
+        reported instead of being overwritten by the sealing guard.
+        """
+
+        with self._receipt_lock:
+            if self._inflight_sequences:
+                raise LiveProductPathError(
+                    "public_api_receipt_chain_incomplete",
+                    "failure receipt snapshot still has in-flight requests",
+                    details={"inflight_count": len(self._inflight_sequences)},
+                )
+            return tuple(sorted(self._receipts, key=lambda item: item.sequence))
+
+    @property
+    def last_receipt(self) -> PublicApiReceipt:
+        receipt = getattr(self._thread_state, "last_receipt", None)
+        if not isinstance(receipt, PublicApiReceipt):
+            raise LiveProductPathError(
+                "public_api_response_receipt_missing",
+                "current thread has no public API response receipt to bind",
+            )
+        return receipt
 
     @property
     def base_url(self) -> str:
         value = getattr(self._client, "base_url", "")
         return str(value).rstrip("/")
 
-    def get_json(self, route: str) -> dict[str, Any]:
+    def get_json(
+        self,
+        route: str,
+        *,
+        _timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         self._require_route("GET", route)
-        response = self._client.get(route)
-        self._record("GET", route, None, response.content, response.status_code)
+        sequence = self._reserve_sequence()
+        try:
+            response = self._client_get(route, timeout_seconds=_timeout_seconds)
+            self._record(
+                "GET",
+                route,
+                None,
+                response.content,
+                response.status_code,
+                sequence=sequence,
+            )
+        except Exception as exc:
+            self._fail_sequence(sequence)
+            if isinstance(exc, httpx.HTTPError):
+                raise LiveProductPathError(
+                    "host_public_api_transport_failed",
+                    "Host public API GET transport failed",
+                    details={
+                        "route": route.split("?", 1)[0],
+                        "failure_type": type(exc).__name__,
+                    },
+                ) from exc
+            raise
         self._raise_for_status(route, response.status_code, response)
         payload = response.json()
         if not isinstance(payload, dict):
@@ -694,10 +870,18 @@ class _PublicHostClient:
             )
         return dict(payload)
 
-    def get_events(self, session_id: str) -> dict[str, object]:
-        events = self.get_event_records(session_id)
+    def get_events(
+        self,
+        session_id: str,
+        *,
+        _timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        events = self.get_event_records(
+            session_id,
+            _timeout_seconds=_timeout_seconds,
+        )
         response_binding = self.response_binding(
-            self.receipts[-1], semantic_value=list(events)
+            self.last_receipt, semantic_value=list(events)
         )
         event_types = [str(event.get("event_type") or "") for event in events]
         event_ids = [str(event.get("event_id") or "") for event in events]
@@ -742,11 +926,33 @@ class _PublicHostClient:
         session_id: str,
         *,
         after_cursor: int = 0,
+        _timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], ...]:
         route = f"/v3/sessions/{session_id}/events?replay=1&after_cursor={after_cursor}"
         self._require_route("GET", route)
-        response = self._client.get(route)
-        self._record("GET", route, None, response.content, response.status_code)
+        sequence = self._reserve_sequence()
+        try:
+            response = self._client_get(route, timeout_seconds=_timeout_seconds)
+            self._record(
+                "GET",
+                route,
+                None,
+                response.content,
+                response.status_code,
+                sequence=sequence,
+            )
+        except Exception as exc:
+            self._fail_sequence(sequence)
+            if isinstance(exc, httpx.HTTPError):
+                raise LiveProductPathError(
+                    "host_public_api_transport_failed",
+                    "Host public event replay transport failed",
+                    details={
+                        "route": route.split("?", 1)[0],
+                        "failure_type": type(exc).__name__,
+                    },
+                ) from exc
+            raise
         self._raise_for_status(route, response.status_code, response)
         events: list[dict[str, Any]] = []
         for line in response.text.splitlines():
@@ -767,15 +973,41 @@ class _PublicHostClient:
         payload: Mapping[str, object],
         *,
         idempotency_key: str,
+        _request_started: threading.Event | None = None,
+        _timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         self._require_route("POST", route)
         body = dict(payload)
-        response = self._client.post(
-            route,
-            json=body,
-            headers={"Idempotency-Key": idempotency_key},
-        )
-        self._record("POST", route, body, response.content, response.status_code)
+        sequence = self._reserve_sequence()
+        if _request_started is not None:
+            _request_started.set()
+        try:
+            response = self._client_post(
+                route,
+                body=body,
+                idempotency_key=idempotency_key,
+                timeout_seconds=_timeout_seconds,
+            )
+            self._record(
+                "POST",
+                route,
+                body,
+                response.content,
+                response.status_code,
+                sequence=sequence,
+            )
+        except Exception as exc:
+            self._fail_sequence(sequence)
+            if isinstance(exc, httpx.HTTPError):
+                raise LiveProductPathError(
+                    "host_public_api_transport_failed",
+                    "Host public API POST transport failed",
+                    details={
+                        "route": route.split("?", 1)[0],
+                        "failure_type": type(exc).__name__,
+                    },
+                ) from exc
+            raise
         self._raise_for_status(route, response.status_code, response)
         parsed = response.json()
         if not isinstance(parsed, dict):
@@ -793,6 +1025,8 @@ class _PublicHostClient:
         payload: Mapping[str, object] | None,
         response: bytes,
         status_code: int,
+        *,
+        sequence: int | None = None,
     ) -> None:
         canonical_route = route.split("?", 1)[0]
         request_payload: Mapping[str, object] = (
@@ -832,9 +1066,11 @@ class _PublicHostClient:
             response=response,
             status_code=status_code,
         )
-        self.receipts.append(
-            PublicApiReceipt(
-                sequence=len(self.receipts) + 1,
+        if sequence is None:
+            sequence = self._reserve_sequence()
+        with self._receipt_lock:
+            receipt = PublicApiReceipt(
+                sequence=sequence,
                 method=method,
                 route=canonical_route,
                 status_code=status_code,
@@ -842,7 +1078,43 @@ class _PublicHostClient:
                 response_digest=_sha256(response),
                 response_semantic_digest=response_semantic_digest,
             )
-        )
+            self._receipts.append(receipt)
+            self._inflight_sequences.discard(sequence)
+        self._thread_state.last_receipt = receipt
+
+    def _reserve_sequence(self) -> int:
+        with self._receipt_lock:
+            sequence = self._next_receipt_sequence
+            self._next_receipt_sequence += 1
+            self._inflight_sequences.add(sequence)
+        return sequence
+
+    def _fail_sequence(self, sequence: int) -> None:
+        with self._receipt_lock:
+            if sequence in self._inflight_sequences:
+                self._inflight_sequences.remove(sequence)
+                self._failed_sequences.add(sequence)
+
+    def _client_get(self, route: str, *, timeout_seconds: float | None) -> Any:
+        if timeout_seconds is not None and isinstance(self._client, httpx.Client):
+            return self._client.get(route, timeout=timeout_seconds)
+        return self._client.get(route)
+
+    def _client_post(
+        self,
+        route: str,
+        *,
+        body: Mapping[str, object],
+        idempotency_key: str,
+        timeout_seconds: float | None,
+    ) -> Any:
+        kwargs: dict[str, object] = {
+            "json": dict(body),
+            "headers": {"Idempotency-Key": idempotency_key},
+        }
+        if timeout_seconds is not None and isinstance(self._client, httpx.Client):
+            kwargs["timeout"] = timeout_seconds
+        return self._client.post(route, **kwargs)
 
     @staticmethod
     def _response_semantic_digest(
@@ -1006,202 +1278,265 @@ class LiveAoxAttemptRunner:
             dependencies,
             **({"ui_dist_dir": self.ui_dist_dir} if browser_gate_enabled else {}),
         )
-        probe: SessionDriveResult | None = None
-        formal: SessionDriveResult | None = None
-        fault: FaultInjectionReceipt | None = None
-        health: dict[str, Any] = {}
+        outcome: _LiveDriveOutcome | None = None
+        drive_error: Exception | None = None
         with self._host_client(
             app, browser_gate_enabled=browser_gate_enabled
         ) as raw_client:
             api = _PublicHostClient(raw_client)
             try:
-                health = api.get_json("/v3/runtime/health")
-                health_blocker = self._health_blocker(health)
-                if health_blocker is not None:
-                    return self._failure_evidence(
-                        context,
-                        blocker=health_blocker,
-                        provider=provider,
-                        api_receipts=tuple(api.receipts),
-                        health=_safe_health(health),
-                        probe=None,
-                        formal=None,
-                    )
-                self._bootstrap_sandbox_runtime_identity(
-                    provider,
-                    health=health,
-                    identity=context.identity,
-                )
-
-                probe_session_id = f"sess_probe_{context.roots.attempt_id}"
-                probe = self._run_session(
-                    api,
-                    provider,
-                    session_id=probe_session_id,
-                    purpose="probe",
-                    objective="Bounded AOX provider and HPC known-positive health probe.",
-                    message=self._probe_prompt(context),
-                    workflow_refs=(),
-                    fault_enabled=False,
-                    fault_blob_root=None,
-                    browser_gate_enabled=False,
-                )[0]
-                if probe.state != "completed":
-                    return self._failure_evidence(
-                        context,
-                        blocker={
-                            "code": probe.blocker_code
-                            or "known_positive_probe_incomplete",
-                            "message": (
-                                "independent NCBI/UniProt and four-tool globin probe "
-                                "did not complete"
-                            ),
-                        },
-                        provider=provider,
-                        api_receipts=tuple(api.receipts),
-                        health=_safe_health(health),
-                        probe=probe,
-                        formal=None,
-                    )
-
-                formal_session_id = f"sess_formal_{context.roots.attempt_id}"
-                formal, fault = self._run_session(
-                    api,
-                    provider,
-                    session_id=formal_session_id,
-                    purpose="formal",
-                    objective=(
-                        "Run the canonical blank-world AOX/HMM product path and publish "
-                        "a source-linked scientific report."
-                    ),
-                    message=self._formal_prompt(context),
-                    workflow_refs=(context.identity["workflow_ref"],),
-                    fault_enabled=context.roots.attempt_kind == "fault",
-                    fault_blob_root=context.roots.blob_root,
+                outcome = self._drive_live_attempt(
+                    context,
+                    api=api,
+                    provider=provider,
                     browser_gate_enabled=browser_gate_enabled,
                 )
-                if context.roots.attempt_kind == "fault":
-                    if fault is not None and formal.state == "failed":
-                        return self._fault_evidence(
-                            context,
-                            provider=provider,
-                            api_receipts=tuple(api.receipts),
-                            health=_safe_health(health),
-                            probe=probe,
-                            formal=formal,
-                            fault=fault,
-                            micu_record_ids_before=micu_record_ids_before,
-                        )
-                    return self._failure_evidence(
-                        context,
-                        blocker={
-                            "code": "controlled_fault_not_observed",
-                            "message": "formal path did not prove the configured artifact-digest fault",
-                        },
-                        provider=provider,
-                        api_receipts=tuple(api.receipts),
-                        health=_safe_health(health),
-                        probe=probe,
-                        formal=formal,
-                    )
-                blocker = self._positive_blocker(
-                    provider,
-                    formal,
-                    browser_gate_required=browser_gate_enabled,
+            except Exception as exc:
+                drive_error = exc
+
+        # Evidence and ledger-after collection must occur only after the
+        # loopback Host has retired every server-side drain handler.
+        if drive_error is not None:
+            raise drive_error
+        if outcome is None:
+            raise LiveProductPathError(
+                "live_product_path_outcome_missing",
+                "live attempt Host exited without a drive outcome",
+            )
+        if outcome.kind == "positive":
+            if outcome.probe is None or outcome.formal is None:
+                raise AssertionError("positive live outcome lacks probe/formal state")
+            return self._positive_evidence(
+                context,
+                provider=provider,
+                api_receipts=outcome.api_receipts,
+                health=outcome.health,
+                probe=outcome.probe,
+                formal=outcome.formal,
+                micu_record_ids_before=micu_record_ids_before,
+            )
+        if outcome.kind == "fault":
+            if (
+                outcome.probe is None
+                or outcome.formal is None
+                or outcome.fault is None
+            ):
+                raise AssertionError("fault live outcome lacks terminal state")
+            return self._fault_evidence(
+                context,
+                provider=provider,
+                api_receipts=outcome.api_receipts,
+                health=outcome.health,
+                probe=outcome.probe,
+                formal=outcome.formal,
+                fault=outcome.fault,
+                micu_record_ids_before=micu_record_ids_before,
+            )
+        return self._failure_evidence(
+            context,
+            blocker=outcome.blocker
+            or {
+                "code": "live_product_path_failed",
+                "message": "live product path failed without a structured blocker",
+            },
+            provider=provider,
+            api_receipts=outcome.api_receipts,
+            health=outcome.health,
+            probe=outcome.probe,
+            formal=outcome.formal,
+        )
+
+    def _drive_live_attempt(
+        self,
+        context: AttemptRunContext,
+        *,
+        api: _PublicHostClient,
+        provider: SQLiteRepositoryProvider,
+        browser_gate_enabled: bool,
+    ) -> _LiveDriveOutcome:
+        probe: SessionDriveResult | None = None
+        formal: SessionDriveResult | None = None
+        fault: FaultInjectionReceipt | None = None
+        health: dict[str, Any] = {}
+        try:
+            health = api.get_json("/v3/runtime/health")
+            health_blocker = self._health_blocker(health)
+            if health_blocker is not None:
+                return _LiveDriveOutcome(
+                    kind="failure",
+                    blocker=dict(health_blocker),
+                    api_receipts=api.sealed_receipts,
+                    health=_safe_health(health),
+                    probe=None,
+                    formal=None,
                 )
-                if blocker is not None:
-                    return self._failure_evidence(
-                        context,
-                        blocker=blocker,
-                        provider=provider,
-                        api_receipts=tuple(api.receipts),
+            self._bootstrap_sandbox_runtime_identity(
+                provider,
+                health=health,
+                identity=context.identity,
+            )
+
+            probe_session_id = f"sess_probe_{context.roots.attempt_id}"
+            probe = self._run_session(
+                api,
+                provider,
+                session_id=probe_session_id,
+                purpose="probe",
+                objective="Bounded AOX provider and HPC known-positive health probe.",
+                message=self._probe_prompt(context),
+                workflow_refs=(),
+                fault_enabled=False,
+                fault_blob_root=None,
+                browser_gate_enabled=False,
+            )[0]
+            if probe.state != "completed":
+                return _LiveDriveOutcome(
+                    kind="failure",
+                    blocker={
+                        "code": probe.blocker_code
+                        or "known_positive_probe_incomplete",
+                        "message": (
+                            "independent NCBI/UniProt and four-tool globin probe "
+                            "did not complete"
+                        ),
+                    },
+                    api_receipts=api.sealed_receipts,
+                    health=_safe_health(health),
+                    probe=probe,
+                    formal=None,
+                )
+
+            formal_session_id = f"sess_formal_{context.roots.attempt_id}"
+            formal, fault = self._run_session(
+                api,
+                provider,
+                session_id=formal_session_id,
+                purpose="formal",
+                objective=(
+                    "Run the canonical blank-world AOX/HMM product path and publish "
+                    "a source-linked scientific report."
+                ),
+                message=self._formal_prompt(context),
+                workflow_refs=(context.identity["workflow_ref"],),
+                fault_enabled=context.roots.attempt_kind == "fault",
+                fault_blob_root=context.roots.blob_root,
+                browser_gate_enabled=browser_gate_enabled,
+            )
+            if context.roots.attempt_kind == "fault":
+                if fault is not None and formal.state == "failed":
+                    return _LiveDriveOutcome(
+                        kind="fault",
+                        api_receipts=api.sealed_receipts,
                         health=_safe_health(health),
                         probe=probe,
                         formal=formal,
+                        fault=fault,
                     )
-                if formal.browser_approval_receipt is not None:
-                    expected_page_state = _terminal_browser_page_state(formal)
-                    observation_ready_started = time.monotonic()
-                    observation_ready_wall_ns = time.time_ns()
-                    observation_not_before_wall_ns = observation_ready_wall_ns + int(
-                        round(self.browser_completion_hold_seconds * 1_000_000_000)
-                    )
-                    _emit_operator_record(
-                        {
-                            "schema_id": MANUAL_APPROVAL_HANDOFF_SCHEMA_ID,
-                            "status": "ready_for_completion_observation",
-                            "session_id": formal.session_id,
-                            "hold_seconds": self.browser_completion_hold_seconds,
-                            "observation_submission_timeout_seconds": (
-                                self.browser_observation_submission_timeout_seconds
-                            ),
-                            "observation_ready_at_unix_ns": observation_ready_wall_ns,
-                            "receipt_not_before_unix_ns": (
-                                observation_not_before_wall_ns
-                            ),
-                            "receipt_write_protocol": (
-                                "write sibling temp, fsync, then atomic rename after receipt_not_before_unix_ns"
-                            ),
-                            "workspace_digest": canonical_digest(formal.workspace),
-                            "event_receipt": formal.event_receipt,
-                            "expected_page_state": expected_page_state,
-                            "expected_page_state_digest": canonical_digest(
-                                expected_page_state
-                            ),
-                            "browser_observation_mode": BROWSER_OBSERVATION_MODE,
-                            "browser_observation_receipt_schema_id": (
-                                BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
-                            ),
-                            "sealed_page_url": formal.browser_approval_receipt.get(
-                                "page_url"
-                            ),
-                            "host_process_id": formal.browser_approval_receipt.get(
-                                "host_process_id"
-                            ),
-                            "served_ui_dist_digest": (
-                                formal.browser_approval_receipt.get(
-                                    "served_ui_dist_digest"
-                                )
-                            ),
-                            "browser_observation_challenge": (
-                                formal.browser_approval_receipt.get(
-                                    "observation_challenge"
-                                )
-                            ),
-                            "browser_observation_receipt_path": (
-                                None
-                                if self.browser_observation_receipt_path is None
-                                else str(self.browser_observation_receipt_path)
-                            ),
-                        }
-                    )
-                    formal = replace(
-                        formal,
-                        browser_observation_receipt=self._wait_for_browser_observation(
-                            formal,
-                            observation_ready_started=observation_ready_started,
-                            observation_ready_wall_ns=observation_ready_wall_ns,
+                return _LiveDriveOutcome(
+                    kind="failure",
+                    blocker={
+                        "code": "controlled_fault_not_observed",
+                        "message": (
+                            "formal path did not prove the configured "
+                            "artifact-digest fault"
                         ),
-                    )
-                return self._positive_evidence(
-                    context,
-                    provider=provider,
-                    api_receipts=tuple(api.receipts),
+                    },
+                    api_receipts=api.sealed_receipts,
                     health=_safe_health(health),
                     probe=probe,
                     formal=formal,
-                    micu_record_ids_before=micu_record_ids_before,
                 )
-            except LiveProductPathError as exc:
-                return self._failure_evidence(
-                    context,
-                    blocker={"code": exc.code, "message": _safe_message(exc)},
-                    provider=provider,
-                    api_receipts=tuple(api.receipts),
-                    health=_safe_health(health) if health else {},
+            blocker = self._positive_blocker(
+                provider,
+                formal,
+                browser_gate_required=browser_gate_enabled,
+            )
+            if blocker is not None:
+                return _LiveDriveOutcome(
+                    kind="failure",
+                    blocker=dict(blocker),
+                    api_receipts=api.sealed_receipts,
+                    health=_safe_health(health),
                     probe=probe,
                     formal=formal,
                 )
+            if formal.browser_approval_receipt is not None:
+                expected_page_state = _terminal_browser_page_state(formal)
+                observation_ready_started = time.monotonic()
+                observation_ready_wall_ns = time.time_ns()
+                observation_not_before_wall_ns = observation_ready_wall_ns + int(
+                    round(self.browser_completion_hold_seconds * 1_000_000_000)
+                )
+                _emit_operator_record(
+                    {
+                        "schema_id": MANUAL_APPROVAL_HANDOFF_SCHEMA_ID,
+                        "status": "ready_for_completion_observation",
+                        "session_id": formal.session_id,
+                        "hold_seconds": self.browser_completion_hold_seconds,
+                        "observation_submission_timeout_seconds": (
+                            self.browser_observation_submission_timeout_seconds
+                        ),
+                        "observation_ready_at_unix_ns": observation_ready_wall_ns,
+                        "receipt_not_before_unix_ns": observation_not_before_wall_ns,
+                        "receipt_write_protocol": (
+                            "write sibling temp, fsync, then atomic rename after "
+                            "receipt_not_before_unix_ns"
+                        ),
+                        "workspace_digest": canonical_digest(formal.workspace),
+                        "event_receipt": formal.event_receipt,
+                        "expected_page_state": expected_page_state,
+                        "expected_page_state_digest": canonical_digest(
+                            expected_page_state
+                        ),
+                        "browser_observation_mode": BROWSER_OBSERVATION_MODE,
+                        "browser_observation_receipt_schema_id": (
+                            BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
+                        ),
+                        "sealed_page_url": formal.browser_approval_receipt.get(
+                            "page_url"
+                        ),
+                        "host_process_id": formal.browser_approval_receipt.get(
+                            "host_process_id"
+                        ),
+                        "served_ui_dist_digest": formal.browser_approval_receipt.get(
+                            "served_ui_dist_digest"
+                        ),
+                        "browser_observation_challenge": (
+                            formal.browser_approval_receipt.get(
+                                "observation_challenge"
+                            )
+                        ),
+                        "browser_observation_receipt_path": (
+                            None
+                            if self.browser_observation_receipt_path is None
+                            else str(self.browser_observation_receipt_path)
+                        ),
+                    }
+                )
+                formal = replace(
+                    formal,
+                    browser_observation_receipt=self._wait_for_browser_observation(
+                        formal,
+                        observation_ready_started=observation_ready_started,
+                        observation_ready_wall_ns=observation_ready_wall_ns,
+                    ),
+                )
+            return _LiveDriveOutcome(
+                kind="positive",
+                api_receipts=api.sealed_receipts,
+                health=_safe_health(health),
+                probe=probe,
+                formal=formal,
+            )
+        except LiveProductPathError as exc:
+            return _LiveDriveOutcome(
+                kind="failure",
+                blocker={"code": exc.code, "message": _safe_message(exc)},
+                api_receipts=api.failure_receipts,
+                health=_safe_health(health) if health else {},
+                probe=probe,
+                formal=formal,
+            )
 
     def _browser_gate_enabled(self, context: AttemptRunContext) -> bool:
         return (
@@ -1217,14 +1552,11 @@ class LiveAoxAttemptRunner:
         *,
         browser_gate_enabled: bool,
     ) -> Iterator[Any]:
-        if self.approval_mode == "chrome-once" and browser_gate_enabled:
-            with _LoopbackHost(
-                app=app,
-                request_timeout_seconds=self.timeout_seconds,
-            ) as client:
-                yield client
-            return
-        with TestClient(app) as client:
+        del browser_gate_enabled
+        with _LoopbackHost(
+            app=app,
+            request_timeout_seconds=self.timeout_seconds,
+        ) as client:
             yield client
 
     def _run_session(
@@ -1265,7 +1597,12 @@ class LiveAoxAttemptRunner:
         for drain_number in range(1, self.max_drains + 1):
             if time.monotonic() - started > self.timeout_seconds:
                 break
-            pre_drain_events = api.get_event_records(session_id)
+            pre_drain_events = api.get_event_records(
+                session_id,
+                _timeout_seconds=max(
+                    0.001, started + self.timeout_seconds - time.monotonic()
+                ),
+            )
             pre_drain_cursor = max(
                 (
                     int(event["cursor"])
@@ -1275,66 +1612,27 @@ class LiveAoxAttemptRunner:
                 ),
                 default=0,
             )
-            api.post_json(
-                f"/v3/sessions/{session_id}/runtime/drain",
-                {
-                    "max_signals": self.max_signals_per_drain,
-                    "max_steps_per_agent": self.max_steps_per_agent,
-                    "auto_enqueue_ready_tasks": False,
-                },
-                idempotency_key=f"{session_id}:drain:{drain_number}",
+            coordination = self._coordinate_runtime_drain(
+                api,
+                provider,
+                session_id=session_id,
+                drain_number=drain_number,
+                started=started,
+                pre_event_cursor=pre_drain_cursor,
+                prior_approval_ids=frozenset(approval_ids),
+                browser_gate_enabled=browser_gate_enabled,
+                browser_approval_receipt=browser_approval_receipt,
+                fault_enabled=fault_enabled,
+                fault_blob_root=fault_blob_root,
+                fault_receipt=fault_receipt,
             )
-            last_workspace = api.get_json(f"/v3/sessions/{session_id}/workspace")
-            last_workspace_response_binding = api.response_binding(
-                api.receipts[-1], semantic_value=last_workspace
+            last_workspace = coordination.workspace
+            last_workspace_response_binding = (
+                coordination.workspace_response_binding
             )
-            pending = [
-                dict(item)
-                for item in last_workspace.get("pending_approvals") or []
-                if isinstance(item, dict)
-            ]
-            if pending and browser_gate_enabled and browser_approval_receipt is None:
-                browser_approval_receipt, last_workspace = (
-                    self._wait_for_browser_approval(
-                        api,
-                        session_id=session_id,
-                        workspace=last_workspace,
-                        pending_approval=pending[0],
-                        started=started,
-                        pre_event_cursor=pre_drain_cursor,
-                    )
-                )
-                last_workspace_response_binding = api.response_binding(
-                    api.receipts[-1], semantic_value=last_workspace
-                )
-                approval_ids.append(str(browser_approval_receipt["approval_id"]))
-                pending = [
-                    dict(item)
-                    for item in last_workspace.get("pending_approvals") or []
-                    if isinstance(item, dict)
-                ]
-            for approval in pending:
-                approval_id = str(approval.get("approval_id") or "")
-                if not approval_id:
-                    continue
-                if fault_enabled and fault_receipt is None:
-                    if fault_blob_root is None:
-                        raise LiveProductPathError(
-                            "fault_blob_root_missing",
-                            "controlled fault injection lacks its attempt-scoped blob root",
-                        )
-                    fault_receipt = self._inject_before_hpc_approval(
-                        provider,
-                        session_id=session_id,
-                        approval_id=approval_id,
-                        blob_root=fault_blob_root,
-                    )
-                api.post_json(
-                    f"/v3/approvals/{approval_id}/resolve",
-                    {"decision": "approved"},
-                    idempotency_key=f"{session_id}:approve:{approval_id}",
-                )
-                approval_ids.append(approval_id)
+            approval_ids.extend(coordination.approval_ids)
+            browser_approval_receipt = coordination.browser_approval_receipt
+            fault_receipt = coordination.fault_receipt
             state, blocker = self._session_state(
                 provider,
                 session_id=session_id,
@@ -1360,7 +1658,13 @@ class LiveAoxAttemptRunner:
                         blocker_code=blocker,
                         workspace=last_workspace,
                         workspace_response_binding=last_workspace_response_binding,
-                        event_receipt=api.get_events(session_id),
+                        event_receipt=api.get_events(
+                            session_id,
+                            _timeout_seconds=max(
+                                0.001,
+                                started + self.timeout_seconds - time.monotonic(),
+                            ),
+                        ),
                         drain_count=drain_number,
                         approval_ids=tuple(approval_ids),
                         browser_approval_receipt=browser_approval_receipt,
@@ -1368,9 +1672,14 @@ class LiveAoxAttemptRunner:
                     fault_receipt,
                 )
         if not last_workspace:
-            last_workspace = api.get_json(f"/v3/sessions/{session_id}/workspace")
+            last_workspace = api.get_json(
+                f"/v3/sessions/{session_id}/workspace",
+                _timeout_seconds=max(
+                    0.001, started + self.timeout_seconds - time.monotonic()
+                ),
+            )
             last_workspace_response_binding = api.response_binding(
-                api.receipts[-1], semantic_value=last_workspace
+                api.last_receipt, semantic_value=last_workspace
             )
         return (
             SessionDriveResult(
@@ -1380,12 +1689,284 @@ class LiveAoxAttemptRunner:
                 blocker_code=f"{purpose}_runtime_drain_exhausted",
                 workspace=last_workspace,
                 workspace_response_binding=last_workspace_response_binding,
-                event_receipt=api.get_events(session_id),
+                event_receipt=api.get_events(
+                    session_id,
+                    _timeout_seconds=max(
+                        0.001, started + self.timeout_seconds - time.monotonic()
+                    ),
+                ),
                 drain_count=self.max_drains,
                 approval_ids=tuple(approval_ids),
                 browser_approval_receipt=browser_approval_receipt,
             ),
             fault_receipt,
+        )
+
+    def _coordinate_runtime_drain(
+        self,
+        api: _PublicHostClient,
+        provider: SQLiteRepositoryProvider,
+        *,
+        session_id: str,
+        drain_number: int,
+        started: float,
+        pre_event_cursor: int,
+        prior_approval_ids: frozenset[str],
+        browser_gate_enabled: bool,
+        browser_approval_receipt: dict[str, object] | None,
+        fault_enabled: bool,
+        fault_blob_root: Path | None,
+        fault_receipt: FaultInjectionReceipt | None,
+    ) -> _DrainCoordinationResult:
+        """Drive approvals while the bounded drain request remains in flight.
+
+        The current supervised sandbox waits synchronously for each controlled
+        operation decision.  The live evidence driver therefore has to observe
+        and resolve those requests through the public Host API concurrently with
+        the public drain command.  This is a cutover-driver coordination seam,
+        not a replacement for the durable runtime/continuation architecture.
+        """
+
+        drain_done = threading.Event()
+        drain_request_started = threading.Event()
+        drain_errors: list[Exception] = []
+        deadline = started + self.timeout_seconds
+
+        def post_drain() -> None:
+            try:
+                api.post_json(
+                    f"/v3/sessions/{session_id}/runtime/drain",
+                    {
+                        "max_signals": self.max_signals_per_drain,
+                        "max_steps_per_agent": self.max_steps_per_agent,
+                        "auto_enqueue_ready_tasks": False,
+                    },
+                    idempotency_key=f"{session_id}:drain:{drain_number}",
+                    _request_started=drain_request_started,
+                    _timeout_seconds=max(0.001, deadline - time.monotonic()),
+                )
+            except Exception as exc:  # propagated on the coordinating thread
+                drain_errors.append(exc)
+            finally:
+                drain_done.set()
+
+        drain_thread = threading.Thread(
+            target=post_drain,
+            name=f"aox-cutover-drain-{drain_number}",
+            daemon=False,
+        )
+        drain_thread.start()
+
+        handled = set(prior_approval_ids)
+        newly_approved: list[str] = []
+        latest_workspace: dict[str, Any] = {}
+        latest_binding: dict[str, object] = {}
+        coordination_error: Exception | None = None
+        cleanup_errors: list[Exception] = []
+
+        try:
+            while not drain_request_started.is_set():
+                if drain_done.is_set():
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LiveProductPathError(
+                        "runtime_drain_coordination_timeout",
+                        "public runtime drain did not begin before the attempt deadline",
+                        details={
+                            "session_id": session_id,
+                            "drain_number": drain_number,
+                        },
+                    )
+                drain_request_started.wait(
+                    timeout=min(self.browser_poll_interval_seconds, remaining)
+                )
+
+            while True:
+                if drain_done.is_set():
+                    break
+                if time.monotonic() >= deadline:
+                    raise LiveProductPathError(
+                        "runtime_drain_coordination_timeout",
+                        "public runtime drain did not reach a bounded response",
+                        details={
+                            "session_id": session_id,
+                            "drain_number": drain_number,
+                        },
+                    )
+
+                latest_workspace = api.get_json(
+                    f"/v3/sessions/{session_id}/workspace",
+                    _timeout_seconds=max(0.001, deadline - time.monotonic()),
+                )
+                latest_workspace_receipt = api.last_receipt
+                latest_binding = api.response_binding(
+                    latest_workspace_receipt, semantic_value=latest_workspace
+                )
+                pending = [
+                    dict(item)
+                    for item in latest_workspace.get("pending_approvals") or []
+                    if isinstance(item, dict)
+                ]
+                acted = False
+                for approval in pending:
+                    approval_id = str(approval.get("approval_id") or "")
+                    if not approval_id or approval_id in handled:
+                        continue
+                    if browser_gate_enabled and browser_approval_receipt is None:
+                        browser_approval_receipt, latest_workspace = (
+                            self._wait_for_browser_approval(
+                                api,
+                                session_id=session_id,
+                                workspace=latest_workspace,
+                                workspace_receipt=latest_workspace_receipt,
+                                pending_approval=approval,
+                                started=started,
+                                pre_event_cursor=pre_event_cursor,
+                            )
+                        )
+                        latest_binding = api.response_binding(
+                            api.last_receipt, semantic_value=latest_workspace
+                        )
+                    else:
+                        if fault_enabled and fault_receipt is not None:
+                            raise LiveProductPathError(
+                                "fault_path_additional_approval_forbidden",
+                                "fault target was injected but the sandbox requested another approval",
+                                details={"approval_id": approval_id},
+                            )
+                        if fault_enabled:
+                            if fault_blob_root is None:
+                                raise LiveProductPathError(
+                                    "fault_blob_root_missing",
+                                    "controlled fault injection lacks its attempt-scoped blob root",
+                                )
+                            fault_receipt = self._inject_before_hpc_approval(
+                                provider,
+                                session_id=session_id,
+                                approval_id=approval_id,
+                                blob_root=fault_blob_root,
+                            )
+                        api.post_json(
+                            f"/v3/approvals/{approval_id}/resolve",
+                            {"decision": "approved"},
+                            idempotency_key=f"{session_id}:approve:{approval_id}",
+                            _timeout_seconds=max(
+                                0.001, deadline - time.monotonic()
+                            ),
+                        )
+                    handled.add(approval_id)
+                    newly_approved.append(approval_id)
+                    acted = True
+                    if browser_approval_receipt is not None:
+                        break
+                if not acted:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    drain_done.wait(
+                        timeout=min(self.browser_poll_interval_seconds, remaining)
+                    )
+        except Exception as exc:
+            coordination_error = exc
+
+        if coordination_error is not None and not drain_done.is_set():
+            cleanup_deadline = time.monotonic() + 15.0
+            rejected: set[str] = set()
+            while not drain_done.is_set() and time.monotonic() < cleanup_deadline:
+                try:
+                    cleanup_workspace = api.get_json(
+                        f"/v3/sessions/{session_id}/workspace",
+                        _timeout_seconds=max(
+                            0.001, cleanup_deadline - time.monotonic()
+                        ),
+                    )
+                    cleanup_pending = [
+                        dict(item)
+                        for item in cleanup_workspace.get("pending_approvals") or []
+                        if isinstance(item, dict)
+                    ]
+                    for approval in cleanup_pending:
+                        approval_id = str(approval.get("approval_id") or "")
+                        if (
+                            not approval_id
+                            or approval_id in handled
+                            or approval_id in rejected
+                        ):
+                            continue
+                        api.post_json(
+                            f"/v3/approvals/{approval_id}/resolve",
+                            {"decision": "rejected"},
+                            idempotency_key=(
+                                f"{session_id}:reject-on-coordination-error:{approval_id}"
+                            ),
+                            _timeout_seconds=max(
+                                0.001, cleanup_deadline - time.monotonic()
+                            ),
+                        )
+                        rejected.add(approval_id)
+                except Exception as exc:
+                    cleanup_errors.append(exc)
+                    break
+                remaining = max(0.0, cleanup_deadline - time.monotonic())
+                drain_done.wait(
+                    timeout=min(self.browser_poll_interval_seconds, remaining)
+                )
+
+        drain_thread.join(timeout=2.0)
+        if drain_thread.is_alive():
+            # The drain request itself has a finite remaining-attempt transport
+            # timeout.  Do not unwind the Host context while that request still
+            # owns a server-side runtime call; wait for the bounded request to
+            # retire its reservation first.
+            drain_thread.join()
+        if cleanup_errors:
+            raise LiveProductPathError(
+                "runtime_drain_coordination_cleanup_failed",
+                "failed to reject a pending approval during drain cleanup",
+                details={"failure_type": type(cleanup_errors[0]).__name__},
+            ) from coordination_error
+        if coordination_error is not None:
+            if isinstance(coordination_error, LiveProductPathError):
+                raise coordination_error
+            raise LiveProductPathError(
+                "runtime_drain_coordination_failed",
+                "public drain approval coordination failed",
+                details={"failure_type": type(coordination_error).__name__},
+            ) from coordination_error
+        if drain_errors:
+            error = drain_errors[0]
+            if isinstance(error, LiveProductPathError):
+                raise error
+            raise LiveProductPathError(
+                "runtime_drain_command_failed",
+                "public runtime drain failed before producing a bounded response",
+                details={"failure_type": type(error).__name__},
+            ) from error
+
+        latest_workspace = api.get_json(
+            f"/v3/sessions/{session_id}/workspace",
+            _timeout_seconds=max(0.001, deadline - time.monotonic()),
+        )
+        latest_binding = api.response_binding(
+            api.last_receipt, semantic_value=latest_workspace
+        )
+        unhandled_pending = [
+            str(item.get("approval_id") or "")
+            for item in latest_workspace.get("pending_approvals") or []
+            if isinstance(item, dict)
+            and str(item.get("approval_id") or "") not in handled
+        ]
+        if unhandled_pending:
+            raise LiveProductPathError(
+                "runtime_drain_returned_with_unhandled_approval",
+                "public runtime drain returned without coordinating a pending approval",
+                details={"pending_count": len(unhandled_pending)},
+            )
+        return _DrainCoordinationResult(
+            workspace=latest_workspace,
+            workspace_response_binding=latest_binding,
+            approval_ids=tuple(newly_approved),
+            browser_approval_receipt=browser_approval_receipt,
+            fault_receipt=fault_receipt,
         )
 
     def _wait_for_browser_approval(
@@ -1394,6 +1975,7 @@ class LiveAoxAttemptRunner:
         *,
         session_id: str,
         workspace: Mapping[str, object],
+        workspace_receipt: PublicApiReceipt,
         pending_approval: Mapping[str, object],
         started: float,
         pre_event_cursor: int,
@@ -1427,21 +2009,16 @@ class LiveAoxAttemptRunner:
             )
         pre_cursor = pre_event_cursor
         workspace_route = f"/v3/sessions/{session_id}/workspace"
-        pre_workspace_semantic_digest = canonical_digest(workspace)
-        pre_workspace_receipts = [
-            receipt
-            for receipt in api.receipts
-            if receipt.method == "GET"
-            and receipt.route == workspace_route
-            and receipt.response_semantic_digest == pre_workspace_semantic_digest
-        ]
-        if not pre_workspace_receipts:
+        if (
+            workspace_receipt.method != "GET"
+            or workspace_receipt.route != workspace_route
+        ):
             raise LiveProductPathError(
                 "browser_approval_pre_workspace_response_unbound",
                 "pending approval projection is not bound to its public workspace response",
             )
         pre_workspace_response_binding = api.response_binding(
-            pre_workspace_receipts[-1], semantic_value=dict(workspace)
+            workspace_receipt, semantic_value=dict(workspace)
         )
         ui_url = f"{api.base_url}/ui/?project_id=aox-blank-world-cutover"
         sealed_page_url = BROWSER_SEALED_PAGE_URL
@@ -1508,9 +2085,10 @@ class LiveAoxAttemptRunner:
             new_events = api.get_event_records(
                 session_id,
                 after_cursor=cursor,
+                _timeout_seconds=max(0.001, deadline - time.monotonic()),
             )
             event_binding = api.response_binding(
-                api.receipts[-1], semantic_value=list(new_events)
+                api.last_receipt, semantic_value=list(new_events)
             )
             event_response_bindings.append(
                 {
@@ -1551,9 +2129,12 @@ class LiveAoxAttemptRunner:
                     continuation_event = event
             if resolution_event is None or continuation_event is None:
                 continue
-            post_workspace = api.get_json(f"/v3/sessions/{session_id}/workspace")
+            post_workspace = api.get_json(
+                f"/v3/sessions/{session_id}/workspace",
+                _timeout_seconds=max(0.001, deadline - time.monotonic()),
+            )
             post_workspace_response_binding = api.response_binding(
-                api.receipts[-1], semantic_value=post_workspace
+                api.last_receipt, semantic_value=post_workspace
             )
             still_pending = {
                 str(item.get("approval_id") or "")
@@ -1598,6 +2179,19 @@ class LiveAoxAttemptRunner:
                 continuation_event,
                 expected_type="sdk_controlled_operation.approval_resolved",
             )
+            resolution_cursor = resolution_record.get("cursor")
+            continuation_cursor = continuation_record.get("cursor")
+            if (
+                not isinstance(resolution_cursor, int)
+                or isinstance(resolution_cursor, bool)
+                or not isinstance(continuation_cursor, int)
+                or isinstance(continuation_cursor, bool)
+                or not pre_cursor < resolution_cursor < continuation_cursor
+            ):
+                raise LiveProductPathError(
+                    "browser_approval_event_cursor_order_invalid",
+                    "Chrome approval durable events do not follow the sealed pre-drain cursor",
+                )
             if (
                 resolution_record["session_id"] != session_id
                 or continuation_record["session_id"] != session_id
@@ -2767,17 +3361,26 @@ class LiveAoxAttemptRunner:
             operation = repositories.controlled_operations.get_by_approval_id(
                 approval_id
             )
+            if operation is None or operation.session_id != session_id:
+                raise LiveProductPathError(
+                    "fault_approval_operation_unbound",
+                    "fault attempt approval is not bound to its formal session operation",
+                    details={"approval_id": approval_id},
+                )
+            if operation.function_name != "mafft":
+                return None
             if (
-                operation is None
-                or operation.session_id != session_id
+                operation.sdk_module != "bio_tools"
                 or operation.selected_backend != "hpc"
-                or operation.sdk_module != "bio_tools"
-                or operation.function_name != "mafft"
                 or operation.toolchain_id
                 != AOX_TOOLCHAIN_RUNTIME_CONTRACTS["mafft"]["toolchain_id"]
                 or not operation.input_artifact_ids
             ):
-                return None
+                raise LiveProductPathError(
+                    "fault_target_operation_identity_drift",
+                    "mafft fault target does not match the sealed HPC operation identity",
+                    details={"operation_id": operation.operation_id},
+                )
             operations = repositories.controlled_operations.list_by_session(session_id)
             artifacts = {
                 artifact.artifact_id: artifact
@@ -2798,7 +3401,11 @@ class LiveAoxAttemptRunner:
             and item.status.value == "completed"
         ]
         if len(source_operations) != 1 or len(targets) != 1:
-            return None
+            raise LiveProductPathError(
+                "fault_target_artifact_binding_invalid",
+                "mafft fault target lacks one canonical AOX reference derivation",
+                details={"operation_id": operation.operation_id},
+            )
         source_operation = source_operations[0]
         target = targets[0]
         source_artifacts = [
@@ -2809,7 +3416,11 @@ class LiveAoxAttemptRunner:
             == "proteins.fasta"
         ]
         if len(source_artifacts) != 1:
-            return None
+            raise LiveProductPathError(
+                "fault_source_artifact_binding_invalid",
+                "mafft fault target lacks one canonical NCBI source artifact",
+                details={"operation_id": operation.operation_id},
+            )
         source_artifact = source_artifacts[0]
         path = Path(target.storage_uri)
         source_path = Path(source_artifact.storage_uri)
@@ -2822,11 +3433,19 @@ class LiveAoxAttemptRunner:
             or resolved_blob_root not in path.resolve().parents
             or resolved_blob_root not in source_path.resolve().parents
         ):
-            return None
+            raise LiveProductPathError(
+                "fault_target_storage_boundary_invalid",
+                "fault target is not a regular attempt-scoped artifact",
+                details={"operation_id": operation.operation_id},
+            )
         content = path.read_bytes()
         source_content = source_path.read_bytes()
         if not content or not source_content:
-            return None
+            raise LiveProductPathError(
+                "fault_target_artifact_empty",
+                "fault target or its canonical source artifact is empty",
+                details={"operation_id": operation.operation_id},
+            )
         before_digest = _sha256(content)
         source_digest = _sha256(source_content)
         try:
@@ -2847,14 +3466,22 @@ class LiveAoxAttemptRunner:
                 ),
                 expected_input_digest=source_digest,
             )
-        except (ValueError, IndexError):
-            return None
+        except (ValueError, IndexError) as exc:
+            raise LiveProductPathError(
+                "fault_target_derivation_invalid",
+                "fault target cannot be re-derived from its sealed NCBI source",
+                details={"operation_id": operation.operation_id},
+            ) from exc
         if (
             declared_target_digest != before_digest
             or derived.to_fasta().encode("utf-8") != content
             or target.run_id != operation.sandbox_run_id
         ):
-            return None
+            raise LiveProductPathError(
+                "fault_target_digest_binding_invalid",
+                "fault target bytes do not match the approved operation derivation",
+                details={"operation_id": operation.operation_id},
+            )
         byte_offset = min(4, len(content) - 1)
         mutated = bytearray(content)
         mutated[byte_offset] ^= 1

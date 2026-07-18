@@ -36,6 +36,7 @@ from .provider_tools import ProviderToolCatalog
 from .public_diagnostics import sanitize_public_diagnostic_payload
 from .public_diagnostics import sanitize_public_diagnostic_text
 from .public_diagnostics import safe_public_machine_identifier
+from .podman_lifecycle import PodmanContainerLease
 from .runtime_identity import immutable_source_tree_digest
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
@@ -311,6 +312,7 @@ __all__ = [
     "quality_eval_skip_reason",
     "project_artifact_for_agent",
     "project_artifacts_for_agent",
+    "PodmanContainerLease",
     "sanitize_private_artifact_fields",
     "serialize_llm_payload",
     "validate_runtime_foundation_support",

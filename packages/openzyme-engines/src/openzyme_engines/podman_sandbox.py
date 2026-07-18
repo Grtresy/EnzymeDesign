@@ -20,12 +20,16 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_runtime import immutable_source_tree_digest
+from openzyme_runtime import PodmanContainerLease
 
 from .execution import ExecutionArtifactRef
 from .execution import ExecutionOutcome
 
 
 DEFAULT_SANDBOX_IMAGE = "localhost/openzyme-pipeline-sandbox:dev"
+_CONTROL_SOCKET_START_ATTEMPTS = 100
+_CONTROL_SOCKET_START_POLL_SECONDS = 0.01
+_CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
 
 
 def _safe_host_segment(value: str, *, label: str) -> str:
@@ -156,7 +160,16 @@ class PodmanPipelineSandboxRunner:
             sandbox_workspace_id or invocation_id,
             label="sandbox_workspace_id" if sandbox_workspace_id is not None else "invocation_id",
         )
-        root = _ensure_within(workspace_root / root_segment, workspace_root, label="invocation sandbox")
+        root_candidate = workspace_root / root_segment
+        if root_candidate.is_symlink():
+            raise RuntimeError("podman sandbox root must not be a symlink")
+        root = _ensure_within(
+            root_candidate,
+            workspace_root,
+            label="invocation sandbox",
+        )
+        if root.exists() and not root.is_dir():
+            raise RuntimeError("podman sandbox root must be a directory")
         if sandbox_workspace_id is None and root.exists():
             shutil.rmtree(root)
         input_dir = root / "input"
@@ -180,10 +193,18 @@ class PodmanPipelineSandboxRunner:
             control_handler=control_handler,
         )
         run_id = f"podman_{uuid4().hex[:12]}"
+        container_lease = PodmanContainerLease.create(
+            podman_binary=self.podman_binary,
+            workspace_root=workspace_root,
+            sandbox_root=root,
+            run_id=run_id,
+        )
+        container_lease.require_absent_before_run()
         command = [
             self.podman_binary,
             "run",
             "--rm",
+            *container_lease.run_options(),
             "--network=none",
             "--userns=keep-id",
             "--security-opt=no-new-privileges",
@@ -219,13 +240,16 @@ class PodmanPipelineSandboxRunner:
         command.append(runtime_identity["immutable_image_ref"])
         server.start()
         try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                )
+            finally:
+                container_lease.retire()
         finally:
             server.stop()
         (logs_dir / "stdout.log").write_text(completed.stdout, encoding="utf-8")
@@ -299,6 +323,7 @@ class _ControlSocketServer:
     control_handler: Callable[[str, dict[str, Any]], Any] | None
     _thread: threading.Thread | None
     _stop: threading.Event
+    _ready: threading.Event
 
     def __init__(
         self,
@@ -317,16 +342,19 @@ class _ControlSocketServer:
         self.registered = []
         self._thread = None
         self._stop = threading.Event()
+        self._ready = threading.Event()
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._stop = threading.Event()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=False)
         self._thread.start()
-        for _ in range(100):
-            if self.socket_path.exists():
+        for _ in range(_CONTROL_SOCKET_START_ATTEMPTS):
+            if self._ready.wait(timeout=_CONTROL_SOCKET_START_POLL_SECONDS):
                 return
-            import time
-
-            time.sleep(0.01)
+            if not self._thread.is_alive():
+                break
+        self.stop()
         raise RuntimeError("control socket did not start")
 
     def stop(self) -> None:
@@ -338,7 +366,9 @@ class _ControlSocketServer:
         except OSError:
             pass
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=_CONTROL_SOCKET_STOP_GRACE_SECONDS)
+            if self._thread.is_alive():
+                self._thread.join()
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
@@ -354,6 +384,7 @@ class _ControlSocketServer:
             os.chmod(self.socket_path, 0o666)
             server.listen(8)
             server.settimeout(0.1)
+            self._ready.set()
             while not self._stop.is_set():
                 try:
                     conn, _ = server.accept()

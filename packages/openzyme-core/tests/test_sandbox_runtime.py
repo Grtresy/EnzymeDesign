@@ -5,6 +5,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import threading
@@ -42,6 +43,7 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import Session
 from openzyme_domain import SessionArtifactRecord
 from openzyme_domain import SessionStatus
+from openzyme_runtime import PodmanContainerLease
 
 
 def _build_repositories() -> CoreRepositories:
@@ -118,6 +120,166 @@ def test_control_socket_error_envelope_rejects_private_machine_code(
     assert "/tmp/private-hint" not in serialized
     assert "sk-abcdefghijklmnop" not in serialized
     assert "host_path" not in serialized
+
+
+def test_control_socket_stop_waits_past_grace_for_blocking_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler_started = threading.Event()
+    release_handler = threading.Event()
+
+    def blocking_transport(
+        _server: _ControlSocketServer,
+        request: dict[str, object],
+        _params: dict[str, object],
+    ) -> dict[str, object]:
+        handler_started.set()
+        if not release_handler.wait(timeout=10.0):
+            raise AssertionError("test did not release blocking control handler")
+        return {"jsonrpc": "2.0", "id": request.get("id"), "result": {}}
+
+    monkeypatch.setattr(
+        _ControlSocketServer,
+        "_handle_transport_smoke",
+        blocking_transport,
+    )
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "blocking-control.sock",
+        repositories=_build_repositories(),
+        session_id="sess_blocking_stop",
+        sandbox_workspace_id="sw_blocking_stop",
+        sandbox_run_id="srun_blocking_stop",
+        agent_id="agent:executor",
+        source_snapshot_artifact_id="art_source",
+        source_tree_digest=_digest_text("source"),
+    )
+    request_errors: list[BaseException] = []
+    stop_errors: list[BaseException] = []
+    stop_started = threading.Event()
+    stop_done = threading.Event()
+
+    def request() -> None:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5.0)
+                client.connect(str(server.socket_path))
+                client.sendall(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": "blocking_call",
+                            "method": "s09.transport_smoke",
+                        }
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+                client.recv(4096)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            request_errors.append(exc)
+
+    def stop() -> None:
+        stop_started.set()
+        try:
+            server.stop()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            stop_errors.append(exc)
+        finally:
+            stop_done.set()
+
+    server.start()
+    request_thread = threading.Thread(target=request, name="control-request")
+    stop_thread = threading.Thread(target=stop, name="control-stop")
+    try:
+        request_thread.start()
+        assert handler_started.wait(timeout=1.0)
+        stop_thread.start()
+        assert stop_started.wait(timeout=1.0)
+
+        assert stop_done.wait(timeout=2.2) is False
+        assert stop_thread.is_alive()
+        assert server._thread is not None
+        assert server._thread.is_alive()
+    finally:
+        release_handler.set()
+        if stop_thread.ident is None:
+            server.stop()
+        stop_thread.join(timeout=3.0)
+        request_thread.join(timeout=3.0)
+
+    assert stop_done.is_set()
+    assert stop_thread.is_alive() is False
+    assert request_thread.is_alive() is False
+    assert request_errors == []
+    assert stop_errors == []
+    assert server._thread is not None
+    assert server._thread.is_alive() is False
+    assert server.socket_path.exists() is False
+
+
+def test_control_socket_start_failure_retires_created_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_worker = threading.Event()
+    worker_started = threading.Event()
+    start_done = threading.Event()
+    start_errors: list[BaseException] = []
+
+    def blocked_serve(_server: _ControlSocketServer) -> None:
+        worker_started.set()
+        release_worker.wait()
+
+    monkeypatch.setattr(_ControlSocketServer, "_serve", blocked_serve)
+    monkeypatch.setattr(
+        "openzyme_core.sandbox_runtime._CONTROL_SOCKET_START_ATTEMPTS",
+        1,
+    )
+    monkeypatch.setattr(
+        "openzyme_core.sandbox_runtime._CONTROL_SOCKET_START_POLL_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        "openzyme_core.sandbox_runtime._CONTROL_SOCKET_STOP_GRACE_SECONDS",
+        0.01,
+    )
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "never-started-control.sock",
+        repositories=_build_repositories(),
+        session_id="sess_start_failure",
+        sandbox_workspace_id="sw_start_failure",
+        sandbox_run_id="srun_start_failure",
+        agent_id="agent:executor",
+        source_snapshot_artifact_id="art_source",
+        source_tree_digest=_digest_text("source"),
+    )
+
+    def start() -> None:
+        try:
+            server.start()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            start_errors.append(exc)
+        finally:
+            start_done.set()
+
+    start_thread = threading.Thread(target=start, name="control-start")
+    start_thread.start()
+    try:
+        assert worker_started.wait(timeout=1.0)
+        assert start_done.wait(timeout=0.05) is False
+        assert server._thread is not None
+        assert server._thread.is_alive()
+    finally:
+        release_worker.set()
+        start_thread.join(timeout=2.0)
+
+    assert start_done.is_set()
+    assert start_thread.is_alive() is False
+    assert server._thread is not None
+    assert server._thread.is_alive() is False
+    assert len(start_errors) == 1
+    assert isinstance(start_errors[0], SandboxRuntimeError)
+    assert start_errors[0].error_code == "sandbox_transport_unavailable"
 
 
 @pytest.mark.parametrize("summary_execution_mode", [None, "sbatch"])
@@ -3056,6 +3218,12 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     captured: dict[str, list[str]] = {}
 
     monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(
+        PodmanContainerLease,
+        "require_absent_before_run",
+        lambda self: None,
+    )
+    monkeypatch.setattr(PodmanContainerLease, "retire", lambda self: None)
 
     def fake_active_timeout(
         self: SandboxRuntimeService,
@@ -3091,10 +3259,97 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     assert any(item.endswith(":/openzyme/sdk:ro,Z") for item in command)
     assert "PYTHONPATH=/openzyme/sdk" in command
     assert "/openzyme/control.sock" in " ".join(command)
+    assert "--name" in command
+    cidfile = Path(command[command.index("--cidfile") + 1])
+    assert cidfile.parent == workspace_root / ".podman-leases"
+    assert workspace_root / workspace.sandbox_workspace_id not in cidfile.parents
+    labels = [
+        command[index + 1]
+        for index, item in enumerate(command)
+        if item == "--label"
+    ]
+    assert any(label.startswith("io.openzyme.run_id=") for label in labels)
+    assert any(
+        label.startswith("io.openzyme.sandbox_root_digest=sha256:")
+        for label in labels
+    )
     assert command[-3:] == [workspace.image_digest, "python", "src/podman.py"]
     assert run.compatibility is not None
     assert run.compatibility["pipeline_sdk_digest"].startswith("sha256:")
     assert run.compatibility["runtime_identity_digest"].startswith("sha256:")
+
+
+def test_sandbox_exec_podman_timeout_retires_container_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = SandboxRuntimeService(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        execution_backend="podman",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/timeout.py",
+        content="print('timeout')\n",
+        create_dirs=True,
+    )
+    lifecycle: list[str] = []
+    monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(
+        PodmanContainerLease,
+        "require_absent_before_run",
+        lambda self: lifecycle.append("absent"),
+    )
+    monkeypatch.setattr(
+        PodmanContainerLease,
+        "retire",
+        lambda self: lifecycle.append("retired"),
+    )
+
+    def fake_active_timeout(
+        self: SandboxRuntimeService,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int,
+        sandbox_run_id: str,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del self, cwd, env, sandbox_run_id
+        lifecycle.append("run")
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout_seconds,
+            output=b"",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(
+        SandboxRuntimeService,
+        "_run_process_with_active_timeout",
+        fake_active_timeout,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/timeout.py"],
+        timeout_seconds=1,
+    )
+
+    assert run.status is SandboxRunStatus.TIMEOUT
+    assert run.error_code == "sandbox_exec_timeout"
+    assert lifecycle == ["absent", "run", "retired"]
 
 
 def test_sandbox_exec_rejects_missing_ready_workspace_layout_before_snapshot(
@@ -3185,6 +3440,12 @@ def test_sandbox_exec_redacts_host_paths_before_persisting_stdio(
     )
     workspace_path = workspace_root / workspace.sandbox_workspace_id
     monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
+    monkeypatch.setattr(
+        PodmanContainerLease,
+        "require_absent_before_run",
+        lambda self: None,
+    )
+    monkeypatch.setattr(PodmanContainerLease, "retire", lambda self: None)
 
     def fake_active_timeout(
         self: SandboxRuntimeService,

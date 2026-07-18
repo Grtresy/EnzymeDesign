@@ -415,6 +415,55 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
     /tmp/openzyme-aox-browser-handoff/<campaign-id>.json
 ```
 
+Every live attempt, including the known-positive probe, positive 2 and the
+controlled-fault attempt, uses a same-process loopback HTTP Host.  The current
+product drain remains synchronous while a supervised sandbox waits for an
+approval, so the cutover driver keeps at most one bounded drain request in
+flight and uses the public workspace/approval routes concurrently until that
+request returns before a later sequential drain may begin. It auto-resolves
+probe and non-Chrome approvals, keeps positive 1's first formal approval
+exclusively for the browser, and continues coordinating any later serial
+approvals from that same drain. A coordination failure may
+reject a still-pending operation only to release the failed worker; it never
+approves an operation as cleanup.  The worker must join before Host teardown or
+evidence collection.  Because a client timeout does not prove the synchronous
+FastAPI handler has stopped, the loopback Host also tracks every server-side
+mutation lifetime, initiates server shutdown, and waits through server retirement
+until all of them become idle;
+failure/fault/positive evidence and MICU-after collection occur only after the
+Host context has fully exited.  If server-side retirement cannot complete, the
+campaign remains blocked rather than reading mutable attempt state or claiming
+a closed receipt chain. Mutation handlers are forbidden from returning while a
+detached writer can still change attempt state. The canonical core and Podman
+sandbox control-socket workers are non-daemon; startup failure and stop use a
+finite cooperative grace but then wait without a timeout until the worker has
+retired, and only then remove its socket. Both core `sandbox.exec` and the
+compatibility Podman pipeline runner bind a random container name, protected
+unmounted CID file, run-id label and sandbox-root-digest label through the
+shared Host runtime lease. Every normal/error/timeout path retires the exact CID
+with `kill -> wait -> rm` before stopping the control worker, and returns only
+after stable repeated absence of both CID and name; name drift, malformed CID,
+identity ambiguity and Podman lifecycle errors remain fail-stop. This
+same-process fail-stop may
+therefore remain blocked forever after an unrecoverable mutation; process-level
+bounded retirement and safe fatal evidence require the separately proposed
+[process-isolated live-attempt supervision](architecture-proposals/process-isolated-live-attempt-supervision.md).
+This is a cutover-driver workaround, not product-level async drain or
+restart-safe continuation; that larger product-runtime change is recorded in
+[non-blocking supervised continuation](architecture-proposals/nonblocking-supervised-continuation.md).
+
+Public API receipt sequence is reserved when each request begins and finalized
+with that exact response.  This preserves `create < message < drain <
+workspace/events` even when the workspace response completes before the blocked
+drain response.  Final evidence accepts the sorted contiguous chain only after
+all reservations have completed; thread-local response binding prevents a
+concurrent drain response from being substituted for the workspace/event call
+that produced a semantic snapshot.  A transport or response-normalization
+failure retires its reservation as failed and preserves the original blocker in
+non-eligible failure evidence; completed response receipts may then contain an
+intentional sequence gap and can never be sealed or verified as an eligible
+closed chain.
+
 `chrome-once` exposes positive 1 through the Web UI served by the same-process
 loopback Host and waits for the first formal approval card. The campaign driver
 does not call the approval resolve route for that gate: the operator uses the

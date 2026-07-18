@@ -34,6 +34,7 @@ from openzyme_domain import SandboxWorkspaceRecord
 from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import immutable_source_tree_digest
+from openzyme_runtime import PodmanContainerLease
 from openzyme_runtime import S12_ROUTE_POLICIES
 from openzyme_runtime import safe_public_machine_identifier
 from openzyme_runtime import sanitize_public_diagnostic_payload
@@ -71,6 +72,9 @@ EXEC_POLICY_VERSION = "s09.exec_policy.v1"
 S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
 S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
 S12_HOST_RESULT_ORIGIN = "host_adapter_executor"
+_CONTROL_SOCKET_START_ATTEMPTS = 100
+_CONTROL_SOCKET_START_POLL_SECONDS = 0.01
+_CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
 SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
 SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
@@ -498,15 +502,19 @@ class _ControlSocketServer:
     repository_scope_factory: Callable[[], Any] | None = None
     _thread: threading.Thread | None = None
     _stop: threading.Event = field(default_factory=threading.Event)
+    _ready: threading.Event = field(default_factory=threading.Event)
 
     def start(self) -> None:
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=False)
         self._thread.start()
-        for _ in range(100):
-            if self.socket_path.exists():
+        for _ in range(_CONTROL_SOCKET_START_ATTEMPTS):
+            if self._ready.wait(timeout=_CONTROL_SOCKET_START_POLL_SECONDS):
                 return
-            time.sleep(0.01)
+            if not self._thread.is_alive():
+                break
+        self.stop()
         raise SandboxRuntimeError("sandbox_transport_unavailable", "control socket did not start")
 
     def stop(self) -> None:
@@ -518,7 +526,12 @@ class _ControlSocketServer:
         except OSError:
             pass
         if self._thread is not None:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=_CONTROL_SOCKET_STOP_GRACE_SECONDS)
+            if self._thread.is_alive():
+                # The grace period only bounds the cooperative shutdown path.
+                # Returning with a live control worker would let repository and
+                # socket ownership escape the sandbox lifecycle boundary.
+                self._thread.join()
         try:
             self.socket_path.unlink()
         except FileNotFoundError:
@@ -545,6 +558,7 @@ class _ControlSocketServer:
             os.chmod(self.socket_path, 0o600)
             server.listen(8)
             server.settimeout(0.1)
+            self._ready.set()
             while not self._stop.is_set():
                 try:
                     conn, _ = server.accept()
@@ -2950,22 +2964,33 @@ class SandboxRuntimeService:
         if self.execution_backend == "podman":
             if shutil.which(self.podman_binary) is None:
                 raise SandboxRuntimeError("sandbox_image_missing", "podman binary is not available for sandbox.exec")
-            return self._run_process_with_active_timeout(
-                self._podman_command(
-                    workspace=workspace,
-                    workspace_path=workspace_path,
-                    argv=argv,
-                    cwd_public=cwd_public,
-                    user_env=user_env,
-                    socket_path=socket_path,
-                    session_id=session_id,
-                    sandbox_workspace_id=sandbox_workspace_id,
-                    sandbox_run_id=sandbox_run_id,
-                    expected_pipeline_sdk_digest=expected_pipeline_sdk_digest,
-                ),
-                timeout_seconds=timeout_seconds,
-                sandbox_run_id=sandbox_run_id,
+            container_lease = PodmanContainerLease.create(
+                podman_binary=self.podman_binary,
+                workspace_root=_workspace_root(self.workspace_root),
+                sandbox_root=workspace_path,
+                run_id=sandbox_run_id,
             )
+            container_lease.require_absent_before_run()
+            try:
+                return self._run_process_with_active_timeout(
+                    self._podman_command(
+                        workspace=workspace,
+                        workspace_path=workspace_path,
+                        argv=argv,
+                        cwd_public=cwd_public,
+                        user_env=user_env,
+                        socket_path=socket_path,
+                        session_id=session_id,
+                        sandbox_workspace_id=sandbox_workspace_id,
+                        sandbox_run_id=sandbox_run_id,
+                        expected_pipeline_sdk_digest=expected_pipeline_sdk_digest,
+                        container_lease=container_lease,
+                    ),
+                    timeout_seconds=timeout_seconds,
+                    sandbox_run_id=sandbox_run_id,
+                )
+            finally:
+                container_lease.retire()
         raise SandboxRuntimeError("invalid_tool_arguments", f"unknown sandbox execution backend {self.execution_backend!r}")
 
     def _run_process_with_active_timeout(
@@ -2996,8 +3021,8 @@ class SandboxRuntimeService:
             finally:
                 stream.close()
 
-        stdout_thread = threading.Thread(target=_drain_output, args=(process.stdout, stdout_chunks), daemon=True)
-        stderr_thread = threading.Thread(target=_drain_output, args=(process.stderr, stderr_chunks), daemon=True)
+        stdout_thread = threading.Thread(target=_drain_output, args=(process.stdout, stdout_chunks), daemon=False)
+        stderr_thread = threading.Thread(target=_drain_output, args=(process.stderr, stderr_chunks), daemon=False)
         stdout_thread.start()
         stderr_thread.start()
         started = time.monotonic()
@@ -3059,6 +3084,7 @@ class SandboxRuntimeService:
         sandbox_workspace_id: str,
         sandbox_run_id: str,
         expected_pipeline_sdk_digest: str,
+        container_lease: PodmanContainerLease,
     ) -> list[str]:
         self._assert_workspace_layout(sandbox_workspace_id)
         env_args = [
@@ -3103,6 +3129,7 @@ class SandboxRuntimeService:
             self.podman_binary,
             "run",
             "--rm",
+            *container_lease.run_options(),
             "--network=none",
             "--userns=keep-id",
             "--user",
