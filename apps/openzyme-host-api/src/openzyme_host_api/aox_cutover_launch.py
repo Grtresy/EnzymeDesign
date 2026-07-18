@@ -11,10 +11,13 @@ import math
 from pathlib import Path
 import re
 import subprocess
+from typing import Any
 from typing import Literal
+from typing import Protocol
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
 
+from mcp_hpc_runner.server import MCPHpcServer
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_engines import PodmanPipelineSandboxRunner
 from openzyme_pipeline import aox_motif
@@ -24,6 +27,8 @@ from openzyme_runtime import is_micu_provider_url
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
+from openzyme_tools import compile_hpc_tool_request
+from openzyme_tools import get_hpc_tool_contract
 
 from .aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from .aox_cutover_runtime_config import (
@@ -78,6 +83,22 @@ KNOWN_POSITIVE_PROBE_UNIPROT_ACCESSIONS = ("P68871", "P69905")
 RUNNER_CONTRACT_MANIFEST_RELATIVE_PATH = Path(
     "apps/mcp-hpc-runner/src/mcp_hpc_runner/contracts/hpc_tool_contracts.json"
 )
+AOX_TOOLCHAIN_PIN_FIXTURE_ROOT = Path(
+    "apps/mcp-hpc-runner/fixtures/hpc_tool_samples/aox_hmm"
+)
+_TOOLCHAIN_PIN_ORDER = ("mafft", "cd-hit", "hmmbuild", "hmmalign")
+_TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = frozenset(
+    {
+        "schema_id",
+        "attestation_scope",
+        "execution_mode",
+        "tool_id",
+        "adapter_id",
+        "command_template_id",
+        "runner_contract_digest",
+        "image_digest",
+    }
+)
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -110,6 +131,7 @@ class AoxCutoverDriverConfig:
     browser_poll_interval_seconds: float = 0.5
     browser_approval_timeout_seconds: float = 300.0
     browser_completion_hold_seconds: float = 60.0
+    browser_observation_submission_timeout_seconds: float = 180.0
     browser_observation_mode: str = "chrome_devtools_mcp_file_handoff"
     ui_dist_dir: Path = field(
         default_factory=lambda: REPO_ROOT / "apps" / "openzyme-web-ui" / "dist"
@@ -145,6 +167,14 @@ class AoxCutoverLaunchSnapshot:
         """Fail closed if checkout or launch-effective runtime identity drifted."""
 
         self._guard()
+
+
+class _McpHpcServer(Protocol):
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]: ...
 
 
 def _canonical_digest(payload: object) -> str:
@@ -603,6 +633,9 @@ def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
         "timeout_seconds": driver.timeout_seconds,
         "browser_poll_interval_seconds": driver.browser_poll_interval_seconds,
         "browser_approval_timeout_seconds": (driver.browser_approval_timeout_seconds),
+        "browser_observation_submission_timeout_seconds": (
+            driver.browser_observation_submission_timeout_seconds
+        ),
     }
     invalid = sorted(
         key
@@ -825,6 +858,9 @@ def build_aox_cutover_effective_config(
                 driver.browser_approval_timeout_seconds
             ),
             "browser_completion_hold_seconds": (driver.browser_completion_hold_seconds),
+            "browser_observation_submission_timeout_seconds": (
+                driver.browser_observation_submission_timeout_seconds
+            ),
             "ui_dist_digest": ui_dist_digest,
             "micu_hard_limit_tokens": LIVE_MICU_TOKEN_HARD_LIMIT,
             "micu_ledger_identity_digest": _canonical_digest(
@@ -888,6 +924,330 @@ def _resolve_actual_identity(
             "sdk_digest": sdk_digest,
         }
     )
+
+
+def _pin_fixture(repo_root: Path, name: str) -> Path:
+    resolved_root = repo_root.resolve()
+    fixture_root = resolved_root / AOX_TOOLCHAIN_PIN_FIXTURE_ROOT
+    fixture = fixture_root / name
+    if (
+        fixture_root.is_symlink()
+        or fixture.is_symlink()
+        or not fixture.is_file()
+        or fixture.resolve() != fixture
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_fixture_invalid",
+            "AOX toolchain pin requires the committed deterministic runner fixture",
+            details={"fixture_id": name},
+        )
+    return fixture
+
+
+def _pin_artifact(path: Path, *, artifact_id: str) -> dict[str, object]:
+    return {
+        "artifact_id": artifact_id,
+        "storage_uri": str(path),
+        "title": "AOX cutover toolchain pin fixture",
+        "relative_path": path.name,
+        "metadata": {
+            "classification": "deterministic_fixture",
+            "scientific_evidence": False,
+            "purpose": "aox_cutover_toolchain_pin",
+        },
+    }
+
+
+def _runner_expectations_by_tool_id(
+    runner_contract_expectations: Mapping[str, object],
+) -> dict[str, dict[str, str]]:
+    contracts = runner_contract_expectations.get("contracts")
+    expected_tool_ids = {
+        str(contract["tool_id"])
+        for contract in AOX_TOOLCHAIN_RUNTIME_CONTRACTS.values()
+    }
+    if not isinstance(contracts, Mapping) or set(contracts) != expected_tool_ids:
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_contract_invalid",
+            "AOX toolchain pin requires the exact effective runner contract closure",
+        )
+    normalized: dict[str, dict[str, str]] = {}
+    for tool_id in sorted(expected_tool_ids):
+        record = contracts[tool_id]
+        if not isinstance(record, Mapping):
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_contract_invalid",
+                "AOX toolchain pin runner contract record is malformed",
+                details={"tool_id": tool_id},
+            )
+        normalized[tool_id] = {
+            "adapter_id": str(record.get("adapter_id") or ""),
+            "command_template_id": str(record.get("command_template_id") or ""),
+            "runner_contract_digest": _require_digest(
+                record.get("runner_contract_digest"),
+                identity=f"runner_contract.{tool_id}",
+            ),
+        }
+    return normalized
+
+
+def _compile_toolchain_pin_request(
+    *,
+    tool_id: str,
+    artifacts: list[dict[str, object]],
+    tool_inputs: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    artifact_ids = [str(artifact["artifact_id"]) for artifact in artifacts]
+    return compile_hpc_tool_request(
+        tool_id=tool_id,
+        tool_inputs=dict(tool_inputs or {}),
+        execution_mode="ssh",
+        execution_goal={
+            "purpose": "aox_cutover_toolchain_pin",
+            "classification": "deterministic_fixture",
+            "scientific_evidence": False,
+        },
+        required_artifacts=artifacts,
+        context_artifacts=(),
+        required_artifact_ids=artifact_ids,
+        context_artifact_ids=(),
+    )
+
+
+def attest_aox_toolchain_image_digests(
+    *,
+    server: _McpHpcServer,
+    repo_root: Path,
+    runner_contract_expectations: Mapping[str, object],
+) -> dict[str, str]:
+    """Attest all AOX SIF bytes in the SSH shell that executes real payloads.
+
+    The inputs are committed deterministic, non-scientific fixtures.  Commands
+    are compiled by the production OpenZyme tool compiler and then rebound to
+    the runner-owned contracts by ``MCPHpcServer``.  No configured SIF locator,
+    discovery receipt, or Slurm metadata is accepted as an image identity.
+    """
+
+    expected_contracts = _runner_expectations_by_tool_id(
+        runner_contract_expectations
+    )
+    input_sequences = _pin_fixture(repo_root, "input_sequences.fasta")
+    model_alignment = _pin_fixture(repo_root, "msa.sto")
+    search_targets = _pin_fixture(repo_root, "search_targets.fasta")
+    hmmbuild_model: Path | None = None
+    image_digests: dict[str, str] = {}
+
+    for route_name in _TOOLCHAIN_PIN_ORDER:
+        expected = AOX_TOOLCHAIN_RUNTIME_CONTRACTS[route_name]
+        tool_id = str(expected["tool_id"])
+        if route_name in {"mafft", "cd-hit"}:
+            artifacts = [
+                _pin_artifact(
+                    input_sequences,
+                    artifact_id=f"aox-pin-{route_name}-input",
+                )
+            ]
+        elif route_name == "hmmbuild":
+            artifacts = [
+                _pin_artifact(
+                    model_alignment,
+                    artifact_id="aox-pin-hmmbuild-alignment",
+                )
+            ]
+        else:
+            if hmmbuild_model is None:
+                raise AoxCutoverLaunchError(
+                    "aox_launch_toolchain_pin_chain_invalid",
+                    "AOX hmmalign pin requires the completed hmmbuild output",
+                )
+            artifacts = [
+                _pin_artifact(
+                    hmmbuild_model,
+                    artifact_id="aox-pin-hmmalign-model",
+                ),
+                _pin_artifact(
+                    search_targets,
+                    artifact_id="aox-pin-hmmalign-targets",
+                ),
+            ]
+        tool_inputs: dict[str, object] = {}
+        if route_name == "cd-hit":
+            tool_inputs = {"identity": 1.0, "word_size": 5}
+        try:
+            request = _compile_toolchain_pin_request(
+                tool_id=tool_id,
+                artifacts=artifacts,
+                tool_inputs=tool_inputs,
+            )
+            result = server.call_tool(
+                "exec.run",
+                {
+                    "runspec": request["runspec"],
+                    "mode_override": "ssh",
+                },
+            )
+        except AoxCutoverLaunchError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - redact runner internals at boundary
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_execution_failed",
+                "AOX toolchain pin failed inside the trusted runner boundary",
+                details={
+                    "tool_id": tool_id,
+                    "failure_type": type(exc).__name__,
+                },
+            ) from exc
+        if (
+            not isinstance(result, Mapping)
+            or result.get("status") != "completed"
+            or type(result.get("exit_code")) is not int
+            or result.get("exit_code") != 0
+            or result.get("selected_mode") != "ssh"
+            or result.get("error_code") is not None
+        ):
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_execution_failed",
+                "AOX toolchain pin did not complete as an authoritative SSH run",
+                details={"tool_id": tool_id},
+            )
+        runtime_identity = result.get("toolchain_runtime_identity")
+        if (
+            not isinstance(runtime_identity, Mapping)
+            or set(runtime_identity) != _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS
+        ):
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_identity_missing",
+                "AOX toolchain pin lacks its closed same-shell runtime identity",
+                details={"tool_id": tool_id},
+            )
+        expected_runner = expected_contracts[tool_id]
+        expected_identity = {
+            "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+            "attestation_scope": "same_ssh_login_shell_pre_exec",
+            "execution_mode": "ssh",
+            "tool_id": tool_id,
+            "adapter_id": str(expected["adapter_id"]),
+            "command_template_id": str(expected["command_template_id"]),
+            "runner_contract_digest": expected_runner["runner_contract_digest"],
+        }
+        mismatched = sorted(
+            key
+            for key, value in expected_identity.items()
+            if runtime_identity.get(key) != value
+        )
+        if mismatched:
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_identity_mismatch",
+                "AOX toolchain pin identity differs from the effective runner contract",
+                details={"tool_id": tool_id, "fields": mismatched},
+            )
+        image_digest = _require_digest(
+            runtime_identity.get("image_digest"),
+            identity=f"toolchain_runtime_identity.{tool_id}.image_digest",
+        )
+        contract = get_hpc_tool_contract(tool_id)
+        expected_output_paths = {
+            output.path for output in contract.expected_outputs
+        }
+        raw_artifacts = result.get("artifacts")
+        if (
+            not isinstance(raw_artifacts, Mapping)
+            or set(raw_artifacts) != expected_output_paths
+        ):
+            raise AoxCutoverLaunchError(
+                "aox_launch_toolchain_pin_output_invalid",
+                "AOX toolchain pin did not return its exact declared output closure",
+                details={"tool_id": tool_id},
+            )
+        materialized_outputs: dict[str, Path] = {}
+        for output_path in sorted(expected_output_paths):
+            local_value = raw_artifacts[output_path]
+            local_path = Path(str(local_value)).expanduser()
+            if local_path.is_symlink() or not local_path.is_file():
+                raise AoxCutoverLaunchError(
+                    "aox_launch_toolchain_pin_output_invalid",
+                    "AOX toolchain pin output was not materialized as a regular file",
+                    details={"tool_id": tool_id, "output_id": output_path},
+                )
+            materialized_outputs[output_path] = local_path.resolve()
+        if route_name == "hmmbuild":
+            hmmbuild_model = materialized_outputs["bio_tools/hmmbuild/model.hmm"]
+        image_digests[str(expected["toolchain_id"])] = image_digest
+
+    return _normalize_toolchain_image_digests(image_digests)
+
+
+def pin_aox_cutover_launch(
+    *,
+    settings: OpenZymeSettings,
+    driver: AoxCutoverDriverConfig,
+    ledger_path: Path,
+    repo_root: Path = REPO_ROOT,
+    probes: AoxCutoverLaunchProbes = DEFAULT_LAUNCH_PROBES,
+    runner_server_factory: Callable[[str | Path | None], _McpHpcServer] = (
+        MCPHpcServer
+    ),
+) -> AoxCutoverLaunchSnapshot:
+    """Bootstrap exact launch declarations from the actual trusted runtime."""
+
+    resolved_root = repo_root.resolve()
+    effective_config = build_aox_cutover_effective_config(
+        settings,
+        driver=driver,
+        ledger_path=ledger_path,
+        repo_root=resolved_root,
+        source_tree_digest=probes.source_tree_digest,
+    )
+    actual_identity = _resolve_actual_identity(
+        repo_root=resolved_root,
+        config_digest=effective_config.digest,
+        probes=probes,
+    )
+    try:
+        server = runner_server_factory(
+            effective_config.settings.execution.hpc_runner_config
+        )
+    except Exception as exc:  # noqa: BLE001 - private config stays behind Host
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_runner_unavailable",
+            "AOX toolchain pin could not initialize the trusted runner",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    execution_config = effective_config.payload.get("execution")
+    runner_expectations = (
+        execution_config.get("aox_runner_contract_expectations")
+        if isinstance(execution_config, Mapping)
+        else None
+    )
+    if not isinstance(runner_expectations, Mapping):
+        raise AoxCutoverLaunchError(
+            "aox_launch_toolchain_pin_contract_invalid",
+            "AOX toolchain pin lacks effective runner contract expectations",
+        )
+    toolchain_image_digests = attest_aox_toolchain_image_digests(
+        server=server,
+        repo_root=resolved_root,
+        runner_contract_expectations=runner_expectations,
+    )
+    prerequisites = build_aox_cutover_allowed_prerequisites(
+        identity=actual_identity,
+        settings=effective_config.settings,
+        toolchain_image_digests=toolchain_image_digests,
+    )
+    # Deliberately go back through the exact run-live launch gate after the SSH
+    # attestations.  This catches checkout/config/runtime drift caused during
+    # bootstrap and proves the generated declarations require no operator guess.
+    snapshot = prepare_aox_cutover_launch(
+        settings=settings,
+        driver=driver,
+        ledger_path=ledger_path,
+        declared_identity=actual_identity,
+        declared_prerequisites=prerequisites,
+        repo_root=resolved_root,
+        probes=probes,
+    )
+    snapshot.assert_unchanged()
+    return snapshot
 
 
 def _mismatched_fields(
@@ -1002,10 +1362,12 @@ __all__ = [
     "EFFECTIVE_CONFIG_SCHEMA_ID",
     "IDENTITY_FIELDS",
     "TOOLCHAIN_IDS",
+    "attest_aox_toolchain_image_digests",
     "build_aox_cutover_allowed_prerequisites",
     "build_aox_cutover_effective_config",
     "canonical_prompt_accessions",
     "normalize_aox_blank_world_runtime_config",
+    "pin_aox_cutover_launch",
     "prepare_aox_cutover_launch",
     "validate_aox_cutover_allowed_prerequisites",
     "validate_aox_cutover_identity",

@@ -63,9 +63,9 @@ Every attempt creates a new attempt root containing initially empty, distinct lo
 
 The public root proof contains only stable names, counts, identities and cache policy, never Host paths. `provider_cache_mode=bypass`, `evidence_cache_reuse=false` and `sqlite_preexisting=false` are mandatory. Existing attempt roots, symlinks, preloaded scientific files and unknown prerequisite fields are rejected.
 
-`run-live` resolves one canonical launch snapshot before it constructs the runner,
-campaign, or any attempt root. The declared campaign identity is an exact closed
-seven-field object:
+`pin` first derives the declarations and `run-live` resolves the same canonical
+launch snapshot before it constructs the campaign runner or any attempt root.
+The campaign identity is an exact closed seven-field object:
 
 - `git_commit`;
 - `config_digest`;
@@ -135,6 +135,65 @@ contains exactly:
 The hmmbuild and hmmalign values must identify the same immutable HMMER SIF
 bytes. Credentials, private locators and scientific bytes are forbidden from
 the prerequisite object.
+
+The operator does not guess either closed object. From a clean checkout, `pin`
+uses the effective post-foundation settings and the production
+`compile_hpc_tool_request` commands to run deterministic non-scientific MAFFT,
+CD-HIT, hmmbuild and hmmalign payloads through the configured trusted
+`MCPHpcServer` in forced SSH mode. The runner binds its own private SIF locator
+and contract, hashes that SIF in the same login shell before and after the real
+payload, and emits the closed public runtime identity only on success. The
+hmmalign pin consumes the materialized output of the preceding hmmbuild pin;
+neither configured locators nor Slurm/discovery metadata can populate
+`toolchain_image_digests`. `pin` then calls the same
+`prepare_aox_cutover_launch` gate used by `run-live` to detect any intervening
+checkout/config/runtime drift.
+
+Both payload files are canonical JSON written with mode `0600` and individual
+no-replace publication. They must share one existing real transaction directory
+whose two payload targets and fixed marker target do not yet exist. Host fsyncs
+both payloads first, then publishes the fixed hidden
+`.aox-cutover-pin-commit.json` marker as the single consumer-visible commit
+point and fsyncs the directory again. The marker is an exact closed object that
+binds both basenames and both canonical payload digests. `run-live` refuses the
+pair before launch/root creation when the marker is absent, a symlink, malformed
+or digest-drifted. A crash before the marker may leave orphan payload files, but
+they can never be consumed as a committed declaration pair; the operator uses a
+new transaction directory. Parents must already exist without symlink
+traversal, targets must not exist, and checkout-local targets are rejected so
+the subsequent clean-checkout guard remains valid. The public pin receipt
+contains only commit/config/declaration digests, never an output path,
+credential, NCBI identity value, runner locator or Host artifact path.
+
+The unsigned marker is a transaction-integrity commit point, not producer
+attestation. `run-live` verifies real regular files, one parent, the exact marker
+shape/basenames and both canonical payload digests; it does not prove that an
+accepted pair was written by `pin`, that the directory contains no unrelated
+files, or that consumer-time modes remain `0600`. The live trusted-operator
+contract therefore still requires the canonical `pin` command, while actual
+launch recomputation and each live operation's runner-issued identity fail
+closed on environment or toolchain drift.
+
+```bash
+install -d -m 700 /tmp/openzyme-aox-pin/<campaign-id>
+uv --project apps/openzyme-host-api run openzyme-aox-cutover pin \
+  --identity-output \
+    /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
+  --allowed-prerequisites-output \
+    /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
+  --approval-mode chrome-once \
+  --browser-poll-interval-seconds 0.5 \
+  --browser-approval-timeout-seconds 300 \
+  --browser-completion-hold-seconds 60 \
+  --browser-observation-submission-timeout-seconds 180 \
+  --timeout-seconds 1800 \
+  --max-drains 120 \
+  --max-signals-per-drain 10 \
+  --max-steps-per-agent 16
+```
+
+These driver arguments, including every Chrome bound, must be repeated exactly
+for `run-live`; changing any value changes `config_digest` and is rejected.
 
 Before the first session or model/provider call, the campaign reads the public
 Host runtime-health preflight, requires its canonical immutable sandbox image
@@ -335,9 +394,18 @@ Real campaign entry point:
 install -d -m 700 /tmp/openzyme-aox-browser-handoff
 uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --campaign-root /tmp/openzyme-aox-cutover/<campaign-id> \
-  --identity /tmp/aox-campaign-identity.json \
-  --allowed-prerequisites /tmp/aox-allowed-prerequisites.json \
+  --identity /tmp/openzyme-aox-pin/<campaign-id>/identity.json \
+  --allowed-prerequisites \
+    /tmp/openzyme-aox-pin/<campaign-id>/allowed-prerequisites.json \
   --approval-mode chrome-once \
+  --browser-poll-interval-seconds 0.5 \
+  --browser-approval-timeout-seconds 300 \
+  --browser-completion-hold-seconds 60 \
+  --browser-observation-submission-timeout-seconds 180 \
+  --timeout-seconds 1800 \
+  --max-drains 120 \
+  --max-signals-per-drain 10 \
+  --max-steps-per-agent 16 \
   --browser-observation-receipt \
     /tmp/openzyme-aox-browser-handoff/<campaign-id>.json
 ```
@@ -354,9 +422,17 @@ handoff, so an immediate browser resolution is reconstructed from durable
 events instead of racing a later snapshot. The independent approval deadline
 starts when the handoff is emitted and is capped by the attempt-wide deadline;
 after formal completion the driver keeps a bounded UI observation window.
-The final observation target must remain absent during that entire window; the
-operator writes a sibling temporary file, fsyncs it, and atomically renames it
-only after the handoff's `receipt_not_before_unix_ns`. The sealed
+Under the trusted-operator contract, the final observation target must remain
+absent during that entire window; the operator writes a sibling temporary file,
+fsyncs it, and atomically renames it only after the handoff's
+`receipt_not_before_unix_ns`, within the separately sealed positive finite
+observation-submission timeout (default 180 seconds). The current Host rejects a
+target seen by any bounded hold poll or whose final mtime predates the hold end,
+then requires a non-symlink regular file to remain identical across two
+stat/read passes. That proves a fresh stable post-hold final file within the
+trusted boundary; it does not prove continuous absence between polls or the
+atomic-rename/fsync provenance of that file.
+The sealed
 `aox_browser_observation_receipt@2` binds the challenge, same page/Host/UI dist,
 terminal page state, DevTools transcript, zero application console errors, a
 fully decodable PNG, and Host acceptance timing. Public API receipts use the
@@ -364,6 +440,48 @@ closed seven-field form including `response_semantic_digest`. The last public
 workspace GET and full `after_cursor=0,replay=true` event GET are copied into
 bundle-level attestation artifacts; they are not registered back into product
 state. Browser approval evidence is valid only for `chrome-once` positive 1.
+
+The `approval_required` and `ready_for_completion_observation` handoffs are
+dynamic-identity-complete for the trusted Chrome operator. In addition to the
+actual loopback HTTP `ui_url`, they expose the sealed logical `page_url`, Host
+process id, served UI-dist digest, challenge and raw receipt schema identifier.
+They do not carry a standalone receipt builder: the versioned exact field and
+digest rules are the static contract below and in `aox_cutover_live.py`. The operator opens
+the actual HTTP URL, but writes the sealed logical value
+`loopback://same-process/ui/?project_id=aox-blank-world-cutover` into the
+receipt. The raw JSON has exactly 23 fields:
+
+- schema/mode/challenge plus session, approval and operation ids;
+- sealed page URL, Host process, UI-dist digest and actual Chrome page target;
+- hold duration, normalized non-error console entries and their digest, with
+  `application_error_count=0`;
+- the exact `expected_page_state` supplied after the operator independently
+  checks the visible/public terminal semantics, plus its digest;
+- one command receipt and an ordered transcript covering at least
+  `list_console_messages`, `evaluate_script` and `take_screenshot`;
+- strict base64 PNG bytes, raw-byte SHA-256 and IHDR width/height.
+
+All object/list digests use canonical JSON with UTF-8, sorted keys, compact
+separators and no NaN. The command and response digest preimages remain the
+closed forms enforced by `aox_cutover_live.py`; the screenshot digest is over
+raw PNG bytes, not base64 text. Any observed application error is a hard
+failure and must not be filtered out to manufacture zero. After accepting the
+raw receipt, Host appends exactly six timing fields: hold seconds/satisfied,
+submission timeout seconds, ready/not-before timestamps and acceptance
+timestamp. The offline verifier binds both time bounds back to effective
+config and rejects acceptance before hold end or after the submission
+deadline.
+
+The sibling-temp/fsync/atomic-rename sequence is a mandatory trusted-operator
+write protocol, not a Host-observed filesystem provenance claim. The accepted
+receipt proves only the polling, mtime, regular-file and double-read stability
+checks described above.
+
+This `@2` contract is intentionally a trusted-operator observation receipt. It
+does not claim a signed, browser-origin-complete, independently replayable raw
+MCP transcript. The larger authority/normalization redesign is recorded in
+`architecture-proposals/verifiable-chrome-devtools-observation-transcript.md`
+and is not implemented by this cutover goal.
 
 Use `--approval-mode auto` only when collecting a non-Chrome campaign that is
 expected to remain short of the Chrome GO criterion. The command runs positive

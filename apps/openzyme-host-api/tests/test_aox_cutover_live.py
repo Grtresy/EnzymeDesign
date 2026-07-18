@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
 import struct
@@ -40,6 +41,10 @@ def _digest(label: str) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def _chrome_effective_config() -> dict[str, object]:
+    return {"driver": {"ui_dist_digest": _digest("built-ui-dist")}}
 
 
 def _public_receipt(
@@ -819,6 +824,7 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
         ledger_path=ledger_path,
+        effective_config=_chrome_effective_config(),
         approval_mode="chrome-once",
         browser_poll_interval_seconds=0.001,
         browser_completion_hold_seconds=0.0,
@@ -964,6 +970,17 @@ def test_chrome_once_waits_for_exact_public_resolution_events(
     operator_output = capsys.readouterr().err
     assert '"status": "approval_required"' in operator_output
     assert '"status": "approval_observed"' in operator_output
+    handoff = next(
+        json.loads(line)
+        for line in operator_output.splitlines()
+        if '"status": "approval_required"' in line
+    )
+    assert handoff["sealed_page_url"] == live.BROWSER_SEALED_PAGE_URL
+    assert handoff["served_ui_dist_digest"] == _digest("built-ui-dist")
+    assert (
+        handoff["browser_observation_receipt_schema_id"]
+        == live.BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
+    )
 
 
 def test_chrome_once_rejects_continuation_operation_identity_drift(
@@ -973,6 +990,7 @@ def test_chrome_once_rejects_continuation_operation_identity_drift(
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
         ledger_path=ledger_path,
+        effective_config=_chrome_effective_config(),
         approval_mode="chrome-once",
         timeout_seconds=0.01,
         browser_poll_interval_seconds=0.001,
@@ -1072,6 +1090,7 @@ def test_chrome_once_uses_independent_handoff_timeout(
     runner = live.LiveAoxAttemptRunner(
         settings=_runner_settings(ledger_path),
         ledger_path=ledger_path,
+        effective_config=_chrome_effective_config(),
         approval_mode="chrome-once",
         timeout_seconds=60.0,
         browser_approval_timeout_seconds=0.005,
@@ -1254,6 +1273,221 @@ def test_chrome_observation_rejects_receipt_written_before_hold_end(
         )
 
     assert error.value.code == "browser_observation_receipt_too_early"
+
+
+def test_chrome_observation_uses_independent_submission_timeout(
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "browser-observation.json"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(tmp_path / "ledger.sqlite3"),
+        ledger_path=tmp_path / "ledger.sqlite3",
+        effective_config=_chrome_effective_config(),
+        approval_mode="chrome-once",
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.0,
+        browser_observation_submission_timeout_seconds=0.005,
+        browser_observation_receipt_path=receipt_path,
+    )
+    operation_digest = _digest("browser-observation-timeout")
+    formal = live.SessionDriveResult(
+        session_id="sess_observation_timeout",
+        purpose="formal",
+        state="completed",
+        blocker_code=None,
+        workspace={
+            "pending_approvals": [],
+            "conversation": [
+                {
+                    "message_id": "msg_observation_timeout_final",
+                    "role": "assistant",
+                    "content": "completed",
+                }
+            ],
+            "reports": [
+                {"report_id": "report_observation_timeout", "status": "published"}
+            ],
+            "scientific_evidence": {
+                "operations": [
+                    {
+                        "operation_id": "operation_observation_timeout",
+                        "operation_digest": operation_digest,
+                        "status": "completed",
+                    }
+                ]
+            },
+        },
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=1,
+        approval_ids=("approval_observation_timeout",),
+        browser_approval_receipt={
+            "approval_id": "approval_observation_timeout",
+            "operation_id": "operation_observation_timeout",
+            "operation_digest": operation_digest,
+        },
+    )
+    started = time.monotonic()
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        runner._wait_for_browser_observation(
+            formal,
+            observation_ready_started=started,
+            observation_ready_wall_ns=time.time_ns(),
+        )
+
+    assert error.value.code == "browser_observation_receipt_missing"
+    assert time.monotonic() - started < 0.5
+
+
+def test_chrome_observation_accepts_stable_post_hold_receipt(
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "browser-observation.json"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(tmp_path / "ledger.sqlite3"),
+        ledger_path=tmp_path / "ledger.sqlite3",
+        effective_config=_chrome_effective_config(),
+        approval_mode="chrome-once",
+        browser_poll_interval_seconds=0.001,
+        browser_completion_hold_seconds=0.01,
+        browser_observation_submission_timeout_seconds=1.0,
+        browser_observation_receipt_path=receipt_path,
+    )
+    operation_digest = _digest("browser-observation-valid")
+    approval = {
+        "approval_id": "approval_observation_valid",
+        "operation_id": "operation_observation_valid",
+        "operation_digest": operation_digest,
+        "observation_challenge": _digest("browser-challenge"),
+        "page_url": live.BROWSER_SEALED_PAGE_URL,
+        "host_process_id": os.getpid(),
+        "served_ui_dist_digest": _digest("built-ui-dist"),
+    }
+    formal = live.SessionDriveResult(
+        session_id="sess_observation_valid",
+        purpose="formal",
+        state="completed",
+        blocker_code=None,
+        workspace={
+            "pending_approvals": [],
+            "conversation": [
+                {
+                    "message_id": "msg_observation_valid_final",
+                    "role": "assistant",
+                    "content": "completed",
+                }
+            ],
+            "reports": [
+                {"report_id": "report_observation_valid", "status": "published"}
+            ],
+            "scientific_evidence": {
+                "operations": [
+                    {
+                        "operation_id": "operation_observation_valid",
+                        "operation_digest": operation_digest,
+                        "status": "completed",
+                    }
+                ]
+            },
+        },
+        workspace_response_binding={"sequence": 7},
+        event_receipt={
+            "event_stream_digest": _digest("browser-events"),
+            "last_cursor": 9,
+            "public_response_binding": {"sequence": 8},
+        },
+        drain_count=1,
+        approval_ids=("approval_observation_valid",),
+        browser_approval_receipt=approval,
+    )
+    page_target_id = "chrome-page-1"
+    page_state = live._terminal_browser_page_state(formal)
+    transcript = [
+        {
+            "sequence": sequence,
+            "tool": "chrome_devtools_mcp",
+            "method": method,
+            "page_target_id": page_target_id,
+            "request_digest": _digest(f"request-{method}"),
+            "response_digest": _digest(f"response-{method}"),
+        }
+        for sequence, method in enumerate(
+            ("list_console_messages", "evaluate_script", "take_screenshot"),
+            start=1,
+        )
+    ]
+    screenshot_base64 = _one_pixel_grayscale_png(filter_byte=0)
+    screenshot_bytes = base64.b64decode(screenshot_base64)
+    command_id = "chrome-observation-valid"
+    command_digest = live.canonical_digest(
+        {
+            "tool": "chrome_devtools_mcp",
+            "command_id": command_id,
+            "page_target_id": page_target_id,
+            "observation_challenge": approval["observation_challenge"],
+            "action": "observe_console_page_state_and_screenshot",
+        }
+    )
+    screenshot_digest = live._sha256(screenshot_bytes)
+    response_digest = live.canonical_digest(
+        {
+            "page_state": page_state,
+            "console_entries": [],
+            "application_error_count": 0,
+            "devtools_transcript_digest": live.canonical_digest(transcript),
+            "screenshot_digest": screenshot_digest,
+        }
+    )
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_id": live.BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID,
+                "observation_mode": live.BROWSER_OBSERVATION_MODE,
+                "observation_challenge": approval["observation_challenge"],
+                "session_id": formal.session_id,
+                "approval_id": approval["approval_id"],
+                "operation_id": approval["operation_id"],
+                "page_url": approval["page_url"],
+                "host_process_id": approval["host_process_id"],
+                "served_ui_dist_digest": approval["served_ui_dist_digest"],
+                "page_target_id": page_target_id,
+                "observation_window_seconds": 0.01,
+                "console_entries": [],
+                "console_entries_digest": live.canonical_digest([]),
+                "application_error_count": 0,
+                "page_state": page_state,
+                "page_state_digest": live.canonical_digest(page_state),
+                "devtools_command_receipt": {
+                    "command_id": command_id,
+                    "tool": "chrome_devtools_mcp",
+                    "command_digest": command_digest,
+                    "response_digest": response_digest,
+                    "page_target_id": page_target_id,
+                },
+                "devtools_transcript": transcript,
+                "devtools_transcript_digest": live.canonical_digest(transcript),
+                "screenshot_png_base64": screenshot_base64,
+                "screenshot_digest": screenshot_digest,
+                "screenshot_width": 1,
+                "screenshot_height": 1,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = runner._wait_for_browser_observation(
+        formal,
+        observation_ready_started=time.monotonic() - 0.02,
+        observation_ready_wall_ns=(
+            receipt_path.stat().st_mtime_ns - 20_000_000
+        ),
+    )
+
+    assert receipt["host_observation_hold_satisfied"] is True
+    assert receipt["host_observation_submission_timeout_seconds"] == 1.0
+    assert receipt["screenshot_digest"] == screenshot_digest
 
 
 @pytest.mark.parametrize(

@@ -188,6 +188,7 @@ def _effective_config(
             "browser_poll_interval_seconds": 0.5,
             "browser_approval_timeout_seconds": 300.0,
             "browser_completion_hold_seconds": 60.0,
+            "browser_observation_submission_timeout_seconds": 180.0,
             "ui_dist_digest": None,
             "micu_hard_limit_tokens": 100_000_000,
             "micu_ledger_identity_digest": (
@@ -4626,6 +4627,7 @@ def _browser_approval_receipt(payload: dict[str, object]) -> dict[str, object]:
         "screenshot_height": 1,
         "host_observation_hold_seconds": 60.0,
         "host_observation_hold_satisfied": True,
+        "host_observation_submission_timeout_seconds": 180.0,
         "host_observation_ready_at_unix_ns": 1_000_000_000_000,
         "host_observation_not_before_unix_ns": 1_060_000_000_000,
         "host_observation_accepted_at_unix_ns": 1_060_000_000_001,
@@ -4822,7 +4824,12 @@ def test_chrome_once_receipt_tamper_fails_offline_verification(
 
 @pytest.mark.parametrize(
     "tamper",
-    ("accepted_before_window_end", "window_duration_drift"),
+    (
+        "accepted_before_window_end",
+        "accepted_after_submission_deadline",
+        "window_duration_drift",
+        "submission_timeout_drift",
+    ),
 )
 def test_chrome_observation_host_timing_tamper_fails_offline_verification(
     tmp_path: Path,
@@ -4840,8 +4847,15 @@ def test_chrome_observation_host_timing_tamper_fails_offline_verification(
             receipt["host_observation_accepted_at_unix_ns"] = (
                 receipt["host_observation_not_before_unix_ns"] - 1
             )
-        else:
+        elif tamper == "accepted_after_submission_deadline":
+            receipt["host_observation_accepted_at_unix_ns"] = (
+                receipt["host_observation_not_before_unix_ns"]
+                + 180_000_000_001
+            )
+        elif tamper == "window_duration_drift":
             receipt["host_observation_not_before_unix_ns"] += 1
+        else:
+            receipt["host_observation_submission_timeout_seconds"] = 181.0
         envelope["bundle_digest"] = canonical_digest(payload)
 
     _rewrite_envelope(bundle_path, mutate_timing)

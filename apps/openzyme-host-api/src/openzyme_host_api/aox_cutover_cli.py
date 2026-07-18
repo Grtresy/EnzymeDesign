@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
+import tempfile
+
+from openzyme_runtime import REPO_ROOT
 
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import AoxCutoverCampaign
@@ -13,7 +18,33 @@ from .aox_cutover_evidence import safe_micu_ledger_snapshot
 from .aox_cutover_evidence import seal_campaign_decision
 from .aox_cutover_evidence import verify_attempt_bundle
 from .aox_cutover_launch import AoxCutoverDriverConfig
+from .aox_cutover_launch import AoxCutoverLaunchError
+from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import prepare_aox_cutover_launch
+
+
+_PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
+_PIN_COMMIT_SCHEMA_ID = "aox_cutover_pin_commit@1"
+_PIN_COMMIT_FIELDS = frozenset(
+    {
+        "schema_id",
+        "identity_file",
+        "allowed_prerequisites_file",
+        "identity_digest",
+        "allowed_prerequisites_digest",
+    }
+)
+
+
+def _canonical_digest(payload: object) -> str:
+    content = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
 def _json_object(path: Path) -> dict[str, object]:
@@ -44,6 +75,326 @@ def _print(payload: object) -> None:
             sort_keys=True,
         )
     )
+
+
+def _driver_from_args(args: argparse.Namespace) -> AoxCutoverDriverConfig:
+    return AoxCutoverDriverConfig(
+        approval_mode=args.approval_mode,
+        timeout_seconds=args.timeout_seconds,
+        max_drains=args.max_drains,
+        max_signals_per_drain=args.max_signals_per_drain,
+        max_steps_per_agent=args.max_steps_per_agent,
+        browser_poll_interval_seconds=args.browser_poll_interval_seconds,
+        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
+        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
+        browser_observation_submission_timeout_seconds=(
+            args.browser_observation_submission_timeout_seconds
+        ),
+    )
+
+
+def _pin_output_target(path: Path) -> Path:
+    expanded = path.expanduser()
+    absolute = Path(os.path.abspath(expanded))
+    try:
+        parent = absolute.parent.resolve(strict=True)
+    except OSError as exc:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_parent_invalid",
+            "AOX pin output parent must be an existing real directory",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    if absolute.parent != parent or not parent.is_dir() or parent.is_symlink():
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_parent_invalid",
+            "AOX pin output parent must not traverse a symbolic link",
+        )
+    target = parent / absolute.name
+    repo_root = REPO_ROOT.resolve()
+    if target == repo_root or repo_root in target.parents:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_inside_checkout",
+            "AOX pin declarations must be written outside the clean checkout",
+        )
+    if os.path.lexists(target):
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_exists",
+            "AOX pin output is append-only and already exists",
+        )
+    return target
+
+
+def _pin_output_targets(
+    identity_path: Path,
+    prerequisites_path: Path,
+) -> tuple[Path, Path]:
+    identity_target = _pin_output_target(identity_path)
+    prerequisites_target = _pin_output_target(prerequisites_path)
+    if identity_target == prerequisites_target:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_collision",
+            "AOX identity and prerequisite outputs must use distinct paths",
+        )
+    if identity_target.parent != prerequisites_target.parent:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_parent_mismatch",
+            "AOX pin declarations must share one transaction directory",
+        )
+    if _PIN_COMMIT_BASENAME in {
+        identity_target.name,
+        prerequisites_target.name,
+    }:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_collision",
+            "AOX declaration output collides with its transaction commit marker",
+        )
+    _pin_output_target(identity_target.parent / _PIN_COMMIT_BASENAME)
+    return identity_target, prerequisites_target
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _stage_pin_json(target: Path, payload: object) -> Path:
+    content = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".openzyme-aox-pin-",
+        suffix=".tmp",
+        dir=target.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        offset = 0
+        while offset < len(content):
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                raise OSError("atomic AOX pin write made no progress")
+            offset += written
+        os.fsync(descriptor)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(descriptor)
+    return temporary_path
+
+
+def _pin_commit_payload(
+    *,
+    identity_target: Path,
+    prerequisites_target: Path,
+    identity: object,
+    prerequisites: object,
+) -> dict[str, str]:
+    return {
+        "schema_id": _PIN_COMMIT_SCHEMA_ID,
+        "identity_file": identity_target.name,
+        "allowed_prerequisites_file": prerequisites_target.name,
+        "identity_digest": _canonical_digest(identity),
+        "allowed_prerequisites_digest": _canonical_digest(prerequisites),
+    }
+
+
+def _write_pin_outputs_atomic_no_replace(
+    *,
+    identity_target: Path,
+    prerequisites_target: Path,
+    identity: object,
+    prerequisites: object,
+) -> None:
+    staged: list[tuple[Path, Path]] = []
+    installed: list[Path] = []
+    if identity_target.parent != prerequisites_target.parent:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_parent_mismatch",
+            "AOX pin declarations must share one transaction directory",
+        )
+    parent = identity_target.parent
+    commit_target = parent / _PIN_COMMIT_BASENAME
+    if commit_target in {identity_target, prerequisites_target}:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_output_collision",
+            "AOX declaration output collides with its transaction commit marker",
+        )
+    commit_payload = _pin_commit_payload(
+        identity_target=identity_target,
+        prerequisites_target=prerequisites_target,
+        identity=identity,
+        prerequisites=prerequisites,
+    )
+    try:
+        for target, payload in (
+            (identity_target, identity),
+            (prerequisites_target, prerequisites),
+            (commit_target, commit_payload),
+        ):
+            temporary_path = _stage_pin_json(target, payload)
+            staged.append((temporary_path, target))
+        for temporary_path, target in staged[:2]:
+            os.link(temporary_path, target, follow_symlinks=False)
+            installed.append(target)
+        # Payloads must be durable before the one-link commit point can appear.
+        _fsync_directory(parent)
+        commit_temporary, commit_target = staged[2]
+        os.link(commit_temporary, commit_target, follow_symlinks=False)
+        installed.append(commit_target)
+        _fsync_directory(parent)
+    except Exception as exc:
+        for target in reversed(installed):
+            target.unlink(missing_ok=True)
+        try:
+            _fsync_directory(parent)
+        except OSError:
+            pass
+        code = (
+            "aox_launch_pin_output_exists"
+            if isinstance(exc, FileExistsError)
+            else "aox_launch_pin_output_write_failed"
+        )
+        raise AoxCutoverLaunchError(
+            code,
+            "AOX pin outputs could not be atomically published without replacement",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    finally:
+        for temporary_path, _ in staged:
+            temporary_path.unlink(missing_ok=True)
+        try:
+            _fsync_directory(parent)
+        except OSError:
+            pass
+
+
+def _existing_pin_target(path: Path) -> Path:
+    expanded = path.expanduser()
+    absolute = Path(os.path.abspath(expanded))
+    try:
+        parent = absolute.parent.resolve(strict=True)
+    except OSError as exc:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX pinned declarations require an existing real transaction directory",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    target = parent / absolute.name
+    repo_root = REPO_ROOT.resolve()
+    if (
+        absolute.parent != parent
+        or parent.is_symlink()
+        or not parent.is_dir()
+        or target.is_symlink()
+        or not target.is_file()
+        or target.resolve() != target
+        or target == repo_root
+        or repo_root in target.parents
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX pinned declaration transaction is incomplete or unsafe",
+        )
+    return target
+
+
+def _load_pinned_declarations(
+    identity_path: Path,
+    prerequisites_path: Path,
+) -> tuple[dict[str, object], dict[str, object]]:
+    identity_target = _existing_pin_target(identity_path)
+    prerequisites_target = _existing_pin_target(prerequisites_path)
+    if (
+        identity_target == prerequisites_target
+        or identity_target.parent != prerequisites_target.parent
+        or _PIN_COMMIT_BASENAME
+        in {identity_target.name, prerequisites_target.name}
+    ):
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX pinned declarations do not form one committed transaction",
+        )
+    commit_target = _existing_pin_target(
+        identity_target.parent / _PIN_COMMIT_BASENAME
+    )
+    try:
+        identity = _json_object(identity_target)
+        prerequisites = _json_object(prerequisites_target)
+        commit = _json_object(commit_target)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX pinned declaration transaction contains malformed JSON",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    expected_commit = _pin_commit_payload(
+        identity_target=identity_target,
+        prerequisites_target=prerequisites_target,
+        identity=identity,
+        prerequisites=prerequisites,
+    )
+    if set(commit) != _PIN_COMMIT_FIELDS or commit != expected_commit:
+        raise AoxCutoverLaunchError(
+            "aox_launch_pin_commit_invalid",
+            "AOX declaration commit marker does not bind the exact pinned payloads",
+        )
+    return identity, prerequisites
+
+
+def _pin(args: argparse.Namespace) -> int:
+    from openzyme_runtime import OpenZymeSettings
+
+    identity_target, prerequisites_target = _pin_output_targets(
+        args.identity_output,
+        args.allowed_prerequisites_output,
+    )
+    settings = OpenZymeSettings.from_env()
+    ledger_path = (
+        Path(settings.test.live_llm.token_ledger_path)
+        if args.ledger_path is None
+        else args.ledger_path
+    )
+    launch = pin_aox_cutover_launch(
+        settings=settings,
+        driver=_driver_from_args(args),
+        ledger_path=ledger_path,
+    )
+    _write_pin_outputs_atomic_no_replace(
+        identity_target=identity_target,
+        prerequisites_target=prerequisites_target,
+        identity=launch.identity,
+        prerequisites=launch.allowed_prerequisites,
+    )
+    _print(
+        {
+            "schema_id": "aox_cutover_pin_receipt@1",
+            "status": "pinned",
+            "git_commit": launch.identity["git_commit"],
+            "config_digest": launch.identity["config_digest"],
+            "declaration_commit_digest": _canonical_digest(
+                _pin_commit_payload(
+                    identity_target=identity_target,
+                    prerequisites_target=prerequisites_target,
+                    identity=launch.identity,
+                    prerequisites=launch.allowed_prerequisites,
+                )
+            ),
+        }
+    )
+    return 0
 
 
 def _preflight(args: argparse.Namespace) -> int:
@@ -108,23 +459,17 @@ def _run_live(args: argparse.Namespace) -> int:
 
     from .aox_cutover_live import LiveAoxAttemptRunner
 
-    identity = _json_object(args.identity)
-    prerequisites = _json_object(args.allowed_prerequisites)
+    identity, prerequisites = _load_pinned_declarations(
+        args.identity,
+        args.allowed_prerequisites,
+    )
     settings = OpenZymeSettings.from_env()
     ledger_path = (
         Path(settings.test.live_llm.token_ledger_path)
         if args.ledger_path is None
         else args.ledger_path
     )
-    driver = AoxCutoverDriverConfig(
-        approval_mode=args.approval_mode,
-        timeout_seconds=args.timeout_seconds,
-        max_drains=args.max_drains,
-        max_signals_per_drain=args.max_signals_per_drain,
-        max_steps_per_agent=args.max_steps_per_agent,
-        browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
-        browser_completion_hold_seconds=args.browser_completion_hold_seconds,
-    )
+    driver = _driver_from_args(args)
     launch = prepare_aox_cutover_launch(
         settings=settings,
         driver=driver,
@@ -141,8 +486,12 @@ def _run_live(args: argparse.Namespace) -> int:
         max_drains=args.max_drains,
         max_signals_per_drain=args.max_signals_per_drain,
         max_steps_per_agent=args.max_steps_per_agent,
+        browser_poll_interval_seconds=args.browser_poll_interval_seconds,
         browser_approval_timeout_seconds=args.browser_approval_timeout_seconds,
         browser_completion_hold_seconds=args.browser_completion_hold_seconds,
+        browser_observation_submission_timeout_seconds=(
+            args.browser_observation_submission_timeout_seconds
+        ),
         browser_observation_receipt_path=args.browser_observation_receipt,
     )
     campaign = AoxCutoverCampaign(
@@ -175,11 +524,86 @@ def _run_live(args: argparse.Namespace) -> int:
     return 0 if decision["decision"] == "GO" else 2
 
 
+def _add_driver_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--approval-mode",
+        choices=("auto", "chrome-once"),
+        default="auto",
+        help=(
+            "chrome-once exposes positive 1 through the same-process loopback Host "
+            "and waits for the first formal approval from the Web UI"
+        ),
+    )
+    parser.add_argument(
+        "--browser-poll-interval-seconds",
+        type=float,
+        default=0.5,
+        help="bounded Host polling interval for the Chrome approval/observation path",
+    )
+    parser.add_argument(
+        "--browser-approval-timeout-seconds",
+        type=float,
+        default=300.0,
+        help=(
+            "independent Chrome approval deadline measured from the emitted handoff; "
+            "it never extends the total attempt deadline"
+        ),
+    )
+    parser.add_argument(
+        "--browser-completion-hold-seconds",
+        type=float,
+        default=60.0,
+        help="bounded UI observation window after the Chrome-gated positive completes",
+    )
+    parser.add_argument(
+        "--browser-observation-submission-timeout-seconds",
+        type=float,
+        default=180.0,
+        help=(
+            "positive finite deadline for atomically submitting the challenged "
+            "DevTools observation after the Host-held completion window"
+        ),
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=1_800.0)
+    parser.add_argument("--max-drains", type=int, default=120)
+    parser.add_argument("--max-signals-per-drain", type=int, default=10)
+    parser.add_argument("--max-steps-per-agent", type=int, default=16)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prepare and offline-verify the AOX/HMM blank-world cutover campaign."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    pin = subparsers.add_parser(
+        "pin",
+        help=(
+            "derive exact launch declarations from the clean checkout and real "
+            "runner-attested AOX SSH toolchains"
+        ),
+    )
+    pin.add_argument(
+        "--identity-output",
+        required=True,
+        type=Path,
+        help="new append-only path for the generated exact-seven identity JSON",
+    )
+    pin.add_argument(
+        "--allowed-prerequisites-output",
+        required=True,
+        type=Path,
+        help="new append-only path for the generated exact-nine prerequisite JSON",
+    )
+    pin.add_argument(
+        "--ledger-path",
+        type=Path,
+        help=(
+            "persistent MICU ledger; defaults to the exact configured live-LLM ledger"
+        ),
+    )
+    _add_driver_arguments(pin)
+    pin.set_defaults(handler=_pin)
 
     preflight = subparsers.add_parser(
         "preflight",
@@ -253,30 +677,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_live.add_argument(
-        "--approval-mode",
-        choices=("auto", "chrome-once"),
-        default="auto",
-        help=(
-            "chrome-once exposes positive 1 through the same-process loopback Host "
-            "and waits for the first formal approval from the Web UI"
-        ),
-    )
-    run_live.add_argument(
-        "--browser-approval-timeout-seconds",
-        type=float,
-        default=300.0,
-        help=(
-            "independent Chrome approval deadline measured from the emitted handoff; "
-            "it never extends the total attempt deadline"
-        ),
-    )
-    run_live.add_argument(
-        "--browser-completion-hold-seconds",
-        type=float,
-        default=60.0,
-        help="bounded UI observation window after the Chrome-gated positive completes",
-    )
-    run_live.add_argument(
         "--browser-observation-receipt",
         type=Path,
         help=(
@@ -284,10 +684,7 @@ def build_parser() -> argparse.ArgumentParser:
             "to the live handoff challenge; required by chrome-once positive 1"
         ),
     )
-    run_live.add_argument("--timeout-seconds", type=float, default=1_800.0)
-    run_live.add_argument("--max-drains", type=int, default=120)
-    run_live.add_argument("--max-signals-per-drain", type=int, default=10)
-    run_live.add_argument("--max-steps-per-agent", type=int, default=16)
+    _add_driver_arguments(run_live)
     run_live.set_defaults(handler=_run_live)
     return parser
 
@@ -296,7 +693,44 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     handler = args.handler
-    return int(handler(args))
+    try:
+        return int(handler(args))
+    except AoxCutoverLaunchError as exc:
+        # Launch failures can wrap SSH/provider/config exceptions whose repr may
+        # contain private locators or credentials.  The operator boundary gets
+        # only the stable public code; Python's chained traceback stays closed.
+        print(
+            json.dumps(
+                {
+                    "schema_id": "aox_cutover_launch_failure@1",
+                    "status": "failed",
+                    "failure_code": exc.code,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    except Exception:  # noqa: BLE001 - final CLI secrecy/fail-closed boundary
+        # Environment parsing, filesystem decoding, or an unexpected provider
+        # exception can include the offending secret/path in its message.  Do
+        # not print the exception or chained traceback.  Keep the command so
+        # offline verification failures are not mislabeled as launch failures.
+        print(
+            json.dumps(
+                {
+                    "schema_id": "aox_cutover_cli_failure@1",
+                    "status": "failed",
+                    "command": args.command,
+                    "failure_code": "aox_cutover_cli_unhandled_failure",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":

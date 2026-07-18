@@ -125,6 +125,7 @@ _DRIVER_FIELDS = frozenset(
         "browser_poll_interval_seconds",
         "browser_approval_timeout_seconds",
         "browser_completion_hold_seconds",
+        "browser_observation_submission_timeout_seconds",
         "ui_dist_digest",
         "micu_hard_limit_tokens",
         "micu_ledger_identity_digest",
@@ -839,6 +840,15 @@ def normalize_aox_blank_world_runtime_config(
             driver["browser_completion_hold_seconds"],
             path="effective_config.driver.browser_completion_hold_seconds",
             minimum=0.0,
+        ),
+        "browser_observation_submission_timeout_seconds": _number(
+            driver["browser_observation_submission_timeout_seconds"],
+            path=(
+                "effective_config.driver."
+                "browser_observation_submission_timeout_seconds"
+            ),
+            minimum=0.0,
+            minimum_inclusive=False,
         ),
         "ui_dist_digest": ui_dist_digest,
         "micu_hard_limit_tokens": hard_limit,

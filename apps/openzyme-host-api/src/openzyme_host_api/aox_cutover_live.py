@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -58,6 +58,9 @@ LIVE_BLOCKER_SCHEMA_ID = "aox_blank_world_live_blocker@1"
 BROWSER_APPROVAL_RECEIPT_SCHEMA_ID = "aox_browser_approval_receipt@2"
 BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID = "aox_browser_observation_receipt@2"
 BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
+BROWSER_SEALED_PAGE_URL = (
+    "loopback://same-process/ui/?project_id=aox-blank-world-cutover"
+)
 _MAX_BROWSER_SCREENSHOT_BASE64_CHARS = 64 * 1024 * 1024
 _MAX_BROWSER_SCREENSHOT_DECODED_BYTES = 64 * 1024 * 1024
 FAULT_NEGATIVE_CLOSURE_SCHEMA_ID = "aox_fault_negative_state_closure@1"
@@ -919,8 +922,8 @@ class _PublicHostClient:
 
 @dataclass(slots=True)
 class LiveAoxAttemptRunner:
-    settings: OpenZymeSettings
-    ledger_path: Path
+    settings: OpenZymeSettings = field(repr=False)
+    ledger_path: Path = field(repr=False)
     effective_config: Mapping[str, object] | None = None
     approval_mode: Literal["auto", "chrome-once"] = "auto"
     timeout_seconds: float = 1_800.0
@@ -930,6 +933,7 @@ class LiveAoxAttemptRunner:
     browser_poll_interval_seconds: float = 0.5
     browser_approval_timeout_seconds: float = 300.0
     browser_completion_hold_seconds: float = 60.0
+    browser_observation_submission_timeout_seconds: float = 180.0
     ui_dist_dir: Path = DEFAULT_UI_DIST
     browser_observation_receipt_path: Path | None = None
 
@@ -940,6 +944,7 @@ class LiveAoxAttemptRunner:
             or self.browser_poll_interval_seconds <= 0
             or self.browser_approval_timeout_seconds <= 0
             or self.browser_completion_hold_seconds < 0
+            or self.browser_observation_submission_timeout_seconds <= 0
         ):
             raise ValueError("live attempt timeout and max_drains must be positive")
         if (
@@ -1123,6 +1128,9 @@ class LiveAoxAttemptRunner:
                             "status": "ready_for_completion_observation",
                             "session_id": formal.session_id,
                             "hold_seconds": self.browser_completion_hold_seconds,
+                            "observation_submission_timeout_seconds": (
+                                self.browser_observation_submission_timeout_seconds
+                            ),
                             "observation_ready_at_unix_ns": observation_ready_wall_ns,
                             "receipt_not_before_unix_ns": (
                                 observation_not_before_wall_ns
@@ -1137,6 +1145,20 @@ class LiveAoxAttemptRunner:
                                 expected_page_state
                             ),
                             "browser_observation_mode": BROWSER_OBSERVATION_MODE,
+                            "browser_observation_receipt_schema_id": (
+                                BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
+                            ),
+                            "sealed_page_url": formal.browser_approval_receipt.get(
+                                "page_url"
+                            ),
+                            "host_process_id": formal.browser_approval_receipt.get(
+                                "host_process_id"
+                            ),
+                            "served_ui_dist_digest": (
+                                formal.browser_approval_receipt.get(
+                                    "served_ui_dist_digest"
+                                )
+                            ),
                             "browser_observation_challenge": (
                                 formal.browser_approval_receipt.get(
                                     "observation_challenge"
@@ -1418,9 +1440,18 @@ class LiveAoxAttemptRunner:
             pre_workspace_receipts[-1], semantic_value=dict(workspace)
         )
         ui_url = f"{api.base_url}/ui/?project_id=aox-blank-world-cutover"
-        sealed_page_url = (
-            "loopback://same-process/ui/?project_id=aox-blank-world-cutover"
+        sealed_page_url = BROWSER_SEALED_PAGE_URL
+        ui_dist_digest = str(
+            dict(dict(self.effective_config or {}).get("driver") or {}).get(
+                "ui_dist_digest"
+            )
+            or ""
         )
+        if _SHA256_DIGEST_PATTERN.fullmatch(ui_dist_digest) is None:
+            raise LiveProductPathError(
+                "browser_approval_ui_identity_missing",
+                "Chrome approval handoff lacks the sealed built-UI identity",
+            )
         observation_challenge = "sha256:" + hashlib.sha256(
             secrets.token_bytes(32)
         ).hexdigest()
@@ -1438,6 +1469,11 @@ class LiveAoxAttemptRunner:
                 "status": "approval_required",
                 "process_id": os.getpid(),
                 "ui_url": ui_url,
+                "sealed_page_url": sealed_page_url,
+                "served_ui_dist_digest": ui_dist_digest,
+                "browser_observation_receipt_schema_id": (
+                    BROWSER_OBSERVATION_RECEIPT_SCHEMA_ID
+                ),
                 "session_id": session_id,
                 "approval_id": approval_id,
                 "operation_id": operation_id,
@@ -1592,12 +1628,6 @@ class LiveAoxAttemptRunner:
                 )
             pre_workspace_snapshot = dict(workspace)
             post_workspace_snapshot = dict(post_workspace)
-            ui_dist_digest = str(
-                dict(dict(self.effective_config or {}).get("driver") or {}).get(
-                    "ui_dist_digest"
-                )
-                or ""
-            )
             receipt = {
                 "schema_id": BROWSER_APPROVAL_RECEIPT_SCHEMA_ID,
                 "approval_mode": "chrome-once",
@@ -1687,9 +1717,8 @@ class LiveAoxAttemptRunner:
         hold_wall_deadline_ns = observation_ready_wall_ns + int(
             round(self.browser_completion_hold_seconds * 1_000_000_000)
         )
-        deadline = hold_deadline + max(
-            5.0,
-            min(15.0, self.browser_approval_timeout_seconds),
+        deadline = (
+            hold_deadline + self.browser_observation_submission_timeout_seconds
         )
         raw: dict[str, object] | None = None
         last_failure_type = "receipt_missing"
@@ -1749,7 +1778,7 @@ class LiveAoxAttemptRunner:
             )
             raise LiveProductPathError(
                 code,
-                "Chrome observation receipt was not atomically stable and valid after the Host-held window",
+                "Chrome observation receipt was not fresh, stable, and valid after the Host-held window",
                 details={"failure_type": last_failure_type},
             )
         expected_keys = {
@@ -1920,11 +1949,29 @@ class LiveAoxAttemptRunner:
                 "browser_observation_hold_incomplete",
                 "Host did not preserve the configured post-completion observation window",
             )
+        if time.monotonic() > deadline:
+            raise LiveProductPathError(
+                "browser_observation_submission_timeout",
+                "Chrome observation receipt was not accepted within its sealed submission timeout",
+            )
         accepted_at_unix_ns = time.time_ns()
+        if accepted_at_unix_ns > hold_wall_deadline_ns + int(
+            round(
+                self.browser_observation_submission_timeout_seconds
+                * 1_000_000_000
+            )
+        ):
+            raise LiveProductPathError(
+                "browser_observation_submission_timeout",
+                "Chrome observation receipt wall-clock acceptance exceeded its sealed submission timeout",
+            )
         return {
             **raw,
             "host_observation_hold_seconds": host_hold_elapsed,
             "host_observation_hold_satisfied": True,
+            "host_observation_submission_timeout_seconds": (
+                self.browser_observation_submission_timeout_seconds
+            ),
             "host_observation_ready_at_unix_ns": observation_ready_wall_ns,
             "host_observation_not_before_unix_ns": hold_wall_deadline_ns,
             "host_observation_accepted_at_unix_ns": accepted_at_unix_ns,

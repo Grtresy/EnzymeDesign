@@ -20,6 +20,8 @@ from openzyme_runtime import ResearchSettings
 from openzyme_runtime import TestSettings as RuntimeTestSettings
 from openzyme_runtime import TracingSettings
 from openzyme_runtime import V3BackgroundRuntimeSettings
+from openzyme_tools import get_hpc_tool_contract
+from openzyme_tools import render_contract_command
 
 
 def _digest(label: str) -> str:
@@ -169,6 +171,84 @@ def _stage_runner_contract_manifest(repo_root: Path) -> None:
     destination.write_bytes(source.read_bytes())
 
 
+def _pin_runner_expectations() -> dict[str, object]:
+    return {
+        "contracts": {
+            str(contract["tool_id"]): {
+                "adapter_id": str(contract["adapter_id"]),
+                "command_template_id": str(contract["command_template_id"]),
+                "runner_contract_digest": _digest(
+                    f"runner-contract:{contract['tool_id']}"
+                ),
+            }
+            for contract in launch.AOX_TOOLCHAIN_RUNTIME_CONTRACTS.values()
+        }
+    }
+
+
+class _FakePinServer:
+    def __init__(
+        self,
+        output_root: Path,
+        *,
+        add_private_identity_field: bool = False,
+    ) -> None:
+        self.output_root = output_root
+        self.add_private_identity_field = add_private_identity_field
+        self.calls: list[dict[str, object]] = []
+        self.expectations = _pin_runner_expectations()
+
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, object] | None,
+    ) -> dict[str, object]:
+        assert name == "exec.run"
+        assert arguments is not None
+        assert arguments["mode_override"] == "ssh"
+        runspec = dict(arguments["runspec"])
+        metadata = dict(runspec["metadata"])
+        tool_contract = dict(metadata["tool_contract"])
+        tool_id = str(tool_contract["tool_id"])
+        contract = get_hpc_tool_contract(tool_id)
+        assert runspec["execution_mode"] == "ssh"
+        assert runspec["command"] == render_contract_command(
+            contract,
+            dict(metadata["tool_inputs"]),
+        )
+        self.calls.append(runspec)
+        artifacts: dict[str, str] = {}
+        for output in contract.expected_outputs:
+            materialized = self.output_root / tool_id / output.path
+            materialized.parent.mkdir(parents=True, exist_ok=True)
+            materialized.write_text(f"fixture output for {tool_id}\n", encoding="utf-8")
+            artifacts[output.path] = str(materialized)
+        runner_contract = dict(self.expectations["contracts"])[tool_id]
+        image_label = "hmmer" if "hmm" in tool_id else tool_id
+        identity: dict[str, str] = {
+            "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+            "attestation_scope": "same_ssh_login_shell_pre_exec",
+            "execution_mode": "ssh",
+            "tool_id": tool_id,
+            "adapter_id": str(tool_contract["adapter_id"]),
+            "command_template_id": str(tool_contract["command_template_id"]),
+            "runner_contract_digest": str(runner_contract["runner_contract_digest"]),
+            "image_digest": _digest(image_label),
+        }
+        if self.add_private_identity_field:
+            identity["sif_locator"] = "private-location"
+        return {
+            "run_id": f"run-{len(self.calls)}",
+            "status": "completed",
+            "selected_mode": "ssh",
+            "exit_code": 0,
+            "error_code": None,
+            "artifacts": artifacts,
+            "logs": {},
+            "toolchain_runtime_identity": identity,
+        }
+
+
 def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) -> None:
     hpc_config = tmp_path / "hpc.toml"
     hpc_config.write_text("[cluster]\nssh_target='trusted-host'\n", encoding="utf-8")
@@ -273,6 +353,34 @@ def test_effective_config_normalizer_canonicalizes_numeric_durations(
     assert effective.payload["driver"]["browser_observation_mode"] == (
         "chrome_devtools_mcp_file_handoff"
     )
+    assert (
+        effective.payload["driver"][
+            "browser_observation_submission_timeout_seconds"
+        ]
+        == 180.0
+    )
+
+
+def test_effective_config_rejects_nonpositive_observation_submission_timeout(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+            driver=launch.AoxCutoverDriverConfig(
+                browser_observation_submission_timeout_seconds=0.0
+            ),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == "aox_launch_driver_bounds_invalid"
+    assert error.value.details == {
+        "fields": ["browser_observation_submission_timeout_seconds"]
+    }
 
 
 def test_effective_config_builder_maps_closed_schema_failure_to_launch_error(
@@ -652,3 +760,145 @@ def test_clean_checkout_probe_rejects_tracked_or_untracked_entries(
 
     assert error.value.code == "aox_launch_worktree_dirty"
     assert error.value.details == {"entry_count": 2}
+
+
+def test_toolchain_pin_uses_production_ssh_commands_and_chains_hmmbuild(
+    tmp_path: Path,
+) -> None:
+    server = _FakePinServer(tmp_path / "runner-outputs")
+
+    digests = launch.attest_aox_toolchain_image_digests(
+        server=server,
+        repo_root=launch.REPO_ROOT,
+        runner_contract_expectations=server.expectations,
+    )
+
+    assert [
+        dict(dict(spec["metadata"])["tool_contract"])["tool_id"]
+        for spec in server.calls
+    ] == [
+        "bio_tools.mafft",
+        "bio_tools.cdhit",
+        "bio_tools.hmmbuild",
+        "bio_tools.hmmalign",
+    ]
+    hmmalign = server.calls[-1]
+    hmmalign_inputs = list(hmmalign["inputs"])
+    assert hmmalign_inputs[0]["remote_path"] == "model.hmm"
+    assert hmmalign_inputs[0]["local_path"].endswith(
+        "bio_tools/hmmbuild/model.hmm"
+    )
+    assert hmmalign_inputs[1]["remote_path"] == "input.fasta"
+    assert digests == {
+        "cdhit_4.8.1.hpc_apptainer_sif:v1": _digest("bio_tools.cdhit"),
+        "hmmer_3.4.hmmalign.hpc_apptainer_sif:v1": _digest("hmmer"),
+        "hmmer_3.4.hmmbuild.hpc_apptainer_sif:v1": _digest("hmmer"),
+        "mafft_7.525.hpc_apptainer_sif:v1": _digest("bio_tools.mafft"),
+    }
+
+
+def test_toolchain_pin_rejects_nonclosed_runtime_identity(tmp_path: Path) -> None:
+    server = _FakePinServer(
+        tmp_path / "runner-outputs",
+        add_private_identity_field=True,
+    )
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.attest_aox_toolchain_image_digests(
+            server=server,
+            repo_root=launch.REPO_ROOT,
+            runner_contract_expectations=server.expectations,
+        )
+
+    assert error.value.code == "aox_launch_toolchain_pin_identity_missing"
+    assert error.value.details == {"tool_id": "bio_tools.mafft"}
+
+
+def test_toolchain_pin_redacts_runner_exception_details() -> None:
+    class RaisingServer:
+        def call_tool(
+            self,
+            name: str,
+            arguments: dict[str, object] | None,
+        ) -> dict[str, object]:
+            del name, arguments
+            raise RuntimeError("credential and /private/runner/path")
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.attest_aox_toolchain_image_digests(
+            server=RaisingServer(),
+            repo_root=launch.REPO_ROOT,
+            runner_contract_expectations=_pin_runner_expectations(),
+        )
+
+    projected = json.dumps(
+        {
+            "message": str(error.value),
+            "details": error.value.details,
+        },
+        sort_keys=True,
+    )
+    assert error.value.code == "aox_launch_toolchain_pin_execution_failed"
+    assert "credential" not in projected
+    assert "/private/" not in projected
+
+
+def test_pin_launch_self_validates_generated_identity_and_prerequisites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+    settings = _settings(ledger_path=ledger, hpc_config_path=hpc_config)
+    driver = launch.AoxCutoverDriverConfig()
+    probes = _probes()
+    _stage_runner_contract_manifest(tmp_path)
+    effective = launch.build_aox_cutover_effective_config(
+        settings,
+        driver=driver,
+        ledger_path=ledger,
+        repo_root=tmp_path,
+        source_tree_digest=probes.source_tree_digest,
+    )
+    expected_identity = launch._resolve_actual_identity(
+        repo_root=tmp_path,
+        config_digest=effective.digest,
+        probes=probes,
+    )
+    toolchain_digests = {
+        key: _digest("hmmer" if "hmmer" in key else key)
+        for key in launch.TOOLCHAIN_IDS
+    }
+    expected_prerequisites = launch.build_aox_cutover_allowed_prerequisites(
+        identity=expected_identity,
+        settings=effective.settings,
+        toolchain_image_digests=toolchain_digests,
+    )
+    captured: dict[str, object] = {}
+    real_prepare = launch.prepare_aox_cutover_launch
+
+    def fake_attest(**kwargs: object) -> dict[str, str]:
+        captured["attest"] = kwargs
+        return toolchain_digests
+
+    def recording_prepare(**kwargs: object) -> launch.AoxCutoverLaunchSnapshot:
+        captured["prepare"] = kwargs
+        return real_prepare(**kwargs)
+
+    monkeypatch.setattr(launch, "attest_aox_toolchain_image_digests", fake_attest)
+    monkeypatch.setattr(launch, "prepare_aox_cutover_launch", recording_prepare)
+
+    snapshot = launch.pin_aox_cutover_launch(
+        settings=settings,
+        driver=driver,
+        ledger_path=ledger,
+        repo_root=tmp_path,
+        probes=probes,
+        runner_server_factory=lambda _: object(),
+    )
+
+    assert captured["prepare"]["declared_identity"] == expected_identity
+    assert captured["prepare"]["declared_prerequisites"] == expected_prerequisites
+    assert snapshot.identity == expected_identity
+    assert snapshot.allowed_prerequisites == expected_prerequisites

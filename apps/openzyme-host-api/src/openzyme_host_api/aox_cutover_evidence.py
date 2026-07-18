@@ -154,6 +154,7 @@ _BROWSER_OBSERVATION_RECEIPT_KEYS = {
     "screenshot_height",
     "host_observation_hold_seconds",
     "host_observation_hold_satisfied",
+    "host_observation_submission_timeout_seconds",
     "host_observation_ready_at_unix_ns",
     "host_observation_not_before_unix_ns",
     "host_observation_accepted_at_unix_ns",
@@ -4600,6 +4601,10 @@ def _browser_observation_receipt_is_valid(
         and float(receipt.get("host_observation_hold_seconds") or -1)
         >= float(driver.get("browser_completion_hold_seconds") or 0)
         and receipt.get("host_observation_hold_satisfied") is True
+        and type(receipt.get("host_observation_submission_timeout_seconds"))
+        in {int, float}
+        and float(receipt.get("host_observation_submission_timeout_seconds") or 0)
+        == float(driver.get("browser_observation_submission_timeout_seconds") or 0)
         and type(receipt.get("host_observation_ready_at_unix_ns")) is int
         and type(receipt.get("host_observation_not_before_unix_ns")) is int
         and type(receipt.get("host_observation_accepted_at_unix_ns")) is int
@@ -4614,6 +4619,17 @@ def _browser_observation_receipt_is_valid(
         )
         and int(receipt.get("host_observation_accepted_at_unix_ns") or 0)
         >= int(receipt.get("host_observation_not_before_unix_ns") or 0)
+        and int(receipt.get("host_observation_accepted_at_unix_ns") or 0)
+        <= int(receipt.get("host_observation_not_before_unix_ns") or 0)
+        + int(
+            round(
+                float(
+                    driver.get("browser_observation_submission_timeout_seconds")
+                    or 0
+                )
+                * 1_000_000_000
+            )
+        )
         and isinstance(entries_value, list)
         and len(entries) == len(entries_value)
         and [item.get("sequence") for item in entries]
