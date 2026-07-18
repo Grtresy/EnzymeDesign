@@ -13,6 +13,7 @@ from openzyme_domain import SessionReportRecord
 from openzyme_domain import SessionReportStatus
 from openzyme_core import DurableEventRecord
 from openzyme_core import EngineDocumentRecord
+from openzyme_core import SQLiteRepositoryProvider
 from openzyme_host_api import aox_cutover_live as live
 from openzyme_host_api.aox_cutover_cli import build_parser
 from openzyme_host_api.aox_cutover_evidence import AttemptRunContext
@@ -160,6 +161,226 @@ def test_probe_runtime_completion_requires_the_full_v2_operation_set() -> None:
         ("bio_tools", "cdhit"),
         ("bio_tools", "hmmalign"),
     }
+
+
+def _ready_health(*, image_digest: str, sdk_digest: str) -> dict[str, object]:
+    return {
+        "schema_version": "v3.runtime_health.v1",
+        "status": "ready",
+        "deployment_profile": "local-dev",
+        "storage_profile": "single_process_sqlite",
+        "components": {
+            "model": {"status": "ready", "details": {}},
+            "execution": {"status": "ready", "details": {}},
+            "bio_research": {"status": "ready", "details": {}},
+            "sandbox": {
+                "status": "ready",
+                "details": {
+                    "image_digest": image_digest,
+                    "pipeline_sdk_digest": sdk_digest,
+                    "runtime_identity_digest": _digest("runtime"),
+                    "sandbox_protocol_version": "openzyme-sandbox.v1",
+                },
+            },
+        },
+    }
+
+
+def test_live_runner_bootstraps_verified_sandbox_image_into_fresh_sqlite(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    provider = SQLiteRepositoryProvider(str(tmp_path / "blank-world.sqlite3"))
+    health = _ready_health(
+        image_digest=identity["image_digest"],
+        sdk_digest=identity["sdk_digest"],
+    )
+
+    live.LiveAoxAttemptRunner._bootstrap_sandbox_runtime_identity(
+        provider,
+        health=health,
+        identity=identity,
+    )
+
+    with provider.read() as scope:
+        image = scope.repositories.sandbox_images.get_default()
+    assert image is not None
+    assert image.image_ref == (
+        "localhost/openzyme-pipeline-sandbox@" + identity["image_digest"]
+    )
+    assert image.image_digest == identity["image_digest"]
+    assert image.compatibility.value == "compatible"
+    assert live._safe_health(health)["sandbox_runtime_identity"] == {
+        "image_digest": identity["image_digest"],
+        "pipeline_sdk_digest": identity["sdk_digest"],
+        "runtime_identity_digest": _digest("runtime"),
+        "sandbox_protocol_version": "openzyme-sandbox.v1",
+    }
+
+
+@pytest.mark.parametrize("mismatched_field", ("image_digest", "sdk_digest"))
+def test_live_runner_rejects_campaign_sandbox_identity_drift_before_registration(
+    tmp_path: Path,
+    mismatched_field: str,
+) -> None:
+    identity = _identity()
+    actual = dict(identity)
+    actual[mismatched_field] = _digest(f"drift-{mismatched_field}")
+    provider = SQLiteRepositoryProvider(str(tmp_path / "blank-world.sqlite3"))
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.LiveAoxAttemptRunner._bootstrap_sandbox_runtime_identity(
+            provider,
+            health=_ready_health(
+                image_digest=actual["image_digest"],
+                sdk_digest=actual["sdk_digest"],
+            ),
+            identity=identity,
+        )
+
+    assert error.value.code == "campaign_sandbox_identity_mismatch"
+    assert error.value.details == {"mismatched_fields": [mismatched_field]}
+    with provider.read() as scope:
+        assert scope.repositories.sandbox_images.get_default() is None
+
+
+@pytest.mark.parametrize("missing_field", ("image_digest", "sdk_digest"))
+def test_live_runner_rejects_missing_canonical_sandbox_runtime_identity(
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    identity = _identity()
+    actual = dict(identity)
+    actual[missing_field] = "sha256:short"
+    provider = SQLiteRepositoryProvider(str(tmp_path / "blank-world.sqlite3"))
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.LiveAoxAttemptRunner._bootstrap_sandbox_runtime_identity(
+            provider,
+            health=_ready_health(
+                image_digest=actual["image_digest"],
+                sdk_digest=actual["sdk_digest"],
+            ),
+            identity=identity,
+        )
+
+    assert error.value.code == "sandbox_runtime_identity_missing"
+    with provider.read() as scope:
+        assert scope.repositories.sandbox_images.get_default() is None
+
+
+def test_live_runner_rejects_preexisting_sandbox_image_registry_row(
+    tmp_path: Path,
+) -> None:
+    identity = _identity()
+    provider = SQLiteRepositoryProvider(str(tmp_path / "blank-world.sqlite3"))
+    inherited_digest = _digest("inherited-image")
+    with provider.write() as scope:
+        scope.repositories.sandbox_images.save(
+            live.sandbox_image_record(
+                image_ref=live.DEFAULT_SANDBOX_IMAGE_REF,
+                image_digest=inherited_digest,
+            )
+        )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live.LiveAoxAttemptRunner._bootstrap_sandbox_runtime_identity(
+            provider,
+            health=_ready_health(
+                image_digest=identity["image_digest"],
+                sdk_digest=identity["sdk_digest"],
+            ),
+            identity=identity,
+        )
+
+    assert error.value.code == "sandbox_image_registry_not_blank"
+    with provider.read() as scope:
+        image = scope.repositories.sandbox_images.get_default()
+    assert image is not None
+    assert image.image_digest == inherited_digest
+
+
+def test_live_runner_registers_sandbox_identity_before_first_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _identity()
+    ledger_path = tmp_path / "persistent-micu-ledger.sqlite3"
+    settings = OpenZymeSettings.from_env()
+    settings = replace(
+        settings,
+        test=replace(
+            settings.test,
+            live_llm=replace(
+                settings.test.live_llm,
+                token_ledger_path=str(ledger_path),
+            ),
+        ),
+    )
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites={},
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=identity,
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+    health = _ready_health(
+        image_digest=identity["image_digest"],
+        sdk_digest=identity["sdk_digest"],
+    )
+
+    class Response:
+        status_code = 200
+        content = b'{"status":"ready"}'
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return health
+
+    class Client:
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        @staticmethod
+        def get(route: str) -> Response:
+            assert route == "/v3/runtime/health"
+            return Response()
+
+    observed = {"registered_before_session": False}
+
+    def stop_at_first_session(
+        self: live.LiveAoxAttemptRunner,
+        api: live._PublicHostClient,
+        provider: SQLiteRepositoryProvider,
+        **kwargs: object,
+    ) -> None:
+        del self, kwargs
+        with provider.read() as scope:
+            image = scope.repositories.sandbox_images.get_default()
+        observed["registered_before_session"] = (
+            image is not None and image.image_digest == identity["image_digest"]
+        )
+        assert [receipt.route for receipt in api.receipts] == ["/v3/runtime/health"]
+        raise live.LiveProductPathError("test_stop", "stop before session creation")
+
+    monkeypatch.setattr(live.LiveAoxAttemptRunner, "_settings_blocker", lambda self: None)
+    monkeypatch.setattr(live, "build_configured_foundation", lambda **kwargs: object())
+    monkeypatch.setattr(live, "create_app", lambda dependencies: object())
+    monkeypatch.setattr(live, "TestClient", lambda app: Client())
+    monkeypatch.setattr(live.LiveAoxAttemptRunner, "_run_session", stop_at_first_session)
+    runner = live.LiveAoxAttemptRunner(settings=settings, ledger_path=ledger_path)
+
+    evidence = runner(context)
+
+    assert observed["registered_before_session"] is True
+    assert evidence["scientific_outcome"]["blocker_code"] == "test_stop"
 
 
 def test_public_driver_route_surface_rejects_debug_shortcut() -> None:

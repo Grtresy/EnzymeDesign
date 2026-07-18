@@ -16,6 +16,8 @@ from typing import Any, Literal
 from fastapi.testclient import TestClient
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import build_conversation_projection
+from openzyme_core import sandbox_image_record
+from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_domain import ControlledOperation
 from openzyme_domain import SessionArtifactRecord
 from openzyme_pipeline import aox_hmmer
@@ -112,6 +114,7 @@ _FAILED_OPERATION_STATUSES = {"failed", "recovery_failed"}
 _TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled", "blocked"}
 _FAILED_TASK_STATUSES = {"failed", "cancelled", "blocked"}
 _TERMINAL_SANDBOX_STATUSES = {"completed", "failed", "cancelled", "timed_out"}
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -420,6 +423,7 @@ class LiveAoxAttemptRunner:
         probe: SessionDriveResult | None = None
         formal: SessionDriveResult | None = None
         fault: FaultInjectionReceipt | None = None
+        health: dict[str, Any] = {}
         with TestClient(app) as raw_client:
             api = _PublicHostClient(raw_client)
             try:
@@ -435,6 +439,11 @@ class LiveAoxAttemptRunner:
                         probe=None,
                         formal=None,
                     )
+                self._bootstrap_sandbox_runtime_identity(
+                    provider,
+                    health=health,
+                    identity=context.identity,
+                )
 
                 probe_session_id = f"sess_probe_{context.roots.attempt_id}"
                 probe = self._run_session(
@@ -528,7 +537,7 @@ class LiveAoxAttemptRunner:
                     blocker={"code": exc.code, "message": _safe_message(exc)},
                     provider=provider,
                     api_receipts=tuple(api.receipts),
-                    health={},
+                    health=_safe_health(health) if health else {},
                     probe=probe,
                     formal=formal,
                 )
@@ -764,6 +773,15 @@ class LiveAoxAttemptRunner:
 
     @staticmethod
     def _health_blocker(health: Mapping[str, object]) -> dict[str, str] | None:
+        if (
+            health.get("schema_version") != "v3.runtime_health.v1"
+            or health.get("deployment_profile") != "local-dev"
+            or health.get("storage_profile") != "single_process_sqlite"
+        ):
+            return {
+                "code": "runtime_health_invalid",
+                "message": "Host runtime health identity does not match the local SQLite campaign contract",
+            }
         components = health.get("components")
         if not isinstance(components, dict):
             return {
@@ -784,6 +802,68 @@ class LiveAoxAttemptRunner:
                 + ", ".join(unready),
             }
         return None
+
+    @staticmethod
+    def _bootstrap_sandbox_runtime_identity(
+        provider: SQLiteRepositoryProvider,
+        *,
+        health: Mapping[str, object],
+        identity: Mapping[str, object],
+    ) -> None:
+        components = health.get("components")
+        sandbox_component = (
+            dict(components.get("sandbox") or {})
+            if isinstance(components, dict)
+            else {}
+        )
+        details = dict(sandbox_component.get("details") or {})
+        actual = {
+            "image_digest": str(details.get("image_digest") or ""),
+            "sdk_digest": str(details.get("pipeline_sdk_digest") or ""),
+        }
+        if any(
+            _SHA256_DIGEST_PATTERN.fullmatch(value) is None
+            for value in actual.values()
+        ):
+            raise LiveProductPathError(
+                "sandbox_runtime_identity_missing",
+                "ready sandbox health lacks canonical image or Pipeline SDK identity",
+            )
+        expected = {
+            "image_digest": str(identity.get("image_digest") or ""),
+            "sdk_digest": str(identity.get("sdk_digest") or ""),
+        }
+        mismatched = sorted(
+            key for key, value in actual.items() if expected.get(key) != value
+        )
+        if mismatched:
+            raise LiveProductPathError(
+                "campaign_sandbox_identity_mismatch",
+                "campaign image or Pipeline SDK identity differs from Host preflight",
+                details={"mismatched_fields": mismatched},
+            )
+        image_ref = (
+            f"{DEFAULT_SANDBOX_IMAGE_REF.rsplit(':', maxsplit=1)[0]}@"
+            f"{actual['image_digest']}"
+        )
+        with provider.write() as scope:
+            repositories = scope.repositories
+            if (
+                repositories.sandbox_images.get_default() is not None
+                or repositories.sandbox_images.get(DEFAULT_SANDBOX_IMAGE_REF)
+                is not None
+                or repositories.sandbox_images.get(image_ref) is not None
+            ):
+                raise LiveProductPathError(
+                    "sandbox_image_registry_not_blank",
+                    "blank-world SQLite unexpectedly contains a sandbox image identity",
+                )
+            repositories.sandbox_images.save(
+                sandbox_image_record(
+                    image_ref=image_ref,
+                    image_digest=actual["image_digest"],
+                )
+            )
 
     def _positive_blocker(
         self,
@@ -2790,7 +2870,9 @@ def _collect_positive_evidence(
     ledger_path: Path,
     micu_record_ids_before: set[int],
 ) -> dict[str, Any]:
-    del health
+    sandbox_preflight_identity = dict(
+        _safe_health(health).get("sandbox_runtime_identity") or {}
+    )
     probe_attestation = _collect_probe_attestation(
         context,
         provider=provider,
@@ -3715,6 +3797,7 @@ def _collect_positive_evidence(
             "artifact_root_bound": True,
             "blob_root_bound": True,
             "sandbox_root_bound": True,
+            "sandbox_runtime_identity": sandbox_preflight_identity,
         },
     }
 
@@ -4950,12 +5033,33 @@ def _safe_health(health: Mapping[str, object]) -> dict[str, object]:
         for name, value in (components.items() if isinstance(components, dict) else [])
         if isinstance(value, dict)
     }
+    sandbox_component = (
+        dict(components.get("sandbox") or {})
+        if isinstance(components, dict)
+        else {}
+    )
+    sandbox_details = dict(sandbox_component.get("details") or {})
+    sandbox_runtime_identity = {
+        key: value
+        for key, value in {
+            "image_digest": sandbox_details.get("image_digest"),
+            "pipeline_sdk_digest": sandbox_details.get("pipeline_sdk_digest"),
+            "runtime_identity_digest": sandbox_details.get(
+                "runtime_identity_digest"
+            ),
+            "sandbox_protocol_version": sandbox_details.get(
+                "sandbox_protocol_version"
+            ),
+        }.items()
+        if isinstance(value, str) and value
+    }
     return {
         "schema_version": health.get("schema_version"),
         "status": health.get("status"),
         "deployment_profile": health.get("deployment_profile"),
         "storage_profile": health.get("storage_profile"),
         "component_statuses": statuses,
+        "sandbox_runtime_identity": sandbox_runtime_identity,
     }
 
 

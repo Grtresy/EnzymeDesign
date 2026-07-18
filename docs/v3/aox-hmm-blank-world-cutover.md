@@ -65,6 +65,15 @@ The public root proof contains only stable names, counts, identities and cache p
 
 Allowed prerequisite fields are closed to code/config identity only: commit, config/workflow/image/SDK digests, toolchain image digests, credential slot names, NCBI identity and prompt accessions. Credentials themselves and scientific bytes are forbidden.
 
+Before the first session or model/provider call, the campaign reads the public
+Host runtime-health preflight, requires its canonical immutable sandbox image
+and Pipeline SDK digests to equal the campaign identity, and only then registers
+that verified image identity in the attempt's fresh SQLite repository. Missing
+or drifted runtime identity fails closed; a mutable tag or an inherited image
+row from another attempt is not accepted. The public preflight image, SDK,
+runtime-identity and protocol fields are sealed in the launch receipt, and the
+offline verifier compares the image/SDK fields to the campaign identity.
+
 Operator preflight example:
 
 ```bash

@@ -2491,6 +2491,12 @@ def _valid_evidence(
                 "artifact_root_bound": True,
                 "blob_root_bound": True,
                 "sandbox_root_bound": True,
+                "sandbox_runtime_identity": {
+                    "image_digest": _identity()["image_digest"],
+                    "pipeline_sdk_digest": _identity()["sdk_digest"],
+                    "runtime_identity_digest": _digest("sandbox-runtime"),
+                    "sandbox_protocol_version": "s10",
+                },
             },
         },
         "approvals": [
@@ -3142,6 +3148,35 @@ def test_untampered_positive_and_fault_bundles_verify_offline(tmp_path: Path) ->
 
         assert result.passed, result.to_dict()
         assert result.attempt_kind == attempt_kind
+
+
+@pytest.mark.parametrize(
+    ("runtime_field", "identity_field"),
+    (("image_digest", "image_digest"), ("pipeline_sdk_digest", "sdk_digest")),
+)
+def test_sandbox_preflight_identity_tamper_fails_offline_verification(
+    tmp_path: Path,
+    runtime_field: str,
+    identity_field: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift_runtime_identity(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        launch = payload["product_path"]["launch_receipt"]
+        launch["sandbox_runtime_identity"][runtime_field] = _digest(
+            f"drift-{identity_field}"
+        )
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, drift_runtime_identity)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "sandbox_runtime_identity_drift" for issue in result.issues
+    )
 
 
 def test_nonempty_reference_chain_uses_exact_14_13_aab_plus_target_contract(

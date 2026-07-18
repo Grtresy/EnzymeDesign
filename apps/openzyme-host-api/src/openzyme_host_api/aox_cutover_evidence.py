@@ -2719,10 +2719,14 @@ def _validate_required_live_chain(
             details={"identity": "tasks"},
         )
     product_path = dict(payload.get("product_path") or {})
+    campaign_identity = dict(payload.get("identity") or {})
     expected_task_ids = {
         role: role_to_ids[role][0] for role in sorted(_REQUIRED_TASK_ROLES)
     }
     launch_receipt = dict(product_path.get("launch_receipt") or {})
+    sandbox_runtime_identity = dict(
+        launch_receipt.get("sandbox_runtime_identity") or {}
+    )
     clean_world = dict(payload.get("clean_world") or {})
     required_digests = (
         "entry_message_digest",
@@ -2754,6 +2758,24 @@ def _validate_required_live_chain(
             "canonical_product_path_incomplete",
             "eligible AOX evidence requires root-bound Host launch and public API receipts",
             details={"identity": "product_path"},
+        )
+    if (
+        sandbox_runtime_identity.get("image_digest")
+        != campaign_identity.get("image_digest")
+        or sandbox_runtime_identity.get("pipeline_sdk_digest")
+        != campaign_identity.get("sdk_digest")
+        or _DIGEST_PATTERN.fullmatch(
+            str(sandbox_runtime_identity.get("runtime_identity_digest") or "")
+        )
+        is None
+        or not str(
+            sandbox_runtime_identity.get("sandbox_protocol_version") or ""
+        )
+    ):
+        raise CutoverEvidenceError(
+            "sandbox_runtime_identity_drift",
+            "sealed Host sandbox preflight identity differs from the campaign identity",
+            details={"identity": "product_path.launch_receipt.sandbox_runtime_identity"},
         )
     approvals = [dict(item) for item in payload.get("approvals") or []]
     if not approvals or any(

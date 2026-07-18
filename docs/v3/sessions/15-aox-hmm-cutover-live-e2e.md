@@ -109,6 +109,8 @@ probe 的 task、operation、invocation、artifact 与 bytes 不得进入 formal
 
 每次 attempt 建立独立空 SQLite、artifact/blob、sandbox 和 HPC roots，记录 cache bypass 和只读允许 prerequisite，并继续使用既有 MICU 持久 100M 账本，不在 campaign 初始化时重置。`aox_blank_world_attempt_bundle@1` 必须绑定 commit/config/workflow/scoring/image/SDK/provider/toolchain/root/approval/operation/task/artifact/report/final-answer/warning/degradation/outcome 身份。offline verifier 无网络重算 canonical JSON、所有可达 sealed artifact、科学计算、lineage 和 report references。
 
+fresh SQLite 不继承任何 sandbox image row。campaign 在第一个 session / model / provider 调用前读取 public runtime health，只接受与 campaign identity 完全一致的 canonical image digest 和 Pipeline SDK digest，再把 digest-pinned、cutover-grade image 身份登记进本 attempt；缺失、格式非法、预存 registry row 或任一 digest 漂移均直接 fail closed。该 preflight identity 进入 sealed launch receipt，offline verifier 再对 image/SDK identity 做精确比对。
+
 GO 只由顺序固定的三次 campaign 聚合得出：
 
 1. positive 1：全新 roots，published report，offline verification passed；
