@@ -14,7 +14,7 @@ from mcp_hpc_runner.config import (
 )
 from mcp_hpc_runner.errors import FailureMapper
 from mcp_hpc_runner.mode import select_execution_mode
-from mcp_hpc_runner.models import JobHandle, ResourceSpec, RunSpec
+from mcp_hpc_runner.models import ExpectedOutput, JobHandle, JobStatus, ResourceSpec, RunSpec
 from mcp_hpc_runner.remote import CommandResult, CommandRunner
 from mcp_hpc_runner.slurm import SlurmRunner
 from mcp_hpc_runner.staging import StagingManager
@@ -238,3 +238,105 @@ def test_slurm_status_rejects_safe_but_out_of_scope_remote_dir(
         )
 
     assert fake_runner.commands == []
+
+
+@pytest.mark.parametrize(
+    ("state", "exit_code", "expected_status", "expected_error"),
+    [
+        ("running", None, "running", "JOB_NOT_TERMINAL"),
+        ("unknown", None, "unknown", "JOB_NOT_TERMINAL"),
+        ("failed", 1, "failed", "JOB_TERMINAL_FAILED"),
+        ("cancelled", 0, "failed", "JOB_TERMINAL_FAILED"),
+        ("completed", None, "failed", "JOB_TERMINAL_FAILED"),
+    ],
+)
+def test_slurm_fetch_rejects_partial_outputs_without_terminal_zero_exit(
+    tmp_path: Path,
+    state: str,
+    exit_code: int | None,
+    expected_status: str,
+    expected_error: str,
+) -> None:
+    runner = _slurm_runner(tmp_path)
+    run_id = "run123"
+    runner.store.ensure_run_layout(run_id)
+    handle = JobHandle(
+        run_id=run_id,
+        job_id="12345",
+        remote_run_dir=runner._remote_run_dir(run_id),
+    )
+    spec = RunSpec(
+        name="partial-output",
+        stage="execution",
+        command=["true"],
+        expected_outputs=[
+            ExpectedOutput(path="partial.fasta", required=True, non_empty=True)
+        ],
+    )
+    download_calls: list[str] = []
+
+    runner.status = lambda _: JobStatus(  # type: ignore[method-assign]
+        run_id=run_id,
+        job_id=handle.job_id,
+        state=state,
+        raw_state=state.upper(),
+        exit_code=exit_code,
+    )
+    runner.staging.download_outputs = (  # type: ignore[method-assign]
+        lambda *_args, **_kwargs: download_calls.append("called") or []
+    )
+
+    result = runner.fetch_artifacts(spec, handle)
+
+    assert result.status == expected_status
+    assert result.error_code == expected_error
+    assert result.artifacts == {}
+    assert download_calls == []
+
+
+def test_slurm_fetch_downloads_only_after_completed_zero_exit(
+    tmp_path: Path,
+) -> None:
+    runner = _slurm_runner(tmp_path)
+    run_id = "run123"
+    runner.store.ensure_run_layout(run_id)
+    output_path = runner.store.run_root(run_id) / "outputs" / "result.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("complete\n", encoding="utf-8")
+    handle = JobHandle(
+        run_id=run_id,
+        job_id="12345",
+        remote_run_dir=runner._remote_run_dir(run_id),
+    )
+    spec = RunSpec(
+        name="completed-output",
+        stage="execution",
+        command=["true"],
+        expected_outputs=[
+            ExpectedOutput(path="result.txt", required=True, non_empty=True)
+        ],
+    )
+    runner.status = lambda _: JobStatus(  # type: ignore[method-assign]
+        run_id=run_id,
+        job_id=handle.job_id,
+        state="completed",
+        raw_state="COMPLETED",
+        exit_code=0,
+    )
+    runner.staging.download_outputs = (  # type: ignore[method-assign]
+        lambda *_args, **_kwargs: [
+            {
+                "remote_path": "mcp_runs/run123/out/result.txt",
+                "local_path": str(output_path),
+                "returncode": 0,
+            }
+        ]
+    )
+
+    result = runner.fetch_artifacts(spec, handle)
+
+    assert result.status == "completed"
+    assert result.error_code is None
+    assert result.artifacts == {
+        "mcp_runs/run123/out/result.txt": str(output_path)
+    }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 from typing import Any
 import tomllib
@@ -70,6 +71,24 @@ class ExecutionConfig:
     preflight_timeout_seconds: int = 60
     remote_execution_timeout_seconds: int = 7200
     artifact_fetch_timeout_seconds: int = 120
+    apptainer_executable: str = "/usr/bin/apptainer"
+
+    def __post_init__(self) -> None:
+        path = PurePosixPath(self.apptainer_executable)
+        if (
+            not path.is_absolute()
+            or path.name != "apptainer"
+            or any(part in {"", ".", ".."} for part in path.parts[1:])
+            or re.fullmatch(
+                r"/(?:[A-Za-z0-9._-]+/)*apptainer",
+                self.apptainer_executable,
+            )
+            is None
+        ):
+            raise ValueError(
+                "execution.apptainer_executable must be an absolute path ending in /apptainer"
+            )
+        self.apptainer_executable = path.as_posix()
 
 
 @dataclass(slots=True)
@@ -198,6 +217,9 @@ def _merge_defaults(data: dict[str, Any] | None) -> RunnerConfig:
             preflight_timeout_seconds=int(execution_raw.get("preflight_timeout_seconds", 60)),
             remote_execution_timeout_seconds=int(execution_raw.get("remote_execution_timeout_seconds", 7200)),
             artifact_fetch_timeout_seconds=int(execution_raw.get("artifact_fetch_timeout_seconds", 120)),
+            apptainer_executable=str(
+                execution_raw.get("apptainer_executable", "/usr/bin/apptainer")
+            ),
         ),
         logging=LoggingConfig(
             inline_log_limit=int(logging_raw.get("inline_log_limit", 4096)),

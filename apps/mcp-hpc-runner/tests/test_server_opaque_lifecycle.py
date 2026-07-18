@@ -40,6 +40,26 @@ def _runspec(**extra: Any) -> dict[str, Any]:
     }
 
 
+def _mafft_runspec(**extra: Any) -> dict[str, Any]:
+    return _runspec(
+        command=["bash", "-lc", "printf tool-output"],
+        metadata={
+            "tool_contract": {
+                "adapter_id": "bio_tools.mafft",
+                "tool_id": "bio_tools.mafft",
+                "command_template_id": "bio_tools_mafft_sif_v1",
+                "preflight_hints": {
+                    "entrypoint": {
+                        "kind": "sif",
+                        "path": "~/caller/injected.sif",
+                    }
+                },
+            }
+        },
+        **extra,
+    )
+
+
 def _persist_async_run(
     server: MCPHpcServer,
     run_id: str,
@@ -125,6 +145,191 @@ def test_exec_run_assigns_opaque_id_and_hides_internal_handle_fields(
     assert "metadata" not in result
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["toolchain_runtime_request", "toolchain_runtime_identity"],
+)
+def test_submit_rejects_caller_owned_toolchain_runtime_fields(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+    runspec = _mafft_runspec()
+    runspec["metadata"][field] = {"sif_locator": "~/caller/injected.sif"}
+
+    with pytest.raises(ValueError, match="runner-owned toolchain runtime fields"):
+        server.call_tool("exec.run", {"runspec": runspec})
+
+
+def test_exec_run_binds_runner_contract_and_projects_closed_toolchain_identity(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+    captured: dict[str, RunSpec] = {}
+    digest = "sha256:" + "a" * 64
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        captured["spec"] = spec
+        runtime_request = dict(spec.metadata["toolchain_runtime_request"])
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="completed",
+            metadata={
+                "toolchain_runtime_identity": {
+                    "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+                    "attestation_scope": "same_ssh_login_shell_pre_exec",
+                    "execution_mode": "ssh",
+                    "tool_id": "bio_tools.mafft",
+                    "adapter_id": "bio_tools.mafft",
+                    "command_template_id": "bio_tools_mafft_sif_v1",
+                    "runner_contract_digest": runtime_request[
+                        "runner_contract_digest"
+                    ],
+                    "image_digest": digest,
+                    "sif_path": "/private/runner/mafft.sif",
+                    "future_private_field": "must-not-cross-boundary",
+                }
+            },
+        )
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+
+    result = server.call_tool("exec.run", {"runspec": _mafft_runspec()})
+
+    bound = captured["spec"].metadata
+    assert bound["tool_contract"]["preflight_hints"]["entrypoint"] == {
+        "kind": "sif",
+        "path": "~/containers/mafft_7.525.sif",
+    }
+    assert bound["toolchain_runtime_request"] == {
+        "schema_id": "mcp_hpc_toolchain_runtime_request@1",
+        "tool_id": "bio_tools.mafft",
+        "adapter_id": "bio_tools.mafft",
+        "command_template_id": "bio_tools_mafft_sif_v1",
+        "entrypoint_kind": "sif",
+        "sif_locator": "~/containers/mafft_7.525.sif",
+        "runner_contract_digest": bound["tool_contract"]["runner_contract_digest"],
+    }
+    identity = result["toolchain_runtime_identity"]
+    assert identity == {
+        "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+        "attestation_scope": "same_ssh_login_shell_pre_exec",
+        "execution_mode": "ssh",
+        "tool_id": "bio_tools.mafft",
+        "adapter_id": "bio_tools.mafft",
+        "command_template_id": "bio_tools_mafft_sif_v1",
+        "runner_contract_digest": bound["tool_contract"][
+            "runner_contract_digest"
+        ],
+        "image_digest": digest,
+    }
+    assert "/private/runner" not in str(result)
+    assert "future_private_field" not in str(result)
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("tool_id", "bio_tools.hmmbuild"),
+        ("command_template_id", "bio_tools_hmmbuild_sif_v1"),
+        ("runner_contract_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_exec_run_fails_closed_when_identity_differs_from_bound_contract(
+    tmp_path: Path,
+    field: str,
+    wrong_value: str,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        runtime_request = dict(spec.metadata["toolchain_runtime_request"])
+        identity = {
+            "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+            "attestation_scope": "same_ssh_login_shell_pre_exec",
+            "execution_mode": "ssh",
+            "tool_id": runtime_request["tool_id"],
+            "adapter_id": runtime_request["adapter_id"],
+            "command_template_id": runtime_request["command_template_id"],
+            "runner_contract_digest": runtime_request["runner_contract_digest"],
+            "image_digest": "sha256:" + "a" * 64,
+        }
+        identity[field] = wrong_value
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="completed",
+            artifacts={"out/alignment.fasta": "/private/partial/alignment.fasta"},
+            metadata={"toolchain_runtime_identity": identity},
+        )
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+
+    result = server.call_tool("exec.run", {"runspec": _mafft_runspec()})
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "TOOLCHAIN_IDENTITY_MISSING"
+    assert result["artifacts"] == {}
+    assert "toolchain_runtime_identity" not in result
+
+
+def test_slurm_projection_never_claims_ssh_toolchain_attestation(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_submit(spec: RunSpec) -> RunResult:
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="sbatch",
+            selected_mode="sbatch",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="submitted",
+            metadata={
+                "toolchain_runtime_identity": {
+                    "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+                    "attestation_scope": "same_ssh_login_shell_pre_exec",
+                    "execution_mode": "ssh",
+                    "tool_id": "bio_tools.mafft",
+                    "adapter_id": "bio_tools.mafft",
+                    "command_template_id": "bio_tools_mafft_sif_v1",
+                    "runner_contract_digest": "sha256:" + "b" * 64,
+                    "image_digest": "sha256:" + "a" * 64,
+                }
+            },
+        )
+
+    server.slurm_runner.submit = fake_submit  # type: ignore[method-assign]
+
+    result = server.call_tool("job.submit", {"runspec": _mafft_runspec()})
+
+    assert result["selected_mode"] == "sbatch"
+    assert "toolchain_runtime_identity" not in result
+
+
+def test_job_submit_rejects_runner_mode_mismatch(tmp_path: Path) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_submit(spec: RunSpec) -> RunResult:
+        return RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="sbatch",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="submitted",
+        )
+
+    server.slurm_runner.submit = fake_submit  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="authoritative dispatch mode"):
+        server.call_tool("job.submit", {"runspec": _mafft_runspec()})
+
+
 def test_run_result_with_missing_status_fails_closed(tmp_path: Path) -> None:
     server = MCPHpcServer(_config_path(tmp_path))
 
@@ -145,6 +350,57 @@ def test_run_result_with_missing_status_fails_closed(tmp_path: Path) -> None:
     result = server.call_tool("exec.run", {"runspec": _runspec()})
 
     assert result["status"] == "failed"
+    assert result["error_code"] == "RUNNER_STATUS_INVALID"
+
+
+def test_uppercase_success_cannot_bypass_required_toolchain_identity(
+    tmp_path: Path,
+) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        result = RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="completed",
+            artifacts={"out/alignment.fasta": "/private/partial/alignment.fasta"},
+        )
+        result.status = "COMPLETED"
+        return result
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+
+    result = server.call_tool("exec.run", {"runspec": _mafft_runspec()})
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "TOOLCHAIN_IDENTITY_MISSING"
+    assert result["artifacts"] == {}
+
+
+def test_unknown_runner_status_is_closed_to_failed(tmp_path: Path) -> None:
+    server = MCPHpcServer(_config_path(tmp_path))
+
+    def fake_exec(spec: RunSpec) -> RunResult:
+        result = RunResult(
+            run_id=str(spec.run_id),
+            requested_mode="ssh",
+            selected_mode="ssh",
+            remote_run_dir=f"mcp_runs/{spec.run_id}",
+            status="failed",
+            artifacts={"out/result.txt": "/private/partial/result.txt"},
+        )
+        result.status = "unexpected_future_success"
+        return result
+
+    server.ssh_runner.exec_run = fake_exec  # type: ignore[method-assign]
+
+    result = server.call_tool("exec.run", {"runspec": _runspec()})
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "RUNNER_STATUS_INVALID"
+    assert result["artifacts"] == {}
 
 
 def test_job_submit_hides_raw_scheduler_output(tmp_path: Path) -> None:

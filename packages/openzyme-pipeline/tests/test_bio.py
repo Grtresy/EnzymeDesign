@@ -80,7 +80,6 @@ def test_uniprot_fetch_binds_source_hit_artifact_without_rewriting_it(
     source_hit_artifact = {
         "artifact_id": "art_ebi_hits_001",
         "content_digest": HIT_DIGEST,
-        "relative_path": "provider_parsed/hits.json",
     }
 
     result = bio.uniprot_fetch(
@@ -117,6 +116,11 @@ def test_uniprot_fetch_binds_source_hit_artifact_without_rewriting_it(
         {"artifact_id": "art_ebi_hits_001", "content_digest": ""},
         {"artifact_id": "art_ebi_hits_001", "content_digest": "sha256:bad"},
         {"artifact_id": " ", "content_digest": HIT_DIGEST},
+        {
+            "artifact_id": "art_ebi_hits_001",
+            "content_digest": HIT_DIGEST,
+            "storage_hint": "must-not-cross-provider-boundary",
+        },
     ],
 )
 def test_uniprot_fetch_fails_closed_for_invalid_source_hit_artifact(

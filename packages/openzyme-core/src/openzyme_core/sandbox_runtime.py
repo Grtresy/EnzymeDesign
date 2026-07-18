@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from pathlib import PurePosixPath
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -65,6 +66,7 @@ EXEC_MAX_TIMEOUT_SECONDS = 900
 EXEC_POLICY_VERSION = "s09.exec_policy.v1"
 S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
 S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
+S12_HOST_RESULT_ORIGIN = "host_adapter_executor"
 SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
 SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
@@ -147,6 +149,104 @@ def _scrub_private_adapter_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [_scrub_private_adapter_payload(item) for item in value]
     return value
+
+
+def _artifact_ref_pairs(value: Any) -> list[tuple[str, str]]:
+    """Collect direct artifact refs without guessing route-specific aliases."""
+
+    pairs: list[tuple[str, str]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            if "artifact_id" in item:
+                artifact_id = str(item.get("artifact_id") or "")
+                raw_digests = [
+                    str(item.get(key) or "")
+                    for key in ("artifact_digest", "content_digest")
+                    if key in item
+                ]
+                digests = [digest for digest in raw_digests if digest]
+                if (
+                    not artifact_id
+                    or artifact_id != artifact_id.strip()
+                    or not digests
+                    or len(set(digests)) != 1
+                    or not _is_sha256_digest(digests[0])
+                ):
+                    raise SandboxRuntimeError(
+                        "adapter_input_binding_mismatch",
+                        "S12 artifact refs require one canonical artifact ID and digest.",
+                    )
+                pairs.append((artifact_id, digests[0]))
+            for nested in item.values():
+                visit(nested)
+            return
+        if isinstance(item, (list, tuple)):
+            for nested in item:
+                visit(nested)
+
+    visit(value)
+    return sorted(pairs)
+
+
+_TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
+    "schema_id",
+    "attestation_scope",
+    "execution_mode",
+    "tool_id",
+    "adapter_id",
+    "command_template_id",
+    "runner_contract_digest",
+    "image_digest",
+)
+_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
+)
+
+
+def _project_toolchain_runtime_identity(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    identity = {
+        field: str(value.get(field) or "")
+        for field in _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS
+    }
+    if (
+        identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
+        or identity["attestation_scope"]
+        != "same_ssh_login_shell_pre_exec"
+        or identity["execution_mode"] != "ssh"
+        or any(
+            _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN.fullmatch(identity[field]) is None
+            for field in ("tool_id", "adapter_id", "command_template_id")
+        )
+        or any(
+            not _is_sha256_digest(identity[field])
+            or identity[field] != identity[field].lower()
+            for field in ("runner_contract_digest", "image_digest")
+        )
+    ):
+        return None
+    return identity
+
+
+def _sanitize_toolchain_runtime_identity(
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    safe_summary = dict(summary)
+    if "toolchain_runtime_identity" not in safe_summary:
+        return safe_summary
+    if safe_summary.get("execution_mode") != "ssh":
+        safe_summary.pop("toolchain_runtime_identity", None)
+        return safe_summary
+    identity = _project_toolchain_runtime_identity(
+        safe_summary.get("toolchain_runtime_identity")
+    )
+    if identity is None:
+        safe_summary.pop("toolchain_runtime_identity", None)
+    else:
+        safe_summary["toolchain_runtime_identity"] = identity
+    return safe_summary
 
 
 def _structured_adapter_message(value: Any, *, default_code: str) -> dict[str, Any] | None:
@@ -740,6 +840,16 @@ class _ControlSocketServer:
             session_id=self.session_id,
             operation_digest=operation_digest,
         )
+        if (
+            reusable is not None
+            and envelope["schema_version"] == S12_ADAPTER_ENVELOPE_SCHEMA
+            and reusable.status is ControlledOperationStatus.COMPLETED
+            and reusable.adapter_result_origin != S12_HOST_RESULT_ORIGIN
+        ):
+            # An untrusted historical result grants neither result reuse nor
+            # implicit execution authority. A fresh idempotency key must pass
+            # through a new approval instead of inheriting the old approval.
+            reusable = None
         if reusable is not None:
             operation = self._create_operation(
                 envelope,
@@ -750,9 +860,9 @@ class _ControlSocketServer:
             )
             if (
                 operation.adapter_envelope_schema_version == S12_ADAPTER_ENVELOPE_SCHEMA
-                and not envelope.get("adapter_result")
                 and reusable.status is ControlledOperationStatus.COMPLETED
                 and reusable.adapter_result_envelope
+                and reusable.adapter_result_origin == S12_HOST_RESULT_ORIGIN
             ):
                 envelope = {
                     **envelope,
@@ -762,6 +872,7 @@ class _ControlSocketServer:
                         or dict(reusable.adapter_result_envelope).get("bounded_summary")
                         or {"status": "completed"}
                     ),
+                    "_host_validated_result_reuse": True,
                 }
             result = self._complete_running_operation(operation, envelope)
             return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
@@ -865,6 +976,17 @@ class _ControlSocketServer:
         }
 
     def _validated_s12_envelope(self, params: dict[str, Any]) -> dict[str, Any]:
+        caller_result_fields = sorted(
+            field
+            for field in ("adapter_result", "result_summary")
+            if field in params
+        )
+        if caller_result_fields:
+            raise SandboxRuntimeError(
+                "adapter_result_forbidden",
+                "S12 adapter_result and result_summary are Host-owned and cannot be supplied by sandbox code.",
+                details={"forbidden_fields": caller_result_fields},
+            )
         route_policy_id = str(params.get("route_policy_id") or "")
         policy = self._route_policy(route_policy_id)
         sdk_module = str(params.get("sdk_module") or policy["sdk_module"])
@@ -933,6 +1055,16 @@ class _ControlSocketServer:
             ),
             key=lambda pair: pair[0],
         )
+        if any(
+            not artifact_id
+            or artifact_id != artifact_id.strip()
+            or not _is_sha256_digest(artifact_digest)
+            for artifact_id, artifact_digest in input_artifact_pairs
+        ):
+            raise SandboxRuntimeError(
+                "adapter_input_binding_mismatch",
+                "S12 approved input artifacts require canonical IDs and sha256 digests.",
+            )
         if not isinstance(stage_refs, list) or not all(isinstance(item, dict) for item in stage_refs):
             raise SandboxRuntimeError("invalid_tool_arguments", "stage_refs must be a list of objects")
         expected_outputs = params.get("expected_outputs", params.get("expected_outputs_summary") or {})
@@ -961,12 +1093,29 @@ class _ControlSocketServer:
                 )
             stage_refs = self._validated_hpc_stage_refs(stage_refs, hpc_workspace_id=hpc_workspace_id)
             planned_fetch_intent = self._validated_hpc_fetch_intent(planned_fetch_intent)
-        adapter_result = params.get("adapter_result") or {}
-        if not isinstance(adapter_result, dict):
-            raise SandboxRuntimeError("invalid_tool_arguments", "adapter_result must be an object")
-        result_summary = params.get("result_summary") or adapter_result.get("bounded_summary") or {"status": "completed"}
-        if not isinstance(result_summary, dict):
-            raise SandboxRuntimeError("invalid_tool_arguments", "result_summary must be an object")
+        else:
+            stage_refs = self._validated_provider_stage_refs(stage_refs)
+        stage_ref_pairs = _artifact_ref_pairs(stage_refs)
+        adapter_param_pairs = self._validated_adapter_param_pairs(
+            sdk_module=sdk_module,
+            function_name=function_name,
+            adapter_params=adapter_params or {},
+            stage_refs=stage_refs,
+        )
+        if (
+            len(stage_ref_pairs) != len(stage_refs)
+            or stage_ref_pairs != input_artifact_pairs
+            or adapter_param_pairs != input_artifact_pairs
+        ):
+            raise SandboxRuntimeError(
+                "adapter_input_binding_mismatch",
+                "S12 stage refs, adapter params, and approved input artifact pairs must match exactly.",
+                details={
+                    "approved_input_count": len(input_artifact_pairs),
+                    "stage_ref_count": len(stage_ref_pairs),
+                    "adapter_param_ref_count": len(adapter_param_pairs),
+                },
+            )
         logical_operation_key = f"{sdk_module}.{function_name}"
         return {
             "schema_version": S12_ADAPTER_ENVELOPE_SCHEMA,
@@ -997,8 +1146,11 @@ class _ControlSocketServer:
             "approval_requirement": dict(policy.get("approval_requirement") or {}),
             "expected_outputs_summary": expected_outputs_summary,
             "resource_estimate": resource_estimate,
-            "result_summary": result_summary,
-            "adapter_result": adapter_result,
+            # Result fields are internal Host slots. They are never populated
+            # from the sandbox wire envelope; only the Host adapter executor or
+            # a validated approved-result reuse may fill them.
+            "result_summary": None,
+            "adapter_result": {},
             "adapter_params": adapter_params,
         }
 
@@ -1081,6 +1233,143 @@ class _ControlSocketServer:
                 item["workspace_relative_path"] = self._validated_hpc_workspace_path(workspace_path)
             validated.append(item)
         return validated
+
+    def _validated_provider_stage_refs(
+        self,
+        stage_refs: list[Any],
+    ) -> list[dict[str, str]]:
+        expected_keys = {"artifact_id", "content_digest"}
+        validated: list[dict[str, str]] = []
+        for ref in stage_refs:
+            raw_item = dict(ref)
+            if set(raw_item) != expected_keys:
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "Provider stage refs must be closed artifact_id/content_digest objects.",
+                    details={"stage_ref_fields": sorted(raw_item)},
+                )
+            artifact_id = str(raw_item.get("artifact_id") or "")
+            content_digest = str(raw_item.get("content_digest") or "")
+            if (
+                not artifact_id
+                or artifact_id != artifact_id.strip()
+                or not _is_sha256_digest(content_digest)
+            ):
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "Provider stage refs require a canonical artifact ID and sha256 digest.",
+                )
+            validated.append(
+                {
+                    "artifact_id": artifact_id,
+                    "content_digest": content_digest,
+                }
+            )
+        return validated
+
+    def _validated_adapter_param_pairs(
+        self,
+        *,
+        sdk_module: str,
+        function_name: str,
+        adapter_params: dict[str, Any],
+        stage_refs: list[dict[str, Any]],
+    ) -> list[tuple[str, str]]:
+        route = (sdk_module, function_name)
+        direct_pairs = _artifact_ref_pairs(adapter_params)
+
+        if route == ("bio", "hmmer_search"):
+            artifact_id = str(adapter_params.get("hmm_artifact_id") or "")
+            artifact_digest = str(
+                adapter_params.get("hmm_artifact_digest") or ""
+            )
+            if (
+                not artifact_id
+                or artifact_id != artifact_id.strip()
+                or not _is_sha256_digest(artifact_digest)
+                or direct_pairs
+            ):
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "bio.hmmer_search requires one closed HMM artifact ID/digest binding.",
+                )
+            return [(artifact_id, artifact_digest)]
+
+        if route == ("bio", "uniprot_fetch"):
+            source_ref = adapter_params.get("source_hit_artifact") or {}
+            if not isinstance(source_ref, dict):
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "bio.uniprot_fetch source_hit_artifact must be an object.",
+                )
+            if not source_ref:
+                if direct_pairs:
+                    raise SandboxRuntimeError(
+                        "adapter_input_binding_mismatch",
+                        "bio.uniprot_fetch contains an undeclared artifact ref.",
+                    )
+                return []
+            if set(source_ref) != {"artifact_id", "content_digest"}:
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "bio.uniprot_fetch source_hit_artifact must be a closed artifact ref.",
+                )
+            pairs = _artifact_ref_pairs(source_ref)
+            if len(pairs) != 1 or direct_pairs != pairs:
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    "bio.uniprot_fetch contains an inconsistent source artifact ref.",
+                )
+            return pairs
+
+        hpc_slots = {
+            ("bio_tools", "cdhit"): ("input_fasta",),
+            ("bio_tools", "mafft"): ("input_fasta",),
+            ("bio_tools", "hmmbuild"): ("alignment",),
+            ("bio_tools", "hmmalign"): ("hmm", "fasta"),
+            ("structure_tools", "fpocket"): ("structure",),
+        }.get(route)
+        if hpc_slots is not None:
+            stage_refs_by_pair = {
+                pair: ref
+                for ref in stage_refs
+                for pair in _artifact_ref_pairs(ref)
+            }
+            pairs: list[tuple[str, str]] = []
+            for slot in hpc_slots:
+                raw_ref = adapter_params.get(slot)
+                if not isinstance(raw_ref, dict):
+                    raise SandboxRuntimeError(
+                        "adapter_input_binding_mismatch",
+                        f"{sdk_module}.{function_name} requires artifact ref slot {slot}.",
+                    )
+                scrubbed_ref = _scrub_private_adapter_payload(raw_ref)
+                ref_pairs = _artifact_ref_pairs(scrubbed_ref)
+                if len(ref_pairs) != 1:
+                    raise SandboxRuntimeError(
+                        "adapter_input_binding_mismatch",
+                        f"{sdk_module}.{function_name} artifact ref slot {slot} is invalid.",
+                    )
+                pair = ref_pairs[0]
+                if scrubbed_ref != stage_refs_by_pair.get(pair):
+                    raise SandboxRuntimeError(
+                        "adapter_input_binding_mismatch",
+                        f"{sdk_module}.{function_name} artifact ref slot {slot} does not match its closed stage ref.",
+                    )
+                pairs.append(pair)
+            if sorted(pairs) != direct_pairs:
+                raise SandboxRuntimeError(
+                    "adapter_input_binding_mismatch",
+                    f"{sdk_module}.{function_name} contains an undeclared artifact ref.",
+                )
+            return sorted(pairs)
+
+        if direct_pairs:
+            raise SandboxRuntimeError(
+                "adapter_input_binding_mismatch",
+                f"{sdk_module}.{function_name} does not declare artifact-bearing params.",
+            )
+        return []
 
     def _validated_hpc_fetch_intent(self, planned_fetch_intent: dict[str, Any]) -> dict[str, Any]:
         intent = dict(_scrub_private_adapter_payload(planned_fetch_intent))
@@ -1282,19 +1571,30 @@ class _ControlSocketServer:
         }
         for key in forbidden_pre_run_keys:
             adapter_result.pop(key, None)
+        raw_bounded_summary = (
+            adapter_result.get("bounded_summary")
+            or operation.result_summary
+            or {}
+        )
+        bounded_summary = (
+            _sanitize_toolchain_runtime_identity(dict(raw_bounded_summary))
+            if isinstance(raw_bounded_summary, dict)
+            else {}
+        )
         return {
             "adapter_envelope_schema_version": operation.adapter_envelope_schema_version,
             "operation_id": operation.operation_id,
             "operation_digest": operation.operation_digest,
             "sandbox_run_id": operation.sandbox_run_id,
             "status": adapter_result.get("status") or operation.status.value,
+            "result_origin": adapter_result.get("result_origin"),
             "backend_run_id": adapter_result.get("backend_run_id"),
             "provider_request_id": adapter_result.get("provider_request_id"),
             "fetch_refs": list(adapter_result.get("fetch_refs") or []),
             "registered_artifact_ids": list(adapter_result.get("registered_artifact_ids") or []),
             "output_artifact_ids": list(adapter_result.get("output_artifact_ids") or []),
             "validation_results": adapter_result.get("validation_results") or {},
-            "bounded_summary": adapter_result.get("bounded_summary") or operation.result_summary or {},
+            "bounded_summary": bounded_summary,
             "warnings": _structured_adapter_warnings(adapter_result.get("warnings")),
             "error": _structured_adapter_message(
                 adapter_result.get("error"),
@@ -1349,7 +1649,9 @@ class _ControlSocketServer:
             envelope,
             continuation_id=continuation_id,
         )
-        result_summary = dict(envelope.get("result_summary") or {"status": "completed"})
+        result_summary = _sanitize_toolchain_runtime_identity(
+            dict(envelope.get("result_summary") or {"status": "completed"})
+        )
         completed = replace(
             operation,
             status=ControlledOperationStatus.COMPLETED,
@@ -1363,6 +1665,10 @@ class _ControlSocketServer:
             completed = replace(
                 completed,
                 adapter_result_envelope=self._adapter_result_envelope(completed, envelope),
+                adapter_result_origin=str(
+                    dict(envelope.get("adapter_result") or {}).get("result_origin") or ""
+                )
+                or None,
             )
         self.repositories.controlled_operations.save(completed)
         if continuation_id is not None:
@@ -1378,7 +1684,7 @@ class _ControlSocketServer:
     ) -> dict[str, Any]:
         if operation.adapter_envelope_schema_version != S12_ADAPTER_ENVELOPE_SCHEMA:
             return envelope
-        if envelope.get("adapter_result"):
+        if envelope.get("_host_validated_result_reuse") is True:
             return envelope
         if self.adapter_executor is None:
             self._fail_adapter_operation(
@@ -1447,6 +1753,42 @@ class _ControlSocketServer:
                 "Host adapter executor did not provide an adapter_result object.",
                 details={"operation_id": operation.operation_id},
             )
+        adapter_status = str(adapter_result.get("status") or "").strip().lower()
+        raw_adapter_error = adapter_result.get("error")
+        raw_adapter_error_code = adapter_result.get("error_code")
+        if (
+            adapter_status not in {"completed", "succeeded", "success"}
+            or raw_adapter_error not in (None, "", {})
+            or raw_adapter_error_code not in (None, "")
+        ):
+            structured_error = _structured_adapter_message(
+                raw_adapter_error,
+                default_code="adapter_result_unsuccessful",
+            )
+            error_code = str(
+                (structured_error or {}).get("code")
+                or raw_adapter_error_code
+                or "adapter_result_unsuccessful"
+            )
+            error_summary = str(
+                (structured_error or {}).get("summary")
+                or f"Host adapter executor returned non-success status {adapter_status or '<missing>'}."
+            )
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code=error_code,
+                error_summary=error_summary,
+            )
+            raise SandboxRuntimeError(
+                error_code,
+                error_summary,
+                details={"operation_id": operation.operation_id},
+            )
+        adapter_result = {
+            **adapter_result,
+            "result_origin": S12_HOST_RESULT_ORIGIN,
+        }
         result_summary = execution.get("result_summary") or adapter_result.get("bounded_summary") or {"status": "completed"}
         if not isinstance(result_summary, dict):
             self._fail_adapter_operation(
@@ -1458,6 +1800,27 @@ class _ControlSocketServer:
             raise SandboxRuntimeError(
                 "adapter_result_invalid",
                 "Host adapter executor returned a non-object result_summary.",
+                details={"operation_id": operation.operation_id},
+            )
+        summary_status = str(result_summary.get("status") or "").strip().lower()
+        if (
+            summary_status
+            and summary_status not in {"completed", "succeeded", "success"}
+        ) or result_summary.get("error") not in (None, "", {}) or result_summary.get(
+            "error_code"
+        ) not in (None, ""):
+            self._fail_adapter_operation(
+                operation,
+                continuation_id,
+                error_code="adapter_result_inconsistent",
+                error_summary=(
+                    "Host adapter executor returned a success adapter_result with "
+                    "an unsuccessful result_summary."
+                ),
+            )
+            raise SandboxRuntimeError(
+                "adapter_result_inconsistent",
+                "Host adapter executor returned inconsistent result status.",
                 details={"operation_id": operation.operation_id},
             )
         return {
@@ -1487,6 +1850,20 @@ class _ControlSocketServer:
 
     def _resume_or_return(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
         if operation.status is ControlledOperationStatus.COMPLETED:
+            if (
+                operation.adapter_envelope_schema_version
+                == S12_ADAPTER_ENVELOPE_SCHEMA
+                and operation.adapter_result_origin != S12_HOST_RESULT_ORIGIN
+            ):
+                # A completed historical S12 row may contain caller-authored
+                # adapter_result JSON, including a forged marker string. The
+                # independent Host-owned column is the only reuse authority,
+                # and the old approval cannot authorize a hidden rerun.
+                raise SandboxRuntimeError(
+                    "adapter_result_origin_untrusted",
+                    "completed S12 result lacks Host-owned origin and cannot be reused or rerun",
+                    details={"operation_id": operation.operation_id},
+                )
             return self._operation_response(operation)
         continuation = self.repositories.continuation_states.get_by_operation_id(operation.operation_id)
         if continuation is None:

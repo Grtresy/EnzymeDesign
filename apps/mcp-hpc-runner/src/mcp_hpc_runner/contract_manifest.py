@@ -46,6 +46,12 @@ CDHIT_MEMBERSHIP_COLUMNS = (
     "identity_to_representative",
     "member_length",
 )
+AOX_SIF_COMMAND_TEMPLATE_IDS = {
+    "bio_tools.cdhit": "bio_tools_cdhit_sif_v2",
+    "bio_tools.mafft": "bio_tools_mafft_sif_v1",
+    "bio_tools.hmmbuild": "bio_tools_hmmbuild_sif_v1",
+    "bio_tools.hmmalign": "bio_tools_hmmalign_sif_v1",
+}
 
 _CDHIT_MEMBERSHIP_AWK = (
     r'function mark_error(message) { '
@@ -218,6 +224,14 @@ def validate_contract_manifest(payload: dict[str, Any]) -> None:
             raise ContractManifestError(f"{tool_id} has unsupported executor_relevance")
         _validate_entrypoint(tool_id, tool["entrypoint"])
         _validate_resource_profile(tool_id, tool["resource_profile"])
+        expected_template_id = AOX_SIF_COMMAND_TEMPLATE_IDS.get(tool_id)
+        if (
+            expected_template_id is not None
+            and tool.get("command_template_id") != expected_template_id
+        ):
+            raise ContractManifestError(
+                f"{tool_id}.command_template_id must be {expected_template_id}"
+            )
         if tool_id == "bio_tools.cdhit":
             _validate_cdhit_normalization_contract(tool)
 
@@ -470,7 +484,7 @@ def _build_bio_tool_smoke(
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/cdhit"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${CDHIT_SIF:-$HOME/containers/cd-hit_4.8.1.sif}" cd-hit '
+                '"$HOME/containers/cd-hit_4.8.1.sif" cd-hit '
                 '-i /work/input.fasta -o /out/bio_tools/cdhit/clustered.fasta '
                 '-c 0.85 -n 5 -d 0 -T 1 -M 256 > "$MCP_OUTDIR/bio_tools/cdhit/cdhit.log"; '
                 + render_cdhit_membership_normalizer_command()
@@ -486,7 +500,7 @@ def _build_bio_tool_smoke(
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/mafft"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${MAFFT_SIF:-$HOME/containers/mafft_7.525.sif}" mafft --auto /work/input.fasta '
+                '"$HOME/containers/mafft_7.525.sif" mafft --auto /work/input.fasta '
                 '> "$MCP_OUTDIR/bio_tools/mafft/alignment.fasta"'
             ),
             "inputs": [("input_sequences.fasta", "input.fasta")],
@@ -497,7 +511,7 @@ def _build_bio_tool_smoke(
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmbuild"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                '"$HOME/containers/hmmer_3.4.sif" hmmbuild --amino '
                 '/out/bio_tools/hmmbuild/model.hmm /work/alignment.fasta '
                 '> "$MCP_OUTDIR/bio_tools/hmmbuild/hmmbuild.summary.txt"'
             ),
@@ -509,12 +523,12 @@ def _build_bio_tool_smoke(
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmalign"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                '"$HOME/containers/hmmer_3.4.sif" hmmbuild --amino '
                 '/out/bio_tools/hmmalign/smoke_model.hmm /work/alignment.fasta '
                 '> "$MCP_OUTDIR/bio_tools/hmmalign/hmmbuild.summary.txt"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmalign --amino --outformat afa '
+                '"$HOME/containers/hmmer_3.4.sif" hmmalign --amino --outformat afa '
                 '-o /out/bio_tools/hmmalign/aligned.fasta '
                 '/out/bio_tools/hmmalign/smoke_model.hmm /work/input.fasta'
             ),

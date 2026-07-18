@@ -2424,13 +2424,14 @@ class ControlledOperationRepository:
                 input_artifact_ids_json, stage_refs_json,
                 planned_fetch_intent_json, approval_requirement_json,
                 adapter_approval_envelope_json, adapter_result_envelope_json,
+                adapter_result_origin,
                 expected_outputs_summary_json, resource_estimate_json,
                 result_summary_json, error_code, error_summary,
                 idempotency_key, status, created_at, updated_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(operation_id) DO UPDATE SET
                 approval_id = excluded.approval_id,
@@ -2438,6 +2439,7 @@ class ControlledOperationRepository:
                 status = excluded.status,
                 adapter_approval_envelope_json = excluded.adapter_approval_envelope_json,
                 adapter_result_envelope_json = excluded.adapter_result_envelope_json,
+                adapter_result_origin = excluded.adapter_result_origin,
                 expected_outputs_summary_json = excluded.expected_outputs_summary_json,
                 resource_estimate_json = excluded.resource_estimate_json,
                 result_summary_json = excluded.result_summary_json,
@@ -2479,6 +2481,7 @@ class ControlledOperationRepository:
                 _json_dumps(record.approval_requirement or {}),
                 _json_dumps(record.adapter_approval_envelope or {}),
                 _json_dumps(record.adapter_result_envelope or {}),
+                record.adapter_result_origin,
                 _json_dumps(record.expected_outputs_summary or {}),
                 _json_dumps(record.resource_estimate or {}),
                 _json_dumps(record.result_summary or {}),
@@ -2633,6 +2636,7 @@ class ControlledOperationRepository:
             approval_requirement=_json_loads_object(row["approval_requirement_json"]) or {},
             adapter_approval_envelope=_json_loads_object(row["adapter_approval_envelope_json"]) or {},
             adapter_result_envelope=_json_loads_object(row["adapter_result_envelope_json"]) or {},
+            adapter_result_origin=row["adapter_result_origin"],
             expected_outputs_summary=_json_loads_object(row["expected_outputs_summary_json"]) or {},
             resource_estimate=_json_loads_object(row["resource_estimate_json"]) or {},
             result_summary=_json_loads_object(row["result_summary_json"]) or {},

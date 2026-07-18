@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 import sys
 from typing import Any
 import uuid
 
 from .config import RunnerConfig, load_config
+from .contract_manifest import ToolContract, load_contract_manifest
 from .errors import FailureMapper
 from .mode import select_execution_mode
 from .models import JobHandle, RunSpec
@@ -18,12 +21,32 @@ from .store import ArtifactStore
 from .validation import ensure_valid_runspec
 
 
+_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PUBLIC_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PUBLIC_RUN_STATUSES = {
+    "submitted",
+    "queued",
+    "pending",
+    "running",
+    "in_progress",
+    "completed",
+    "succeeded",
+    "success",
+    "cancelled",
+    "canceled",
+    "failed",
+}
+
+
 class MCPHpcServer:
     def __init__(self, config_path: str | Path | None) -> None:
         self.config: RunnerConfig = load_config(config_path)
         self.store = ArtifactStore(self.config.artifact_root)
         self.command_runner = CommandRunner()
         self.failure_mapper = FailureMapper()
+        self._tool_contracts_by_adapter = {
+            contract.adapter_id: contract for contract in load_contract_manifest()
+        }
         self.staging = StagingManager(self.config, self.store, self.command_runner)
         self.ssh_runner = SSHRunner(
             self.config,
@@ -152,12 +175,84 @@ class MCPHpcServer:
             raise ValueError("RunSpec.run_id is server-generated and must not be supplied")
         spec = RunSpec.from_dict(raw)
         spec.run_id = self._new_run_id()
+        self._bind_runner_toolchain_contract(spec)
         ensure_valid_runspec(
             spec,
             limits=self.config.limits,
             allowed_partitions=self.config.slurm.allowed_partitions,
         )
         return spec
+
+    def _bind_runner_toolchain_contract(self, spec: RunSpec) -> None:
+        metadata = dict(spec.metadata or {})
+        caller_owned_runtime_fields = sorted(
+            {"toolchain_runtime_request", "toolchain_runtime_identity"} & set(metadata)
+        )
+        if caller_owned_runtime_fields:
+            raise ValueError(
+                "runner-owned toolchain runtime fields cannot be supplied: "
+                + ", ".join(caller_owned_runtime_fields)
+            )
+        caller_contract = dict(metadata.get("tool_contract") or {})
+        adapter_id = str(caller_contract.get("adapter_id") or "")
+        contract = self._tool_contracts_by_adapter.get(adapter_id)
+        if (
+            contract is None
+            or contract.entrypoint.get("kind") != "sif"
+            or contract.command_template_id is None
+        ):
+            return
+        self._validate_caller_tool_contract(caller_contract, contract)
+        contract_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    contract.raw,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        entrypoint = contract.entrypoint
+        caller_contract.update(
+            {
+                "preflight_hints": {
+                    "entrypoint": {
+                        "kind": "sif",
+                        "path": str(entrypoint["path"]),
+                    },
+                    "bind_paths": list(entrypoint.get("bind_paths") or []),
+                },
+                "runner_contract_digest": contract_digest,
+            }
+        )
+        metadata["tool_contract"] = caller_contract
+        metadata["toolchain_runtime_request"] = {
+            "schema_id": "mcp_hpc_toolchain_runtime_request@1",
+            "tool_id": contract.tool_id,
+            "adapter_id": contract.adapter_id,
+            "command_template_id": contract.command_template_id,
+            "entrypoint_kind": "sif",
+            "sif_locator": str(entrypoint["path"]),
+            "runner_contract_digest": contract_digest,
+        }
+        spec.metadata = metadata
+
+    @staticmethod
+    def _validate_caller_tool_contract(
+        caller: dict[str, Any],
+        contract: ToolContract,
+    ) -> None:
+        if (
+            caller.get("tool_id") != contract.tool_id
+            or caller.get("adapter_id") != contract.adapter_id
+            or not contract.command_template_id
+            or caller.get("command_template_id") != contract.command_template_id
+        ):
+            raise ValueError(
+                "Host tool contract does not match the runner-owned SIF contract"
+            )
 
     def _load_handle(self, run_id: str) -> JobHandle:
         try:
@@ -198,18 +293,31 @@ class MCPHpcServer:
             return remote_path.as_posix()
         return remote_path.name
 
-    @classmethod
-    def _project_run_result(cls, result: dict[str, Any]) -> dict[str, Any]:
-        selected_mode = str(result.get("selected_mode", "unknown"))
-        status = result.get("status")
-        return {
+    def _project_run_result(
+        self,
+        result: dict[str, Any],
+        *,
+        authoritative_mode: str,
+        runtime_request: dict[str, object] | None,
+    ) -> dict[str, Any]:
+        reported_mode = str(result.get("selected_mode", "unknown"))
+        if reported_mode != authoritative_mode:
+            raise ValueError(
+                "runner result selected_mode does not match the authoritative dispatch mode"
+            )
+        selected_mode = authoritative_mode
+        raw_status = result.get("status")
+        normalized_status = str(raw_status or "").strip().lower()
+        status_valid = normalized_status in _PUBLIC_RUN_STATUSES
+        status = normalized_status if status_valid else "failed"
+        projected = {
             "run_id": str(result["run_id"]),
-            "status": "failed" if status is None else str(status),
+            "status": status,
             "selected_mode": selected_mode,
             "exit_code": result.get("exit_code"),
             "error_code": result.get("error_code"),
             "artifacts": {
-                cls._relative_artifact_path(str(path)): str(storage_uri)
+                self._relative_artifact_path(str(path)): str(storage_uri)
                 for path, storage_uri in dict(result.get("artifacts") or {}).items()
             },
             # Slurm submit stdout contains the raw scheduler job ID. Async
@@ -218,6 +326,76 @@ class MCPHpcServer:
                 dict(result.get("logs") or {}) if selected_mode == "ssh" else {}
             ),
         }
+        if not status_valid and not projected["error_code"]:
+            projected["error_code"] = "RUNNER_STATUS_INVALID"
+        execution_identity = self._project_toolchain_runtime_identity(
+            result,
+            selected_mode=selected_mode,
+            runtime_request=runtime_request,
+        )
+        if execution_identity is not None:
+            projected["toolchain_runtime_identity"] = execution_identity
+        elif (
+            selected_mode == "ssh"
+            and runtime_request
+            and projected["status"] in {"completed", "succeeded", "success"}
+        ):
+            projected["status"] = "failed"
+            projected["error_code"] = "TOOLCHAIN_IDENTITY_MISSING"
+        if projected["status"] not in {"completed", "succeeded", "success"}:
+            projected["artifacts"] = {}
+        return projected
+
+    @staticmethod
+    def _project_toolchain_runtime_identity(
+        result: dict[str, Any],
+        *,
+        selected_mode: str,
+        runtime_request: dict[str, object] | None,
+    ) -> dict[str, str] | None:
+        # Only the synchronous SSH runner can currently attest the image in the
+        # same login shell that executes the payload. Never reinterpret Slurm
+        # submit/preflight metadata as an execution identity.
+        if selected_mode != "ssh" or not runtime_request:
+            return None
+        raw_identity = dict(
+            dict(result.get("metadata") or {}).get("toolchain_runtime_identity") or {}
+        )
+        if not raw_identity:
+            return None
+        projected = {
+            "schema_id": str(raw_identity.get("schema_id") or ""),
+            "attestation_scope": str(raw_identity.get("attestation_scope") or ""),
+            "execution_mode": str(raw_identity.get("execution_mode") or ""),
+            "tool_id": str(raw_identity.get("tool_id") or ""),
+            "adapter_id": str(raw_identity.get("adapter_id") or ""),
+            "command_template_id": str(raw_identity.get("command_template_id") or ""),
+            "runner_contract_digest": str(
+                raw_identity.get("runner_contract_digest") or ""
+            ),
+            "image_digest": str(raw_identity.get("image_digest") or ""),
+        }
+        if (
+            projected["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
+            or projected["attestation_scope"] != "same_ssh_login_shell_pre_exec"
+            or projected["execution_mode"] != "ssh"
+            or projected["tool_id"] != runtime_request.get("tool_id")
+            or projected["adapter_id"] != runtime_request.get("adapter_id")
+            or projected["command_template_id"]
+            != runtime_request.get("command_template_id")
+            or projected["runner_contract_digest"]
+            != runtime_request.get("runner_contract_digest")
+            or any(
+                _PUBLIC_ID_PATTERN.fullmatch(projected[key]) is None
+                for key in ("tool_id", "adapter_id", "command_template_id")
+            )
+            or _DIGEST_PATTERN.fullmatch(projected["runner_contract_digest"]) is None
+            or _DIGEST_PATTERN.fullmatch(projected["image_digest"]) is None
+        ):
+            return None
+        # Rebuild a closed public object instead of forwarding runner metadata;
+        # paths and future private fields therefore cannot cross this boundary.
+        return projected
 
     @staticmethod
     def _project_job_status(result: dict[str, Any]) -> dict[str, Any]:
@@ -260,7 +438,14 @@ class MCPHpcServer:
                 result = self.ssh_runner.exec_run(spec).to_dict()
             else:
                 result = self.slurm_runner.submit(spec).to_dict()
-            return self._project_run_result(result)
+            return self._project_run_result(
+                result,
+                authoritative_mode=selected,
+                runtime_request=dict(
+                    spec.metadata.get("toolchain_runtime_request") or {}
+                )
+                or None,
+            )
 
         if name == "job.submit":
             self._require_arguments(
@@ -271,7 +456,11 @@ class MCPHpcServer:
             )
             spec = self._public_runspec(args["runspec"])
             spec.execution_mode = "sbatch"
-            return self._project_run_result(self.slurm_runner.submit(spec).to_dict())
+            return self._project_run_result(
+                self.slurm_runner.submit(spec).to_dict(),
+                authoritative_mode="sbatch",
+                runtime_request=None,
+            )
 
         if name == "job.status":
             self._require_arguments(
@@ -307,7 +496,11 @@ class MCPHpcServer:
             )
             run_id = str(args["run_id"])
             handle = self._load_handle(run_id)
-            return self._project_run_result(self.slurm_runner.cancel(handle).to_dict())
+            return self._project_run_result(
+                self.slurm_runner.cancel(handle).to_dict(),
+                authoritative_mode="sbatch",
+                runtime_request=None,
+            )
 
         if name == "job.fetch_artifacts":
             self._require_arguments(
@@ -320,7 +513,9 @@ class MCPHpcServer:
             handle = self._load_handle(run_id)
             spec = self._load_runspec_for_run(run_id)
             return self._project_run_result(
-                self.slurm_runner.fetch_artifacts(spec, handle).to_dict()
+                self.slurm_runner.fetch_artifacts(spec, handle).to_dict(),
+                authoritative_mode="sbatch",
+                runtime_request=None,
             )
 
         raise ValueError(f"Unknown tool: {name}")

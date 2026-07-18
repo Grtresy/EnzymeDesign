@@ -33,6 +33,27 @@ def test_cdhit_contract_exposes_one_member_per_row_schema() -> None:
     assert "member_count" not in rendered[2]
 
 
+@pytest.mark.parametrize(
+    ("tool_id", "expected_sif"),
+    [
+        ("bio_tools.cdhit", "$HOME/containers/cd-hit_4.8.1.sif"),
+        ("bio_tools.mafft", "$HOME/containers/mafft_7.525.sif"),
+        ("bio_tools.hmmbuild", "$HOME/containers/hmmer_3.4.sif"),
+        ("bio_tools.hmmalign", "$HOME/containers/hmmer_3.4.sif"),
+    ],
+)
+def test_aox_sif_commands_pin_runner_owned_image_locator(
+    tool_id: str,
+    expected_sif: str,
+) -> None:
+    command = render_contract_command(get_hpc_tool_contract(tool_id), {})[2]
+
+    assert expected_sif in command
+    assert "CDHIT_SIF" not in command
+    assert "MAFFT_SIF" not in command
+    assert "HMMER_SIF" not in command
+
+
 def test_cdhit_normalizer_parses_every_real_clstr_member(tmp_path: Path) -> None:
     cdhit_root = tmp_path / "bio_tools" / "cdhit"
     cdhit_root.mkdir(parents=True)

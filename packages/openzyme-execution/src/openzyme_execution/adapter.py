@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+import re
 from typing import Any
 from typing import Protocol
 
@@ -11,6 +12,20 @@ from openzyme_runtime.limits import LimiterRegistry
 from openzyme_runtime.seams import ExecutionAdapter
 
 _SUPPORTED_EXECUTION_TOOLS = frozenset({"exec.run"})
+_TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
+    "schema_id",
+    "attestation_scope",
+    "execution_mode",
+    "tool_id",
+    "adapter_id",
+    "command_template_id",
+    "runner_contract_digest",
+    "image_digest",
+)
+_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
+)
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class HpcRunnerToolServer(Protocol):
@@ -54,6 +69,35 @@ def map_runner_status_to_run_status(status: str) -> RunStatus:
     return RunStatus.FAILED
 
 
+def _project_toolchain_runtime_identity(
+    value: Any,
+    *,
+    execution_mode: str,
+) -> dict[str, str] | None:
+    if execution_mode != "ssh" or not isinstance(value, dict):
+        return None
+    identity = {
+        field: str(value.get(field) or "")
+        for field in _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS
+    }
+    if (
+        identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
+        or identity["attestation_scope"]
+        != "same_ssh_login_shell_pre_exec"
+        or identity["execution_mode"] != "ssh"
+        or any(
+            _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN.fullmatch(identity[field]) is None
+            for field in ("tool_id", "adapter_id", "command_template_id")
+        )
+        or any(
+            _SHA256_DIGEST_PATTERN.fullmatch(identity[field]) is None
+            for field in ("runner_contract_digest", "image_digest")
+        )
+    ):
+        return None
+    return identity
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionArtifactRef:
     storage_uri: str
@@ -69,6 +113,7 @@ class ExecutionOutcome:
     artifacts: tuple[ExecutionArtifactRef, ...]
     raw_result: dict[str, Any]
     exit_code: int | None = None
+    toolchain_runtime_identity: dict[str, str] | None = None
     # Compatibility-only DTO fields. The active HPC adapter never populates raw
     # runner handles; it uses only an opaque URI and leaves job_id unset.
     remote_run_dir: str = ""
@@ -98,19 +143,17 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
 
     def submit_execution(self, session_id: str, payload: dict[str, Any]) -> ExecutionOutcome:
         requested_tool_name = str(payload.get("tool_name", "exec.run"))
-        tool_name = (
-            requested_tool_name
-            if requested_tool_name in _SUPPORTED_EXECUTION_TOOLS
-            else "exec.run"
-        )
+        if requested_tool_name not in _SUPPORTED_EXECUTION_TOOLS:
+            raise ValueError(
+                f"unsupported execution tool {requested_tool_name!r}; expected 'exec.run'"
+            )
+        tool_name = requested_tool_name
         runspec = dict(payload["runspec"])
         if "run_id" in runspec:
             raise ValueError("RunSpec.run_id is server-generated and must not be supplied")
         metadata = dict(runspec.get("metadata", {}))
         metadata.setdefault("openzyme", {})
         metadata["openzyme"]["session_id"] = session_id
-        if tool_name != requested_tool_name:
-            metadata["openzyme"]["requested_tool_name"] = requested_tool_name
         runspec["metadata"] = metadata
         result = self._call_tool(tool_name, {"runspec": runspec})
         return self._normalize_result(result, declared_paths=_declared_output_paths(runspec))
@@ -171,6 +214,22 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
         declared_paths: set[str] | None = None,
     ) -> ExecutionOutcome:
         selected_mode = str(result.get("selected_mode", result.get("requested_mode", "unknown")))
+        run_status = map_runner_status_to_run_status(
+            str(result.get("status", "failed"))
+        )
+        toolchain_runtime_identity = _project_toolchain_runtime_identity(
+            result.get("toolchain_runtime_identity"),
+            execution_mode=selected_mode,
+        )
+        safe_result = dict(result)
+        if toolchain_runtime_identity is None:
+            safe_result.pop("toolchain_runtime_identity", None)
+        else:
+            safe_result["toolchain_runtime_identity"] = dict(
+                toolchain_runtime_identity
+            )
+        if run_status is not RunStatus.SUCCEEDED:
+            safe_result["artifacts"] = {}
         artifacts = tuple(
             ExecutionArtifactRef(
                 storage_uri=str(local_path),
@@ -178,15 +237,20 @@ class HpcRunnerExecutionAdapter(ExecutionAdapter):
                 kind=_artifact_kind_from_uri(str(local_path)),
             )
             for remote_path, local_path in sorted(dict(result.get("artifacts", {})).items())
-            if declared_paths is None or _relative_output_path(str(remote_path)) in declared_paths
+            if run_status is RunStatus.SUCCEEDED
+            and (
+                declared_paths is None
+                or _relative_output_path(str(remote_path)) in declared_paths
+            )
         )
         return ExecutionOutcome(
             run_id=str(result["run_id"]),
-            status=map_runner_status_to_run_status(str(result.get("status", "failed"))),
+            status=run_status,
             execution_mode=selected_mode,
             artifacts=artifacts,
-            raw_result=result,
+            raw_result=safe_result,
             exit_code=None if result.get("exit_code") is None else int(result["exit_code"]),
+            toolchain_runtime_identity=toolchain_runtime_identity,
             remote_run_dir=f"opaque://{result['run_id']}",
         )
 

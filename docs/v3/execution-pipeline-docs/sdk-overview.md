@@ -26,6 +26,27 @@ The sandbox file/command tools may run ordinary bash and Python within the isola
 
 External SDK calls are supervised operations. The Host supervisor applies SDK operation policy, quota, and approval gates. The stable executor-facing path is sandbox-first: edit files in the persistent sandbox workspace, snapshot source when needed, and run code through `sandbox.exec`; the Host builds an `ExecutionPlan`, asks the Web UI for approval when needed, then continues the supervised operation. Current migration code may still mention `execution.pipeline.start`, but that is a compatibility bridge rather than the executor authoring contract. AOX/HMM evals use a single-plan approval policy to require one plan approval across bio, bio_tools, external tool, and output-registration steps. Plans carry a static per-operation `max_calls`; repeated calls and literal bounded loops count toward it, while dynamically unbounded external calls fail before execution. The Host atomically consumes this budget before each provider/tool/HPC action. Runtime SDK calls can still trigger a secondary approval gate if the sandbox requests an unapproved or changed operation, but an exhausted approved call budget fails with `execution_plan_quota_exceeded` rather than reopening approval. Pipeline code should not implement its own approval or resume protocol.
 
+The S12 sandbox request envelope is plan-only. `adapter_result` and
+`result_summary` are not SDK inputs and are rejected if sandbox code puts them
+on the wire. Result envelopes, including toolchain runtime identity, may be
+created only from an explicitly successful, error-free Host adapter executor
+response whose result summary does not contradict that success, or from a validated,
+approved completed result carrying both the public
+`result_origin=host_adapter_executor` projection and its separate Host-owned
+repository provenance column, then reused by the Host for the same operation
+digest. Current-schema rows without that Host-owned column fail with
+`adapter_result_origin_untrusted` for the same idempotency key and are never
+silently executed again. A fresh key creates a fresh operation and approval,
+even if formerly caller-controlled JSON contains the same marker string;
+older SQLite schema versions retain the normal explicit schema-mismatch policy
+and are not promised an automatic in-place migration.
+
+Runner outputs are success-only scientific inputs. Non-success or unknown
+runner status, missing toolchain identity, output validation failure, and
+partial execution project an empty artifact set through runner, server,
+adapter, and engine. Slurm fetch additionally requires an authoritative
+`COMPLETED` state with exit code 0 before downloading any declared output.
+
 The execution plan also binds the resolved immutable sandbox image id, the digest of the exact `openzyme_pipeline` SDK source tree mounted read-only into the container, and the sandbox protocol version. The Host revalidates this runtime identity immediately before execution and after SDK materialization, and Podman is launched by immutable image id rather than the configured tag. Persistent sandbox adapter operations inherit the identity recorded by their originating `SandboxRun`; identity drift or missing provenance is a fail-closed error before provider, tool, or runner activity.
 
 When registering derived outputs, pass `format` and `metadata.required_columns` for key FASTA/HMM/CSV artifacts. The sandbox control server rejects empty files, invalid FASTA/HMM content, and CSV files missing required columns before they can enter the artifact catalog.

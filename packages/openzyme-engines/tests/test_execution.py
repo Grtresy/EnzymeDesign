@@ -74,6 +74,16 @@ CDHIT_MEMBERSHIP_HEADER = (
     "cluster_id,member_id,representative_id,is_representative,"
     "identity_to_representative,member_length"
 )
+TOOLCHAIN_RUNTIME_IDENTITY = {
+    "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+    "attestation_scope": "same_ssh_login_shell_pre_exec",
+    "execution_mode": "ssh",
+    "tool_id": "bio_tools.mafft",
+    "adapter_id": "bio_tools.mafft",
+    "command_template_id": "bio_tools_mafft_sif_v1",
+    "runner_contract_digest": "sha256:" + "a" * 64,
+    "image_digest": "sha256:" + "b" * 64,
+}
 
 
 def _fpocket_pipeline_code(artifact_id: str = "art_001") -> str:
@@ -388,6 +398,44 @@ class CapturingSuccessRunner(ImmediateSuccessRunner):
         return super().submit_execution(session_id, payload)
 
 
+class ToolchainIdentitySuccessRunner(ImmediateSuccessRunner):
+    def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionOutcome
+
+        outcome = super().submit_execution(session_id, payload)
+        unsafe_identity = {
+            **TOOLCHAIN_RUNTIME_IDENTITY,
+            "sif_path": "/private/tool.sif",
+            "command": ["apptainer", "exec", "/private/tool.sif"],
+            "secret": "must-not-propagate",
+        }
+        return ExecutionOutcome(
+            run_id=outcome.run_id,
+            status=outcome.status,
+            execution_mode=outcome.execution_mode,
+            remote_run_dir=outcome.remote_run_dir,
+            raw_result={
+                **outcome.raw_result,
+                "toolchain_runtime_identity": unsafe_identity,
+            },
+            artifacts=outcome.artifacts,
+            exit_code=outcome.exit_code,
+            toolchain_runtime_identity=unsafe_identity,  # type: ignore[arg-type]
+        )
+
+
+def test_toolchain_runtime_identity_projection_is_ssh_only() -> None:
+    from openzyme_engines.execution import _project_toolchain_runtime_identity
+
+    assert (
+        _project_toolchain_runtime_identity(
+            TOOLCHAIN_RUNTIME_IDENTITY,
+            execution_mode="sbatch",
+        )
+        is None
+    )
+
+
 class AdapterShapeArtifactRef:
     def __init__(
         self, *, storage_uri: str, relative_path: str, kind: ArtifactKind
@@ -421,14 +469,31 @@ class AdapterShapeSuccessRunner(ImmediateSuccessRunner):
 
 
 class CapturingFailedRunner(ImmediateSuccessRunner):
-    def __init__(self) -> None:
+    def __init__(self, partial_artifact_path: Path | None = None) -> None:
         self.payloads: list[dict[str, object]] = []
+        self.partial_artifact_path = partial_artifact_path
 
     def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
+        from openzyme_engines.execution import ExecutionArtifactRef
         from openzyme_engines.execution import ExecutionOutcome
 
         del session_id
         self.payloads.append(payload)
+        artifacts = ()
+        raw_artifacts: dict[str, str] = {}
+        if self.partial_artifact_path is not None:
+            self.partial_artifact_path.write_text(
+                ">partial\nNOT_VALIDATED\n",
+                encoding="utf-8",
+            )
+            artifacts = (
+                ExecutionArtifactRef(
+                    storage_uri=str(self.partial_artifact_path),
+                    relative_path="target_out",
+                    kind=ArtifactKind.RESULT,
+                ),
+            )
+            raw_artifacts = {"target_out": str(self.partial_artifact_path)}
         return ExecutionOutcome(
             run_id="runner_failed_001",
             status=RunStatus.FAILED,
@@ -440,8 +505,9 @@ class CapturingFailedRunner(ImmediateSuccessRunner):
                 "error_code": "APPTAINER_MISSING",
                 "stdout": "",
                 "stderr": "apptainer: command not found",
+                "artifacts": raw_artifacts,
             },
-            artifacts=(),
+            artifacts=artifacts,
             exit_code=127,
         )
 
@@ -806,6 +872,11 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
             f"structure_tools.fpocket failed with status failed for run run_{invocation_id}_1",
             encoding="utf-8",
         )
+        partial_result_path = self.stderr_path.with_name("partial-result.fasta")
+        partial_result_path.write_text(
+            ">partial\nNOT_VALIDATED\n",
+            encoding="utf-8",
+        )
         return ExecutionOutcome(
             run_id=f"sandbox_{invocation_id}",
             status=RunStatus.FAILED,
@@ -817,6 +888,11 @@ class FailedHpcSandboxRunner(HandlerSandboxRunner):
                     storage_uri=str(self.stderr_path),
                     relative_path="logs/stderr.log",
                     kind=ArtifactKind.LOG,
+                ),
+                ExecutionArtifactRef(
+                    storage_uri=str(partial_result_path),
+                    relative_path="bio_tools/mafft/alignment.fasta",
+                    kind=ArtifactKind.RESULT,
                 ),
             ),
             exit_code=1,
@@ -1363,6 +1439,48 @@ def test_execution_engine_resumes_after_approval_and_persists_run_and_artifacts(
         repositories.runs.get_by_invocation(session.session_id, "inv_exec_001").summary
         is not None
     )
+
+
+def test_execution_engine_never_persists_failed_partial_scientific_artifacts(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    partial_path = tmp_path / "partial-target-out"
+    engine = ExecutionEngine(
+        repositories,
+        CapturingFailedRunner(partial_artifact_path=partial_path),
+    )
+    first = engine.start_execution(
+        session_id=session.session_id,
+        task_id="task_001",
+        handoff={
+            "execution_goal": "Run fpocket on the selected structure",
+            "required_artifact_ids": ["art_001"],
+            "catalog_tool_id": "fpocket",
+            "require_approval": True,
+        },
+        invocation_id="inv_exec_failed_partial",
+    )
+    assert first.approval is not None
+    _approve_request(repositories, first.approval)
+
+    resumed = engine.continue_after_approval(
+        invocation_id="inv_exec_failed_partial",
+        resolution="Approved for launch.",
+    )
+
+    assert resumed.invocation.status is EngineInvocationStatus.FAILED
+    assert resumed.artifacts == ()
+    assert repositories.artifacts.list_by_invocation(
+        session.session_id,
+        "inv_exec_failed_partial",
+    ) == []
+    output = repositories.engine_documents.get(str(resumed.invocation.output_ref))
+    assert output is not None
+    assert output.payload["outcome"]["artifacts"] == []
+    assert output.payload["outcome"]["raw_result"]["artifacts"] == {}
+    assert str(partial_path) not in str(output.payload)
 
 
 def test_execution_engine_resume_keeps_pending_approval_waiting() -> None:
@@ -2834,7 +2952,7 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
         sandbox_workspace_id=sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
-    engine = ExecutionEngine(repositories, ImmediateSuccessRunner())
+    engine = ExecutionEngine(repositories, ToolchainIdentitySuccessRunner())
 
     result = engine.execute_sandbox_adapter_operation(
         operation, {"adapter_params": params}
@@ -2844,8 +2962,18 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
     assert run_handle["kind"] == "hpc_run_handle"
     assert run_handle["operation_id"] == operation.operation_id
     assert run_handle["runner_run_id"].startswith("runner_run_")
+    assert (
+        run_handle["toolchain_runtime_identity"]
+        == TOOLCHAIN_RUNTIME_IDENTITY
+    )
+    assert "/private/tool.sif" not in json.dumps(run_handle)
+    assert "must-not-propagate" not in json.dumps(run_handle)
     adapter_result = result["adapter_result"]
     assert adapter_result["backend_run_id"] == run_handle["runner_run_id"]
+    assert (
+        adapter_result["bounded_summary"]["toolchain_runtime_identity"]
+        == TOOLCHAIN_RUNTIME_IDENTITY
+    )
     assert adapter_result["registered_artifact_ids"] == []
     fetch = engine.fetch_sandbox_hpc_outputs(
         {
@@ -2875,6 +3003,106 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
         == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
     )
     assert artifact.metadata["sdk_method"] == "bio_tools.mafft"
+
+
+def test_sandbox_adapter_executor_rejects_mutated_sealed_input_before_hpc_submit(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(
+        repositories,
+        sandbox_workspace_id="sws_adapter_corrupt_input",
+    )
+    fasta_artifact_id = _save_fasta_artifact(
+        repositories,
+        "art_sandbox_hpc_corrupt_fasta",
+    )
+    workspace = _workspace_payload("sandbox_hpc_corrupt")
+    staged_fasta = _stage_payload(
+        repositories,
+        fasta_artifact_id,
+        workspace,
+        "inputs/sequences.fasta",
+    )
+    params = {
+        "input_fasta": staged_fasta,
+        "placement": workspace,
+        "expected_outputs": _bio_tool_outputs("bio_tools.mafft"),
+        "params": {},
+    }
+    operation = ControlledOperation(
+        operation_id="op_sandbox_hpc_mafft_corrupt_input",
+        session_id="sess_001",
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_hpc_mafft_corrupt_input",
+        logical_operation_key="bio_tools.mafft",
+        operation_digest="sha256:operation-hpc-corrupt-input",
+        params_digest=_payload_digest(params),
+        backend_category="hpc",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        input_artifact_ids=(fasta_artifact_id,),
+        input_artifact_digests=(
+            _artifact_digest(repositories, fasta_artifact_id),
+        ),
+        source_snapshot_artifact_id="art_source_snapshot",
+        source_snapshot_digest="sha256:source",
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio_tools",
+        function_name="mafft",
+        route_policy_id="bio_tools.mafft.hpc:v1",
+        placement="hpc",
+        hpc_workspace_id=str(workspace["hpc_workspace_id"]),
+        selected_backend="hpc",
+        resource_class="hpc_batch_small",
+        runtime_packaging_id="hpc_apptainer_sif.aox_hmm_2026_05_30",
+        toolchain_id="mafft_7.520.hpc_apptainer_sif:v1",
+        stage_refs=(staged_fasta,),
+        expected_outputs_summary={
+            "declared_outputs": _bio_tool_outputs("bio_tools.mafft")
+        },
+        resource_estimate={
+            "placement": "hpc",
+            "resource_class": "hpc_batch_small",
+        },
+        idempotency_key="bio_tools.mafft:" + _payload_digest(params),
+    )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
+    )
+    artifact = repositories.artifacts.get(fasta_artifact_id)
+    assert artifact is not None
+    blob_path = Path(artifact.storage_uri)
+    original = blob_path.read_bytes()
+    mutated = bytearray(original)
+    mutated[min(4, len(mutated) - 1)] ^= 1
+    blob_path.write_bytes(bytes(mutated))
+    runner = CapturingSuccessRunner()
+    engine = ExecutionEngine(
+        repositories,
+        runner,
+        sandbox_workspace_root=tmp_path / "workspaces",
+        artifact_blob_root=tmp_path / "artifact-blobs",
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine.execute_sandbox_adapter_operation(
+            operation,
+            {"adapter_params": params},
+        )
+
+    assert exc_info.value.error_type == "artifact_blob_digest_mismatch"
+    assert exc_info.value.stage == "adapter_input_integrity"
+    assert exc_info.value.details["artifact_id"] == fasta_artifact_id
+    assert runner.payloads == []
 
 
 def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation() -> (
@@ -5301,6 +5529,11 @@ def test_pipeline_hpc_backend_failure_exposes_runner_details(tmp_path: Path) -> 
     assert error["hpc_failure"]["runner_run_id"] == "runner_failed_001"
     assert error["hpc_failure"]["error_code"] == "APPTAINER_MISSING"
     assert error["hpc_failure"]["stderr_excerpt"] == "apptainer: command not found"
+    assert repositories.artifacts.list_by_invocation(
+        "sess_001",
+        "inv_pipeline_hpc_failed",
+    ) == []
+    assert "partial-result.fasta" not in str(status)
 
 
 def test_pipeline_hpc_runner_timeout_is_not_sandbox_preflight_failure(

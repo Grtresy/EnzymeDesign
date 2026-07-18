@@ -672,6 +672,7 @@ class ControlledOperation:
     approval_requirement: dict[str, Any] | None = None
     adapter_approval_envelope: dict[str, Any] | None = None
     adapter_result_envelope: dict[str, Any] | None = None
+    adapter_result_origin: str | None = None
     expected_outputs_summary: dict[str, Any] | None = None
     resource_estimate: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None

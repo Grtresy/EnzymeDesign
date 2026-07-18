@@ -160,7 +160,7 @@ def render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[s
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/cdhit"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${CDHIT_SIF:-$HOME/containers/cd-hit_4.8.1.sif}" cd-hit '
+                '"$HOME/containers/cd-hit_4.8.1.sif" cd-hit '
                 f"-i /work/input.fasta -o /out/bio_tools/cdhit/clustered.fasta -c {identity} -n {word_size} -d 0 -T 1 -M 256 "
                 '> "$MCP_OUTDIR/bio_tools/cdhit/cdhit.log"; '
                 + render_cdhit_membership_normalizer_command()
@@ -174,7 +174,7 @@ def render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[s
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/mafft"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${MAFFT_SIF:-$HOME/containers/mafft_7.525.sif}" mafft --auto /work/input.fasta '
+                '"$HOME/containers/mafft_7.525.sif" mafft --auto /work/input.fasta '
                 '> "$MCP_OUTDIR/bio_tools/mafft/alignment.fasta"'
             ),
         ]
@@ -186,7 +186,7 @@ def render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[s
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmbuild"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmbuild --amino '
+                '"$HOME/containers/hmmer_3.4.sif" hmmbuild --amino '
                 "/out/bio_tools/hmmbuild/model.hmm /work/alignment.fasta "
                 '> "$MCP_OUTDIR/bio_tools/hmmbuild/hmmbuild.summary.txt"'
             ),
@@ -199,7 +199,7 @@ def render_contract_command(contract: ToolExecutionContract, tool_inputs: dict[s
                 'set -euo pipefail; mkdir -p "$MCP_OUTDIR/bio_tools/hmmalign"; '
                 'apptainer exec --cleanenv --bind "$MCP_WORKDIR:/work" '
                 '--bind "$MCP_OUTDIR:/out" --bind "$MCP_TMPDIR:/tmp" '
-                '"${HMMER_SIF:-$HOME/containers/hmmer_3.4.sif}" hmmalign --amino --outformat afa '
+                '"$HOME/containers/hmmer_3.4.sif" hmmalign --amino --outformat afa '
                 "-o /out/bio_tools/hmmalign/aligned.fasta /work/model.hmm /work/input.fasta"
             ),
         ]

@@ -28,6 +28,7 @@ MIGRATION_IDS: tuple[str, ...] = (
     "021_v3_durable_event_outbox",
     "022_v3_session_access_control",
     "023_v3_research_source_provenance",
+    "024_v3_host_owned_adapter_result_origin",
 )
 CURRENT_SQLITE_SCHEMA_VERSION = len(MIGRATION_IDS)
 

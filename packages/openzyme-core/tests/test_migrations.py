@@ -36,6 +36,9 @@ def test_migration_asset_is_available() -> None:
     research_source_provenance_sql = get_migration_sql(
         "023_v3_research_source_provenance"
     )
+    adapter_result_origin_sql = get_migration_sql(
+        "024_v3_host_owned_adapter_result_origin"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -76,6 +79,7 @@ def test_migration_asset_is_available() -> None:
     assert "CREATE TABLE IF NOT EXISTS session_access_records" in access_control_sql
     assert "ADD COLUMN provider" in research_source_provenance_sql
     assert "ADD COLUMN provider_provenance_json" in research_source_provenance_sql
+    assert "ADD COLUMN adapter_result_origin" in adapter_result_origin_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -100,6 +104,7 @@ def test_migration_asset_is_available() -> None:
         "021_v3_durable_event_outbox",
         "022_v3_session_access_control",
         "023_v3_research_source_provenance",
+        "024_v3_host_owned_adapter_result_origin",
     )
 
 
@@ -231,6 +236,7 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "planned_fetch_intent_json",
         "adapter_approval_envelope_json",
         "adapter_result_envelope_json",
+        "adapter_result_origin",
     }.issubset(operation_columns)
     trigger_names = {
         row[0]

@@ -105,8 +105,6 @@ def controlled_operation(
     hpc_workspace_id: str | None = None,
     stage_refs: list[dict[str, Any]] | None = None,
     planned_fetch_intent: dict[str, Any] | None = None,
-    adapter_result: dict[str, Any] | None = None,
-    result_summary: dict[str, Any] | None = None,
 ) -> Any:
     params_digest = canonical_digest(params)
     envelope: dict[str, Any] = {
@@ -124,12 +122,9 @@ def controlled_operation(
         "placement": placement,
         "stage_refs": [dict(item) for item in stage_refs or []],
         "planned_fetch_intent": dict(planned_fetch_intent or {}),
-        "adapter_result": dict(adapter_result or {}),
     }
     if hpc_workspace_id:
         envelope["hpc_workspace_id"] = hpc_workspace_id
-    if result_summary is not None:
-        envelope["result_summary"] = dict(result_summary)
     return call("s10.controlled_operation", envelope)
 
 

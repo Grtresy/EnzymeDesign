@@ -215,6 +215,7 @@
     {
       "tool_id": "bio_tools.mafft",
       "adapter_id": "bio_tools.mafft",
+      "command_template_id": "bio_tools_mafft_sif_v1",
       "stage": "execution",
       "deployment_mode": "sif",
       "entrypoint": {
@@ -253,6 +254,7 @@
     {
       "tool_id": "bio_tools.hmmbuild",
       "adapter_id": "bio_tools.hmmbuild",
+      "command_template_id": "bio_tools_hmmbuild_sif_v1",
       "stage": "execution",
       "deployment_mode": "sif",
       "entrypoint": {
@@ -291,6 +293,7 @@
     {
       "tool_id": "bio_tools.hmmalign",
       "adapter_id": "bio_tools.hmmalign",
+      "command_template_id": "bio_tools_hmmalign_sif_v1",
       "stage": "execution",
       "deployment_mode": "sif",
       "entrypoint": {

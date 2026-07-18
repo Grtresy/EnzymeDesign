@@ -1567,6 +1567,7 @@ def test_continuation_state_claim_has_single_winner() -> None:
             "backend_run_id": "slurm_001",
             "registered_artifact_ids": ["artifact_alignment"],
         },
+        adapter_result_origin="host_adapter_executor",
         created_at="2026-04-16T10:00:04+00:00",
         updated_at="2026-04-16T10:00:04+00:00",
     )
@@ -1584,6 +1585,7 @@ def test_continuation_state_claim_has_single_winner() -> None:
         "backend_run_id": "slurm_001",
         "registered_artifact_ids": ["artifact_alignment"],
     }
+    assert saved_operation.adapter_result_origin == "host_adapter_executor"
     continuation = ContinuationState(
         continuation_id="cont_s10_claim",
         session_id=session.session_id,

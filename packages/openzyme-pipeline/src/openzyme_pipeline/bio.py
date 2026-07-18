@@ -20,10 +20,15 @@ _SHA256_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
 def _validated_provider_input_refs(
     input_refs: list[dict[str, Any]] | None,
 ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    refs = [dict(item) for item in input_refs or []]
+    refs: list[dict[str, Any]] = []
     artifact_ids: list[str] = []
     artifact_digests: list[str] = []
-    for item in refs:
+    for raw_item in input_refs or []:
+        item = dict(raw_item)
+        if set(item) != {"artifact_id", "content_digest"}:
+            raise ValueError(
+                "provider input refs require exactly artifact_id and content_digest"
+            )
         artifact_id = item.get("artifact_id")
         content_digest = item.get("content_digest")
         if (
@@ -42,6 +47,12 @@ def _validated_provider_input_refs(
             )
         artifact_ids.append(artifact_id)
         artifact_digests.append(content_digest)
+        refs.append(
+            {
+                "artifact_id": artifact_id,
+                "content_digest": content_digest,
+            }
+        )
     return refs, artifact_ids, artifact_digests
 
 
@@ -103,13 +114,17 @@ def uniprot_fetch(
     sequence_mismatch_choices: dict[str, str] | None = None,
     source_hit_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    source_refs, _, _ = _validated_provider_input_refs(
+        [] if source_hit_artifact is None else [dict(source_hit_artifact)]
+    )
+    canonical_source_hit_artifact = source_refs[0] if source_refs else {}
     params = {
         "accessions": list(accessions),
         "fields": list(fields or []),
         "batch_size": batch_size,
         "source_sequence_identities": dict(source_sequence_identities or {}),
         "sequence_mismatch_choices": dict(sequence_mismatch_choices or {}),
-        "source_hit_artifact": dict(source_hit_artifact or {}),
+        "source_hit_artifact": canonical_source_hit_artifact,
         "output_dir": output_dir,
     }
     if supervised_sandbox_mode():
@@ -117,9 +132,7 @@ def uniprot_fetch(
             function_name="uniprot_fetch",
             params=params,
             output_dir=output_dir,
-            input_refs=[]
-            if source_hit_artifact is None
-            else [dict(source_hit_artifact)],
+            input_refs=source_refs,
         )
     return dict(
         call(

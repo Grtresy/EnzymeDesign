@@ -167,6 +167,51 @@ def _hpc_failure_details(result: dict[str, Any]) -> dict[str, Any] | None:
     return {key: value for key, value in details.items() if value is not None}
 
 
+_TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
+    "schema_id",
+    "attestation_scope",
+    "execution_mode",
+    "tool_id",
+    "adapter_id",
+    "command_template_id",
+    "runner_contract_digest",
+    "image_digest",
+)
+_SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
+)
+_SHA256_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _project_toolchain_runtime_identity(
+    value: Any,
+    *,
+    execution_mode: str,
+) -> dict[str, str] | None:
+    if execution_mode != "ssh" or not isinstance(value, dict):
+        return None
+    identity = {
+        field: str(value.get(field) or "")
+        for field in _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS
+    }
+    if (
+        identity["schema_id"] != "mcp_hpc_toolchain_runtime_identity@1"
+        or identity["attestation_scope"]
+        != "same_ssh_login_shell_pre_exec"
+        or identity["execution_mode"] != "ssh"
+        or any(
+            _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN.fullmatch(identity[field]) is None
+            for field in ("tool_id", "adapter_id", "command_template_id")
+        )
+        or any(
+            _SHA256_DIGEST_PATTERN.fullmatch(identity[field]) is None
+            for field in ("runner_contract_digest", "image_digest")
+        )
+    ):
+        return None
+    return identity
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionArtifactRef:
     storage_uri: str
@@ -194,6 +239,7 @@ class ExecutionOutcome:
     raw_result: dict[str, Any]
     artifacts: tuple[ExecutionArtifactRef, ...] = ()
     exit_code: int | None = None
+    toolchain_runtime_identity: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4509,6 +4555,10 @@ class ExecutionEngine:
                     repository_scope_factory=None,
                 ).execute_sandbox_adapter_operation(operation, envelope)
         method = f"{operation.sdk_module}.{operation.function_name}"
+        self._verify_sandbox_adapter_input_artifacts(
+            operation,
+            sdk_method=method,
+        )
         params = envelope.get("adapter_params")
         if not isinstance(params, dict):
             raise PipelineSdkFailure(
@@ -4557,6 +4607,126 @@ class ExecutionEngine:
                 "selected_backend": operation.selected_backend,
             },
         )
+
+    def _verify_sandbox_adapter_input_artifacts(
+        self,
+        operation: ControlledOperation,
+        *,
+        sdk_method: str,
+    ) -> None:
+        artifact_ids = tuple(operation.input_artifact_ids)
+        artifact_digests = tuple(operation.input_artifact_digests)
+        if len(artifact_ids) != len(artifact_digests):
+            raise PipelineSdkFailure(
+                error_type="artifact_digest_mismatch",
+                message=(
+                    f"{sdk_method} approved input artifact IDs and digests do not "
+                    "have the same cardinality."
+                ),
+                hint="Recreate the controlled operation from current sealed artifact refs.",
+                stage="adapter_input_integrity",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"operation_id": operation.operation_id},
+            )
+        if not artifact_ids:
+            return
+
+        boundary = ArtifactBoundaryService(
+            self.repositories,
+            workspace_root=self.sandbox_workspace_root,
+            blob_store_root=self.artifact_blob_root,
+        )
+        for artifact_id, approved_digest in zip(
+            artifact_ids,
+            artifact_digests,
+            strict=True,
+        ):
+            artifact = self.repositories.artifacts.get(artifact_id)
+            if artifact is None or artifact.session_id != operation.session_id:
+                raise PipelineSdkFailure(
+                    error_type="artifact_not_available",
+                    message=(
+                        f"{sdk_method} approved input artifact {artifact_id!r} is "
+                        "not available in the operation session."
+                    ),
+                    hint="Use only current-session sealed artifacts in controlled operations.",
+                    stage="adapter_input_integrity",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "operation_id": operation.operation_id,
+                        "artifact_id": artifact_id,
+                    },
+                )
+            metadata = dict(artifact.metadata or {})
+            catalog_digest = str(
+                metadata.get("content_digest")
+                or metadata.get("tree_digest")
+                or metadata.get("source_tree_digest")
+                or ""
+            )
+            if not catalog_digest or catalog_digest != approved_digest:
+                raise PipelineSdkFailure(
+                    error_type="artifact_digest_mismatch",
+                    message=(
+                        f"{sdk_method} approved input digest does not match the "
+                        f"catalog digest for artifact {artifact_id!r}."
+                    ),
+                    hint="Re-stage the current sealed artifact and request a fresh approval.",
+                    stage="adapter_input_integrity",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "operation_id": operation.operation_id,
+                        "artifact_id": artifact_id,
+                        "approved_digest": approved_digest,
+                        "catalog_digest": catalog_digest or None,
+                    },
+                )
+            try:
+                materialized = boundary.materialize(
+                    session_id=operation.session_id,
+                    sandbox_workspace_id=operation.sandbox_workspace_id,
+                    artifact_id=artifact_id,
+                    mode="readonly",
+                )
+            except ArtifactBoundaryError as exc:
+                raise PipelineSdkFailure(
+                    error_type=exc.error_code,
+                    message=(
+                        f"{sdk_method} refused an input whose sealed artifact "
+                        "blob failed integrity verification."
+                    ),
+                    hint=exc.hint
+                    or "Quarantine the corrupted blob and recreate the artifact before retrying.",
+                    stage="adapter_input_integrity",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "operation_id": operation.operation_id,
+                        "artifact_id": artifact_id,
+                        **dict(exc.details),
+                    },
+                ) from exc
+            if materialized.artifact_digest != approved_digest:
+                raise PipelineSdkFailure(
+                    error_type="artifact_digest_mismatch",
+                    message=(
+                        f"{sdk_method} materialized input digest differs from its "
+                        "approved digest."
+                    ),
+                    hint="Recreate the controlled operation from current sealed artifact refs.",
+                    stage="adapter_input_integrity",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "operation_id": operation.operation_id,
+                        "artifact_id": artifact_id,
+                        "approved_digest": approved_digest,
+                        "materialized_digest": materialized.artifact_digest,
+                    },
+                )
 
     def fetch_sandbox_hpc_outputs(self, params: dict[str, Any]) -> dict[str, Any]:
         if self.repository_scope_factory is not None:
@@ -9225,6 +9395,11 @@ class ExecutionEngine:
             "summary": f"{method} placement operation succeeded",
             "warnings": [],
         }
+        toolchain_runtime_identity = result.get("toolchain_runtime_identity")
+        if isinstance(toolchain_runtime_identity, dict):
+            run_handle["toolchain_runtime_identity"] = dict(
+                toolchain_runtime_identity
+            )
         parsed_result = result.get("parsed_result")
         if isinstance(parsed_result, dict):
             result_summary = str(parsed_result.get("result_summary") or "")
@@ -9394,6 +9569,11 @@ class ExecutionEngine:
             "summary": None,
             "warnings": [],
         }
+        toolchain_runtime_identity = result.get("toolchain_runtime_identity")
+        if isinstance(toolchain_runtime_identity, dict):
+            run_handle["toolchain_runtime_identity"] = dict(
+                toolchain_runtime_identity
+            )
         parsed_result = result.get("parsed_result")
         if isinstance(parsed_result, dict):
             result_summary = str(parsed_result.get("result_summary") or "")
@@ -9632,12 +9812,24 @@ class ExecutionEngine:
         )
         self.repositories.runs.save(run)
         final_outcome = outcome
+        toolchain_runtime_identity = _project_toolchain_runtime_identity(
+            getattr(final_outcome, "toolchain_runtime_identity", None)
+            or final_outcome.raw_result.get("toolchain_runtime_identity"),
+            execution_mode=final_outcome.execution_mode,
+        )
+        safe_raw_result = dict(final_outcome.raw_result)
+        if toolchain_runtime_identity is None:
+            safe_raw_result.pop("toolchain_runtime_identity", None)
+        else:
+            safe_raw_result["toolchain_runtime_identity"] = dict(
+                toolchain_runtime_identity
+            )
         explicit_non_cutover_fixture = final_outcome.execution_mode in {
             "fixture_non_cutover",
             "simulation_non_cutover",
         } and bool(
-            final_outcome.raw_result.get("fixture")
-            or final_outcome.raw_result.get("simulation")
+            safe_raw_result.get("fixture")
+            or safe_raw_result.get("simulation")
         )
         allow_synthetic_missing = (
             allow_explicit_fixture_placeholders and explicit_non_cutover_fixture
@@ -9654,7 +9846,7 @@ class ExecutionEngine:
                 declared_outputs=declared_outputs,
                 request_metadata=metadata,
                 execution_artifacts=final_outcome.artifacts,
-                raw_result=final_outcome.raw_result,
+                raw_result=safe_raw_result,
                 allow_synthetic_missing=allow_synthetic_missing,
             )
             run = RunRecord(
@@ -9683,27 +9875,32 @@ class ExecutionEngine:
                 outcome=final_outcome,
                 artifact_refs=final_outcome.artifacts,
             )
-        return {
+        step_result = {
             "tool_id": handoff.catalog_tool_id,
             "run_id": run.run_id,
             "runner_run_id": run.runner_run_id,
             "status": run.status.value,
             "execution_mode": run.execution_mode,
             "exit_code": final_outcome.exit_code,
-            "error_code": final_outcome.raw_result.get("error_code"),
-            "stage": final_outcome.raw_result.get("stage"),
-            "raw_result": final_outcome.raw_result,
+            "error_code": safe_raw_result.get("error_code"),
+            "stage": safe_raw_result.get("stage"),
+            "raw_result": safe_raw_result,
             "parsed_result": None if parsed_result is None else parsed_result.to_dict(),
             "runner_result": {
-                "status": final_outcome.raw_result.get("status"),
-                "exit_code": final_outcome.raw_result.get("exit_code"),
-                "error_code": final_outcome.raw_result.get("error_code"),
-                "stage": final_outcome.raw_result.get("stage"),
-                "stdout": final_outcome.raw_result.get("stdout"),
-                "stderr": final_outcome.raw_result.get("stderr"),
-                "logs": final_outcome.raw_result.get("logs"),
+                "status": safe_raw_result.get("status"),
+                "exit_code": safe_raw_result.get("exit_code"),
+                "error_code": safe_raw_result.get("error_code"),
+                "stage": safe_raw_result.get("stage"),
+                "stdout": safe_raw_result.get("stdout"),
+                "stderr": safe_raw_result.get("stderr"),
+                "logs": safe_raw_result.get("logs"),
             },
         }
+        if toolchain_runtime_identity is not None:
+            step_result["toolchain_runtime_identity"] = dict(
+                toolchain_runtime_identity
+            )
+        return step_result
 
     def _run_pipeline_preprocess(
         self,
@@ -10064,6 +10261,9 @@ class ExecutionEngine:
         )
         self.repositories.runs.save(sandbox_run)
         pipeline = dict(self._require_input_payload(invocation).get("pipeline") or {})
+        persistable_artifacts = (
+            outcome.artifacts if outcome.status is RunStatus.SUCCEEDED else ()
+        )
         self._persist_artifacts(
             session_id=invocation.session_id,
             task_id=invocation.task_id,
@@ -10072,7 +10272,7 @@ class ExecutionEngine:
             run_id=sandbox_run.run_id,
             runner_run_id=sandbox_run.runner_run_id,
             created_at=now,
-            artifacts=outcome.artifacts,
+            artifacts=persistable_artifacts,
             request_metadata={
                 "pipeline_invocation_id": invocation.invocation_id,
                 "code_digest": pipeline.get("code_digest"),
@@ -10251,7 +10451,14 @@ class ExecutionEngine:
                 "execution_mode": outcome.execution_mode,
                 "remote_run_dir": outcome.remote_run_dir,
                 "exit_code": outcome.exit_code,
-                "raw_result": outcome.raw_result,
+                "raw_result": {
+                    **outcome.raw_result,
+                    **(
+                        {"artifacts": {}}
+                        if outcome.status is not RunStatus.SUCCEEDED
+                        else {}
+                    ),
+                },
             },
             "runs": [
                 run.to_dict()
@@ -10495,6 +10702,9 @@ class ExecutionEngine:
             )
             or {}
         )
+        persistable_artifacts = (
+            outcome.artifacts if outcome.status is RunStatus.SUCCEEDED else ()
+        )
         artifacts = self._persist_artifacts(
             session_id=invocation.session_id,
             task_id=invocation.task_id,
@@ -10502,7 +10712,7 @@ class ExecutionEngine:
             invocation_id=invocation.invocation_id,
             run_id=run.run_id,
             created_at=now,
-            artifacts=outcome.artifacts,
+            artifacts=persistable_artifacts,
             runner_run_id=run.runner_run_id,
             request_metadata=dict(request_runspec.get("metadata") or {}),
             expected_outputs=tuple(
@@ -10530,9 +10740,16 @@ class ExecutionEngine:
                         "remote_run_dir": outcome.remote_run_dir,
                         "exit_code": outcome.exit_code,
                         "artifacts": [
-                            artifact.to_dict() for artifact in outcome.artifacts
+                            artifact.to_dict() for artifact in persistable_artifacts
                         ],
-                        "raw_result": outcome.raw_result,
+                        "raw_result": {
+                            **outcome.raw_result,
+                            **(
+                                {"artifacts": {}}
+                                if outcome.status is not RunStatus.SUCCEEDED
+                                else {}
+                            ),
+                        },
                     },
                     "parsed_result": parsed_result.to_dict(),
                 },

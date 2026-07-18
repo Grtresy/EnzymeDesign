@@ -12,6 +12,18 @@ from openzyme_execution import map_runner_status_to_run_status
 from openzyme_runtime import LimiterRegistry
 
 
+_TOOLCHAIN_RUNTIME_IDENTITY = {
+    "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+    "attestation_scope": "same_ssh_login_shell_pre_exec",
+    "execution_mode": "ssh",
+    "tool_id": "bio_tools.mafft",
+    "adapter_id": "bio_tools.mafft",
+    "command_template_id": "bio_tools_mafft_sif_v1",
+    "runner_contract_digest": "sha256:" + "a" * 64,
+    "image_digest": "sha256:" + "b" * 64,
+}
+
+
 class FakeRunnerServer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -88,31 +100,93 @@ def test_hpc_runner_adapter_calls_real_boundary_shape_and_normalizes_output() ->
     assert outcome.artifacts[0].kind.value == "result"
 
 
-def test_hpc_runner_adapter_normalizes_unknown_tool_names_to_exec_run() -> None:
+def test_hpc_runner_adapter_projects_only_safe_ssh_toolchain_identity_fields() -> None:
+    adapter = HpcRunnerExecutionAdapter(server=FakeRunnerServer())
+
+    outcome = adapter._normalize_result(
+        {
+            "run_id": "run_001",
+            "selected_mode": "ssh",
+            "status": "completed",
+            "artifacts": {},
+            "toolchain_runtime_identity": {
+                **_TOOLCHAIN_RUNTIME_IDENTITY,
+                "sif_path": "/private/tool.sif",
+                "command": ["apptainer", "exec", "/private/tool.sif"],
+                "secret": "must-not-propagate",
+            },
+        }
+    )
+
+    assert outcome.toolchain_runtime_identity == _TOOLCHAIN_RUNTIME_IDENTITY
+    assert (
+        outcome.raw_result["toolchain_runtime_identity"]
+        == _TOOLCHAIN_RUNTIME_IDENTITY
+    )
+    assert set(outcome.raw_result["toolchain_runtime_identity"]) == set(
+        _TOOLCHAIN_RUNTIME_IDENTITY
+    )
+
+
+def test_hpc_runner_adapter_does_not_project_toolchain_identity_for_slurm() -> None:
+    adapter = HpcRunnerExecutionAdapter(server=FakeRunnerServer())
+
+    outcome = adapter._normalize_result(
+        {
+            "run_id": "run_001",
+            "selected_mode": "sbatch",
+            "status": "completed",
+            "artifacts": {},
+            "toolchain_runtime_identity": _TOOLCHAIN_RUNTIME_IDENTITY,
+        }
+    )
+
+    assert outcome.toolchain_runtime_identity is None
+    assert "toolchain_runtime_identity" not in outcome.raw_result
+
+
+def test_hpc_runner_adapter_does_not_project_failed_partial_artifacts() -> None:
+    adapter = HpcRunnerExecutionAdapter(server=FakeRunnerServer())
+
+    outcome = adapter._normalize_result(
+        {
+            "run_id": "run_failed",
+            "selected_mode": "ssh",
+            "status": "failed",
+            "artifacts": {
+                "bio_tools/mafft/alignment.fasta": (
+                    "/private/partial/alignment.fasta"
+                )
+            },
+        }
+    )
+
+    assert outcome.status is RunStatus.FAILED
+    assert outcome.artifacts == ()
+    assert outcome.raw_result["artifacts"] == {}
+    assert "/private/partial" not in str(outcome.raw_result)
+
+
+def test_hpc_runner_adapter_rejects_unknown_tool_names() -> None:
     server = FakeRunnerServer()
     adapter = HpcRunnerExecutionAdapter(server=server)
 
-    adapter.submit_execution(
-        "sess_001",
-        {
-            "tool_name": "protein_engineering_pipeline",
-            "runspec": {
-                "name": "pipeline-run",
-                "stage": "execution",
-                "command": ["echo", "ok"],
-                "execution_mode": "auto",
-                "metadata": {},
+    with pytest.raises(ValueError, match="unsupported execution tool"):
+        adapter.submit_execution(
+            "sess_001",
+            {
+                "tool_name": "protein_engineering_pipeline",
+                "runspec": {
+                    "name": "pipeline-run",
+                    "stage": "execution",
+                    "command": ["echo", "ok"],
+                    "execution_mode": "auto",
+                    "metadata": {},
+                },
             },
-        },
-    )
+        )
 
-    assert server.calls[0][0] == "exec.run"
-    sent_runspec = server.calls[0][1]["runspec"]
-    assert sent_runspec["metadata"]["openzyme"]["session_id"] == "sess_001"
-    assert (
-        sent_runspec["metadata"]["openzyme"]["requested_tool_name"]
-        == "protein_engineering_pipeline"
-    )
+    assert server.calls == []
 
 
 def test_hpc_runner_adapter_rejects_caller_supplied_run_id() -> None:

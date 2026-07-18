@@ -89,6 +89,15 @@ class PreflightChecker:
     ) -> list[dict[str, Any]]:
         descriptors: list[dict[str, Any]] = []
 
+        if spec.metadata.get("toolchain_runtime_request"):
+            descriptors.append(
+                {
+                    "kind": "binary",
+                    "path": self.config.execution.apptainer_executable,
+                    "severity": "error",
+                }
+            )
+
         # 1. Tool entrypoint (binary or SIF image) from preflight_hints in metadata.
         hints = (
             spec.metadata

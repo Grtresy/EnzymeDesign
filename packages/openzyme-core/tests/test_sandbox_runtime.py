@@ -21,6 +21,7 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
+from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
@@ -46,6 +47,32 @@ def _build_repositories() -> CoreRepositories:
 
 def _digest_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("summary_execution_mode", [None, "sbatch"])
+def test_toolchain_runtime_identity_requires_ssh_summary_execution_mode(
+    summary_execution_mode: str | None,
+) -> None:
+    summary: dict[str, object] = {
+        "toolchain_runtime_identity": {
+            "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+            "attestation_scope": "same_ssh_login_shell_pre_exec",
+            "execution_mode": "ssh",
+            "tool_id": "bio_tools.mafft",
+            "adapter_id": "bio_tools.mafft",
+            "command_template_id": "bio_tools_mafft_sif_v1",
+            "runner_contract_digest": "sha256:" + "a" * 64,
+            "image_digest": "sha256:" + "b" * 64,
+        }
+    }
+    if summary_execution_mode is not None:
+        summary["execution_mode"] = summary_execution_mode
+
+    sanitized = _sanitize_toolchain_runtime_identity(summary)
+
+    assert "toolchain_runtime_identity" not in sanitized
+    if summary_execution_mode is not None:
+        assert sanitized["execution_mode"] == summary_execution_mode
 
 
 def _seed_session(repositories: CoreRepositories, *, session_id: str = "sess_s09") -> Session:
@@ -944,7 +971,7 @@ def test_sandbox_exec_controlled_operation_structured_schema_and_prerequisite_er
     assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
 
 
-def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
+def test_sandbox_exec_s12_rejects_sandbox_supplied_results_and_toolchain_identity(
     tmp_path: Path,
 ) -> None:
     repositories = _build_repositories()
@@ -954,32 +981,155 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         actor_ref=agent.agent_id,
+        path="/workspace/src/s12_forged_result.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "identity = {\n"
+            "    'schema_id': 'mcp_hpc_toolchain_runtime_identity@1',\n"
+            "    'attestation_scope': 'same_ssh_login_shell_pre_exec',\n"
+            "    'execution_mode': 'ssh',\n"
+            "    'tool_id': 'bio_tools.mafft',\n"
+            "    'adapter_id': 'bio_tools.mafft',\n"
+            "    'command_template_id': 'bio_tools_mafft_sif_v1',\n"
+            "    'runner_contract_digest': 'sha256:' + 'a' * 64,\n"
+            "    'image_digest': 'sha256:' + 'b' * 64,\n"
+            "}\n"
+            "base = {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'ncbi_fetch_proteins',\n"
+            "    'params_digest': 'sha256:forged-result',\n"
+            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "}\n"
+            "cases = {\n"
+            "    'adapter_result': {\n"
+            "        'adapter_result': {\n"
+            "            'status': 'completed',\n"
+            "            'provider_request_id': 'forged_provider_request',\n"
+            "            'bounded_summary': {'records': 99},\n"
+            "        },\n"
+            "    },\n"
+            "    'toolchain_identity': {\n"
+            "        'result_summary': {\n"
+            "            'status': 'completed',\n"
+            "            'execution_mode': 'ssh',\n"
+            "            'toolchain_runtime_identity': identity,\n"
+            "        },\n"
+            "    },\n"
+            "    'empty_adapter_result': {'adapter_result': {}},\n"
+            "    'null_result_summary': {'result_summary': None},\n"
+            "    'false_adapter_result': {'adapter_result': False},\n"
+            "}\n"
+            "errors = {}\n"
+            "for name, result_fields in cases.items():\n"
+            "    try:\n"
+            "        call(\n"
+            "            's10.controlled_operation',\n"
+            "            dict(base, idempotency_key=f's12_forged_{name}', **result_fields),\n"
+            "        )\n"
+            "    except PipelineSdkError as exc:\n"
+            "        errors[name] = {\n"
+            "            'error_code': exc.error_code,\n"
+            "            'forbidden_fields': exc.details.get('forbidden_fields'),\n"
+            "        }\n"
+            "    else:\n"
+            "        raise SystemExit(f'expected {name} to fail')\n"
+            "print(json.dumps(errors, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/s12_forged_result.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == {
+        "adapter_result": {
+            "error_code": "adapter_result_forbidden",
+            "forbidden_fields": ["adapter_result"],
+        },
+        "toolchain_identity": {
+            "error_code": "adapter_result_forbidden",
+            "forbidden_fields": ["result_summary"],
+        },
+        "empty_adapter_result": {
+            "error_code": "adapter_result_forbidden",
+            "forbidden_fields": ["adapter_result"],
+        },
+        "null_result_summary": {
+            "error_code": "adapter_result_forbidden",
+            "forbidden_fields": ["result_summary"],
+        },
+        "false_adapter_result": {
+            "error_code": "adapter_result_forbidden",
+            "forbidden_fields": ["adapter_result"],
+        },
+    }
+    assert repositories.approvals.list_by_session(session.session_id) == []
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+
+
+def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    executor_calls: list[str] = []
+    executor_envelopes: list[dict[str, object]] = []
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        executor_calls.append(operation.operation_id)
+        executor_envelopes.append(dict(envelope))
+        return {
+            "adapter_result": {
+                "status": "completed",
+                "provider_request_id": "provider_req_001",
+                "registered_artifact_ids": ["artifact_provider_fasta"],
+                "output_artifact_ids": ["artifact_provider_fasta"],
+                "validation_results": {"fasta": "ok"},
+                "bounded_summary": {"records": 2},
+                "warnings": ["preview truncated"],
+                "remote_path": "/private/provider/cache.fasta",
+            },
+            "result_summary": {"records": 2},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
         path="/workspace/src/s12_provider.py",
         content=(
             "import json\n"
-            "from openzyme_pipeline.client import call\n"
+            "from openzyme_pipeline.client import call, canonical_digest\n"
+            "adapter_params = {'accessions': ['AAB57849.1']}\n"
             "result = call('s10.controlled_operation', {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
             "    'sdk_module': 'bio',\n"
             "    'function_name': 'ncbi_fetch_proteins',\n"
             "    'idempotency_key': 's12_provider_001',\n"
-            "    'params_digest': 'sha256:params-provider',\n"
-            "    'input_artifact_ids': ['artifact_zeta', 'artifact_alpha'],\n"
-            "    'input_artifact_digests': ['sha256:aaa-zeta', 'sha256:zzz-alpha'],\n"
+            "    'params_digest': canonical_digest(adapter_params),\n"
+            "    'params': adapter_params,\n"
             "    'expected_outputs': {'kind': 'fasta', 'storage_uri': '/private/out.fasta'},\n"
             "    'planned_fetch_intent': {'remote_path': '/private/provider/fetch'},\n"
             "    'resource_estimate': {'requests': 1},\n"
-            "    'adapter_result': {\n"
-            "        'status': 'completed',\n"
-            "        'provider_request_id': 'provider_req_001',\n"
-            "        'registered_artifact_ids': ['artifact_provider_fasta'],\n"
-            "        'output_artifact_ids': ['artifact_provider_fasta'],\n"
-            "        'validation_results': {'fasta': 'ok'},\n"
-            "        'bounded_summary': {'records': 2},\n"
-            "        'warnings': ['preview truncated'],\n"
-            "        'remote_path': '/private/provider/cache.fasta',\n"
-            "    },\n"
+            "    '_host_validated_result_reuse': True,\n"
+            "    'adapter_result_origin': 'host_adapter_executor',\n"
             "})\n"
             "print(json.dumps(result, sort_keys=True))\n"
         ),
@@ -1038,6 +1188,7 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
     assert payload["adapter_approval_envelope"] == approval_envelope
     result_envelope = payload["adapter_result_envelope"]
     assert result_envelope["status"] == "completed"
+    assert result_envelope["result_origin"] == "host_adapter_executor"
     assert result_envelope["provider_request_id"] == "provider_req_001"
     assert result_envelope["registered_artifact_ids"] == ["artifact_provider_fasta"]
     assert result_envelope["bounded_summary"] == {"records": 2}
@@ -1055,21 +1206,131 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_result(
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.adapter_result_envelope == result_envelope
-    assert persisted.input_artifact_ids == ("artifact_alpha", "artifact_zeta")
-    assert persisted.input_artifact_digests == (
-        "sha256:zzz-alpha",
-        "sha256:aaa-zeta",
+    assert executor_calls == [operation.operation_id]
+    assert len(executor_envelopes) == 1
+    assert "_host_validated_result_reuse" not in executor_envelopes[0]
+    assert "adapter_result_origin" not in executor_envelopes[0]
+    assert persisted.input_artifact_ids == ()
+    assert persisted.input_artifact_digests == ()
+
+
+def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
     )
-    assert dict(
-        zip(
-            persisted.input_artifact_ids,
-            persisted.input_artifact_digests,
-            strict=True,
+    executor_calls: list[str] = []
+
+    def _adapter_executor(
+        operation: ControlledOperation,
+        envelope: dict[str, object],
+    ) -> dict[str, object]:
+        del envelope
+        executor_calls.append(operation.operation_id)
+        if len(executor_calls) == 1:
+            return {
+                "adapter_result": {
+                    "status": "failed",
+                    "error": {
+                        "code": "provider_contract_failed",
+                        "message": "Provider response failed its contract.",
+                    },
+                },
+                "result_summary": {"status": "failed"},
+            }
+        return {
+            "adapter_result": {
+                "status": "succeeded",
+                "bounded_summary": {"status": "failed"},
+            },
+            "result_summary": {"status": "failed"},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_failed_host_result.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
+            "params = {'accessions': ['P12345']}\n"
+            "base = {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'uniprot_fetch',\n"
+            "    'params_digest': canonical_digest(params),\n"
+            "    'params': params,\n"
+            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "}\n"
+            "errors = []\n"
+            "for key in ('failed_status', 'inconsistent_summary'):\n"
+            "    try:\n"
+            "        call('s10.controlled_operation', dict(base, idempotency_key=key))\n"
+            "    except PipelineSdkError as exc:\n"
+            "        errors.append(exc.error_code)\n"
+            "    else:\n"
+            "        raise SystemExit('expected Host result failure')\n"
+            "print(json.dumps(errors))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s12_failed_host_result.py"],
+            timeout_seconds=10,
         )
-    ) == {
-        "artifact_alpha": "sha256:zzz-alpha",
-        "artifact_zeta": "sha256:aaa-zeta",
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    _resolve_s10_approval(
+        repositories,
+        pending.approval_id,
+        decision="approved",
+    )
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == [
+        "provider_contract_failed",
+        "adapter_result_inconsistent",
+    ]
+    operations = repositories.controlled_operations.list_by_session(
+        session.session_id
+    )
+    assert len(operations) == 2
+    assert all(
+        operation.status is ControlledOperationStatus.FAILED
+        for operation in operations
+    )
+    assert {operation.error_code for operation in operations} == {
+        "provider_contract_failed",
+        "adapter_result_inconsistent",
     }
+    assert all(operation.adapter_result_origin is None for operation in operations)
+    assert all(not operation.adapter_result_envelope for operation in operations)
+    assert len(repositories.approvals.list_by_session(session.session_id)) == 1
+    assert len(executor_calls) == 2
 
 
 def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(
@@ -1211,6 +1472,7 @@ def test_sandbox_exec_public_bio_sdk_uses_adapter_executor_after_approval(
     assert run.status is SandboxRunStatus.COMPLETED
     payload = json.loads(str(run.stdout_summary))
     assert payload["adapter_result_envelope"]["provider_request_id"] == "provider_req_core"
+    assert payload["adapter_result_envelope"]["result_origin"] == "host_adapter_executor"
     assert payload["adapter_result_envelope"]["registered_artifact_ids"] == ["artifact_provider_core"]
     assert calls == [
         {
@@ -1355,6 +1617,16 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
     adapter_calls: list[dict[str, object]] = []
     fetch_calls: list[dict[str, object]] = []
+    safe_toolchain_identity = {
+        "schema_id": "mcp_hpc_toolchain_runtime_identity@1",
+        "attestation_scope": "same_ssh_login_shell_pre_exec",
+        "execution_mode": "ssh",
+        "tool_id": "bio_tools.mafft",
+        "adapter_id": "bio_tools.mafft",
+        "command_template_id": "bio_tools_mafft_sif_v1",
+        "runner_contract_digest": "sha256:" + "a" * 64,
+        "image_digest": "sha256:" + "b" * 64,
+    }
 
     def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
         params = dict(envelope["adapter_params"])
@@ -1364,12 +1636,19 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
             "run_id": "run_hpc_core",
             "runner_run_id": "runner_hpc_core",
             "status": "succeeded",
+            "execution_mode": "ssh",
             "operation_id": operation.operation_id,
             "operation_digest": operation.operation_digest,
             "hpc_workspace_id": operation.hpc_workspace_id,
             "declared_outputs": list(params["expected_outputs"]),
             "summary": "bio_tools.mafft placement operation succeeded",
             "warnings": [],
+            "toolchain_runtime_identity": {
+                **safe_toolchain_identity,
+                "sif_path": "/private/tool.sif",
+                "command": ["apptainer", "exec", "/private/tool.sif"],
+                "secret": "must-not-propagate",
+            },
         }
         return {
             "adapter_result": {
@@ -1464,6 +1743,12 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     assert payload["run"]["kind"] == "hpc_run_handle"
     assert payload["run"]["run_id"] == "run_hpc_core"
     assert payload["run"]["operation_id"] == operation.operation_id
+    assert (
+        payload["run"]["toolchain_runtime_identity"]
+        == safe_toolchain_identity
+    )
+    assert "/private/tool.sif" not in json.dumps(payload["run"])
+    assert "must-not-propagate" not in json.dumps(payload["run"])
     assert payload["fetch"]["registered_artifact_ids"] == ["artifact_alignment_core"]
     assert adapter_calls[0]["operation_id"] == operation.operation_id
     assert fetch_calls[0]["operation_id"] == operation.operation_id
@@ -1471,9 +1756,20 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.status is ControlledOperationStatus.COMPLETED
+    assert persisted.result_summary is not None
+    assert (
+        persisted.result_summary["toolchain_runtime_identity"]
+        == safe_toolchain_identity
+    )
     assert persisted.adapter_result_envelope is not None
     assert persisted.adapter_result_envelope["registered_artifact_ids"] == ["artifact_alignment_core"]
     assert persisted.adapter_result_envelope["fetch_refs"][0]["fetch_ref_id"] == "fetch_alignment_core"
+    assert (
+        persisted.adapter_result_envelope["bounded_summary"][
+            "toolchain_runtime_identity"
+        ]
+        == safe_toolchain_identity
+    )
 
 
 def test_sandbox_exec_public_artifacts_hpc_and_bio_tools_sdk_use_control_socket(
@@ -1823,7 +2119,33 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        del operation, envelope
+        return {
+            "adapter_result": {
+                "status": "completed",
+                "backend_run_id": "slurm_123",
+                "fetch_refs": [
+                    {
+                        "fetch_ref_id": "fetch_alignment",
+                        "remote_path": "hpc://private/out",
+                    }
+                ],
+                "registered_artifact_ids": ["artifact_alignment"],
+                "validation_results": {"alignment": "ok"},
+                "bounded_summary": {"outputs": 1},
+            },
+            "result_summary": {"outputs": 1},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    input_digest = "sha256:" + "a" * 64
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1831,13 +2153,13 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
         path="/workspace/src/s12_hpc.py",
         content=(
             "import json\n"
-            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
             "stage_ref = {\n"
             "    'kind': 'hpc_stage_ref',\n"
             "    'stage_ref_id': 'stage_input_001',\n"
             "    'hpc_workspace_id': 'hpcws_s12',\n"
             "    'artifact_id': 'artifact_input_fasta',\n"
-            "    'artifact_digest': 'sha256:input-fasta',\n"
+            f"    'artifact_digest': '{input_digest}',\n"
             "    'workspace_relative_path': 'inputs/query.fasta',\n"
             "    'remote_path': 'hpc://private/input.fasta',\n"
             "}\n"
@@ -1847,14 +2169,16 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
             "    ],\n"
             "    'remote_path': 'hpc://private/run',\n"
             "}\n"
+            "adapter_params = {'input_fasta': stage_ref}\n"
             "base = {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio_tools.mafft.hpc:v1',\n"
             "    'sdk_module': 'bio_tools',\n"
             "    'function_name': 'mafft',\n"
-            "    'params_digest': 'sha256:hpc-params',\n"
+            "    'params_digest': canonical_digest(adapter_params),\n"
+            "    'params': adapter_params,\n"
             "    'input_artifact_ids': ['artifact_input_fasta'],\n"
-            "    'input_artifact_digests': ['sha256:input-fasta'],\n"
+            f"    'input_artifact_digests': ['{input_digest}'],\n"
             "    'expected_outputs': [{'path': 'outputs/alignment.fasta'}],\n"
             "    'resource_estimate': {'walltime_minutes': 5},\n"
             "}\n"
@@ -1880,6 +2204,33 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
             "    ))\n"
             "except PipelineSdkError as exc:\n"
             "    errors['bad_stage_path'] = exc.error_code\n"
+            "try:\n"
+            "    call('s10.controlled_operation', dict(\n"
+            "        base,\n"
+            "        idempotency_key='s12_hpc_empty_approved_inputs',\n"
+            "        placement='hpc',\n"
+            "        hpc_workspace_id='hpcws_s12',\n"
+            "        input_artifact_ids=[],\n"
+            "        input_artifact_digests=[],\n"
+            "        stage_refs=[stage_ref],\n"
+            "        planned_fetch_intent=fetch_intent,\n"
+            "    ))\n"
+            "except PipelineSdkError as exc:\n"
+            "    errors['empty_approved_inputs'] = exc.error_code\n"
+            "try:\n"
+            "    changed_params = {'input_fasta': dict(stage_ref, artifact_id='artifact_other')}\n"
+            "    call('s10.controlled_operation', dict(\n"
+            "        base,\n"
+            "        idempotency_key='s12_hpc_param_ref_mismatch',\n"
+            "        params=changed_params,\n"
+            "        params_digest=canonical_digest(changed_params),\n"
+            "        placement='hpc',\n"
+            "        hpc_workspace_id='hpcws_s12',\n"
+            "        stage_refs=[stage_ref],\n"
+            "        planned_fetch_intent=fetch_intent,\n"
+            "    ))\n"
+            "except PipelineSdkError as exc:\n"
+            "    errors['param_ref_mismatch'] = exc.error_code\n"
             "result = call('s10.controlled_operation', dict(\n"
             "    base,\n"
             "    idempotency_key='s12_hpc_valid',\n"
@@ -1887,14 +2238,6 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
             "    hpc_workspace_id='hpcws_s12',\n"
             "    stage_refs=[stage_ref],\n"
             "    planned_fetch_intent=fetch_intent,\n"
-            "    adapter_result={\n"
-            "        'status': 'completed',\n"
-            "        'backend_run_id': 'slurm_123',\n"
-            "        'fetch_refs': [{'fetch_ref_id': 'fetch_alignment', 'remote_path': 'hpc://private/out'}],\n"
-            "        'registered_artifact_ids': ['artifact_alignment'],\n"
-            "        'validation_results': {'alignment': 'ok'},\n"
-            "        'bounded_summary': {'outputs': 1},\n"
-            "    },\n"
             "))\n"
             "print(json.dumps({'errors': errors, 'result': result}, sort_keys=True))\n"
         ),
@@ -1928,7 +2271,7 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
             "stage_ref_id": "stage_input_001",
             "hpc_workspace_id": "hpcws_s12",
             "artifact_id": "artifact_input_fasta",
-            "artifact_digest": "sha256:input-fasta",
+            "artifact_digest": input_digest,
             "workspace_relative_path": "inputs/query.fasta",
         }
     ]
@@ -1948,7 +2291,9 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
     payload = json.loads(str(run.stdout_summary))
     assert payload["errors"] == {
         "bad_stage_path": "hpc_stage_path_invalid",
+        "empty_approved_inputs": "adapter_input_binding_mismatch",
         "missing_placement": "hpc_workspace_forbidden",
+        "param_ref_mismatch": "adapter_input_binding_mismatch",
     }
     result_envelope = payload["result"]["adapter_result_envelope"]
     assert result_envelope["backend_run_id"] == "slurm_123"
@@ -1960,12 +2305,31 @@ def test_sandbox_exec_s12_hpc_requires_explicit_placement_stage_and_fetch_intent
     assert operations[0].operation_id == operation.operation_id
 
 
-def test_sandbox_exec_s12_result_fields_do_not_affect_digest_but_prerun_fields_do(
+def test_sandbox_exec_s12_reuses_only_host_persisted_result_without_second_executor(
     tmp_path: Path,
 ) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
-    service = _service(repositories, workspace_root=workspace_root, log_root=tmp_path / "logs")
+    executor_calls: list[str] = []
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        del envelope
+        executor_calls.append(operation.operation_id)
+        return {
+            "adapter_result": {
+                "status": "completed",
+                "provider_request_id": "provider_req_host",
+                "bounded_summary": {"records": 1},
+            },
+            "result_summary": {"records": 1},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
     service.write_file(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
@@ -1973,37 +2337,37 @@ def test_sandbox_exec_s12_result_fields_do_not_affect_digest_but_prerun_fields_d
         path="/workspace/src/s12_drift.py",
         content=(
             "import json\n"
-            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
+            "adapter_params = {'accessions': ['P12345']}\n"
             "base = {\n"
             "    'schema_version': 's12.adapter_envelope.v1',\n"
             "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
             "    'sdk_module': 'bio',\n"
             "    'function_name': 'uniprot_fetch',\n"
-            "    'idempotency_key': 's12_digest_scope',\n"
-            "    'params_digest': 'sha256:params-a',\n"
-            "    'input_artifact_ids': ['artifact_query'],\n"
-            "    'input_artifact_digests': ['sha256:query'],\n"
+            "    'params_digest': canonical_digest(adapter_params),\n"
+            "    'params': adapter_params,\n"
             "    'expected_outputs': {'kind': 'fasta'},\n"
             "    'resource_estimate': {'requests': 1},\n"
             "}\n"
-            "first = call('s10.controlled_operation', dict(\n"
-            "    base,\n"
-            "    adapter_result={\n"
-            "        'status': 'completed',\n"
-            "        'provider_request_id': 'provider_req_first',\n"
-            "        'bounded_summary': {'records': 1},\n"
-            "    },\n"
-            "))\n"
-            "second = call('s10.controlled_operation', dict(\n"
-            "    base,\n"
-            "    adapter_result={\n"
-            "        'status': 'completed',\n"
-            "        'provider_request_id': 'provider_req_second',\n"
-            "        'bounded_summary': {'records': 99},\n"
-            "    },\n"
-            "))\n"
+            "first = call(\n"
+            "    's10.controlled_operation',\n"
+            "    dict(base, idempotency_key='s12_reuse_a'),\n"
+            ")\n"
+            "second = call(\n"
+            "    's10.controlled_operation',\n"
+            "    dict(base, idempotency_key='s12_reuse_b'),\n"
+            ")\n"
             "try:\n"
-            "    call('s10.controlled_operation', dict(base, params_digest='sha256:params-b'))\n"
+            "    changed_params = {'accessions': ['Q99999']}\n"
+            "    call(\n"
+            "        's10.controlled_operation',\n"
+            "        dict(\n"
+            "            base,\n"
+            "            idempotency_key='s12_reuse_a',\n"
+            "            params=changed_params,\n"
+            "            params_digest=canonical_digest(changed_params),\n"
+            "        ),\n"
+            "    )\n"
             "except PipelineSdkError as exc:\n"
             "    drift_error = exc.error_code\n"
             "else:\n"
@@ -2040,12 +2404,146 @@ def test_sandbox_exec_s12_result_fields_do_not_affect_digest_but_prerun_fields_d
     assert run.status is SandboxRunStatus.COMPLETED
     payload = json.loads(str(run.stdout_summary))
     assert payload["drift_error"] == "operation_drift_detected"
-    assert payload["first_operation"] == payload["second_operation"]
-    assert payload["second_provider_request_id"] == "provider_req_first"
+    assert payload["first_operation"] != payload["second_operation"]
+    assert payload["second_provider_request_id"] == "provider_req_host"
     operations = repositories.controlled_operations.list_by_run(run.sandbox_run_id)
-    assert len(operations) == 1
-    assert operations[0].adapter_result_envelope is not None
-    assert operations[0].adapter_result_envelope["provider_request_id"] == "provider_req_first"
+    assert len(operations) == 2
+    assert len(repositories.approvals.list_by_session(session.session_id)) == 1
+    assert executor_calls == [payload["first_operation"]]
+    assert {operation.operation_digest for operation in operations} == {
+        operations[0].operation_digest
+    }
+    for operation in operations:
+        assert operation.adapter_result_envelope is not None
+        assert operation.adapter_result_envelope["provider_request_id"] == "provider_req_host"
+        assert operation.adapter_result_envelope["result_origin"] == "host_adapter_executor"
+
+
+def test_sandbox_exec_s12_untrusted_legacy_result_requires_fresh_approval(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    executor_calls: list[str] = []
+
+    def _adapter_executor(operation: ControlledOperation, envelope: dict[str, object]) -> dict[str, object]:
+        del envelope
+        executor_calls.append(operation.operation_id)
+        request_id = f"provider_req_host_{len(executor_calls)}"
+        return {
+            "adapter_result": {
+                "status": "completed",
+                "provider_request_id": request_id,
+                "bounded_summary": {"records": 1},
+            },
+            "result_summary": {"records": 1},
+        }
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/s12_legacy_reuse.py",
+        content=(
+            "import json\n"
+            "import time\n"
+            "from openzyme_pipeline.client import call, canonical_digest\n"
+            "adapter_params = {'accessions': ['P12345']}\n"
+            "base = {\n"
+            "    'schema_version': 's12.adapter_envelope.v1',\n"
+            "    'route_policy_id': 'bio.uniprot_fetch.provider:v1',\n"
+            "    'sdk_module': 'bio',\n"
+            "    'function_name': 'uniprot_fetch',\n"
+            "    'params_digest': canonical_digest(adapter_params),\n"
+            "    'params': adapter_params,\n"
+            "    'expected_outputs': {'kind': 'fasta'},\n"
+            "    'resource_estimate': {'requests': 1},\n"
+            "}\n"
+            "first = call(\n"
+            "    's10.controlled_operation',\n"
+            "    dict(base, idempotency_key='s12_legacy_reuse_a'),\n"
+            ")\n"
+            "time.sleep(1.0)\n"
+            "try:\n"
+            "    call(\n"
+            "        's10.controlled_operation',\n"
+            "        dict(base, idempotency_key='s12_legacy_reuse_a'),\n"
+            "    )\n"
+            "except Exception as exc:\n"
+            "    same_key_error = getattr(exc, 'error_code', type(exc).__name__)\n"
+            "else:\n"
+            "    raise SystemExit('expected untrusted origin rejection')\n"
+            "fresh = call(\n"
+            "    's10.controlled_operation',\n"
+            "    dict(base, idempotency_key='s12_legacy_reuse_b'),\n"
+            ")\n"
+            "print(json.dumps({\n"
+            "    'first_provider_request_id': first['adapter_result_envelope']['provider_request_id'],\n"
+            "    'same_key_error': same_key_error,\n"
+            "    'fresh_provider_request_id': fresh['adapter_result_envelope']['provider_request_id'],\n"
+            "}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/s12_legacy_reuse.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    _resolve_s10_approval(repositories, pending.approval_id, decision="approved")
+
+    first_operation: ControlledOperation | None = None
+    for _ in range(100):
+        operations = repositories.controlled_operations.list_by_session(session.session_id)
+        if len(operations) == 1 and operations[0].status is ControlledOperationStatus.COMPLETED:
+            first_operation = operations[0]
+            break
+        time.sleep(0.01)
+    assert first_operation is not None
+    legacy_result = dict(first_operation.adapter_result_envelope or {})
+    assert legacy_result["result_origin"] == "host_adapter_executor"
+    repositories.controlled_operations.save(
+        # Simulate a pre-migration row whose caller-controlled JSON happens to
+        # contain the new marker.  Only the Host-owned column grants reuse.
+        replace(first_operation, adapter_result_origin=None)
+    )
+
+    fresh_approval = _wait_for_pending_approval(repositories, session.session_id)
+    assert fresh_approval.approval_id != pending.approval_id
+    _resolve_s10_approval(
+        repositories,
+        fresh_approval.approval_id,
+        decision="approved",
+    )
+
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED
+    assert json.loads(str(run.stdout_summary)) == {
+        "first_provider_request_id": "provider_req_host_1",
+        "same_key_error": "adapter_result_origin_untrusted",
+        "fresh_provider_request_id": "provider_req_host_2",
+    }
+    assert len(repositories.approvals.list_by_session(session.session_id)) == 2
+    assert len(executor_calls) == 2
 
 
 def test_sandbox_exec_controlled_operation_reuses_approved_digest_without_second_approval(

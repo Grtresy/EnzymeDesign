@@ -300,11 +300,16 @@ class SlurmRunner:
         squeue = self.command_runner.run(squeue_cmd, check=False)
         raw_state = squeue.stdout.strip()
 
-        if squeue.returncode == 0 and raw_state:
+        mapped_squeue_state = _map_slurm_state(raw_state)
+        if (
+            squeue.returncode == 0
+            and raw_state
+            and mapped_squeue_state in {"queued", "running"}
+        ):
             return JobStatus(
                 run_id=handle.run_id,
                 job_id=handle.job_id,
-                state=_map_slurm_state(raw_state),
+                state=mapped_squeue_state,
                 raw_state=raw_state,
             )
 
@@ -405,6 +410,23 @@ class SlurmRunner:
 
     def fetch_artifacts(self, spec: RunSpec, handle: JobHandle) -> RunResult:
         self._validate_handle(handle)
+        job_status = self.status(handle)
+        if job_status.state != "completed" or job_status.exit_code != 0:
+            active = job_status.state in {"queued", "running", "unknown"}
+            return RunResult(
+                run_id=handle.run_id,
+                requested_mode="sbatch",
+                selected_mode="sbatch",
+                remote_run_dir=handle.remote_run_dir,
+                status=job_status.state if active else "failed",
+                exit_code=job_status.exit_code,
+                job_id=handle.job_id,
+                error_code=(
+                    "JOB_NOT_TERMINAL" if active else "JOB_TERMINAL_FAILED"
+                ),
+                artifacts={},
+                metadata={"job_status": job_status.to_dict()},
+            )
         entries = self.staging.download_outputs(
             handle.run_id,
             spec.expected_outputs,
@@ -427,8 +449,11 @@ class SlurmRunner:
             for entry in entries
             if entry.get("returncode", 1) == 0
         }
+        if status != "completed":
+            artifacts = {}
 
         metadata = {
+            "job_status": job_status.to_dict(),
             "validation": {
                 "missing_outputs": missing_outputs,
                 "empty_outputs": empty_outputs,

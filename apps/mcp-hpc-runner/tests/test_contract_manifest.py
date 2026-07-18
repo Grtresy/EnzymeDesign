@@ -65,6 +65,43 @@ def test_hmmalign_contract_requires_model_and_input_fasta() -> None:
     ]
 
 
+def test_aox_sif_contracts_expose_canonical_command_template_ids() -> None:
+    contracts = {contract.tool_id: contract for contract in load_contract_manifest()}
+
+    assert {
+        tool_id: contracts[tool_id].command_template_id
+        for tool_id in (
+            "bio_tools.cdhit",
+            "bio_tools.mafft",
+            "bio_tools.hmmbuild",
+            "bio_tools.hmmalign",
+        )
+    } == {
+        "bio_tools.cdhit": "bio_tools_cdhit_sif_v2",
+        "bio_tools.mafft": "bio_tools_mafft_sif_v1",
+        "bio_tools.hmmbuild": "bio_tools_hmmbuild_sif_v1",
+        "bio_tools.hmmalign": "bio_tools_hmmalign_sif_v1",
+    }
+
+
+@pytest.mark.parametrize(
+    "tool_id",
+    [
+        "bio_tools.cdhit",
+        "bio_tools.mafft",
+        "bio_tools.hmmbuild",
+        "bio_tools.hmmalign",
+    ],
+)
+def test_contract_manifest_rejects_aox_command_template_drift(tool_id: str) -> None:
+    payload = json.loads(default_manifest_path().read_text(encoding="utf-8"))
+    tool = next(tool for tool in payload["tools"] if tool["tool_id"] == tool_id)
+    tool["command_template_id"] = "caller_controlled_template"
+
+    with pytest.raises(ContractManifestError, match="command_template_id must be"):
+        validate_contract_manifest(payload)
+
+
 def test_contract_manifest_rejects_duplicate_tool_ids() -> None:
     payload = {
         "schema_version": 1,
@@ -148,6 +185,54 @@ def test_smoke_runspec_generation_is_valid(tool_id: str) -> None:
     assert spec.metadata["tool_contract"]["tool_id"] == tool_id
     assert spec.metadata["tool_contract"]["preflight_hints"]["entrypoint"]["kind"] == "sif"
     assert spec.expected_outputs
+
+
+@pytest.mark.parametrize(
+    ("tool_id", "expected_sif", "expected_count"),
+    [
+        ("bio_tools.cdhit", "$HOME/containers/cd-hit_4.8.1.sif", 1),
+        ("bio_tools.mafft", "$HOME/containers/mafft_7.525.sif", 1),
+        ("bio_tools.hmmbuild", "$HOME/containers/hmmer_3.4.sif", 1),
+        ("bio_tools.hmmalign", "$HOME/containers/hmmer_3.4.sif", 2),
+    ],
+)
+def test_aox_smoke_commands_pin_runner_owned_sif_locator(
+    tool_id: str,
+    expected_sif: str,
+    expected_count: int,
+) -> None:
+    contract = next(
+        contract for contract in load_contract_manifest() if contract.tool_id == tool_id
+    )
+    spec = build_smoke_runspec(
+        contract,
+        _project_root() / "fixtures" / "hpc_tool_samples",
+        partition="cpu",
+    )
+    command = spec.command[2]
+
+    assert command.count(expected_sif) == expected_count
+    assert "CDHIT_SIF" not in command
+    assert "MAFFT_SIF" not in command
+    assert "HMMER_SIF" not in command
+
+
+def test_hmmalign_sbatch_smoke_does_not_claim_ssh_same_shell_identity() -> None:
+    contract = next(
+        contract
+        for contract in load_contract_manifest()
+        if contract.tool_id == "bio_tools.hmmalign"
+    )
+    spec = build_smoke_runspec(
+        contract,
+        _project_root() / "fixtures" / "hpc_tool_samples",
+        partition="cpu",
+    )
+
+    assert spec.execution_mode == "sbatch"
+    assert "toolchain_runtime_identity" not in spec.metadata
+    assert "toolchain_runtime_request" not in spec.metadata
+    assert "same_ssh_login_shell_pre_exec" not in json.dumps(spec.to_dict())
 
 
 def test_cdhit_smoke_runspec_normalizes_real_membership_and_marks_fixture() -> None:
