@@ -827,7 +827,22 @@ def safe_public_locator(value: str) -> str | None:
     address = _parsed_ip_address(hostname)
     if (
         hostname in {"localhost", "localhost.localdomain"}
-        or hostname.endswith((".localhost", ".local", ".internal"))
+        or hostname.endswith(
+            (
+                ".localhost",
+                ".local",
+                ".internal",
+                ".corp",
+                ".lan",
+                ".home.arpa",
+                ".cluster",
+                ".svc",
+                ".consul",
+                ".test",
+                ".invalid",
+                ".example",
+            )
+        )
         or (address is None and "." not in hostname)
     ):
         return None

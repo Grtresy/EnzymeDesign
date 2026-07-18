@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -17,11 +18,15 @@ from openzyme_core import SandboxRuntimeError
 from openzyme_core import SandboxRuntimeService
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import ToolInvocation
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
 from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
+from openzyme_core.sandbox_runtime import _structured_adapter_message
+from openzyme_core.sandbox_runtime import _tool_success
+from openzyme_core.sandbox_runtime import _ControlSocketServer
 from openzyme_domain import AgentMember
 from openzyme_domain import AgentMemberStatus
 from openzyme_domain import ApprovalRequest
@@ -47,6 +52,72 @@ def _build_repositories() -> CoreRepositories:
 
 def _digest_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def test_structured_adapter_message_rejects_private_machine_fields() -> None:
+    message = _structured_adapter_message(
+        {
+            "code": "/home/operator/private-code",
+            "stage": "sk-abcdefghijklmnop",
+            "summary": "failed at /scratch/slurm/job-001/stderr",
+            "details_ref": "storage://private/adapter.log",
+            "safe_diagnostics": {"host_path": "/custom/private"},
+        },
+        default_code="adapter_result_unsuccessful",
+    )
+
+    assert message == {
+        "code": "adapter_result_unsuccessful",
+        "stage": "adapter_result",
+        "retryable": False,
+        "summary": "failed at [redacted-host-path]",
+        "details_ref": "[redacted-private-locator]",
+        "safe_diagnostics": {},
+    }
+
+
+def test_control_socket_error_envelope_rejects_private_machine_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PrivateCodeError(RuntimeError):
+        error_code = "sk-abcdefghijklmnop"
+        hint = "inspect /tmp/private-hint"
+        details = {"host_path": "/custom/private"}
+
+    def fail_transport(
+        _server: _ControlSocketServer,
+        _request: dict[str, object],
+        _params: dict[str, object],
+    ) -> dict[str, object]:
+        raise PrivateCodeError("failed at /home/operator/private.sock")
+
+    monkeypatch.setattr(
+        _ControlSocketServer,
+        "_handle_transport_smoke",
+        fail_transport,
+    )
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "control.sock",
+        repositories=_build_repositories(),
+        session_id="sess_001",
+        sandbox_workspace_id="sw_001",
+        sandbox_run_id="srun_001",
+        agent_id="agent:executor",
+        source_snapshot_artifact_id="art_source",
+        source_tree_digest=_digest_text("source"),
+    )
+
+    response = server._handle(
+        {"jsonrpc": "2.0", "id": "call_1", "method": "s09.transport_smoke"}
+    )
+    serialized = json.dumps(response, sort_keys=True)
+
+    assert response["error"]["error_code"] == "sandbox_transport_error"
+    assert "/home/operator" not in serialized
+    assert "/tmp/private-hint" not in serialized
+    assert "sk-abcdefghijklmnop" not in serialized
+    assert "host_path" not in serialized
 
 
 @pytest.mark.parametrize("summary_execution_mode", [None, "sbatch"])
@@ -201,10 +272,15 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     assert run.status is SandboxRunStatus.COMPLETED
     artifacts = repositories.artifacts.list_by_session(session.session_id)
     result = next(item for item in artifacts if item.relative_path == "result.json")
+    source_snapshot = repositories.artifacts.get(
+        str(run.source_snapshot_artifact_id)
+    )
+    assert source_snapshot is not None
     assert workspace_root.resolve() in (
         workspace_root / workspace.sandbox_workspace_id
     ).resolve().parents
     assert blob_root.resolve() in Path(result.storage_uri).resolve().parents
+    assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
 
 
 def _wait_for_pending_approval(
@@ -457,6 +533,18 @@ def test_sandbox_exec_snapshots_source_and_allows_output_registration(tmp_path: 
     assert run.source_snapshot_artifact_id
     assert run.source_tree_digest
     assert run.stdout_summary == "ran\n"
+    assert run.stdout_metadata == {
+        "raw_digest": _digest_text("ran\n"),
+        "raw_size_bytes": 4,
+        "truncated": False,
+        "log_ref": None,
+    }
+    assert run.stderr_metadata == {
+        "raw_digest": _digest_text(""),
+        "raw_size_bytes": 0,
+        "truncated": False,
+        "log_ref": None,
+    }
     assert run.changed_files_summary
     assert "output/result.txt" in run.changed_files_summary["added"]
     refreshed = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
@@ -1095,11 +1183,19 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
                 "registered_artifact_ids": ["artifact_provider_fasta"],
                 "output_artifact_ids": ["artifact_provider_fasta"],
                 "validation_results": {"fasta": "ok"},
-                "bounded_summary": {"records": 2},
-                "warnings": ["preview truncated"],
+                "bounded_summary": {
+                    "records": 2,
+                    "diagnostic": "provider cache at /home/operator/private.fasta",
+                    "access_token": "raw-token",
+                },
+                "warnings": ["preview truncated at /tmp/provider/private.log"],
+                "safe_diagnostics_ref": "storage://private/provider.log",
                 "remote_path": "/private/provider/cache.fasta",
             },
-            "result_summary": {"records": 2},
+            "result_summary": {
+                "records": 2,
+                "message": "completed via /var/lib/provider/private",
+            },
         }
 
     service = _service(
@@ -1191,18 +1287,27 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
     assert result_envelope["result_origin"] == "host_adapter_executor"
     assert result_envelope["provider_request_id"] == "provider_req_001"
     assert result_envelope["registered_artifact_ids"] == ["artifact_provider_fasta"]
-    assert result_envelope["bounded_summary"] == {"records": 2}
+    assert result_envelope["bounded_summary"] == {
+        "records": 2,
+        "diagnostic": "provider cache at [redacted-host-path]",
+    }
+    assert result_envelope["safe_diagnostics_ref"] == "[redacted-private-locator]"
     assert result_envelope["warnings"] == [
         {
             "code": "adapter_warning",
             "stage": "adapter_result",
             "retryable": False,
-            "summary": "preview truncated",
+            "summary": "preview truncated at [redacted-host-path]",
             "details_ref": None,
             "safe_diagnostics": None,
         }
     ]
     assert "remote_path" not in json.dumps(result_envelope, sort_keys=True)
+    assert "raw-token" not in json.dumps(payload, sort_keys=True)
+    assert payload["result_summary"] == {
+        "records": 2,
+        "message": "completed via [redacted-host-path]",
+    }
     persisted = repositories.controlled_operations.get(operation.operation_id)
     assert persisted is not None
     assert persisted.adapter_result_envelope == result_envelope
@@ -1241,6 +1346,14 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
                 },
                 "result_summary": {"status": "failed"},
             }
+        if len(executor_calls) == 3:
+            return {
+                "adapter_result": {
+                    "status": "failed",
+                    "error_code": "/home/operator/private-error-code",
+                },
+                "result_summary": {"status": "failed"},
+            }
         return {
             "adapter_result": {
                 "status": "succeeded",
@@ -1275,7 +1388,7 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
             "    'resource_estimate': {'requests': 1},\n"
             "}\n"
             "errors = []\n"
-            "for key in ('failed_status', 'inconsistent_summary'):\n"
+            "for key in ('failed_status', 'inconsistent_summary', 'private_code'):\n"
             "    try:\n"
             "        call('s10.controlled_operation', dict(base, idempotency_key=key))\n"
             "    except PipelineSdkError as exc:\n"
@@ -1314,11 +1427,12 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
     assert json.loads(str(run.stdout_summary)) == [
         "provider_contract_failed",
         "adapter_result_inconsistent",
+        "adapter_result_unsuccessful",
     ]
     operations = repositories.controlled_operations.list_by_session(
         session.session_id
     )
-    assert len(operations) == 2
+    assert len(operations) == 3
     assert all(
         operation.status is ControlledOperationStatus.FAILED
         for operation in operations
@@ -1326,11 +1440,16 @@ def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
     assert {operation.error_code for operation in operations} == {
         "provider_contract_failed",
         "adapter_result_inconsistent",
+        "adapter_result_unsuccessful",
     }
     assert all(operation.adapter_result_origin is None for operation in operations)
     assert all(not operation.adapter_result_envelope for operation in operations)
     assert len(repositories.approvals.list_by_session(session.session_id)) == 1
-    assert len(executor_calls) == 2
+    assert len(executor_calls) == 3
+    assert "/home/operator" not in json.dumps(
+        [operation.to_dict() for operation in operations],
+        sort_keys=True,
+    )
 
 
 def test_sandbox_exec_public_bio_sdk_uses_s12_controlled_operation(
@@ -2759,8 +2878,8 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
         path="/workspace/src/fail.py",
         content=(
             "import sys\n"
-            "print('x' * 40000)\n"
-            "print('bad', file=sys.stderr)\n"
+            "print('/home/operator/private.log ' + 'x' * 40000)\n"
+            "print('/scratch/slurm/private.err ' + 'y' * 40000, file=sys.stderr)\n"
             "raise SystemExit(7)\n"
         ),
         create_dirs=True,
@@ -2776,7 +2895,113 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
     assert failed.exit_code == 7
     assert failed.error_code == "sandbox_exec_nonzero"
     assert failed.log_artifact_ref == f"sandbox-log://{failed.sandbox_run_id}/stdout"
-    assert len(repositories.command_log_artifacts.list_by_run(failed.sandbox_run_id)) == 1
+    log_records = repositories.command_log_artifacts.list_by_run(
+        failed.sandbox_run_id
+    )
+    assert len(log_records) == 2
+    log_records_by_stream = {record.stream: record for record in log_records}
+    log_root = tmp_path / "logs"
+    run_log_root = log_root / failed.sandbox_run_id
+    stdout_log = run_log_root / "stdout.log"
+    stderr_log = run_log_root / "stderr.log"
+    assert log_root.stat().st_mode & 0o777 == 0o700
+    assert run_log_root.stat().st_mode & 0o777 == 0o700
+    assert stdout_log.stat().st_mode & 0o777 == 0o600
+    assert stderr_log.stat().st_mode & 0o777 == 0o600
+    raw_stdout = stdout_log.read_bytes()
+    raw_stderr = stderr_log.read_bytes()
+    assert b"/home/operator/private.log" in raw_stdout
+    assert b"/scratch/slurm/private.err" in raw_stderr
+    assert log_records_by_stream["stdout"].size_bytes == len(raw_stdout)
+    assert log_records_by_stream["stdout"].content_digest == (
+        "sha256:" + hashlib.sha256(raw_stdout).hexdigest()
+    )
+    assert log_records_by_stream["stderr"].size_bytes == len(raw_stderr)
+    assert log_records_by_stream["stderr"].content_digest == (
+        "sha256:" + hashlib.sha256(raw_stderr).hexdigest()
+    )
+    assert all(record.truncated for record in log_records)
+    stdout_ref = f"sandbox-log://{failed.sandbox_run_id}/stdout"
+    stderr_ref = f"sandbox-log://{failed.sandbox_run_id}/stderr"
+    assert log_records_by_stream["stdout"].artifact_ref == stdout_ref
+    assert log_records_by_stream["stderr"].artifact_ref == stderr_ref
+    assert failed.log_artifact_ref == stdout_ref
+    assert failed.stdout_metadata == {
+        "raw_digest": "sha256:" + hashlib.sha256(raw_stdout).hexdigest(),
+        "raw_size_bytes": len(raw_stdout),
+        "truncated": True,
+        "log_ref": stdout_ref,
+    }
+    assert failed.stderr_metadata == {
+        "raw_digest": "sha256:" + hashlib.sha256(raw_stderr).hexdigest(),
+        "raw_size_bytes": len(raw_stderr),
+        "truncated": True,
+        "log_ref": stderr_ref,
+    }
+    assert "/home/operator/private.log" not in str(failed.stdout_summary)
+    assert "/scratch/slurm/private.err" not in str(failed.stderr_summary)
+
+    stored = repositories.sandbox_runs.get(failed.sandbox_run_id)
+    assert stored is not None
+    assert stored.stdout_metadata == failed.stdout_metadata
+    assert stored.stderr_metadata == failed.stderr_metadata
+    workspace_record = repositories.sandbox_workspaces.get(
+        workspace.sandbox_workspace_id
+    )
+    assert workspace_record is not None
+    assert workspace_record.last_command_summary is not None
+    assert workspace_record.last_command_summary["stdout_metadata"] == (
+        failed.stdout_metadata
+    )
+    assert workspace_record.last_command_summary["stderr_metadata"] == (
+        failed.stderr_metadata
+    )
+    tool_result = _tool_success(
+        ToolInvocation(
+            call_id="call_dual_stdio",
+            tool_name="sandbox.exec",
+            arguments={},
+        ),
+        failed.to_dict(),
+        status="sandbox_exec_finished",
+    )
+    tool_payload = json.loads(tool_result.content)
+    assert tool_payload["stdout_metadata"] == failed.stdout_metadata
+    assert tool_payload["stderr_metadata"] == failed.stderr_metadata
+    assert tool_result.envelope()["payload"] == tool_payload
+
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/invalid_utf8.py",
+        content=(
+            "import os\n"
+            "os.write(1, b'\\xff' * 40000)\n"
+            "raise SystemExit(9)\n"
+        ),
+        create_dirs=True,
+    )
+    invalid_utf8 = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/invalid_utf8.py"],
+    )
+    invalid_records = repositories.command_log_artifacts.list_by_run(
+        invalid_utf8.sandbox_run_id
+    )
+    invalid_raw = (
+        log_root / invalid_utf8.sandbox_run_id / "stdout.log"
+    ).read_bytes()
+    assert invalid_utf8.status is SandboxRunStatus.FAILED
+    assert invalid_raw == b"\xff" * 40000
+    assert invalid_records[0].size_bytes == 40000
+    assert invalid_records[0].content_digest == (
+        "sha256:" + hashlib.sha256(invalid_raw).hexdigest()
+    )
+    assert "�" in str(invalid_utf8.stdout_summary)
+    assert len(str(invalid_utf8.stdout_summary).encode("utf-8")) <= 32 * 1024
 
     service.write_file(
         session_id=session.session_id,
@@ -2795,6 +3020,20 @@ def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None
     )
     assert timed_out.status is SandboxRunStatus.TIMEOUT
     assert timed_out.error_code == "sandbox_exec_timeout"
+
+
+def test_sandbox_command_log_root_rejects_symlink(tmp_path: Path) -> None:
+    repositories = _build_repositories()
+    target = tmp_path / "log-target"
+    target.mkdir()
+    log_root = tmp_path / "logs"
+    log_root.symlink_to(target, target_is_directory=True)
+    service = SandboxRuntimeService(repositories, log_root=log_root)
+
+    with pytest.raises(SandboxRuntimeError) as error:
+        service._log_root()
+
+    assert error.value.error_code == "sandbox_log_boundary_invalid"
 
 
 def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2856,6 +3095,147 @@ def test_sandbox_exec_podman_backend_uses_isolation_policy(tmp_path: Path, monke
     assert run.compatibility is not None
     assert run.compatibility["pipeline_sdk_digest"].startswith("sha256:")
     assert run.compatibility["runtime_identity_digest"].startswith("sha256:")
+
+
+def test_sandbox_exec_rejects_missing_ready_workspace_layout_before_snapshot(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/script.py",
+        content="print('must not run')\n",
+        create_dirs=True,
+    )
+    (workspace_root / workspace.sandbox_workspace_id / "input").rmdir()
+
+    with pytest.raises(SandboxRuntimeError) as error:
+        service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/script.py"],
+        )
+
+    assert error.value.error_code == "sandbox_volume_corrupt"
+    assert error.value.details == {
+        "missing_directories": ["input"],
+        "invalid_directories": [],
+    }
+    assert str(workspace_root) not in str(error.value)
+    assert repositories.sandbox_runs.list_by_workspace(workspace.sandbox_workspace_id) == []
+    assert repositories.artifacts.list_by_session(session.session_id) == []
+
+
+def test_sandbox_file_write_does_not_repair_missing_workspace_layout(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+    )
+    missing = workspace_root / workspace.sandbox_workspace_id / "src"
+    missing.rmdir()
+
+    with pytest.raises(SandboxRuntimeError) as error:
+        service.write_file(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            actor_ref=agent.agent_id,
+            path="/workspace/src/repaired.py",
+            content="print('must not be created')\n",
+            create_dirs=True,
+        )
+
+    assert error.value.error_code == "sandbox_volume_corrupt"
+    assert not missing.exists()
+
+
+def test_sandbox_exec_redacts_host_paths_before_persisting_stdio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = SandboxRuntimeService(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "blobs",
+        log_root=tmp_path / "logs",
+        execution_backend="podman",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/podman.py",
+        content="print('must not run')\n",
+        create_dirs=True,
+    )
+    workspace_path = workspace_root / workspace.sandbox_workspace_id
+    monkeypatch.setattr("shutil.which", lambda binary: f"/usr/bin/{binary}")
+
+    def fake_active_timeout(
+        self: SandboxRuntimeService,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int,
+        sandbox_run_id: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del self, cwd, env, timeout_seconds
+        socket_path = Path(tempfile.gettempdir()) / f"oz-{sandbox_run_id}.sock"
+        return subprocess.CompletedProcess(
+            command,
+            125,
+            stdout=f"cwd={workspace_path}/src\n",
+            stderr=(
+                f"Error: statfs {workspace_path}/input: missing\n"
+                f"socket={socket_path}\n"
+                "config=/home/operator/private/config.toml\n"
+            ),
+        )
+
+    monkeypatch.setattr(
+        SandboxRuntimeService,
+        "_run_process_with_active_timeout",
+        fake_active_timeout,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/podman.py"],
+    )
+
+    assert run.status is SandboxRunStatus.FAILED
+    assert run.stdout_summary == "cwd=/workspace/src\n"
+    assert "/workspace/input" in str(run.stderr_summary)
+    assert "/openzyme/control.sock" in str(run.stderr_summary)
+    assert "[redacted-host-path]" in str(run.stderr_summary)
+    serialized = json.dumps(run.to_dict(), sort_keys=True)
+    assert str(tmp_path) not in serialized
+    assert "/home/operator" not in serialized
+    stored = repositories.sandbox_runs.get(run.sandbox_run_id)
+    assert stored is not None
+    assert stored.stderr_summary == run.stderr_summary
+    refreshed = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    assert refreshed is not None
+    assert refreshed.last_command_summary is not None
+    assert refreshed.last_command_summary["stderr_summary"] == run.stderr_summary
 
 
 def test_sandbox_exec_podman_rejects_non_immutable_image_identity(tmp_path: Path) -> None:

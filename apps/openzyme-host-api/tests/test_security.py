@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from fastapi.testclient import TestClient
+import pytest
 
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
@@ -12,6 +13,7 @@ from openzyme_host_api import HostPrincipal
 from openzyme_host_api import HostSecurityPolicy
 from openzyme_host_api import build_local_eval_foundation
 from openzyme_host_api import create_app
+from openzyme_host_api.app import _api_error_payload
 from openzyme_runtime import get_llm_debug_recorder
 
 
@@ -241,3 +243,42 @@ def test_shared_debug_surface_is_disabled_or_operator_only_and_sanitized() -> No
         assert record["base_url"] == "https://example.test/v1"
         assert record["request"]["input_path"] == "[HOST_PATH]"
         assert record["response"]["content"] == "result at [HOST_PATH]"
+
+
+def test_public_api_error_payload_sanitizes_private_diagnostics() -> None:
+    payload = _api_error_payload(
+        code="internal_error",
+        message="failed at /home/operator/private.toml",
+        hint="inspect storage://private/error-log",
+        details={
+            "access_token": "raw-token",
+            "reason": "socket at /tmp/openzyme/private.sock",
+        },
+    )
+    serialized = str(payload)
+
+    assert "/home/operator" not in serialized
+    assert "/tmp/openzyme" not in serialized
+    assert "storage://" not in serialized
+    assert "raw-token" not in serialized
+    assert "access_token" not in serialized
+
+
+@pytest.mark.parametrize(
+    "private_code",
+    (
+        "/home/operator/private-code",
+        "sk-abcdefghijklmnop",
+        "AKIAABCDEFGHIJKLMNOP",
+    ),
+)
+def test_public_api_error_payload_rejects_private_machine_code(
+    private_code: str,
+) -> None:
+    payload = _api_error_payload(
+        code=private_code,
+        message="request failed",
+    )
+
+    assert payload["error"]["code"] == "internal_error"
+    assert private_code not in str(payload)

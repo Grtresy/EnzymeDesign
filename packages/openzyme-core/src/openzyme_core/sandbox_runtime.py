@@ -35,6 +35,9 @@ from openzyme_domain import SandboxWorkspaceStatus
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import S12_ROUTE_POLICIES
+from openzyme_runtime import safe_public_machine_identifier
+from openzyme_runtime import sanitize_public_diagnostic_payload
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .artifact_boundary import ArtifactBoundaryError
 from .artifact_boundary import ArtifactBoundaryService
@@ -47,6 +50,7 @@ from .sandbox_workspace import SANDBOX_PROTOCOL_VERSION
 from .sandbox_workspace import SANDBOX_WORKSPACE_MANIFEST_VERSION
 from .sandbox_workspace import DEFAULT_SANDBOX_QUOTA_BYTES
 from .sandbox_workspace import SandboxWorkspaceService
+from .sandbox_workspace import WORKSPACE_DIRECTORIES
 from .sandbox_workspace import summarize_workspace_directory
 
 
@@ -254,26 +258,37 @@ def _structured_adapter_message(value: Any, *, default_code: str) -> dict[str, A
         return None
     if isinstance(value, dict):
         message = dict(_scrub_private_adapter_payload(value))
-        code = str(
+        code = safe_public_machine_identifier(
             message.get("code")
             or message.get("error_code")
-            or message.get("warning_code")
-            or default_code
+            or message.get("warning_code"),
+            fallback=default_code,
         )
-        summary = str(message.get("summary") or message.get("message") or code)
+        summary = sanitize_public_diagnostic_text(
+            message.get("summary") or message.get("message") or code
+        )
         return {
             "code": code,
-            "stage": str(message.get("stage") or "adapter_result"),
+            "stage": safe_public_machine_identifier(
+                message.get("stage"),
+                fallback="adapter_result",
+            ),
             "retryable": bool(message.get("retryable", False)),
             "summary": summary,
-            "details_ref": message.get("details_ref"),
-            "safe_diagnostics": message.get("safe_diagnostics"),
+            "details_ref": (
+                None
+                if message.get("details_ref") is None
+                else sanitize_public_diagnostic_text(message["details_ref"])
+            ),
+            "safe_diagnostics": sanitize_public_diagnostic_payload(
+                message.get("safe_diagnostics")
+            ),
         }
     return {
         "code": default_code,
         "stage": "adapter_result",
         "retryable": False,
-        "summary": str(value),
+        "summary": sanitize_public_diagnostic_text(value),
         "details_ref": None,
         "safe_diagnostics": None,
     }
@@ -360,7 +375,26 @@ def _bounded_text(value: str, *, limit: int = STDIO_INLINE_LIMIT) -> tuple[str, 
     digest = _sha256_bytes(encoded)
     if len(encoded) <= limit:
         return value, False, len(encoded), digest
-    return encoded[:limit].decode("utf-8", errors="replace"), True, len(encoded), digest
+    bounded = encoded[:limit].decode("utf-8", errors="replace")
+    while len(bounded.encode("utf-8")) > limit:
+        bounded = bounded[:-1]
+    return bounded, True, len(encoded), digest
+
+
+def _public_sandbox_stdio(
+    value: str,
+    *,
+    workspace_path: Path,
+    socket_path: Path,
+) -> str:
+    replacements = (
+        (str(workspace_path.resolve()), WORKSPACE_ROOT.as_posix()),
+        (str(socket_path.resolve()), "/openzyme/control.sock"),
+    )
+    return sanitize_public_diagnostic_text(
+        value,
+        path_replacements=replacements,
+    )
 
 
 def _safe_log_ref(sandbox_run_id: str, stream: str) -> str:
@@ -545,11 +579,21 @@ class _ControlSocketServer:
                 "jsonrpc": "2.0",
                 "id": request.get("id"),
                 "error": {
-                    "message": str(exc),
-                    "type": exc.__class__.__name__,
-                    "error_code": getattr(exc, "error_code", None),
-                    "hint": getattr(exc, "hint", None),
-                    "details": getattr(exc, "details", None),
+                    "message": sanitize_public_diagnostic_text(str(exc)),
+                    "type": safe_public_machine_identifier(
+                        exc.__class__.__name__,
+                        fallback="Exception",
+                    ),
+                    "error_code": safe_public_machine_identifier(
+                        getattr(exc, "error_code", None),
+                        fallback="sandbox_transport_error",
+                    ),
+                    "hint": sanitize_public_diagnostic_text(
+                        getattr(exc, "hint", None) or ""
+                    ),
+                    "details": sanitize_public_diagnostic_payload(
+                        getattr(exc, "details", None)
+                    ),
                 },
             }
 
@@ -1554,7 +1598,14 @@ class _ControlSocketServer:
     def _adapter_result_envelope(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
         if operation.adapter_envelope_schema_version != S12_ADAPTER_ENVELOPE_SCHEMA:
             return {}
-        adapter_result = dict(_scrub_private_adapter_payload(envelope.get("adapter_result") or {}))
+        scrubbed_adapter_result = sanitize_public_diagnostic_payload(
+            _scrub_private_adapter_payload(envelope.get("adapter_result") or {})
+        )
+        adapter_result = (
+            dict(scrubbed_adapter_result)
+            if isinstance(scrubbed_adapter_result, dict)
+            else {}
+        )
         forbidden_pre_run_keys = {
             "sdk_module",
             "function_name",
@@ -1577,7 +1628,13 @@ class _ControlSocketServer:
             or {}
         )
         bounded_summary = (
-            _sanitize_toolchain_runtime_identity(dict(raw_bounded_summary))
+            _sanitize_toolchain_runtime_identity(
+                dict(
+                    sanitize_public_diagnostic_payload(raw_bounded_summary)
+                    if isinstance(raw_bounded_summary, dict)
+                    else {}
+                )
+            )
             if isinstance(raw_bounded_summary, dict)
             else {}
         )
@@ -1649,8 +1706,13 @@ class _ControlSocketServer:
             envelope,
             continuation_id=continuation_id,
         )
+        safe_result_summary = sanitize_public_diagnostic_payload(
+            envelope.get("result_summary") or {"status": "completed"}
+        )
         result_summary = _sanitize_toolchain_runtime_identity(
-            dict(envelope.get("result_summary") or {"status": "completed"})
+            dict(safe_result_summary)
+            if isinstance(safe_result_summary, dict)
+            else {"status": "completed"}
         )
         completed = replace(
             operation,
@@ -1765,12 +1827,12 @@ class _ControlSocketServer:
                 raw_adapter_error,
                 default_code="adapter_result_unsuccessful",
             )
-            error_code = str(
+            error_code = safe_public_machine_identifier(
                 (structured_error or {}).get("code")
-                or raw_adapter_error_code
-                or "adapter_result_unsuccessful"
-            )
-            error_summary = str(
+                or raw_adapter_error_code,
+                fallback="adapter_result_unsuccessful",
+            ) or "adapter_result_unsuccessful"
+            error_summary = sanitize_public_diagnostic_text(
                 (structured_error or {}).get("summary")
                 or f"Host adapter executor returned non-success status {adapter_status or '<missing>'}."
             )
@@ -1823,19 +1885,33 @@ class _ControlSocketServer:
                 "Host adapter executor returned inconsistent result status.",
                 details={"operation_id": operation.operation_id},
             )
+        safe_adapter_result = sanitize_public_diagnostic_payload(adapter_result)
+        safe_result_summary = sanitize_public_diagnostic_payload(result_summary)
         return {
             **envelope,
-            "adapter_result": dict(adapter_result),
-            "result_summary": dict(result_summary),
+            "adapter_result": (
+                dict(safe_adapter_result)
+                if isinstance(safe_adapter_result, dict)
+                else {}
+            ),
+            "result_summary": (
+                dict(safe_result_summary)
+                if isinstance(safe_result_summary, dict)
+                else {"status": "completed"}
+            ),
         }
 
     def _adapter_execution_error(self, exc: Exception) -> tuple[str, str, str | None, dict[str, Any]]:
-        error_code = str(
+        error_code = safe_public_machine_identifier(
             getattr(exc, "error_code", None)
-            or getattr(exc, "error_type", None)
-            or "adapter_execution_failed"
+            or getattr(exc, "error_type", None),
+            fallback="adapter_execution_failed",
         )
-        error_summary = str(getattr(exc, "message", None) or str(exc) or "Host adapter execution failed.")
+        error_summary = sanitize_public_diagnostic_text(
+            getattr(exc, "message", None)
+            or str(exc)
+            or "Host adapter execution failed."
+        )
         hint = getattr(exc, "hint", None)
         details = getattr(exc, "details", None)
         safe_details = dict(details) if isinstance(details, dict) else {}
@@ -1845,8 +1921,15 @@ class _ControlSocketServer:
             safe_details["stage"] = str(stage)
         if retryable is not None:
             safe_details["retryable"] = bool(retryable)
-        scrubbed = _scrub_private_adapter_payload(safe_details)
-        return error_code, error_summary, None if hint is None else str(hint), dict(scrubbed) if isinstance(scrubbed, dict) else {}
+        scrubbed = sanitize_public_diagnostic_payload(
+            _scrub_private_adapter_payload(safe_details)
+        )
+        return (
+            error_code,
+            error_summary,
+            None if hint is None else sanitize_public_diagnostic_text(hint),
+            dict(scrubbed) if isinstance(scrubbed, dict) else {},
+        )
 
     def _resume_or_return(self, operation: ControlledOperation, envelope: dict[str, Any]) -> dict[str, Any]:
         if operation.status is ControlledOperationStatus.COMPLETED:
@@ -1887,6 +1970,11 @@ class _ControlSocketServer:
         error_code: str,
         error_summary: str,
     ) -> None:
+        error_code = safe_public_machine_identifier(
+            error_code,
+            fallback="adapter_execution_failed",
+        ) or "adapter_execution_failed"
+        error_summary = sanitize_public_diagnostic_text(error_summary)
         if continuation_id is not None:
             self._fail_claimed_operation(
                 operation,
@@ -1913,6 +2001,11 @@ class _ControlSocketServer:
         error_code: str,
         error_summary: str,
     ) -> None:
+        error_code = safe_public_machine_identifier(
+            error_code,
+            fallback="adapter_execution_failed",
+        ) or "adapter_execution_failed"
+        error_summary = sanitize_public_diagnostic_text(error_summary)
         failed = replace(
             operation,
             status=ControlledOperationStatus.FAILED,
@@ -2030,7 +2123,8 @@ class _ControlSocketServer:
                     "adapter_result_envelope": operation.adapter_result_envelope or {},
                 }
             )
-        return response
+        sanitized = sanitize_public_diagnostic_payload(response)
+        return dict(sanitized) if isinstance(sanitized, dict) else {}
 
 
 @dataclass(slots=True)
@@ -2117,6 +2211,7 @@ class SandboxRuntimeService:
         recursive: bool = False,
     ) -> dict[str, Any]:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         workspace_path = self._workspace_path(workspace.sandbox_workspace_id)
         public_path = _public_path(path, default=WORKSPACE_ROOT)
         host_path = _resolve_host_path(workspace_path, public_path, allow_workspace_root=True)
@@ -2168,6 +2263,7 @@ class SandboxRuntimeService:
         limit: int = READ_DEFAULT_LIMIT,
     ) -> dict[str, Any]:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         limit = self._bounded_read_limit(limit)
         if offset < 0:
             raise SandboxRuntimeError("sandbox_read_limit_exceeded", "offset must be non-negative")
@@ -2216,6 +2312,7 @@ class SandboxRuntimeService:
     ) -> dict[str, Any]:
         self._ensure_no_active_run(sandbox_workspace_id)
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         encoded = content.encode("utf-8")
         if len(encoded) > WRITE_MAX_BYTES:
             raise SandboxRuntimeError("sandbox_resource_exceeded", "sandbox.file.write content exceeds 256KiB")
@@ -2265,6 +2362,7 @@ class SandboxRuntimeService:
     ) -> dict[str, Any]:
         self._ensure_no_active_run(sandbox_workspace_id)
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         public_path, host_path = self._regular_file_target(workspace, path)
         if not host_path.is_file():
             raise SandboxRuntimeError("sandbox_path_forbidden", "patch target must be an existing regular file")
@@ -2309,6 +2407,7 @@ class SandboxRuntimeService:
     ) -> dict[str, Any]:
         self._ensure_no_active_run(sandbox_workspace_id)
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         public_path, host_path = self._regular_file_target(workspace, path)
         if not host_path.is_file():
             raise SandboxRuntimeError("sandbox_path_forbidden", "delete target must be an existing regular file")
@@ -2350,6 +2449,7 @@ class SandboxRuntimeService:
         user_env = self._validate_user_env(env or {})
         cwd_public = _public_path(cwd, default=WORKSPACE_ROOT)
         workspace_path = self._workspace_path(sandbox_workspace_id)
+        self._assert_workspace_layout(sandbox_workspace_id)
         cwd_host = _resolve_host_path(workspace_path, cwd_public, allow_workspace_root=True)
         if not cwd_host.is_dir():
             raise SandboxRuntimeError("sandbox_path_forbidden", "cwd must be a directory under /workspace")
@@ -2413,7 +2513,7 @@ class SandboxRuntimeService:
             hpc_fetch_executor=self.hpc_fetch_executor,
             repository_scope_factory=self.repository_scope_factory,
         )
-        completed: subprocess.CompletedProcess[str] | None = None
+        completed: subprocess.CompletedProcess[bytes | str] | None = None
         started = time.monotonic()
         try:
             server.start()
@@ -2444,8 +2544,8 @@ class SandboxRuntimeService:
             duration_ms = int((time.monotonic() - started) * 1000)
             return self._finish_run(
                 run,
-                stdout=(exc.stdout or "") if isinstance(exc.stdout, str) else "",
-                stderr=(exc.stderr or "") if isinstance(exc.stderr, str) else "",
+                stdout=exc.stdout if isinstance(exc.stdout, (bytes, str)) else b"",
+                stderr=exc.stderr if isinstance(exc.stderr, (bytes, str)) else b"",
                 exit_code=None,
                 duration_ms=duration_ms,
                 pre_summary=pre_summary,
@@ -2478,11 +2578,16 @@ class SandboxRuntimeService:
         if active is None:
             return []
         now = utc_now_iso()
+        public_reason = _public_sandbox_stdio(
+            reason,
+            workspace_path=self._workspace_path(sandbox_workspace_id),
+            socket_path=Path(tempfile.gettempdir()) / f"oz-{active.sandbox_run_id}.sock",
+        )
         failed = replace(
             active,
             status=SandboxRunStatus.FAILED,
             error_code="sandbox_run_recovery_failed",
-            stderr_summary=reason,
+            stderr_summary=public_reason,
             ended_at=now,
             updated_at=now,
         )
@@ -2493,30 +2598,62 @@ class SandboxRuntimeService:
         self,
         run: SandboxRunRecord,
         *,
-        stdout: str,
-        stderr: str,
+        stdout: bytes | str,
+        stderr: bytes | str,
         exit_code: int | None,
         duration_ms: int,
         pre_summary: dict[str, Any],
         forced_status: SandboxRunStatus | None = None,
         error_code: str | None = None,
     ) -> SandboxRunRecord:
-        stdout_summary, stdout_truncated, stdout_size, stdout_digest = _bounded_text(stdout)
-        stderr_summary, stderr_truncated, stderr_size, stderr_digest = _bounded_text(stderr)
-        log_refs = []
+        stdout_bytes = stdout if isinstance(stdout, bytes) else stdout.encode("utf-8")
+        stderr_bytes = stderr if isinstance(stderr, bytes) else stderr.encode("utf-8")
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+        workspace_path = self._workspace_path(run.sandbox_workspace_id)
+        socket_path = Path(tempfile.gettempdir()) / f"oz-{run.sandbox_run_id}.sock"
+        public_stdout = _public_sandbox_stdio(
+            stdout_text,
+            workspace_path=workspace_path,
+            socket_path=socket_path,
+        )
+        public_stderr = _public_sandbox_stdio(
+            stderr_text,
+            workspace_path=workspace_path,
+            socket_path=socket_path,
+        )
+        (
+            stdout_summary,
+            public_stdout_truncated,
+            _public_stdout_size,
+            _public_stdout_digest,
+        ) = _bounded_text(public_stdout)
+        (
+            stderr_summary,
+            public_stderr_truncated,
+            _public_stderr_size,
+            _public_stderr_digest,
+        ) = _bounded_text(public_stderr)
+        stdout_size = len(stdout_bytes)
+        stderr_size = len(stderr_bytes)
+        stdout_digest = _sha256_bytes(stdout_bytes)
+        stderr_digest = _sha256_bytes(stderr_bytes)
+        raw_stdout_truncated = stdout_size > STDIO_INLINE_LIMIT
+        raw_stderr_truncated = stderr_size > STDIO_INLINE_LIMIT
+        stdout_truncated = raw_stdout_truncated or public_stdout_truncated
+        stderr_truncated = raw_stderr_truncated or public_stderr_truncated
+        log_refs: dict[str, str] = {}
         if stdout_truncated or stderr_truncated:
-            log_refs.extend(
-                self._write_logs(
-                    run,
-                    stdout=stdout,
-                    stderr=stderr,
-                    stdout_digest=stdout_digest,
-                    stdout_size=stdout_size,
-                    stdout_truncated=stdout_truncated,
-                    stderr_digest=stderr_digest,
-                    stderr_size=stderr_size,
-                    stderr_truncated=stderr_truncated,
-                )
+            log_refs = self._write_logs(
+                run,
+                stdout=stdout_bytes,
+                stderr=stderr_bytes,
+                stdout_digest=stdout_digest,
+                stdout_size=stdout_size,
+                stdout_truncated=stdout_truncated,
+                stderr_digest=stderr_digest,
+                stderr_size=stderr_size,
+                stderr_truncated=stderr_truncated,
             )
         post_summary = self._workspace_file_snapshot(run.sandbox_workspace_id)
         changed = self._changed_files(pre_summary, post_summary)
@@ -2542,10 +2679,22 @@ class SandboxRuntimeService:
             status=status,
             stdout_summary=stdout_summary,
             stderr_summary=stderr_summary,
+            stdout_metadata={
+                "raw_digest": stdout_digest,
+                "raw_size_bytes": stdout_size,
+                "truncated": stdout_truncated,
+                "log_ref": log_refs.get("stdout"),
+            },
+            stderr_metadata={
+                "raw_digest": stderr_digest,
+                "raw_size_bytes": stderr_size,
+                "truncated": stderr_truncated,
+                "log_ref": log_refs.get("stderr"),
+            },
             exit_code=exit_code,
             duration_ms=duration_ms,
             changed_files_summary=changed,
-            log_artifact_ref=log_refs[0] if log_refs else None,
+            log_artifact_ref=log_refs.get("stdout") or log_refs.get("stderr"),
             error_code=error_code,
             ended_at=ended_at,
             updated_at=ended_at,
@@ -2568,6 +2717,8 @@ class SandboxRuntimeService:
                     "changed_files_summary": finished.changed_files_summary,
                     "stdout_summary": finished.stdout_summary,
                     "stderr_summary": finished.stderr_summary,
+                    "stdout_metadata": finished.stdout_metadata,
+                    "stderr_metadata": finished.stderr_metadata,
                     "log_artifact_ref": finished.log_artifact_ref,
                 },
                 last_error=None
@@ -2580,26 +2731,45 @@ class SandboxRuntimeService:
         self,
         run: SandboxRunRecord,
         *,
-        stdout: str,
-        stderr: str,
+        stdout: bytes,
+        stderr: bytes,
         stdout_digest: str,
         stdout_size: int,
         stdout_truncated: bool,
         stderr_digest: str,
         stderr_size: int,
         stderr_truncated: bool,
-    ) -> list[str]:
+    ) -> dict[str, str]:
         root = self._log_root() / run.sandbox_run_id
-        root.mkdir(parents=True, exist_ok=True)
-        refs: list[str] = []
-        for stream, text, digest, size, truncated in (
+        if root.is_symlink() or root.exists():
+            raise SandboxRuntimeError(
+                "sandbox_log_boundary_invalid",
+                "sandbox command log directory already exists or is invalid",
+            )
+        root.mkdir(mode=0o700, exist_ok=False)
+        os.chmod(root, 0o700)
+        refs: dict[str, str] = {}
+        for stream, content, digest, size, truncated in (
             ("stdout", stdout, stdout_digest, stdout_size, stdout_truncated),
             ("stderr", stderr, stderr_digest, stderr_size, stderr_truncated),
         ):
             if not truncated:
                 continue
             path = root / f"{stream}.log"
-            path.write_text(text, encoding="utf-8")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(path, flags, 0o600)
+            try:
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb") as handle:
+                    descriptor = -1
+                    handle.write(content)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
             ref = _safe_log_ref(run.sandbox_run_id, stream)
             self.repositories.command_log_artifacts.save(
                 CommandLogArtifactRecord(
@@ -2615,7 +2785,7 @@ class SandboxRuntimeService:
                     created_at=utc_now_iso(),
                 )
             )
-            refs.append(ref)
+            refs[stream] = ref
         return refs
 
     def _write_audit(
@@ -2756,7 +2926,7 @@ class SandboxRuntimeService:
         sandbox_workspace_id: str,
         sandbox_run_id: str,
         expected_pipeline_sdk_digest: str,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[bytes | str]:
         current_sdk_digest = self._pipeline_sdk_digest()
         if current_sdk_digest != expected_pipeline_sdk_digest:
             raise SandboxRuntimeError(
@@ -2806,24 +2976,23 @@ class SandboxRuntimeService:
         env: dict[str, str] | None = None,
         timeout_seconds: int,
         sandbox_run_id: str,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> subprocess.CompletedProcess[bytes]:
         process = subprocess.Popen(
             argv,
             cwd=cwd,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
         )
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
 
-        def _drain_output(stream: Any, chunks: list[str]) -> None:
+        def _drain_output(stream: Any, chunks: list[bytes]) -> None:
             try:
-                for chunk in iter(lambda: stream.read(8192), ""):
+                for chunk in iter(lambda: stream.read(8192), b""):
                     if not chunk:
                         break
-                    chunks.append(str(chunk))
+                    chunks.append(bytes(chunk))
             finally:
                 stream.close()
 
@@ -2852,8 +3021,8 @@ class SandboxRuntimeService:
                 raise subprocess.TimeoutExpired(
                     argv,
                     timeout_seconds,
-                    output="".join(stdout_chunks),
-                    stderr="".join(stderr_chunks),
+                    output=b"".join(stdout_chunks),
+                    stderr=b"".join(stderr_chunks),
                 )
             time.sleep(0.05)
         process.wait()
@@ -2862,8 +3031,8 @@ class SandboxRuntimeService:
         return subprocess.CompletedProcess(
             argv,
             process.returncode,
-            stdout="".join(stdout_chunks),
-            stderr="".join(stderr_chunks),
+            stdout=b"".join(stdout_chunks),
+            stderr=b"".join(stderr_chunks),
         )
 
     def _sandbox_run_waiting_for_user_approval(self, sandbox_run_id: str) -> bool:
@@ -2891,6 +3060,7 @@ class SandboxRuntimeService:
         sandbox_run_id: str,
         expected_pipeline_sdk_digest: str,
     ) -> list[str]:
+        self._assert_workspace_layout(sandbox_workspace_id)
         env_args = [
             item
             for key, value in sorted(
@@ -2970,6 +3140,7 @@ class SandboxRuntimeService:
             result = ArtifactBoundaryService(
                 self.repositories,
                 workspace_root=self.workspace_root,
+                blob_store_root=self.artifact_blob_root,
             ).snapshot_code(
                 session_id=session_id,
                 sandbox_workspace_id=sandbox_workspace_id,
@@ -3008,6 +3179,30 @@ class SandboxRuntimeService:
             raise SandboxRuntimeError("sandbox_image_incompatible", "workspace manifest version is incompatible")
         return workspace
 
+    def _assert_workspace_layout(self, sandbox_workspace_id: str) -> None:
+        workspace_path = self._workspace_path(sandbox_workspace_id)
+        missing: list[str] = []
+        invalid: list[str] = []
+        if workspace_path.is_symlink() or not workspace_path.is_dir():
+            invalid.append("workspace")
+        else:
+            for name in WORKSPACE_DIRECTORIES:
+                directory = workspace_path / name
+                if not directory.exists():
+                    missing.append(name)
+                elif directory.is_symlink() or not directory.is_dir():
+                    invalid.append(name)
+        if missing or invalid:
+            raise SandboxRuntimeError(
+                "sandbox_volume_corrupt",
+                "sandbox workspace layout is incomplete or invalid",
+                hint="Ask the Host operator to inspect or repair the workspace volume before retrying.",
+                details={
+                    "missing_directories": missing,
+                    "invalid_directories": invalid,
+                },
+            )
+
     def _ensure_no_active_run(self, sandbox_workspace_id: str) -> None:
         active = self.repositories.sandbox_runs.get_active_by_workspace(sandbox_workspace_id)
         if active is not None:
@@ -3021,8 +3216,26 @@ class SandboxRuntimeService:
         return _workspace_root(self.workspace_root) / sandbox_workspace_id
 
     def _log_root(self) -> Path:
-        root = self.log_root or Path(tempfile.gettempdir()) / "openzyme-sandbox-command-logs"
-        root.mkdir(parents=True, exist_ok=True)
+        if self.log_root is not None:
+            root = self.log_root
+        elif self.workspace_root is not None:
+            root = self.workspace_root.resolve().parent / "sandbox-command-logs"
+        else:
+            root = Path(tempfile.gettempdir()) / "openzyme-sandbox-command-logs"
+        if root.is_symlink():
+            raise SandboxRuntimeError(
+                "sandbox_log_boundary_invalid",
+                "sandbox command log root must not be a symlink",
+            )
+        if root.exists():
+            if not root.is_dir() or root.stat().st_uid != os.getuid():
+                raise SandboxRuntimeError(
+                    "sandbox_log_boundary_invalid",
+                    "sandbox command log root is not an owned directory",
+                )
+        else:
+            root.mkdir(parents=True, mode=0o700, exist_ok=False)
+        os.chmod(root, 0o700)
         return root.resolve()
 
     def _refresh_workspace_summary(
@@ -3142,7 +3355,11 @@ class SandboxRuntimeService:
 
 
 def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolResult:
-    payload = {"error_code": exc.error_code, **exc.details}
+    safe_details = sanitize_public_diagnostic_payload(exc.details)
+    payload = {
+        "error_code": exc.error_code,
+        **(dict(safe_details) if isinstance(safe_details, dict) else {}),
+    }
     return ToolResult(
         call_id=invocation.call_id,
         tool_name=invocation.tool_name,
@@ -3151,9 +3368,11 @@ def _tool_error(invocation: ToolInvocation, exc: SandboxRuntimeError) -> ToolRes
         task_id=invocation.task_id,
         lane_id=invocation.lane_id,
         status=exc.error_code,
-        summary=str(exc),
+        summary=sanitize_public_diagnostic_text(str(exc)),
         error_code=exc.error_code,
-        hint=exc.hint,
+        hint=None
+        if exc.hint is None
+        else sanitize_public_diagnostic_text(exc.hint),
         details=payload,
     )
 
@@ -3178,11 +3397,13 @@ def register_sandbox_runtime_tools(
 
     def _workspace_id(context: SessionRuntimeContext, invocation: ToolInvocation) -> str:
         raw = invocation.arguments.get("sandbox_workspace_id")
-        if raw not in {None, ""}:
-            return str(raw)
-        workspace, error_code, hint = SandboxWorkspaceService(context.repositories).status_for_agent(
+        workspace, error_code, hint = SandboxWorkspaceService(
+            context.repositories,
+            workspace_root=context.sandbox_workspace_root,
+        ).status_for_agent(
             session_id=context.snapshot.session.session_id,
             agent_id=agent_id or "",
+            sandbox_workspace_id=None if raw in {None, ""} else str(raw),
             focus_task_id=context.restore_focus.task_id,
             focus_lane_id=context.restore_focus.lane_id,
         )

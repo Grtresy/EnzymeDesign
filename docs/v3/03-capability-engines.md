@@ -205,6 +205,8 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - executor sandbox base image 由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；缺失或不兼容返回结构化 image error，不自动换 image 或回退到旧 pipeline runner
 - `image_ref` 只用于配置与 preflight 查找。local Host startup、live/eval bootstrap 和 plan 创建都必须解析完整 `sha256:<64hex>` immutable image id，并对将要只读注入 sandbox 的 `openzyme_pipeline` SDK source tree 计算 digest；Podman `image inspect .Id` 在不同版本可能返回裸 64 位 hex 或带 `sha256:` 前缀，Host 只允许这两种精确格式并统一规范化为后者，其他输出不得登记。image、SDK 与 protocol 形成 `runtime_identity_digest`。执行前重新 preflight、逐字段比对，SDK copy 后重新验哈希，Podman 必须按 immutable id 启动；任何缺失或漂移均在 sandbox/adapter/runner 前结构化失败
 - 持久化语义绑定 sandbox workspace volume、manifest、projection summary 和 canonical records；container process/container id 是可重建的 runtime envelope，不是 public/canonical state
+- workspace root 必须由 Host composition 作为单一依赖注入，并由 status、显式/隐式 workspace lookup、file/exec、source snapshot 与 container bind 一致使用；局部 service 不得独立回落到共享默认 root。显式 workspace id 也必须重新校验当前 session/executor ownership，不能绕过 canonical member 绑定
+- 无 canonical workspace row 时，派生 leaf 必须不存在并以 no-replace/exclusive-create 建立 `src/input/work/output/logs/manifest` 六目录；预存目录、文件或 symlink 返回 `sandbox_volume_corrupt`，不得接管、补建或修改。已有 workspace 缺目录、目录为 symlink 或布局失真时同样 fail closed。`sandbox.exec` 必须在 source snapshot、run 持久化和 process invocation 前重新验证六个 mount source 都是同一 configured root 下的真实目录
 - sandbox 至少提供持久 `/workspace` 与运行时 Host supervisor control socket；旧 `/openzyme/input|work|output|logs` 只能作为兼容视图或实现细节
 - `/workspace` 是 executor 的持久 working copy，可放 pipeline source、脚本、临时 notes 与中间文件；它不是 artifact catalog
 - `/workspace/input` 只读，且只包含已授权 session artifacts 的副本或受控映射
@@ -213,6 +215,7 @@ preprocess adapter，也不是每次执行即销毁的一次性源码容器。ex
 - sandbox 内代码不能直接访问网络、SSH、Slurm 或 runner；NCBI/UniProt/EBI HMMER、本地生信工具、HPC runner 与 artifact catalog 请求都必须通过 `openzyme_pipeline` 走 Host supervisor
 - MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 和领域 toolchain packaging 不进入 executor base image；它们属于 Host supervisor 的 backend/toolchain registry 和 bio_tools route policy
 - 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`；run record、file audit、log artifact 和 changed-file summary 是审计状态，container process id 不是 canonical state
+- public diagnostic 是独立安全边界：已知 workspace/control-socket Host root 只在 schema 声明的 diagnostic/locator field 中映射为逻辑 `/workspace`/`/openzyme/control.sock`，随后递归脱敏已测试的 high-risk Unix/HPC、Windows、UNC、file URI、private URL/locator 与 credential corpus。该有限 producer sanitizer 不扫描或改写任意用户/科学正文；AOX verifier 独立拒绝 surviving private locator/absolute Host path。stdio 以 binary capture，完整 raw bytes 只进入 attempt-local Host-private command log；run directory/file 以 exclusive `0700`/no-follow `0600` 创建，public ref 不含读取 authority，digest/size 按 raw bytes 计算。projection 只对历史 diagnostic/schema-declared locator field执行第二道防御
 - disk quota 是 Host hard limit：file write/patch 在落盘前按 prospective workspace bytes 拒绝超额，exec 完成后按整个 workspace 重算；任何子进程或 SDK 写入造成的超额都必须把 run 标为 `resource_exceeded`、workspace 标为 `quota_exceeded`，清理前拒绝后续执行
 - sandbox 对外能力是 file+command+SDK bridge；后台 scheduler 只唤醒 agent 和 engine continuation，不替 executor 判断该用本地、HPC 还是其它 backend
 

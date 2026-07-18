@@ -10,6 +10,7 @@ from dataclasses import field
 from pathlib import Path
 import tempfile
 from typing import Any
+from typing import AsyncIterator
 from typing import Callable
 from typing import Iterator
 from typing import Literal
@@ -35,6 +36,9 @@ from openzyme_runtime import LimiterRegistry
 from openzyme_runtime import RuntimeFoundation
 from openzyme_runtime import get_llm_debug_recorder
 from openzyme_runtime import llm_debug_context
+from openzyme_runtime import safe_public_machine_identifier
+from openzyme_runtime import sanitize_public_diagnostic_payload
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .background_runtime import RuntimeSignalNotifier
 from .background_runtime import V3BackgroundRuntimeService
@@ -161,7 +165,7 @@ class V3EventDto(BaseModel):
     session_id: str
     event_type: str
     schema_version: Literal["openzyme.v3.event.v1"]
-    visibility: Literal["public", "audit", "internal"]
+    visibility: Literal["public"]
     created_at: str
     payload: dict[str, Any]
     cursor: int | None = None
@@ -563,12 +567,19 @@ def _api_error_payload(
     hint: str | None = None,
     details: Any | None = None,
 ) -> dict[str, Any]:
+    safe_details = sanitize_public_diagnostic_payload(details)
+    safe_code = safe_public_machine_identifier(
+        code,
+        fallback="internal_error",
+    ) or "internal_error"
     return ApiErrorResponse(
         error=ApiErrorDetail(
-            code=code,
-            message=message,
-            hint=hint,
-            details=details,
+            code=safe_code,
+            message=sanitize_public_diagnostic_text(message),
+            hint=None
+            if hint is None
+            else sanitize_public_diagnostic_text(hint),
+            details=safe_details,
         )
     ).model_dump(mode="json", exclude_none=True)
 
@@ -724,6 +735,55 @@ def _sse_encode(event: dict[str, Any], *, envelope: bool = False) -> str:
     )
 
 
+_V3_EVENT_PAGE_SIZE = 1_000
+
+
+async def _iter_v3_event_stream(
+    read_events: Callable[[int], list[dict[str, Any]]],
+    *,
+    requested_cursor: int,
+    request_high_watermark: int,
+    replay: bool,
+    follow: bool,
+    envelope: bool,
+    poll_interval_seconds: float = 0.5,
+) -> AsyncIterator[str]:
+    cursor = requested_cursor
+    if replay:
+        while cursor < request_high_watermark:
+            batch = read_events(cursor)
+            snapshot_events = [
+                event
+                for event in batch
+                if int(event["cursor"]) <= request_high_watermark
+            ]
+            if not snapshot_events:
+                break
+            for event in snapshot_events:
+                yield _sse_encode(event, envelope=envelope)
+                cursor = int(event["cursor"])
+            if cursor >= request_high_watermark or len(batch) < _V3_EVENT_PAGE_SIZE:
+                break
+
+    # A private event may own the high-watermark cursor. Follow the global
+    # durable cursor so private gaps are skipped without exposing their rows.
+    cursor = max(cursor, request_high_watermark)
+    if not follow:
+        return
+
+    while True:
+        while True:
+            current = read_events(cursor)
+            if not current:
+                break
+            for event in current:
+                yield _sse_encode(event, envelope=envelope)
+                cursor = int(event["cursor"])
+            if len(current) < _V3_EVENT_PAGE_SIZE:
+                break
+        await asyncio.sleep(poll_interval_seconds)
+
+
 def create_app(
     dependencies: HostApiDependencies,
     *,
@@ -760,7 +820,14 @@ def create_app(
         del request
         detail = exc.detail
         if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-            content = {"error": detail}
+            content = _api_error_payload(
+                code=detail["code"],
+                message=str(detail.get("message") or "HTTP request failed."),
+                hint=None
+                if detail.get("hint") is None
+                else str(detail.get("hint")),
+                details=detail.get("details"),
+            )
         else:
             status_code_map = {
                 400: "invalid_request",
@@ -1188,6 +1255,7 @@ def create_app(
                 security=security,
                 session_id=session_id,
             )
+            request_high_watermark = service.event_store.latest_cursor(session_id)
 
         last_event_id = request.headers.get("last-event-id")
         if after_cursor is not None and last_event_id is not None:
@@ -1216,31 +1284,23 @@ def create_app(
             # StreamingResponse starts consuming after the route returns. Never
             # capture a request-scoped service/connection in the generator.
             with dependencies.v3_service_scope(mode="read") as scoped_service:
-                return scoped_service.events(session_id, after_cursor=cursor)
+                return scoped_service.events(
+                    session_id,
+                    after_cursor=cursor,
+                    limit=_V3_EVENT_PAGE_SIZE,
+                )
 
-        async def event_stream() -> Any:
-            cursor = requested_cursor
-            if replay:
-                existing = read_events(cursor)
-                for event in existing:
-                    yield _sse_encode(event, envelope=envelope)
-                    cursor = int(event["cursor"])
-            else:
-                existing = read_events(cursor)
-                if existing:
-                    cursor = int(existing[-1]["cursor"])
-
-            if not follow:
-                return
-
-            while True:
-                current = read_events(cursor)
-                for event in current:
-                    yield _sse_encode(event, envelope=envelope)
-                    cursor = int(event["cursor"])
-                await asyncio.sleep(0.5)
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _iter_v3_event_stream(
+                read_events,
+                requested_cursor=requested_cursor,
+                request_high_watermark=request_high_watermark,
+                replay=replay,
+                follow=follow,
+                envelope=envelope,
+            ),
+            media_type="text/event-stream",
+        )
 
     @app.post(
         "/v3/tasks",

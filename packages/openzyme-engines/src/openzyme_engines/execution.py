@@ -64,6 +64,44 @@ from openzyme_tools import CDHIT_MEMBERSHIP_SCHEMA_ID
 from openzyme_tools import parse_execution_result
 
 
+_PIPELINE_WORKSPACE_DIRECTORIES = (
+    "src",
+    "input",
+    "work",
+    "output",
+    "logs",
+    "manifest",
+)
+
+
+def _ensure_pipeline_workspace_layout(
+    workspace_path: Path,
+    *,
+    create: bool,
+) -> None:
+    if workspace_path.is_symlink():
+        raise OSError("sandbox workspace root is a symlink")
+    if create:
+        if workspace_path.exists():
+            raise OSError("new sandbox workspace root already exists")
+        workspace_path.mkdir(parents=True, exist_ok=False)
+    elif not workspace_path.is_dir():
+        raise OSError("sandbox workspace root is missing")
+    for name in _PIPELINE_WORKSPACE_DIRECTORIES:
+        directory = workspace_path / name
+        if directory.is_symlink():
+            raise OSError("sandbox workspace directory is a symlink")
+        if directory.exists():
+            if not directory.is_dir():
+                raise OSError("sandbox workspace entry is not a directory")
+        elif create:
+            directory.mkdir(exist_ok=False)
+        else:
+            raise OSError("sandbox workspace directory is missing")
+        if directory.is_symlink() or not directory.is_dir():
+            raise OSError("sandbox workspace directory is missing or invalid")
+
+
 def _new_document_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
@@ -7001,9 +7039,20 @@ class ExecutionEngine:
             or Path(tempfile.gettempdir()) / "openzyme-sandbox-workspaces"
         )
         workspace_path = workspace_root / sandbox_workspace_id
-        for directory in ("src", "input", "work", "output", "logs", "manifest"):
-            (workspace_path / directory).mkdir(parents=True, exist_ok=True)
         workspace = self.repositories.sandbox_workspaces.get(sandbox_workspace_id)
+        try:
+            _ensure_pipeline_workspace_layout(
+                workspace_path,
+                create=workspace is None,
+            )
+        except OSError as exc:
+            raise PipelineSdkFailure(
+                error_type="sandbox_volume_corrupt",
+                message="Pipeline sandbox workspace layout is incomplete or invalid.",
+                hint="Ask the Host operator to inspect or repair the workspace volume before retrying.",
+                stage="artifact_registration",
+                retryable=False,
+            ) from exc
         if workspace is not None:
             workspace_identity = {
                 "configured_image_ref": workspace.image_ref,

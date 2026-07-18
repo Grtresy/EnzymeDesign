@@ -37,6 +37,8 @@ from openzyme_runtime import ToolResult
 from openzyme_runtime import ToolRouter
 from openzyme_runtime import ToolRuntime
 from openzyme_runtime import ToolSpec
+from openzyme_runtime import sanitize_tool_result_diagnostics
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .engines import EngineRegistry
 from .repositories import EngineDocumentRecord
@@ -388,7 +390,11 @@ class ToolRegistry:
         try:
             result = handler(context, invocation)
         except (KeyError, TypeError, ValueError) as exc:
-            message = f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}"
+            safe_error = sanitize_public_diagnostic_text(str(exc)).strip()
+            message = (
+                f"Tool {invocation.tool_name} failed: "
+                f"{safe_error or exc.__class__.__name__}"
+            )
             return ToolResult(
                 call_id=invocation.call_id,
                 tool_name=invocation.tool_name,
@@ -403,16 +409,16 @@ class ToolRegistry:
                 details={"exception_type": exc.__class__.__name__},
             )
         if isinstance(result, ToolResult):
-            return result
+            return sanitize_tool_result_diagnostics(result)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=str(result),
+            content=result,
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
             status="ok",
-            summary=str(result),
+            summary=result,
         )
 
 
@@ -908,8 +914,19 @@ def _provider_tokenizer_result(
             tools=tools,
         )
     except Exception as exc:
-        return {"available": False, "error": str(exc) or exc.__class__.__name__}
-    return result if isinstance(result, dict) else None
+        return {
+            "available": False,
+            "error": sanitize_public_diagnostic_text(str(exc))
+            or exc.__class__.__name__,
+        }
+    if not isinstance(result, dict):
+        return None
+    public_result = dict(result)
+    if public_result.get("error") is not None:
+        public_result["error"] = sanitize_public_diagnostic_text(
+            public_result["error"]
+        )
+    return public_result
 
 
 def _compact_before_model_call(
@@ -1226,7 +1243,7 @@ def _pending_approval_id(snapshot: SessionRuntimeSnapshot) -> str | None:
 
 
 def _format_runtime_error(exc: Exception) -> str:
-    message = str(exc).strip() or exc.__class__.__name__
+    message = sanitize_public_diagnostic_text(str(exc)).strip() or exc.__class__.__name__
     return f"OpenZyme could not complete this turn: {message}"
 
 
@@ -1376,7 +1393,10 @@ def run_agent_harness_loop(
             outputs.append(_format_runtime_error(exc))
             context.emit(
                 "harness.failed",
-                {"error": str(exc), "error_type": exc.__class__.__name__},
+                {
+                    "error": sanitize_public_diagnostic_text(str(exc)),
+                    "error_type": exc.__class__.__name__,
+                },
             )
             _auto_compact_if_needed(
                 context,
@@ -1579,7 +1599,7 @@ def run_agent_harness_loop(
                     context.emit(
                         "harness.failed",
                         {
-                            "error": str(exc),
+                            "error": sanitize_public_diagnostic_text(str(exc)),
                             "error_type": exc.__class__.__name__,
                             "tool_name": invocation.tool_name,
                             "call_id": invocation.call_id,

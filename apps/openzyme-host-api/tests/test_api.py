@@ -19,6 +19,7 @@ from openzyme_host_api import build_local_eval_foundation
 from openzyme_host_api import create_app
 from openzyme_host_api.app import DrainV3RuntimeRequest
 from openzyme_host_api.app import PostV3MessageRequest
+from openzyme_host_api.app import _iter_v3_event_stream
 from openzyme_host_api.background_runtime import RuntimeSignalNotifier
 from openzyme_host_api.background_runtime import V3BackgroundRuntimeService
 from openzyme_runtime import ConstraintItem
@@ -82,6 +83,66 @@ from openzyme_host_api.v3_service import V3EventStore
 from openzyme_host_api.v3_service import V3HostApiService
 
 
+def test_v3_event_store_preserves_public_payload_and_filters_private_visibility() -> (
+    None
+):
+    repositories = _build_v3_engine_repositories()
+    event_store = V3EventStore(repositories)
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=event_store,
+    )
+    service.create_session(
+        project_id="proj_public_diagnostic",
+        session_id="sess_public_diagnostic",
+        title="Public diagnostic",
+        objective="Verify durable public event sanitization.",
+    )
+    after_cursor = event_store.latest_cursor("sess_public_diagnostic")
+    public_payload = {
+        "message": "user-authored value /home/operator/literal",
+        "scientific_locator": "https://example.org/search?query=AOX",
+    }
+    events = [
+        {
+            "event_id": "evt_public_diagnostic",
+            "session_id": "sess_public_diagnostic",
+            "event_type": "harness.failed",
+            "created_at": "2026-07-18T00:00:00+00:00",
+            "visibility": "public",
+            "payload": public_payload,
+        },
+        {
+            "event_id": "evt_audit_diagnostic",
+            "session_id": "sess_public_diagnostic",
+            "event_type": "harness.audit_diagnostic",
+            "created_at": "2026-07-18T00:00:01+00:00",
+            "visibility": "audit",
+            "payload": {"error": "private audit diagnostic"},
+        },
+        {
+            "event_id": "evt_internal_diagnostic",
+            "session_id": "sess_public_diagnostic",
+            "event_type": "harness.internal_diagnostic",
+            "created_at": "2026-07-18T00:00:02+00:00",
+            "visibility": "internal",
+            "payload": {"error": "private Host diagnostic"},
+        },
+    ]
+
+    stored = event_store.append("sess_public_diagnostic", events)
+    replayed = event_store.list(
+        "sess_public_diagnostic",
+        after_cursor=after_cursor,
+    )
+    assert stored[0]["payload"] == public_payload
+    assert stored[1]["visibility"] == "audit"
+    assert stored[2]["visibility"] == "internal"
+    assert [event["event_id"] for event in replayed] == ["evt_public_diagnostic"]
+    assert {event["visibility"] for event in replayed} == {"public"}
+    assert replayed[0]["payload"] == public_payload
+
+
 def _local_test_security(*, debug_enabled: bool = True) -> HostSecurityPolicy:
     return HostSecurityPolicy(
         deployment_profile="local-dev",
@@ -133,6 +194,162 @@ def test_v3_durable_events_survive_host_restart_and_replay_from_cursor(
         )
         assert after.status_code == 200
         assert first_event["event_id"] not in after.text
+
+
+def test_v3_event_replay_pages_past_one_thousand_and_filters_private_rows(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "event-pages.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        security_policy=_local_test_security(),
+        v3_repository_provider=provider,
+    )
+    session_id = "sess_event_pages"
+
+    with TestClient(create_app(dependencies)) as client:
+        created = client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_event_pages",
+                "objective": "Replay every public event page.",
+            },
+        )
+        assert created.status_code == 200
+        after_cursor = int(created.json()["events"][-1]["cursor"])
+
+        public_ids = [f"evt_page_{index:04d}" for index in range(1_005)]
+        seeded_events: list[dict[str, object]] = []
+        for index, event_id in enumerate(public_ids):
+            if index == 500:
+                seeded_events.append(
+                    {
+                        "event_id": "evt_page_audit",
+                        "session_id": session_id,
+                        "event_type": "page.audit",
+                        "created_at": "2026-07-18T00:00:00+00:00",
+                        "visibility": "audit",
+                        "payload": {"private": "audit"},
+                    }
+                )
+            seeded_events.append(
+                {
+                    "event_id": event_id,
+                    "session_id": session_id,
+                    "event_type": "page.public",
+                    "created_at": "2026-07-18T00:00:00+00:00",
+                    "visibility": "public",
+                    "payload": {"index": index},
+                }
+            )
+        seeded_events.append(
+            {
+                "event_id": "evt_page_internal",
+                "session_id": session_id,
+                "event_type": "page.internal",
+                "created_at": "2026-07-18T00:00:00+00:00",
+                "visibility": "internal",
+                "payload": {"private": "internal"},
+            }
+        )
+        with provider.write() as owner:
+            V3EventStore(owner.repositories).append(session_id, seeded_events)
+
+        replay = client.get(
+            f"/v3/sessions/{session_id}/events"
+            f"?replay=1&follow=0&after_cursor={after_cursor}"
+        )
+        no_replay = client.get(
+            f"/v3/sessions/{session_id}/events"
+            f"?replay=0&follow=0&after_cursor={after_cursor}"
+        )
+
+    assert replay.status_code == 200
+    replayed = [
+        json.loads(line.removeprefix("data: "))
+        for line in replay.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["event_id"] for event in replayed] == public_ids
+    assert {event["visibility"] for event in replayed} == {"public"}
+    assert "evt_page_audit" not in replay.text
+    assert "evt_page_internal" not in replay.text
+    assert no_replay.status_code == 200
+    assert no_replay.text == ""
+
+
+def test_v3_event_stream_uses_request_high_watermark_for_replay_and_follow() -> (
+    None
+):
+    events = [
+        {
+            "event_id": f"evt_{cursor}",
+            "session_id": "sess_follow_watermark",
+            "event_type": "follow.event",
+            "schema_version": "openzyme.v3.event.v1",
+            "visibility": "public",
+            "created_at": "2026-07-18T00:00:00+00:00",
+            "payload": {},
+            "cursor": cursor,
+        }
+        for cursor in range(1, 1_003)
+    ]
+    replay_cursors: list[int] = []
+
+    def read_replay_events(cursor: int) -> list[dict[str, object]]:
+        replay_cursors.append(cursor)
+        return [event for event in events if int(event["cursor"]) > cursor][:1_000]
+
+    async def read_replay_snapshot() -> list[str]:
+        return [
+            encoded
+            async for encoded in _iter_v3_event_stream(
+                read_replay_events,
+                requested_cursor=0,
+                request_high_watermark=1_001,
+                replay=True,
+                follow=False,
+                envelope=False,
+            )
+        ]
+
+    snapshot = asyncio.run(read_replay_snapshot())
+
+    assert len(snapshot) == 1_001
+    assert replay_cursors == [0, 1_000]
+    assert "id: 1001" in snapshot[-1]
+    assert not any("id: 1002" in encoded for encoded in snapshot)
+
+    observed_cursors: list[int] = []
+
+    def read_events(cursor: int) -> list[dict[str, object]]:
+        observed_cursors.append(cursor)
+        return [event for event in events if int(event["cursor"]) > cursor][:1_000]
+
+    async def read_first_follow_event() -> str:
+        stream = _iter_v3_event_stream(
+            read_events,
+            requested_cursor=0,
+            request_high_watermark=1_001,
+            replay=False,
+            follow=True,
+            envelope=False,
+            poll_interval_seconds=0,
+        )
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    encoded = asyncio.run(read_first_follow_event())
+
+    assert observed_cursors == [1_001]
+    assert "id: 1002" in encoded
+    assert '"event_id":"evt_1002"' in encoded
 
 
 def test_v3_task_create_idempotency_replays_response_and_rejects_collision(
@@ -262,6 +479,101 @@ def test_v3_runtime_health_is_public_and_sanitized(monkeypatch) -> None:
     assert "worker_id" not in serialized
     assert "last_error" not in serialized
     assert "secret" not in serialized.lower()
+
+
+def test_v3_workspace_api_projects_closed_sandbox_stdio_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "stdio-metadata.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        security_policy=_local_test_security(),
+        v3_repository_provider=provider,
+        v3_sandbox_workspace_root=tmp_path / "workspaces",
+    )
+    session_id = "sess_stdio_metadata"
+
+    with TestClient(create_app(dependencies)) as client:
+        created = client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_stdio_metadata",
+                "objective": "Project closed sandbox stdio metadata.",
+            },
+        )
+        assert created.status_code == 200
+        with provider.write() as owner:
+            repositories = owner.repositories
+            agent = AgentMember(
+                agent_id="agent:executor:stdio",
+                session_id=session_id,
+                lane_id=None,
+                task_id=None,
+                name="Executor",
+                role="executor",
+                status=AgentMemberStatus.IDLE,
+                parent_agent_id="agent:master",
+                created_at="2026-07-18T00:00:00+00:00",
+                updated_at="2026-07-18T00:00:00+00:00",
+                member_id="member_executor_stdio",
+            )
+            repositories.agents.save(agent)
+            repositories.sandbox_images.save(
+                sandbox_image_record(
+                    image_ref="localhost/openzyme-pipeline-sandbox@sha256:stdio",
+                    image_digest="sha256:stdio",
+                )
+            )
+            workspace = SandboxWorkspaceService(
+                repositories,
+                workspace_root=tmp_path / "workspaces",
+            ).create_or_get(
+                session_id=session_id,
+                agent_member_id="member_executor_stdio",
+            )
+            repositories.sandbox_runs.save(
+                SandboxRunRecord(
+                    sandbox_run_id="srun_stdio_metadata",
+                    session_id=session_id,
+                    sandbox_workspace_id=workspace.sandbox_workspace_id,
+                    agent_id=agent.agent_id,
+                    argv=("python", "src/probe.py"),
+                    argv_digest="sha256:argv",
+                    cwd="/workspace",
+                    env_digest="sha256:env",
+                    status=SandboxRunStatus.COMPLETED,
+                    stdout_summary="bounded stdout",
+                    stderr_summary="bounded stderr",
+                    stdout_metadata={
+                        "raw_digest": "sha256:stdout",
+                        "raw_size_bytes": 40000,
+                        "truncated": True,
+                        "log_ref": "sandbox-log://srun_stdio_metadata/stdout",
+                    },
+                    stderr_metadata={
+                        "raw_digest": "sha256:stderr",
+                        "raw_size_bytes": 41000,
+                        "truncated": True,
+                        "log_ref": "sandbox-log://srun_stdio_metadata/stderr",
+                    },
+                    created_at="2026-07-18T00:00:01+00:00",
+                    updated_at="2026-07-18T00:00:02+00:00",
+                )
+            )
+
+        response = client.get(f"/v3/sessions/{session_id}/workspace")
+
+    assert response.status_code == 200
+    sandbox_run = response.json()["sandbox_runs"][0]
+    assert sandbox_run["stdout_metadata"]["log_ref"].endswith("/stdout")
+    assert sandbox_run["stderr_metadata"]["log_ref"].endswith("/stderr")
+    assert sandbox_run["stdout_metadata"]["raw_size_bytes"] == 40000
+    assert sandbox_run["stderr_metadata"]["raw_size_bytes"] == 41000
+    assert "/home/" not in json.dumps(sandbox_run, sort_keys=True)
 
 
 def test_v3_runtime_health_marks_local_fixtures_non_cutover() -> None:

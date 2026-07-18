@@ -116,6 +116,19 @@ def _seed_session(repositories: CoreRepositories) -> Session:
             created_at="2026-04-17T13:00:04+00:00",
         )
     )
+    repositories.memory.save(
+        MemoryEntry(
+            memory_id="mem_private_source",
+            session_id=session.session_id,
+            scope_kind=MemoryScopeKind.SESSION,
+            scope_ref=session.session_id,
+            kind=MemoryKind.NOTE,
+            summary="Historical locator projection coverage",
+            source_range="/home/operator/private-note.md",
+            importance=1,
+            created_at="2026-04-17T13:00:04+00:00",
+        )
+    )
     user_payload_ref = persist_conversation_message(
         repositories,
         session_id=session.session_id,
@@ -478,6 +491,12 @@ def test_session_projection_builder_assembles_workspace_sections() -> None:
     assert workspace["conversation"][0]["content"] == "Start the research task."
     assert workspace["task_board"]["next_task_id"] == "task_001"
     assert workspace["lane_board"]["lanes"][0]["lane"]["lane_id"] == "lane_001"
+    assert (
+        workspace["lane_board"]["lanes"][0]["lane"]["cwd"]
+        == "[redacted-host-path]"
+    )
+    assert workspace["memory"][0]["source_range"] == "auto:harness_run"
+    assert workspace["memory"][1]["source_range"] == "[redacted-host-path]"
     assert workspace["pending_approvals"][0]["approval_id"] == "appr_001"
     assert any(
         item["agent"]["agent_id"] == "agent:researcher:projection"

@@ -39,6 +39,9 @@ def test_migration_asset_is_available() -> None:
     adapter_result_origin_sql = get_migration_sql(
         "024_v3_host_owned_adapter_result_origin"
     )
+    sandbox_stdio_metadata_sql = get_migration_sql(
+        "025_v3_sandbox_stdio_metadata"
+    )
 
     assert "CREATE TABLE IF NOT EXISTS sessions" in sql
     assert "CREATE TABLE IF NOT EXISTS task_dependencies" in sql
@@ -80,6 +83,8 @@ def test_migration_asset_is_available() -> None:
     assert "ADD COLUMN provider" in research_source_provenance_sql
     assert "ADD COLUMN provider_provenance_json" in research_source_provenance_sql
     assert "ADD COLUMN adapter_result_origin" in adapter_result_origin_sql
+    assert "ADD COLUMN stdout_metadata_json" in sandbox_stdio_metadata_sql
+    assert "ADD COLUMN stderr_metadata_json" in sandbox_stdio_metadata_sql
     assert MIGRATION_IDS == (
         "001_v3_control_plane_foundation",
         "002_v3_lane_isolation",
@@ -105,6 +110,7 @@ def test_migration_asset_is_available() -> None:
         "022_v3_session_access_control",
         "023_v3_research_source_provenance",
         "024_v3_host_owned_adapter_result_origin",
+        "025_v3_sandbox_stdio_metadata",
     )
 
 
@@ -238,6 +244,16 @@ def test_sqlite_migrations_create_v3_control_plane_tables() -> None:
         "adapter_result_envelope_json",
         "adapter_result_origin",
     }.issubset(operation_columns)
+    sandbox_run_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(sandbox_run_records)"
+        ).fetchall()
+    }
+    assert {
+        "stdout_metadata_json",
+        "stderr_metadata_json",
+    }.issubset(sandbox_run_columns)
     trigger_names = {
         row[0]
         for row in connection.execute(

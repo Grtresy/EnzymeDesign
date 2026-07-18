@@ -19,7 +19,8 @@
 - `sandbox_workspace_id` 由 `session_id + agent_member_id` 唯一决定；同一 session 内同一 executor agent member 复用同一个 persistent sandbox workspace。`agent_id` 只作为展示、兼容和 tool/result 可读字段，不参与 identity 派生。
 - `sandbox_workspace_id` 固定派生为 opaque id：`sw_{sha256(session_id + ":" + agent_member_id)[:24]}`。`agent_member_id` 是 control-plane 中 session-scoped agent member 的稳定 id，不使用用户可控 label、task subject、lane name 或 Host path。
 - sandbox workspace registry/repository 属于 core/control-plane canonical state。`packages/openzyme-engines` 只负责按 `sandbox_workspace_id` 启动、attach、运行和释放 runtime envelope，不能成为 workspace identity 的唯一真相。
-- `create_or_get(session_id, agent_member_id)` 必须幂等，并在 core/control-plane repository 层以 `(session_id, agent_member_id)` 建立唯一约束；并发调用只能得到同一个 canonical sandbox workspace record，不能创建第二个 workspace identity。
+- `create_or_get(session_id, agent_member_id)` 必须幂等，并在 core/control-plane repository 层以 `(session_id, agent_member_id)` 建立唯一约束；并发调用只能得到同一个 canonical sandbox workspace record，不能创建第二个 workspace identity。当前单进程 SQLite 合同下，所有 service instance 还必须按 resolved root + workspace id 共用进程内临界区，使 canonical lookup、exclusive filesystem create/既有 layout 校验和 record save 成为同一串行步骤；竞争方在前一调用保存后重新 lookup 并验证同一 READY record，不得把刚建立的 leaf 误判为 orphan 后以 CORRUPT 覆盖。该临界区不构成多进程部署承诺。
+- sandbox workspace root 是 Host composition 注入的 deployment/attempt-scoped 依赖；status service、runtime/file service、显式/隐式 workspace lookup 和恢复路径必须使用同一个 root，不能分别实例化后回落到共享 `/tmp` 默认值。
 - `task_id` / `lane_id` 只是当前 focus metadata。切换 task 或 lane 更新 focus，不创建新的 sandbox workspace，也不改变 `sandbox_workspace_id`。
 - s07 的默认模型是多个 executor 使用同一个 Host-configured sandbox base image digest，分别启动各自的 rootless container process，并挂载各自独立的 persistent sandbox `/workspace` volume。image layer 可以共享，sandbox workspace 绝不能共享。
 - “persistent sandbox” 指 sandbox workspace volume、sandbox workspace manifest、projection summary 和 canonical records 持久化；container process/container id 是可丢弃的 runtime envelope。Host 可以为了性能复用存活容器，但产品语义不能依赖容器一直存在。
@@ -51,6 +52,7 @@
   - `/workspace/output`：准备注册的正式输出。
   - `/workspace/logs`：命令与 SDK 日志。
   - `/workspace/manifest`：safe digest、操作记录、snapshot 指针。
+- repository 无 canonical row 时，派生 workspace leaf 必须不存在，并由 Host 以 no-replace/exclusive-create 建立上述六目录；leaf 已预存为目录、文件或 symlink 时返回 `corrupt` / `sandbox_volume_corrupt`，不得接管、补建或修改现场。repository 已存在 record 时，status/recovery 只能验证现有根及六目录均为真实非 symlink 目录；缺失、类型错误或 symlink 同样 fail closed。
 - `/openzyme/control.sock` 只作为运行时 Host supervisor IPC，不持久化；旧 `/openzyme/input|work|output|logs` 若继续存在，只能是兼容 symlink/bind view 或实现细节，不作为 executor 长期心智模型。
 - sandbox 默认无公网、非 root、资源受限；不得挂载 Host repo、用户 home、`.ssh`、runner config、provider credential、database private mount 或 HPC secret。
 - container id、runtime command、host-side volume path 和 image local store path 都不是 public/canonical state；sandbox workspace recovery 必须能通过 `sandbox_workspace_id + image_digest + manifest` 重新 attach 或重建容器 envelope。
@@ -127,6 +129,7 @@ s07 必须定义 executor sandbox base image 的 Host-level registry / bootstrap
 - 权限语义固定：
   - `sandbox_workspace_id=None` 时只返回当前 executor agent member 在当前 session 内自己的 sandbox workspace status。
   - 显式传入 `sandbox_workspace_id` 时，Host 必须校验该 workspace 属于当前 `session_id + agent_member_id`；跨 session、跨 agent member、未知 workspace 或非 executor actor 访问返回结构化失败。
+  - 显式与隐式 lookup 必须经过同一 context-root-aware service；workspace id 的显式存在不能跳过 ownership、root continuity、layout 与 image compatibility 检查。
   - workspace id 是 opaque id 但不能作为唯一安全边界；权限校验必须基于 canonical repository 中的 session/member 绑定。
 - sandbox workspace status 至少返回：
   - `sandbox_workspace_id`

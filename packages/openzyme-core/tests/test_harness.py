@@ -116,6 +116,21 @@ class BudgetTestModelFactory:
         return self.invoker
 
 
+class PrivateTokenizerDiagnosticFactory(BudgetTestModelFactory):
+    def count_prompt_tokens(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[object],
+        tools: list[object],
+    ) -> dict[str, object]:
+        del system_prompt, messages, tools
+        return {
+            "available": False,
+            "error": "tokenizer failed at /home/operator/private.json",
+        }
+
+
 def _build_repositories() -> CoreRepositories:
     connection = connect_sqlite(":memory:")
     apply_sqlite_migrations(connection)
@@ -298,6 +313,34 @@ def test_llm_preflight_auto_compacts_before_provider_call(monkeypatch) -> None:
         event.event_type == "llm.context_budget.after_compaction"
         for event in result.events
     )
+
+
+def test_llm_context_budget_event_sanitizes_tokenizer_diagnostic(monkeypatch) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    invoker = RecordingToolInvoker([{"content": "done", "tool_calls": []}])
+    factory = PrivateTokenizerDiagnosticFactory(invoker)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(
+            session_id=session.session_id,
+            message="x" * 300_000,
+            max_steps=1,
+        ),
+        driver=LlmConversationDriver(factory),
+        model_factory=factory,
+    )
+    serialized = json.dumps(
+        [event.to_dict() for event in result.events],
+        sort_keys=True,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert "/home/operator" not in serialized
+    assert "[redacted-host-path]" in serialized
 
 
 def test_oversized_tool_result_is_artifactized_before_next_llm_prompt(monkeypatch) -> None:
@@ -519,6 +562,66 @@ def test_harness_loop_dispatches_tool_calls_and_persists_updates() -> None:
         "memory.compacted",
         "message.sent",
     }
+
+
+def test_legacy_harness_dispatch_sanitizes_failed_tool_result() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def fail_tool(_context, invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            call_id=invocation.call_id,
+            tool_name=invocation.tool_name,
+            ok=False,
+            content="failed at /home/operator/private.toml",
+            status="/tmp/private-status",
+            error_code="sk-abcdefghijklmnop",
+            details={"storage_uri": "storage://private/error"},
+        )
+
+    registry.register("echo", fail_tool)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="start"),
+        driver=ToolLoopDriver(),
+        tool_registry=registry,
+    )
+    serialized = json.dumps(
+        [tool_result.envelope() for tool_result in result.tool_results],
+        sort_keys=True,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert "/home/operator" not in serialized
+    assert "/tmp/private-status" not in serialized
+    assert "sk-abcdefghijklmnop" not in serialized
+    assert "storage://private" not in serialized
+    assert result.tool_results[0].status == "failed"
+    assert result.tool_results[0].error_code == "tool_error"
+
+
+def test_legacy_harness_dispatch_preserves_successful_scientific_string() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+    content = (
+        "motif label /private/AOX-reference and "
+        "https://rest.uniprot.org/uniprotkb/search?query=protein_name:oxidase"
+    )
+    registry.register("echo", lambda _context, _invocation: content)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="start"),
+        driver=ToolLoopDriver(),
+        tool_registry=registry,
+    )
+
+    assert result.status is HarnessStatus.COMPLETED
+    assert result.tool_results[0].content == content
+    assert result.tool_results[0].summary == content
 
 
 class TerminalTaskFinishDriver:
@@ -1526,6 +1629,37 @@ def test_harness_fails_turn_when_tool_provider_raises_runtime_error() -> None:
     failed_events = [event for event in result.events if event.event_type == "harness.failed"]
     assert failed_events
     assert failed_events[-1].payload["tool_name"] == "semantic_scholar.search"
+
+
+def test_harness_failed_event_redacts_embedded_host_path() -> None:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    registry = ToolRegistry()
+
+    def fail_search(
+        _context: SessionRuntimeContext, _invocation: ToolInvocation
+    ) -> ToolResult:
+        raise RuntimeError("provider failed at /home/operator/private/config.toml")
+
+    registry.register("semantic_scholar.search", fail_search)
+
+    result = run_agent_harness_loop(
+        repositories,
+        HarnessInput(session_id=session.session_id, message="search"),
+        driver=ToolFailureDriver(),
+        tool_registry=registry,
+    )
+
+    serialized = json.dumps(
+        {
+            "outputs": result.outputs,
+            "events": [event.to_dict() for event in result.events],
+        },
+        sort_keys=True,
+    )
+    assert result.status is HarnessStatus.FAILED
+    assert "/home/operator" not in serialized
+    assert "[redacted-host-path]" in serialized
 
 
 def test_tool_registry_returns_standard_envelope_for_unknown_tool() -> None:

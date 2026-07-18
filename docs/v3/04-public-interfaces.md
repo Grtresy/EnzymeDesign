@@ -31,6 +31,8 @@ V3 公共接口以 harness-first 语义为唯一主线。
 
 Public JSON contract 由 Host API 的 request/response DTO 双向校验。未知请求字段、空 mutation、越界长度和非法 enum 返回 `422`，不得被静默忽略；response 顶层 shape 与 event envelope 同样经过 schema 校验，防止内部字段偶然泄漏或调用方依赖未声明字段。所有 JSON 错误统一为 `{"error":{"code","message","hint?","details?"}}`；调用方必须按稳定 `code` 分支，不能解析异常字符串。
 
+公开诊断采用 fail-closed sanitizer contract。ToolResult、workspace/run read model、runtime signal、`harness.failed`、event、eval 与 HTTP error 中由 schema 指定的 diagnostic/locator field，在 durable/public 落点前先把精确 sandbox workspace/control-socket Host root 映射为 `/workspace` 和 `/openzyme/control.sock`，再删除当前已测试的 high-risk Unix/HPC roots、Windows drive、UNC、`file://`、private/special-use URL、storage/runner locator 与 credential corpus。该 producer sanitizer 不声称识别任意自由文本中的所有 private path，也不得无类型改写 user conversation、scientific evidence 或 report 正文；更完整的 typed/versioned 边界见 [deferred proposal](architecture-proposals/canonical-public-diagnostic-boundary.md)。public projection 对历史 diagnostic 与 schema-declared locator field 再次投影；无法确认安全时退化为稳定 redacted diagnostic。原始异常与完整 stdout/stderr bytes 只能留在受保护 Host-private log，public event/API 只得到 sanitized summary、raw-byte digest/size、truncation marker 与 opaque non-readable ref。AOX verifier 对 surviving Host path/private locator 的独立严格拒绝不得因 sanitizer 存在而放宽。
+
 `GET /v3/runtime/health` 是经过脱敏的产品运维投影，返回 `v3.runtime_health.v1`、整体 `ready|degraded`、deployment/storage profile，以及 control plane、model、background runtime、execution、research、sandbox 的公开状态。它不得返回 worker identity、原始 exception、Host path、runner 配置或 secret；更深诊断仍属于受 operator/admin gate 保护的 `/debug/*`。`fixture_non_cutover`、`unavailable` 与 `disabled` 必须与 `ready` 区分，不能为获得绿色 health 而把 fixture 伪装成真实 provider。
 
 `POST /v3/sessions/{session_id}/messages` 是用户消息 ingress。它持久化用户消息并排队 `agent:master` wakeup signal，正常产品推进由 background runtime worker claim signal 后完成。该请求不提供 `max_steps` 字段，也不允许调用方控制本次后台 turn。后台 worker 的 agent turn budget 来自 `OPENZYME_V3_BACKGROUND_RUNTIME_MAX_STEPS_PER_AGENT`，debug/manual `/runtime/drain` 的 turn budget 则来自 `max_steps_per_agent`。
@@ -334,7 +336,7 @@ Web UI 可以同时展示 conversation 与 approval card；后端在 `waiting_ap
 
 V3 streaming 默认围绕 control-plane events，而不是围绕 graph implementation 细节。
 
-`GET /v3/sessions/{session_id}/events` 从 SQLite durable event log 读取。每个 SSE frame 必须包含整数 `id: <cursor>`；首次 replay 可传 `after_cursor`，自动重连使用标准 `Last-Event-ID`。二者同时提供返回 `400`，负数或非整数 cursor fail closed。`replay=false` 从请求时的 durable tail 开始 follow，不能退回进程内 list index；Host restart 后 replay 必须返回相同 event id/cursor。public endpoint 默认只投影 `visibility=public` events。
+`GET /v3/sessions/{session_id}/events` 从 SQLite durable event log 读取。每个 SSE frame 必须包含整数 `id: <cursor>`；首次 replay 可传 `after_cursor`，自动重连使用标准 `Last-Event-ID`。二者同时提供返回 `400`，负数或非整数 cursor fail closed。Host 在接受请求时固定全局 durable high-watermark；`replay=true` 必须按最多 1000 条一页完整重放到该 watermark，不能把单页上限误当成 replay 上限。`replay=false` 直接把 follow 起点锚定到请求时 watermark，既不回放请求前 backlog，也不能退回进程内 list index。public endpoint 只查询 `visibility=public` rows；private/audit event 占用的 cursor gap只推进全局水位，绝不投影其 payload。完成 snapshot replay 后，follow 只发送 watermark 之后的新 public events。Host restart 后 replay 必须返回相同 event id/cursor。
 
 浏览器等不应维护 event type allowlist 的调用方使用 `envelope=1`，此时所有 frame 的 SSE event name 固定为 `openzyme.event`，真实 `event_type` 保留在 JSON data envelope 中。默认模式继续以真实 `event_type` 作为 SSE event name，供已有调用方迁移；两种模式的数据 envelope、cursor、replay 和可见性语义完全相同。新增 durable event type 不得因为前端没有预先注册监听器而静默丢失。
 

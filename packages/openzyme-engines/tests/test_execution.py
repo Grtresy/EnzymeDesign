@@ -56,6 +56,7 @@ from openzyme_engines.execution import BioProviderHttpConfig
 from openzyme_engines.execution import BioSdkResult
 from openzyme_engines.execution import DeterministicBioDatabaseAdapter
 from openzyme_engines.execution import DeterministicBioToolsAdapter
+from openzyme_engines.execution import _ensure_pipeline_workspace_layout
 from openzyme_engines.execution import PreprocessArtifactDraft
 from openzyme_engines.execution import PreprocessResult
 from openzyme_engines.execution import PipelineSdkFailure
@@ -84,6 +85,75 @@ TOOLCHAIN_RUNTIME_IDENTITY = {
     "runner_contract_digest": "sha256:" + "a" * 64,
     "image_digest": "sha256:" + "b" * 64,
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_execution_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Keep legacy default-root tests isolated without weakening production guards."""
+
+    original_init = ExecutionEngine.__init__
+
+    def isolated_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.setdefault("sandbox_workspace_root", tmp_path / "workspaces")
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExecutionEngine, "__init__", isolated_init)
+
+
+@pytest.mark.parametrize("symlink_name", (None, "input"))
+def test_pipeline_workspace_layout_rejects_symlinks(
+    tmp_path: Path,
+    symlink_name: str | None,
+) -> None:
+    workspace_path = tmp_path / "workspace"
+    target = tmp_path / "target"
+    target.mkdir()
+    if symlink_name is None:
+        workspace_path.symlink_to(target, target_is_directory=True)
+    else:
+        workspace_path.mkdir()
+        (workspace_path / symlink_name).symlink_to(
+            target,
+            target_is_directory=True,
+        )
+
+    with pytest.raises(OSError):
+        _ensure_pipeline_workspace_layout(workspace_path, create=True)
+
+    assert list(target.iterdir()) == []
+
+
+def test_pipeline_workspace_layout_does_not_repair_existing_missing_directory(
+    tmp_path: Path,
+) -> None:
+    workspace_path = tmp_path / "workspace"
+    _ensure_pipeline_workspace_layout(workspace_path, create=True)
+    (workspace_path / "input").rmdir()
+
+    with pytest.raises(OSError):
+        _ensure_pipeline_workspace_layout(workspace_path, create=False)
+
+    assert not (workspace_path / "input").exists()
+
+
+def test_pipeline_workspace_layout_rejects_preexisting_orphan_on_create(
+    tmp_path: Path,
+) -> None:
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    orphan = workspace_path / "prior-science.fasta"
+    orphan.write_text(">old\nAAAA\n", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        _ensure_pipeline_workspace_layout(workspace_path, create=True)
+
+    assert orphan.read_text(encoding="utf-8") == ">old\nAAAA\n"
+    assert {item.name for item in workspace_path.iterdir()} == {
+        "prior-science.fasta"
+    }
 
 
 def _fpocket_pipeline_code(artifact_id: str = "art_001") -> str:
@@ -1218,7 +1288,10 @@ def _save_fasta_artifact(
 
 
 def _seed_sandbox_adapter_workspace(
-    repositories: CoreRepositories, sandbox_workspace_id: str = "sws_adapter_001"
+    repositories: CoreRepositories,
+    *,
+    workspace_root: Path,
+    sandbox_workspace_id: str = "sws_adapter_001",
 ) -> str:
     source_root = Path("/tmp/art_source_snapshot")
     source_root.mkdir(parents=True, exist_ok=True)
@@ -1286,6 +1359,10 @@ def _seed_sandbox_adapter_workspace(
             created_at="2026-04-20T12:00:05+00:00",
             last_attached_at="2026-04-20T12:00:05+00:00",
         )
+    )
+    _ensure_pipeline_workspace_layout(
+        workspace_root / sandbox_workspace_id,
+        create=True,
     )
     return sandbox_workspace_id
 
@@ -2895,10 +2972,16 @@ def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(
     assert artifact.metadata["provider_provenance"]["external_id"] == "6LEH"
 
 
-def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> None:
+def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
-    sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
+    workspace_root = tmp_path / "workspaces"
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(
+        repositories,
+        workspace_root=workspace_root,
+    )
     fasta_artifact_id = _save_fasta_artifact(repositories, "art_sandbox_hpc_fasta")
     workspace = _workspace_payload("sandbox_hpc")
     staged_fasta = _stage_payload(
@@ -2952,7 +3035,11 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs() -> No
         sandbox_workspace_id=sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
-    engine = ExecutionEngine(repositories, ToolchainIdentitySuccessRunner())
+    engine = ExecutionEngine(
+        repositories,
+        ToolchainIdentitySuccessRunner(),
+        sandbox_workspace_root=workspace_root,
+    )
 
     result = engine.execute_sandbox_adapter_operation(
         operation, {"adapter_params": params}
@@ -3012,6 +3099,7 @@ def test_sandbox_adapter_executor_rejects_mutated_sealed_input_before_hpc_submit
     _seed_session(repositories)
     sandbox_workspace_id = _seed_sandbox_adapter_workspace(
         repositories,
+        workspace_root=tmp_path / "workspaces",
         sandbox_workspace_id="sws_adapter_corrupt_input",
     )
     fasta_artifact_id = _save_fasta_artifact(
@@ -3105,12 +3193,16 @@ def test_sandbox_adapter_executor_rejects_mutated_sealed_input_before_hpc_submit
     assert runner.payloads == []
 
 
-def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation() -> (
-    None
-):
+def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_operation(
+    tmp_path: Path,
+) -> None:
     repositories = _build_repositories()
     _seed_session(repositories)
-    sandbox_workspace_id = _seed_sandbox_adapter_workspace(repositories)
+    workspace_root = tmp_path / "workspaces"
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(
+        repositories,
+        workspace_root=workspace_root,
+    )
     workspace = _workspace_payload("sandbox_fpocket")
     staged_structure = _stage_payload(
         repositories, "art_001", workspace, "inputs/structure.pdb"
@@ -3163,7 +3255,11 @@ def test_sandbox_adapter_executor_runs_structure_tools_fpocket_hpc_controlled_op
         sandbox_workspace_id=sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
-    engine = ExecutionEngine(repositories, runner)
+    engine = ExecutionEngine(
+        repositories,
+        runner,
+        sandbox_workspace_root=workspace_root,
+    )
 
     result = engine.execute_sandbox_adapter_operation(
         operation, {"adapter_params": params}

@@ -1517,11 +1517,28 @@ def test_continuation_state_claim_has_single_winner() -> None:
         cwd="/workspace",
         env_digest="sha256:env",
         status=SandboxRunStatus.RUNNING,
+        stdout_metadata={
+            "raw_digest": "sha256:stdout",
+            "raw_size_bytes": 12,
+            "truncated": True,
+            "log_ref": "sandbox-log://srun_s10_claim/stdout",
+        },
+        stderr_metadata={
+            "raw_digest": "sha256:stderr",
+            "raw_size_bytes": 0,
+            "truncated": False,
+            "log_ref": None,
+        },
         changed_files_summary={},
         created_at="2026-04-16T10:00:02+00:00",
         updated_at="2026-04-16T10:00:02+00:00",
     )
     repositories.sandbox_runs.save(run)
+    saved_run = repositories.sandbox_runs.get(run.sandbox_run_id)
+    assert saved_run is not None
+    assert saved_run.stdout_metadata == run.stdout_metadata
+    assert saved_run.stderr_metadata == run.stderr_metadata
+    assert saved_run.to_dict()["stdout_metadata"] == run.stdout_metadata
     approval = ApprovalRequest(
         approval_id="appr_s10_claim",
         session_id=session.session_id,

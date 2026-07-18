@@ -618,6 +618,8 @@ class SandboxRunRecord:
     source_tree_digest: str | None = None
     stdout_summary: str | None = None
     stderr_summary: str | None = None
+    stdout_metadata: dict[str, Any] | None = None
+    stderr_metadata: dict[str, Any] | None = None
     exit_code: int | None = None
     duration_ms: int | None = None
     changed_files_summary: dict[str, Any] | None = None

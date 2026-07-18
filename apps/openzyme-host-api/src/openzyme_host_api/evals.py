@@ -30,6 +30,7 @@ from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
+from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SessionArtifactRecord
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
@@ -52,6 +53,7 @@ from openzyme_runtime import live_e2e_skip_reason
 from openzyme_runtime import live_hpc_skip_reason
 from openzyme_runtime import live_llm_skip_reason
 from openzyme_runtime import live_tavily_skip_reason
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .app import HostApiDependencies
 from .app import create_app
@@ -2880,6 +2882,108 @@ def _s15_is_digest(value: object) -> bool:
     )
 
 
+_S15_STDIO_METADATA_KEYS = frozenset(
+    {"raw_digest", "raw_size_bytes", "truncated", "log_ref"}
+)
+
+
+def _s15_project_stdio_metadata(
+    value: object,
+    *,
+    sandbox_run_id: str,
+    stream: str,
+) -> tuple[dict[str, object] | None, bool]:
+    if not isinstance(value, dict) or set(value) != _S15_STDIO_METADATA_KEYS:
+        return None, False
+    raw_digest = value.get("raw_digest")
+    raw_size_bytes = value.get("raw_size_bytes")
+    truncated = value.get("truncated")
+    log_ref = value.get("log_ref")
+    expected_log_ref = f"sandbox-log://{sandbox_run_id}/{stream}"
+    valid = (
+        _s15_is_digest(raw_digest)
+        and type(raw_size_bytes) is int
+        and raw_size_bytes >= 0
+        and type(truncated) is bool
+        and (
+            (truncated is True and log_ref == expected_log_ref)
+            or (truncated is False and log_ref is None)
+        )
+        and not (raw_size_bytes > 32 * 1024 and truncated is False)
+    )
+    if not valid:
+        return None, False
+    return (
+        {
+            "raw_digest": raw_digest,
+            "raw_size_bytes": raw_size_bytes,
+            "truncated": truncated,
+            "log_ref": log_ref,
+        },
+        True,
+    )
+
+
+def _s15_project_legacy_log_ref(
+    value: object,
+    *,
+    stdout_metadata: dict[str, object] | None,
+    stderr_metadata: dict[str, object] | None,
+) -> tuple[str | None, bool]:
+    if value is None:
+        return None, True
+    allowed_refs = {
+        metadata.get("log_ref")
+        for metadata in (stdout_metadata, stderr_metadata)
+        if metadata is not None and metadata.get("log_ref") is not None
+    }
+    if isinstance(value, str) and value in allowed_refs:
+        return value, True
+    return None, False
+
+
+def _s15_sandbox_run_evidence(sandbox_run: SandboxRunRecord) -> dict[str, object]:
+    stdout_metadata, stdout_metadata_valid = _s15_project_stdio_metadata(
+        sandbox_run.stdout_metadata,
+        sandbox_run_id=sandbox_run.sandbox_run_id,
+        stream="stdout",
+    )
+    stderr_metadata, stderr_metadata_valid = _s15_project_stdio_metadata(
+        sandbox_run.stderr_metadata,
+        sandbox_run_id=sandbox_run.sandbox_run_id,
+        stream="stderr",
+    )
+    log_artifact_ref, log_artifact_ref_valid = _s15_project_legacy_log_ref(
+        sandbox_run.log_artifact_ref,
+        stdout_metadata=stdout_metadata,
+        stderr_metadata=stderr_metadata,
+    )
+    return {
+        "sandbox_run_id": sandbox_run.sandbox_run_id,
+        "sandbox_workspace_id": sandbox_run.sandbox_workspace_id,
+        "status": sandbox_run.status.value,
+        "argv_digest": sandbox_run.argv_digest,
+        "source_snapshot_artifact_id": sandbox_run.source_snapshot_artifact_id,
+        "source_tree_digest": sandbox_run.source_tree_digest,
+        "exit_code": sandbox_run.exit_code,
+        "duration_ms": sandbox_run.duration_ms,
+        "stdout_summary": sanitize_public_diagnostic_text(
+            sandbox_run.stdout_summary or ""
+        ),
+        "stderr_summary": sanitize_public_diagnostic_text(
+            sandbox_run.stderr_summary or ""
+        ),
+        "stdout_metadata": stdout_metadata,
+        "stderr_metadata": stderr_metadata,
+        "stdout_metadata_valid": stdout_metadata_valid,
+        "stderr_metadata_valid": stderr_metadata_valid,
+        "changed_files_summary": sandbox_run.changed_files_summary,
+        "log_artifact_ref": log_artifact_ref,
+        "log_artifact_ref_valid": log_artifact_ref_valid,
+        "error_code": sandbox_run.error_code,
+    }
+
+
 def _s15_prompt_digest() -> str:
     return (
         f"sha256:{hashlib.sha256(S15_AOX_HMM_FIXED_PROMPT.encode('utf-8')).hexdigest()}"
@@ -3134,22 +3238,7 @@ def _s15_build_evidence_bundle(
             [sandbox_workspace.image_digest for sandbox_workspace in sandbox_workspaces]
         ),
         "sandbox_runs": [
-            {
-                "sandbox_run_id": sandbox_run.sandbox_run_id,
-                "sandbox_workspace_id": sandbox_run.sandbox_workspace_id,
-                "status": sandbox_run.status.value,
-                "argv_digest": sandbox_run.argv_digest,
-                "source_snapshot_artifact_id": sandbox_run.source_snapshot_artifact_id,
-                "source_tree_digest": sandbox_run.source_tree_digest,
-                "exit_code": sandbox_run.exit_code,
-                "duration_ms": sandbox_run.duration_ms,
-                "stdout_summary": sandbox_run.stdout_summary,
-                "stderr_summary": sandbox_run.stderr_summary,
-                "changed_files_summary": sandbox_run.changed_files_summary,
-                "log_artifact_ref": sandbox_run.log_artifact_ref,
-                "error_code": sandbox_run.error_code,
-            }
-            for sandbox_run in sandbox_runs
+            _s15_sandbox_run_evidence(sandbox_run) for sandbox_run in sandbox_runs
         ],
         "adapter_schema_versions": _s15_non_empty_unique(
             [operation.adapter_envelope_schema_version for operation in operations]
@@ -3272,6 +3361,63 @@ def _s15_validate_evidence_bundle(
         errors.append(
             {"error_code": "live_evidence_incomplete", "invalid_operation_trace": True}
         )
+    sandbox_runs = evidence_bundle.get("sandbox_runs")
+    if sandbox_runs is not None and (
+        not isinstance(sandbox_runs, list) or not sandbox_runs
+    ):
+        errors.append(
+            {"error_code": "live_evidence_incomplete", "invalid_sandbox_runs": True}
+        )
+    elif isinstance(sandbox_runs, list):
+        for sandbox_run in sandbox_runs:
+            if not isinstance(sandbox_run, dict):
+                errors.append(
+                    {
+                        "error_code": "live_evidence_incomplete",
+                        "invalid_sandbox_run": True,
+                    }
+                )
+                continue
+            sandbox_run_id = sandbox_run.get("sandbox_run_id")
+            if not isinstance(sandbox_run_id, str) or not sandbox_run_id:
+                errors.append(
+                    {
+                        "error_code": "live_evidence_incomplete",
+                        "invalid_sandbox_run_id": True,
+                    }
+                )
+                continue
+            projected_metadata: dict[str, dict[str, object] | None] = {}
+            for stream in ("stdout", "stderr"):
+                metadata, valid = _s15_project_stdio_metadata(
+                    sandbox_run.get(f"{stream}_metadata"),
+                    sandbox_run_id=sandbox_run_id,
+                    stream=stream,
+                )
+                projected_metadata[stream] = metadata
+                if not valid or sandbox_run.get(f"{stream}_metadata_valid") is not True:
+                    errors.append(
+                        {
+                            "error_code": "live_sandbox_stdio_metadata_invalid",
+                            "sandbox_run_id": sandbox_run_id,
+                            "stream": stream,
+                        }
+                    )
+            _, legacy_ref_valid = _s15_project_legacy_log_ref(
+                sandbox_run.get("log_artifact_ref"),
+                stdout_metadata=projected_metadata["stdout"],
+                stderr_metadata=projected_metadata["stderr"],
+            )
+            if (
+                not legacy_ref_valid
+                or sandbox_run.get("log_artifact_ref_valid") is not True
+            ):
+                errors.append(
+                    {
+                        "error_code": "live_sandbox_log_ref_invalid",
+                        "sandbox_run_id": sandbox_run_id,
+                    }
+                )
     return {"passed": not errors, "missing_fields": missing_fields, "errors": errors}
 
 

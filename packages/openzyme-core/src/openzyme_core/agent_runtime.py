@@ -16,6 +16,7 @@ from openzyme_domain import Task
 from openzyme_domain import TaskStatus
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .harness import HarnessInput
 from .harness import HarnessStatus
@@ -595,9 +596,10 @@ class AgentRuntimeService:
         retryable: bool = False,
         emit: bool = True,
     ) -> tuple[AgentRuntimeSignal, bool]:
+        public_error = sanitize_public_diagnostic_text(error_message)
         failed = self.context.repositories.runtime_signals.fail(
             claimed.signal_id,
-            error_message=error_message,
+            error_message=public_error,
             retryable=retryable,
             **self._signal_lease_write_kwargs(),
         )

@@ -16,6 +16,7 @@ from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain.control_plane import utc_now_iso
 from openzyme_runtime import classify_llm_provider_error
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .agent_runtime import AgentRuntimeOutcome
 from .agent_runtime import AgentRuntimeService
@@ -115,10 +116,11 @@ class AgentRuntimeScheduler:
                             )
                         except Exception as exc:
                             classification = classify_llm_provider_error(exc)
+                            public_error = sanitize_public_diagnostic_text(str(exc))
                             failed = (
                                 self.context.repositories.runtime_signals.fail(
                                     signal.signal_id,
-                                    error_message=str(exc),
+                                    error_message=public_error,
                                     retryable=classification.retryable,
                                     expected_session_lease_token=session_lease.lease_token,
                                     expected_session_fencing_token=session_lease.fencing_token,
@@ -151,7 +153,7 @@ class AgentRuntimeScheduler:
                                     signal.session_id, signal.agent_id
                                 ),
                                 ok=False,
-                                summary=str(exc),
+                                summary=public_error,
                                 teammate_status=(
                                     "runtime_retry_scheduled"
                                     if failed.status.value == "pending"

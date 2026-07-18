@@ -290,6 +290,15 @@ def test_tavily_sdk_timeout_uses_bounded_timeout_retry_taxonomy() -> None:
         "https://user:password@example.org/private",
         "file:///tmp/private",
         "https://service.internal/private",
+        "https://service.corp/private",
+        "https://router.lan/private",
+        "https://nas.home.arpa/private",
+        "https://api.cluster/private",
+        "https://service.namespace.svc/private",
+        "https://vault.consul/private",
+        "https://host.test/private",
+        "https://host.invalid/private",
+        "https://host.example/private",
     ),
 )
 def test_private_locators_are_rejected(locator: str) -> None:

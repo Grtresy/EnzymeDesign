@@ -11,10 +11,12 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 from uuid import uuid4
 import zlib
 
 from openzyme_pipeline import aox_reference
+from openzyme_research import safe_public_locator
 from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 from openzyme_runtime import summarize_live_micu_token_ledger
 
@@ -276,27 +278,82 @@ def _validated_browser_png(encoded: object) -> tuple[bytes, int, int] | None:
         return None
     return content, width, height
 _SENSITIVE_KEY_PATTERN = re.compile(
-    r"^(?:authorization|cookie|password|passwd|secret|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|storage_uri|source_uri|host_path|remote_path)$",
+    r"^(?:(?:[a-z0-9]+[_-])*(?:authorization|cookie|password|passwd|secret|"
+    r"api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+    r"credential|credentials|host[_-]?path|local[_-]?path|private[_-]?key|"
+    r"private[_-]?locator|remote[_-]?path|runner[_-]?config|source[_-]?uri|"
+    r"storage[_-]?uri|connection[_-]?string|token)|"
+    r"aws[_-]?secret[_-]?(?:access[_-]?)?key|"
+    r"azure[_-]?storage[_-]?connection[_-]?string|google[_-]?application[_-]?"
+    r"credentials|mysql[_-]?pwd|rediscli[_-]?auth|pgpassword|database[_-]?url|"
+    r"accountkey|(?:[a-z0-9]+[_-])*(?:password|private[_-]?key)"
+    r"[_-](?:data|file|value))$",
     re.IGNORECASE,
 )
 _SENSITIVE_VALUE_PATTERN = re.compile(
-    r"(?:\bBearer\s+[A-Za-z0-9._~+/-]+|\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}|"
+    r"(?:\bBearer\s+[A-Za-z0-9._~+/-]+|"
+    r"\b(?:authorization|set[_-]?cookie|cookie)\s*[:=]\s*[^\r\n]+|"
+    r"\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}|"
     r"\bgh[pousr]_[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}|"
     r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|"
-    r"\b(?:api[_-]?key|client[_-]?secret|password|secret|access[_-]?token)"
+    r"\b(?:(?:[a-z0-9]+[_-])*(?:api[_-]?key|client[_-]?secret|password|"
+    r"secret|access[_-]?token|refresh[_-]?token|credential|private[_-]?key|"
+    r"token)|aws[_-]?secret[_-]?(?:access[_-]?)?key|"
+    r"azure[_-]?storage[_-]?connection[_-]?string|"
+    r"google[_-]?application[_-]?credentials|mysql[_-]?pwd|rediscli[_-]?auth|"
+    r"pgpassword|database[_-]?url|accountkey)"
     r"\s*[:=]\s*\S+)",
     re.IGNORECASE,
 )
 _HOST_PATH_PATTERN = re.compile(
-    r"(?:^|[\s\"'=:,(])(?:/(?:home|root|tmp|var|run|opt|mnt|Users)/|"
-    r"[A-Za-z]:\\|\\\\[A-Za-z0-9_.-]+\\)",
+    r"(?:^|[\s\"'=:,(])(?:/(?:app|cluster|code|data|etc|gpfs|home|lustre|"
+    r"mnt|opt|private|project|root|run|scratch|srv|tmp|usr|var|Users)(?:/|$)|"
+    r"[A-Za-z]:[\\/]|\\\\[A-Za-z0-9_.-]+\\|file://)",
+    re.IGNORECASE,
 )
 _PRIVATE_URL_PATTERN = re.compile(
     r"https?://(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|10(?:\.\d{1,3}){3}|"
     r"192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|"
     r"\[?::1\]?)(?::\d+)?(?:[/\s]|$)",
     re.IGNORECASE,
+)
+_HTTP_URL_PATTERN = re.compile(r"(?i)https?://[^\s\"'<>]+")
+_PRIVATE_LOCATOR_PATTERN = re.compile(
+    r"(?i)(?:storage|s3|gs|gcs|azure|ssh|scp|file|postgres|postgresql|redis|"
+    r"mongodb(?:\+srv)?|mysql|mariadb|amqp|amqps)://[^\s\"'<>]*"
+)
+_ABSOLUTE_UNIX_LOCATION_PATTERN = re.compile(
+    r"(?<![:/\]A-Za-z0-9._-])/(?!/)[^\s\"'<>;,()]+"
+)
+_ENCODED_PRIVATE_LOCATION_PATTERN = re.compile(
+    r"(?i)(?:\\/|%2f)(?:app|cluster|code|data|etc|gpfs|home|lustre|mnt|opt|"
+    r"private|project|root|run|scratch|srv|tmp|usr|var|Users)(?:\\/|%2f)"
+)
+_PUBLIC_API_ROUTE_PATTERN = re.compile(r"^/(?:v3|health|ui)(?:[/?].*)?$")
+_CAMEL_CASE_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SAFE_PUBLIC_METADATA_KEYS = frozenset(
+    {
+        "credential_count",
+        "credential_present",
+        "credential_slots",
+        "credentials_ready",
+        "token_count",
+        "token_limit",
+        "token_usage",
+    }
+)
+_SENSITIVE_COMPACT_KEY_ALIASES = frozenset(
+    {
+        "accountkey",
+        "awssecretaccesskey",
+        "awssecretkey",
+        "azurestorageconnectionstring",
+        "databaseurl",
+        "googleapplicationcredentials",
+        "mysqlpwd",
+        "pgpassword",
+        "rediscliauth",
+    }
 )
 _SCIENCE_SUFFIXES = {
     ".a2m",
@@ -8720,12 +8777,48 @@ def _resolve_artifact_path(root: Path, relative_path: str) -> Path:
     return target
 
 
+def _is_sensitive_public_key(value: object) -> bool:
+    separated = _CAMEL_CASE_BOUNDARY_PATTERN.sub("_", str(value).strip())
+    normalized = separated.casefold().replace("-", "_")
+    if normalized in _SAFE_PUBLIC_METADATA_KEYS:
+        return False
+    compact = normalized.replace("_", "")
+    return (
+        _SENSITIVE_KEY_PATTERN.fullmatch(normalized) is not None
+        or compact in _SENSITIVE_COMPACT_KEY_ALIASES
+        or compact.endswith(
+            (
+                "accesstoken",
+                "apikey",
+                "authorization",
+                "clientsecret",
+                "connectionstring",
+                "cookie",
+                "credential",
+                "credentials",
+                "hostpath",
+                "localpath",
+                "password",
+                "privatekey",
+                "privatelocator",
+                "refreshtoken",
+                "remotepath",
+                "runnerconfig",
+                "secret",
+                "sourceuri",
+                "storageuri",
+                "token",
+            )
+        )
+    )
+
+
 def _assert_public_safe(payload: object, *, identity: str) -> None:
     if isinstance(payload, dict):
         for key, value in payload.items():
             key_text = str(key)
             child_identity = f"{identity}.{key_text}"
-            if _SENSITIVE_KEY_PATTERN.fullmatch(key_text):
+            if _is_sensitive_public_key(key_text):
                 raise CutoverEvidenceError(
                     "public_projection_sensitive_key",
                     "attempt evidence contains a private field",
@@ -8751,12 +8844,65 @@ def _assert_public_safe(payload: object, *, identity: str) -> None:
             "attempt evidence contains a Host-local path",
             details={"identity": identity},
         )
+    if _ENCODED_PRIVATE_LOCATION_PATTERN.search(payload):
+        raise CutoverEvidenceError(
+            "public_projection_host_path",
+            "attempt evidence contains an encoded Host-local path",
+            details={"identity": identity},
+        )
+    if _PRIVATE_LOCATOR_PATTERN.search(payload):
+        raise CutoverEvidenceError(
+            "public_projection_private_locator",
+            "attempt evidence contains a private storage or runner locator",
+            details={"identity": identity},
+        )
     if _PRIVATE_URL_PATTERN.search(payload):
         raise CutoverEvidenceError(
             "public_projection_private_url",
             "attempt evidence contains a private provider URL",
             details={"identity": identity},
         )
+    for url_match in _HTTP_URL_PATTERN.finditer(payload):
+        locator = url_match.group(0).rstrip(".,);]")
+        try:
+            parsed = urlsplit(locator)
+        except ValueError:
+            parsed = None
+        if safe_public_locator(locator) is None:
+            raise CutoverEvidenceError(
+                "public_projection_private_url",
+                "attempt evidence contains a private provider URL",
+                details={"identity": identity},
+            )
+        if parsed is None or parsed.query or parsed.fragment:
+            raise CutoverEvidenceError(
+                "public_projection_url_query",
+                "attempt evidence contains a query-bearing or fragmented URL",
+                details={"identity": identity},
+            )
+    for path_match in _ABSOLUTE_UNIX_LOCATION_PATTERN.finditer(payload):
+        candidate = path_match.group(0)
+        if candidate == "/workspace" or candidate.startswith("/workspace/"):
+            continue
+        if candidate == "/openzyme/control.sock":
+            continue
+        if _PUBLIC_API_ROUTE_PATTERN.fullmatch(candidate):
+            continue
+        raise CutoverEvidenceError(
+            "public_projection_host_path",
+            "attempt evidence contains an unrecognized absolute path",
+            details={"identity": identity},
+        )
+
+
+def assert_public_safe_payload(
+    payload: object,
+    *,
+    identity: str = "public_payload",
+) -> None:
+    """Reject private locators, credentials, and Host paths without rewriting."""
+
+    _assert_public_safe(payload, identity=identity)
 
 
 def _preloaded_science(root: Path) -> list[str]:

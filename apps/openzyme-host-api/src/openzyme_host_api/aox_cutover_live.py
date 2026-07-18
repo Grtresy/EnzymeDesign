@@ -34,6 +34,8 @@ from openzyme_pipeline import aox_sequence_join
 from openzyme_pipeline import aox_similarity
 from openzyme_runtime import OpenZymeSettings
 from openzyme_runtime import REPO_ROOT
+from openzyme_runtime import safe_public_machine_identifier
+from openzyme_runtime import sanitize_public_diagnostic_payload
 import uvicorn
 
 from .aox_cutover_evidence import AttemptRunContext
@@ -42,7 +44,9 @@ from .aox_cutover_evidence import AOX_HPC_WORKSPACE_BINDING_CONTRACT_ID
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
 from .aox_cutover_evidence import canonical_digest
 from .aox_cutover_evidence import canonical_json_bytes
+from .aox_cutover_evidence import assert_public_safe_payload
 from .aox_cutover_evidence import aox_hpc_workspace_id
+from .aox_cutover_evidence import CutoverEvidenceError
 from .aox_cutover_evidence import controlled_operation_digest
 from .aox_cutover_evidence import sandbox_calculation_digest
 from .app import HostApiDependencies
@@ -2559,6 +2563,47 @@ class LiveAoxAttemptRunner:
                     "code": exc.code,
                     "message": _safe_message(exc),
                 }
+        sanitized_blocker_payload = sanitize_public_diagnostic_payload(
+            blocker_payload
+        )
+        if not isinstance(sanitized_blocker_payload, dict):
+            raise LiveProductPathError(
+                "failure_evidence_sanitization_failed",
+                "live failure evidence did not remain a structured object",
+            )
+        blocker_payload = dict(sanitized_blocker_payload)
+        try:
+            assert_public_safe_payload(
+                blocker_payload,
+                identity="live_failure_evidence",
+            )
+        except CutoverEvidenceError:
+            safe_blocker_code = safe_public_machine_identifier(
+                blocker_code,
+                fallback="live_product_path_failed",
+            ) or "live_product_path_failed"
+            blocker_payload = {
+                "schema_id": LIVE_BLOCKER_SCHEMA_ID,
+                "runner_schema_id": LIVE_RUNNER_SCHEMA_ID,
+                "attempt_id": context.roots.attempt_id,
+                "attempt_kind": context.roots.attempt_kind,
+                "observed_at": datetime.now(UTC).isoformat(),
+                "blocker": {
+                    "code": safe_blocker_code,
+                    "message": "[redacted-private-diagnostic]",
+                },
+                "root_identity": context.roots.proof["root_identity"],
+                "hpc_workspace_label": context.roots.hpc_workspace_label,
+                "health": {"status": "redacted"},
+                "probe": None,
+                "formal": None,
+                "public_api_receipts": [],
+                "diagnostic_projection": "fail_closed",
+            }
+            assert_public_safe_payload(
+                blocker_payload,
+                identity="live_failure_evidence_fallback",
+            )
         artifact_id = f"art_live_blocker_{_safe_id(context.roots.attempt_id)}"
         relative_path = "formal/live-product-path-blocker.json"
         content = canonical_json_bytes(blocker_payload) + b"\n"

@@ -6,7 +6,9 @@ import hashlib
 import json
 import re
 import tempfile
+import threading
 from typing import Any
+from weakref import WeakValueDictionary
 
 from openzyme_domain import SandboxImageCompatibility
 from openzyme_domain import SandboxImageRecord
@@ -28,6 +30,10 @@ SANDBOX_MANIFEST_SCHEMA_VERSION = "s07.workspace_manifest.v1"
 SANDBOX_WORKSPACE_MANIFEST_VERSION = "s07.workspace_manifest.v1"
 DEFAULT_SANDBOX_QUOTA_BYTES = 2 * 1024 * 1024 * 1024
 WORKSPACE_DIRECTORIES = ("src", "input", "work", "output", "logs", "manifest")
+_WORKSPACE_CREATION_LOCKS_GUARD = threading.Lock()
+_WORKSPACE_CREATION_LOCKS: WeakValueDictionary[str, threading.RLock] = (
+    WeakValueDictionary()
+)
 REQUIRED_IMAGE_CAPABILITIES = (
     "rootless_podman",
     "non_root_user",
@@ -54,6 +60,16 @@ def normalize_immutable_image_id(value: str) -> str:
 def derive_sandbox_workspace_id(session_id: str, agent_member_id: str) -> str:
     digest = hashlib.sha256(f"{session_id}:{agent_member_id}".encode("utf-8")).hexdigest()
     return f"sw_{digest[:24]}"
+
+
+def _workspace_creation_lock(workspace_path: Path) -> threading.RLock:
+    key = str(workspace_path)
+    with _WORKSPACE_CREATION_LOCKS_GUARD:
+        lock = _WORKSPACE_CREATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _WORKSPACE_CREATION_LOCKS[key] = lock
+        return lock
 
 
 def default_missing_image_record(*, now: str | None = None) -> SandboxImageRecord:
@@ -159,67 +175,80 @@ class SandboxWorkspaceService:
         if agent is None or agent.session_id != session_id:
             raise ValueError(f"agent_member_id {agent_member_id!r} does not belong to session {session_id!r}")
         workspace_id = derive_sandbox_workspace_id(session_id, agent_member_id)
-        existing = self.repositories.sandbox_workspaces.get_by_session_member(
-            session_id, agent_member_id
-        )
-        if existing is not None and existing.sandbox_workspace_id != workspace_id:
-            raise ValueError("sandbox workspace identity does not match session/member derivation")
-        image = self._default_image_record()
         workspace_path = self._workspace_path(workspace_id)
-        try:
-            directory_summary = self._ensure_and_summarize_directory(workspace_path)
-            quota_summary = self._quota_summary(directory_summary)
-            status, last_error = self._status_for(image, quota_summary)
-        except OSError:
-            directory_summary = {
-                "summary_unavailable": True,
-                "error_code": "sandbox_volume_corrupt",
-            }
-            quota_summary = {
-                "limit_bytes": self.quota_bytes,
-                "used_bytes": None,
-                "exceeded": None,
-                "summary_unavailable": True,
-            }
-            status = SandboxWorkspaceStatus.CORRUPT
-            last_error = {
-                "error_code": "sandbox_volume_corrupt",
-                "hint": "Inspect or repair the sandbox workspace volume before continuing.",
-            }
-        now = utc_now_iso()
-        record = SandboxWorkspaceRecord(
-            sandbox_workspace_id=workspace_id,
-            session_id=session_id,
-            agent_member_id=agent_member_id,
-            agent_id=agent.agent_id,
-            focus_task_id=focus_task_id if focus_task_id is not None else agent.task_id,
-            focus_lane_id=focus_lane_id if focus_lane_id is not None else agent.lane_id,
-            status=status,
-            image_ref=image.image_ref,
-            image_digest=image.image_digest,
-            image_version=image.image_version,
-            sandbox_protocol_version=image.sandbox_protocol_version,
-            image_compatibility=image.compatibility,
-            manifest_version=SANDBOX_WORKSPACE_MANIFEST_VERSION,
-            volume_digest=str(directory_summary.get("volume_digest") or ""),
-            quota_summary=quota_summary,
-            directory_summary=directory_summary,
-            materialized_input_artifact_ids=()
-            if existing is None
-            else existing.materialized_input_artifact_ids,
-            registered_artifact_ids=()
-            if existing is None
-            else existing.registered_artifact_ids,
-            source_code_artifact_ids=()
-            if existing is None
-            else existing.source_code_artifact_ids,
-            last_command_summary=None if existing is None else existing.last_command_summary,
-            last_error=last_error,
-            created_at=now if existing is None else existing.created_at,
-            last_attached_at=now,
-        )
-        self.repositories.sandbox_workspaces.save(record)
-        return record
+        with _workspace_creation_lock(workspace_path):
+            existing = self.repositories.sandbox_workspaces.get_by_session_member(
+                session_id, agent_member_id
+            )
+            if existing is not None and existing.sandbox_workspace_id != workspace_id:
+                raise ValueError(
+                    "sandbox workspace identity does not match session/member derivation"
+                )
+            image = self._default_image_record()
+            try:
+                directory_summary = (
+                    self._ensure_and_summarize_directory(workspace_path)
+                    if existing is None
+                    else self._summarize_existing_directory(workspace_path)
+                )
+                quota_summary = self._quota_summary(directory_summary)
+                status, last_error = self._status_for(image, quota_summary)
+            except OSError:
+                directory_summary = {
+                    "summary_unavailable": True,
+                    "error_code": "sandbox_volume_corrupt",
+                }
+                quota_summary = {
+                    "limit_bytes": self.quota_bytes,
+                    "used_bytes": None,
+                    "exceeded": None,
+                    "summary_unavailable": True,
+                }
+                status = SandboxWorkspaceStatus.CORRUPT
+                last_error = {
+                    "error_code": "sandbox_volume_corrupt",
+                    "hint": "Inspect or repair the sandbox workspace volume before continuing.",
+                }
+            now = utc_now_iso()
+            record = SandboxWorkspaceRecord(
+                sandbox_workspace_id=workspace_id,
+                session_id=session_id,
+                agent_member_id=agent_member_id,
+                agent_id=agent.agent_id,
+                focus_task_id=focus_task_id
+                if focus_task_id is not None
+                else agent.task_id,
+                focus_lane_id=focus_lane_id
+                if focus_lane_id is not None
+                else agent.lane_id,
+                status=status,
+                image_ref=image.image_ref,
+                image_digest=image.image_digest,
+                image_version=image.image_version,
+                sandbox_protocol_version=image.sandbox_protocol_version,
+                image_compatibility=image.compatibility,
+                manifest_version=SANDBOX_WORKSPACE_MANIFEST_VERSION,
+                volume_digest=str(directory_summary.get("volume_digest") or ""),
+                quota_summary=quota_summary,
+                directory_summary=directory_summary,
+                materialized_input_artifact_ids=()
+                if existing is None
+                else existing.materialized_input_artifact_ids,
+                registered_artifact_ids=()
+                if existing is None
+                else existing.registered_artifact_ids,
+                source_code_artifact_ids=()
+                if existing is None
+                else existing.source_code_artifact_ids,
+                last_command_summary=None
+                if existing is None
+                else existing.last_command_summary,
+                last_error=last_error,
+                created_at=now if existing is None else existing.created_at,
+                last_attached_at=now,
+            )
+            self.repositories.sandbox_workspaces.save(record)
+            return record
 
     def status_for_agent(
         self,
@@ -306,8 +335,31 @@ class SandboxWorkspaceService:
         return root.resolve() / sandbox_workspace_id
 
     def _ensure_and_summarize_directory(self, workspace_path: Path) -> dict[str, Any]:
+        if workspace_path.is_symlink() or workspace_path.exists():
+            raise OSError("new sandbox workspace root already exists")
+        workspace_path.mkdir(parents=True, exist_ok=False)
+        if workspace_path.is_symlink() or not workspace_path.is_dir():
+            raise OSError("sandbox workspace root is missing or invalid")
         for name in WORKSPACE_DIRECTORIES:
-            (workspace_path / name).mkdir(parents=True, exist_ok=True)
+            directory = workspace_path / name
+            if directory.is_symlink():
+                raise OSError("sandbox workspace directory is a symlink")
+            if directory.exists():
+                if not directory.is_dir():
+                    raise OSError("sandbox workspace entry is not a directory")
+            else:
+                directory.mkdir(exist_ok=False)
+            if directory.is_symlink() or not directory.is_dir():
+                raise OSError("sandbox workspace directory is missing or invalid")
+        return summarize_workspace_directory(workspace_path)
+
+    def _summarize_existing_directory(self, workspace_path: Path) -> dict[str, Any]:
+        if workspace_path.is_symlink() or not workspace_path.is_dir():
+            raise OSError("sandbox workspace root is missing or invalid")
+        for name in WORKSPACE_DIRECTORIES:
+            directory = workspace_path / name
+            if directory.is_symlink() or not directory.is_dir():
+                raise OSError("sandbox workspace layout is incomplete or invalid")
         return summarize_workspace_directory(workspace_path)
 
     def _quota_summary(self, directory_summary: dict[str, Any]) -> dict[str, Any]:
@@ -390,7 +442,10 @@ def register_sandbox_workspace_tools(
 ) -> None:
     def status_handler(context: SessionRuntimeContext, invocation: ToolInvocation) -> ToolResult:
         requested_workspace_id = invocation.arguments.get("sandbox_workspace_id")
-        service = SandboxWorkspaceService(context.repositories)
+        service = SandboxWorkspaceService(
+            context.repositories,
+            workspace_root=context.sandbox_workspace_root,
+        )
         record, error_code, hint = service.status_for_agent(
             session_id=context.snapshot.session.session_id,
             agent_id=agent_id or "",

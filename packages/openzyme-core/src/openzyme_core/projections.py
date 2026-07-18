@@ -10,6 +10,7 @@ from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain import EngineInvocationStatus
 from openzyme_domain import InboxParticipantKind
 from openzyme_domain import MemoryKind
+from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
 from .artifact_projection import project_artifact_for_agent
@@ -21,6 +22,52 @@ from .conversation import build_conversation_projection
 from .protocols import ProtocolService
 from .runtime_consistency import RuntimeConsistencyService
 from .trace_projection import project_public_llm_trace_step
+
+
+def _project_structured_locator(value: object) -> object:
+    """Project a schema-declared locator without rewriting arbitrary prose."""
+
+    if not isinstance(value, str):
+        return value
+    if (
+        value == "/workspace"
+        or value.startswith("/workspace/")
+        or value == "/openzyme/control.sock"
+    ):
+        return value
+    if value.startswith("/"):
+        return "[redacted-host-path]"
+    return sanitize_public_diagnostic_text(value)
+
+
+def _project_named_locators(
+    value: object,
+    *,
+    fields: frozenset[str],
+) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): (
+                _project_structured_locator(item)
+                if str(key) in fields
+                else _project_named_locators(item, fields=fields)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_project_named_locators(item, fields=fields) for item in value]
+    return value
+
+
+def _project_locator_record(
+    value: dict[str, Any],
+    *,
+    fields: frozenset[str],
+) -> dict[str, Any]:
+    projected = _project_named_locators(value, fields=fields)
+    if not isinstance(projected, dict):  # pragma: no cover - structural invariant
+        raise TypeError("structured locator projection must remain an object")
+    return projected
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +190,10 @@ class SessionProjectionBuilder:
         lane_board = (
             LaneManager(self.repositories).build_projection(session_id).to_dict()
         )
+        lane_board = _project_locator_record(
+            lane_board,
+            fields=frozenset({"cwd"}),
+        )
         conversation = tuple(
             entry.to_dict()
             for entry in build_conversation_projection(self.repositories, session_id)
@@ -158,13 +209,17 @@ class SessionProjectionBuilder:
             for message in self.repositories.inbox.list_by_session(session_id)
         )
         memory = tuple(
-            entry.to_dict()
+            _project_locator_record(
+                entry.to_dict(),
+                fields=frozenset({"source_range"}),
+            )
             for entry in self.repositories.memory.list_by_session(session_id)
         )
         delegation = self.build_delegation_projection(session_id).to_dict()
         agent_traces = self.build_agent_traces_projection(session_id)
         activity_feed = tuple(
-            item.to_dict() for item in self.build_activity_feed(session_id)
+            self._sanitize_execution_projection(item.to_dict())
+            for item in self.build_activity_feed(session_id)
         )
         artifacts = tuple(
             self._project_workspace_artifact(artifact)
@@ -172,7 +227,7 @@ class SessionProjectionBuilder:
         )
         artifact_index = tuple(self._build_artifact_index(artifacts))
         sandbox_workspaces = tuple(
-            workspace.to_dict()
+            self._sanitize_execution_projection(workspace.to_dict())
             for workspace in self.repositories.sandbox_workspaces.list_by_session(
                 session_id
             )
@@ -196,7 +251,7 @@ class SessionProjectionBuilder:
             reports=reports,
         )
         capabilities = self._build_capabilities_projection(session_id)
-        runtime_state = (
+        runtime_state = self._sanitize_execution_projection(
             RuntimeConsistencyService(self.repositories)
             .audit_session(session_id)
             .to_dict()
@@ -1402,21 +1457,11 @@ class SessionProjectionBuilder:
         if isinstance(value, list | tuple):
             return [self._sanitize_execution_projection(item) for item in value]
         if isinstance(value, str):
-            if value.startswith(
-                (
-                    "/home/",
-                    "/tmp/",
-                    "/var/",
-                    "/mnt/",
-                    "/data/",
-                    "~/",
-                    "file://",
-                    "storage://",
-                )
-            ):
-                return "[redacted]"
             if value.startswith(("http://", "https://")):
                 return safe_public_locator(value) or "[redacted]"
+            if value.startswith("storage://"):
+                return "[redacted]"
+            return sanitize_public_diagnostic_text(value)
         return value
 
     def _string_or_none(self, value: Any) -> str | None:

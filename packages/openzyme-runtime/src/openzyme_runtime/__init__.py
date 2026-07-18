@@ -33,6 +33,9 @@ from .live_token_ledger import summarize_live_micu_token_ledger
 from .provider_tools import openai_tool_from_spec
 from .provider_tools import ProviderToolAdapter
 from .provider_tools import ProviderToolCatalog
+from .public_diagnostics import sanitize_public_diagnostic_payload
+from .public_diagnostics import sanitize_public_diagnostic_text
+from .public_diagnostics import safe_public_machine_identifier
 from .runtime_identity import immutable_source_tree_digest
 from .bootstrap import RuntimeFoundation
 from .bootstrap import validate_runtime_foundation_support
@@ -150,6 +153,7 @@ from .tooling import ToolRuntime
 from .tooling import ToolSideEffect
 from .tooling import ToolSpec
 from .tooling import ToolValidationError
+from .tooling import sanitize_tool_result_diagnostics
 from .tooling import validate_arguments_against_schema
 
 __all__ = [
@@ -229,6 +233,10 @@ __all__ = [
     "PostgresCheckpointerFactory",
     "ProviderToolAdapter",
     "ProviderToolCatalog",
+    "sanitize_public_diagnostic_payload",
+    "sanitize_public_diagnostic_text",
+    "safe_public_machine_identifier",
+    "sanitize_tool_result_diagnostics",
     "CompositeResearchToolProvider",
     "RepoBackedHpcCatalogProvider",
     "build_bio_research_tools",

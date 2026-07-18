@@ -20,6 +20,7 @@ from .llm_invocation import LlmInvocationRuntime
 from .llm_invocation import max_attempts_from_retries
 from .llm_debug import serialize_llm_payload
 from .provider_tools import ProviderToolAdapter
+from .public_diagnostics import sanitize_public_diagnostic_text
 
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
@@ -528,7 +529,8 @@ class OpenAICompatibleChatModelFactory:
         except Exception as exc:
             return {
                 "available": False,
-                "error": str(exc) or exc.__class__.__name__,
+                "error": sanitize_public_diagnostic_text(str(exc))
+                or exc.__class__.__name__,
             }
         token_count = _extract_tokenizer_count(response)
         if token_count is None:

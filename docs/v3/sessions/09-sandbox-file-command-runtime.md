@@ -28,6 +28,7 @@
 - 已确认 allowlist 必须写入 S07 sandbox image manifest，至少记录依赖名、版本或 lock digest、用途边界和 import smoke；manifest 缺失、版本不匹配或依赖能力不兼容时按 S07 image compatibility fail-closed，不能 runtime auto install、自动换镜像或 fallback 到旧 pipeline runner。
 - S09 的 SDK supervisor RPC smoke 只证明 transport、身份绑定、path/secret 隔离和结构化错误返回；generic operation digest、approval request、`waiting_approval`、pause/resume、route freezing 和 recovery 由 S10 实现。
 - Host 必须在每次 `sandbox.exec` 启动命令前调用 S08 source snapshot service，自动创建或绑定覆盖整个 `/workspace/src` 的 CODE artifact；snapshot 失败时命令不启动，不能映射成普通非零退出。
+- 在 source snapshot、`SandboxRun` 创建和 container process invocation 之前，Host 必须验证 configured workspace root 下 `src/input/work/output/logs/manifest` 六个 bind source 都是已存在的真实非 symlink 目录；任一缺失或类型异常返回 `sandbox_volume_corrupt`，不得在 exec 路径补空目录、创建 snapshot/run 或把底层 Host `statfs` 路径交给 agent。
 - executor 不创建 approval、不调用 resume、不判断敏感性；在 S09 中它只处理命令成功、结构化 transport error 或非零退出后的普通编程结果。
 - 命令执行结果返回 bounded stdout/stderr、exit code、duration、changed file summary、log artifact ref（超限时）和 structured error。
 - `sandbox.exec` 不允许直接传 Host path、SSH/Slurm command、container runtime command、provider credential、runner config 或任意外部 secret。
@@ -46,6 +47,7 @@ S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
 - `sandbox.exec.timeout_seconds` 默认 `120`，最大 `900`；CPU 默认 `2`、memory 默认 `2GiB`、pids 默认 `256`，超过 Host policy 返回 `sandbox_resource_exceeded`。
 - `sandbox.exec.env` 只能包含 allowlist key：`PYTHONPATH`、`OPENZYME_*` sandbox-safe SDK vars 和 task-scoped non-secret variables；任何 credential-like key、PATH override、LD_PRELOAD、SSH/Slurm/provider secret 都返回 `sandbox_env_forbidden`。
 - stdout/stderr inline summary 各最多 `32KiB`；超过时写 `CommandLogArtifact`，result 只返回截断摘要、digest、size 和 log artifact ref。
+- bounded stdout/stderr 与 exception summary 在写 run/workspace/tool result 前先经过 public diagnostic sanitizer：精确 workspace/control-socket Host location 只在 schema-declared field 中映射为逻辑 sandbox path，随后对已测试的 high-risk Unix/HPC、Windows、UNC、file URI、private URL/locator 与 credential corpus递归脱敏；不声称识别任意自由文本中的所有 private path。进程 stdio 以 binary capture，public summary 使用 UTF-8 replacement decode 后再脱敏；raw digest/size按捕获的原始 bytes计算，完整超限 payload仅写 attempt-local Host-private log。
 
 ## File / Command Semantics
 
@@ -64,6 +66,7 @@ S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
 - `sandbox.exec` result 增加 Host-supervised execution metadata：`sandbox_run_id`、`sandbox_workspace_id`、`source_snapshot_artifact_id`、`source_tree_digest`、`sdk_transport_call_ids`、`status`、`error_code`。如果 `/workspace/src` 为空、不可读或 snapshot commit 失败，命令 fail-closed，不启动进程，并返回 S08 source snapshot 错误码。
 - `waiting_approval` 不是 S09 的验收对象；approval resolve 后恢复同一个等待中的 SDK operation 的语义由 S10 锁定。
 - workspace projection 可展示最近命令摘要和文件变化摘要，但不展示完整 stdout/stderr 或大文件内容。最小字段为 `sandbox_run_id`、`status`、`argv_digest`、`cwd`、`started_at`、`ended_at`、`duration_ms`、`exit_code`、`error_code`、`source_snapshot_artifact_id`、`changed_files_summary`、`stdout_summary`、`stderr_summary` 和 `log_artifact_ref`；projection 不暴露 Host path、sandbox host path、control socket path、private storage URI 或完整日志。
+- projection 必须对 workspace/run 的全部字符串与嵌套 diagnostic payload 再次递归脱敏，以保护 sanitizer 落地前形成的历史 SQLite 行；该读取侧防御不能替代写入边界，也不能削弱 verifier 对 public Host path 的拒绝。
 - S09 transport smoke 使用 Host-internal fake supervised transport call，不新增或锁定 public SDK module/function 名称。smoke request/response 只需包含 `sandbox_workspace_id`、`sandbox_run_id`、`source_snapshot_artifact_id`、artifact read summary、call identity、bounded result 或 structured error。
 
 ## Resource Identity / Lifecycle
@@ -86,9 +89,9 @@ S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
   - lifecycle：write/patch/delete 成功后持久化；digest conflict、path forbidden 或 active exec conflict 不写成功 audit，只写失败 event。
   - persistence：audit entry 是 append-only canonical record；后续 workspace cleanup 不删除已持久化 audit，public projection 只展示 bounded summary。
 - `CommandLogArtifact`
-  - identity：stdout/stderr 或 process log 超限时由 Host 创建 log artifact ref。
-  - owner：Host runtime/log service 创建和裁剪；public result 只返回 bounded summary 和 artifact ref。
-  - lifecycle：随 `SandboxRun` 保留；retention 由 Host workspace/log policy 管理，不能把完整日志塞进 RPC 或 projection。cleanup 只能清理超过 policy 的 private log payload，不能删除 run record 中的 digest、size、truncation marker 或 artifact ref。
+  - identity：stdout/stderr 的 public summary 超限时由 Host 创建 private log metadata 与 `sandbox-log://...` opaque ref；它不是 artifact catalog 中可下载的 Artifact，该 ref 不授予读取 authority。
+  - owner：Host runtime/log service在 attempt-local private command-log root中保留完整 raw bytes；per-run directory以 no-replace `0700` 创建，stream file以 no-follow/exclusive `0600` 创建并 fsync。public result只返回 sanitized bounded summary、raw-byte digest/size、truncation marker与opaque ref。
+  - lifecycle：随 `SandboxRun` 保留；retention 由 Host workspace/log policy 管理，不能把完整日志塞进 RPC 或 projection。cleanup 只能清理超过 policy 的 private raw payload，不能删除 run record 中的 digest、size、truncation marker 或 opaque ref。
 
 固定错误码：
 
@@ -125,7 +128,7 @@ S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
    - 先实现 shared path normalization、symlink escape 检查、digest helpers、atomic write、single-file unified diff patch 和 delete guard。
    - 成功 write/patch/delete 后写 append-only audit；失败只写事件或 tool error，不写成功 audit。
 3. Exec service
-   - 在启动进程前检查 workspace/image compatibility、active run lock、argv/env/cwd/resource policy，并调用 S08 source snapshot service。
+   - 在启动进程前检查 context-root continuity、六目录非 symlink 完整布局、workspace/image compatibility、active run lock、argv/env/cwd/resource policy；布局失败先于 S08 source snapshot、run record 与 process invocation。
    - 启动后由 Host-owned sandbox runtime service 管理 process tree、timeout、resource limit、stdout/stderr capture、log artifactization、changed file scan 和 fail-closed recovery。
 4. Tool / projection integration
    - 将 `sandbox.file.*` 与 `sandbox.exec` 注册为 executor-facing tools；handler 只做参数转发和结构化错误包装，不能在 handler 内重复 path/security/run-state 逻辑。

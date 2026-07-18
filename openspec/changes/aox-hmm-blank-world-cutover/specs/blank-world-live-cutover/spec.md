@@ -11,6 +11,15 @@ Each cutover attempt SHALL create unique empty SQLite, artifact/blob, sandbox wo
 - **WHEN** an attempt root already contains an AOX FASTA, HMM, hit table, report, artifact record, or prior evidence digest
 - **THEN** the attempt fails blank-world validation before invoking a provider or runner
 
+#### Scenario: Keep one attempt-scoped sandbox root and fail closed on layout drift
+- **WHEN** workspace status, explicit or implicit workspace lookup, file/exec, source snapshot, and container bind resolve a cutover workspace; a workspace has no canonical row but its derived leaf already exists; or an existing workspace is missing any required `src/input/work/output/logs/manifest` real directory
+- **THEN** every component uses the same Host-injected attempt root and enforces current executor ownership; a new leaf is created only with no-replace/exclusive semantics, while any preexisting directory/file/symlink, incomplete layout, non-directory, or symlinked required entry returns `sandbox_volume_corrupt` before snapshot, run creation, process, provider, or runner activity and is never adopted, modified, or silently repaired as an empty READY workspace
+
+#### Scenario: Keep public failure evidence path-safe
+- **WHEN** sandbox, adapter, provider, scheduler, or harness diagnostics contain embedded private paths, locators, or credentials
+- **THEN** durable/public summaries map only exact context-provided sandbox/control-socket locations to logical paths, sanitize the documented and tested high-risk Unix/HPC-root, Windows-drive, UNC, file-URI, private/special-use URL, locator, and credential corpus in schema-declared diagnostic fields before public or canonical persistence, project historical structured locators/diagnostics again, and retain the independent strict offline rejection of any surviving absolute Host path/private locator; the producer sanitizer does not claim to recognize every arbitrary private path in free text and does not rewrite user/scientific/report content
+- **AND** process stdout/stderr is captured as bytes; complete over-limit stdio MAY persist only in the attempt-scoped Host-private command-log boundary, whose run directory and stream file use no-replace/no-follow private `0700`/`0600` creation, while public records retain only a sanitized summary, raw-byte digest/size, truncation marker, and opaque ref without read authority
+
 ### Requirement: Canonical launch and prerequisite identity
 `run-live` SHALL resolve a canonical clean launch snapshot before constructing the attempt runner, campaign, or any attempt root. The launch identity MUST be the exact seven-field closed object `git_commit`, `config_digest`, `workflow_ref`, `scoring_contract_digest`, `scoring_implementation_digest`, `image_digest`, and `sdk_digest`; each value MUST be derived from the actual clean canonical checkout, digest-pinned workflow/scoring implementation, sandbox runtime preflight, and Pipeline SDK source tree rather than trusted from caller declarations.
 

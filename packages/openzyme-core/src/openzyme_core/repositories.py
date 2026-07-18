@@ -2233,15 +2233,18 @@ class SandboxRunRecordRepository:
                 sandbox_run_id, session_id, sandbox_workspace_id, agent_id,
                 task_id, lane_id, argv_json, argv_digest, cwd, env_digest,
                 resource_policy_json, source_snapshot_artifact_id, source_tree_digest,
-                status, stdout_summary, stderr_summary, exit_code, duration_ms,
-                changed_files_summary_json, log_artifact_ref, error_code,
+                status, stdout_summary, stderr_summary, stdout_metadata_json,
+                stderr_metadata_json, exit_code, duration_ms, changed_files_summary_json,
+                log_artifact_ref, error_code,
                 compatibility_json, created_at, started_at, ended_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sandbox_run_id) DO UPDATE SET
                 status = excluded.status,
                 stdout_summary = excluded.stdout_summary,
                 stderr_summary = excluded.stderr_summary,
+                stdout_metadata_json = excluded.stdout_metadata_json,
+                stderr_metadata_json = excluded.stderr_metadata_json,
                 exit_code = excluded.exit_code,
                 duration_ms = excluded.duration_ms,
                 changed_files_summary_json = excluded.changed_files_summary_json,
@@ -2269,6 +2272,12 @@ class SandboxRunRecordRepository:
                 record.status.value,
                 record.stdout_summary,
                 record.stderr_summary,
+                None
+                if record.stdout_metadata is None
+                else _json_dumps(record.stdout_metadata),
+                None
+                if record.stderr_metadata is None
+                else _json_dumps(record.stderr_metadata),
                 record.exit_code,
                 record.duration_ms,
                 _json_dumps(record.changed_files_summary or {}),
@@ -2350,6 +2359,8 @@ class SandboxRunRecordRepository:
             status=SandboxRunStatus(row["status"]),
             stdout_summary=row["stdout_summary"],
             stderr_summary=row["stderr_summary"],
+            stdout_metadata=_json_loads_object(row["stdout_metadata_json"]),
+            stderr_metadata=_json_loads_object(row["stderr_metadata_json"]),
             exit_code=row["exit_code"],
             duration_ms=row["duration_ms"],
             changed_files_summary=_json_loads_object(row["changed_files_summary_json"]) or {},

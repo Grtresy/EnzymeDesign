@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from decimal import Decimal
 import hashlib
 import io
@@ -937,6 +938,18 @@ def test_s15_evidence_bundle_collects_approval_operation_and_sandbox_records(
             source_tree_digest="sha256:source",
             stdout_summary="registered AOX/HMM outputs",
             stderr_summary="",
+            stdout_metadata={
+                "raw_digest": "sha256:" + "a" * 64,
+                "raw_size_bytes": 26,
+                "truncated": False,
+                "log_ref": None,
+            },
+            stderr_metadata={
+                "raw_digest": "sha256:" + "b" * 64,
+                "raw_size_bytes": 0,
+                "truncated": False,
+                "log_ref": None,
+            },
             exit_code=0,
             duration_ms=1234,
             changed_files_summary={"created": ["aox_hmm/hits_raw.csv"]},
@@ -1042,8 +1055,65 @@ def test_s15_evidence_bundle_collects_approval_operation_and_sandbox_records(
     ]
     assert evidence["sandbox_runs"][0]["exit_code"] == 0
     assert evidence["sandbox_runs"][0]["stdout_summary"] == "registered AOX/HMM outputs"
+    assert evidence["sandbox_runs"][0]["stdout_metadata"] == {
+        "raw_digest": "sha256:" + "a" * 64,
+        "raw_size_bytes": 26,
+        "truncated": False,
+        "log_ref": None,
+    }
+    assert evidence["sandbox_runs"][0]["stderr_metadata"]["log_ref"] is None
+    assert evidence["sandbox_runs"][0]["stdout_metadata_valid"] is True
+    assert evidence["sandbox_runs"][0]["stderr_metadata_valid"] is True
+    assert evidence["sandbox_runs"][0]["log_artifact_ref_valid"] is True
     assert evidence["sandbox_runs"][0]["changed_files_summary"] == {
         "created": ["aox_hmm/hits_raw.csv"]
+    }
+
+    stored_run = repositories.sandbox_runs.get("run_s15")
+    assert stored_run is not None
+    repositories.sandbox_runs.save(
+        replace(
+            stored_run,
+            stdout_metadata={
+                "raw_digest": "sha256:" + "a" * 64,
+                "raw_size_bytes": 40_000,
+                "truncated": True,
+                "log_ref": "/home/operator/private-stdout.log",
+                "storage_uri": "storage://private/stdout",
+            },
+            log_artifact_ref="storage://private/legacy-log",
+        )
+    )
+    unsafe_evidence = _s15_build_evidence_bundle(
+        repositories,
+        scenario_id=S15_AOX_HMM_SCENARIO_ID,
+        session_id=session.session_id,
+        prompt="Run AOX/HMM",
+        prerequisite_report={"status": "ok", "required": ["llm"]},
+        workspace={
+            "conversation": [
+                {"role": "assistant", "content": "AOX/HMM mining completed."}
+            ]
+        },
+        artifacts=repositories.artifacts.list_by_session(session.session_id),
+        required_paths=S15_AOX_HMM_FIXED_DELIVERABLES,
+        final_output_validation={"passed": True, "errors": []},
+    )
+    unsafe_serialized = json.dumps(unsafe_evidence, sort_keys=True)
+    unsafe_validation = _s15_validate_evidence_bundle(unsafe_evidence)
+
+    assert unsafe_evidence["sandbox_runs"][0]["stdout_metadata"] is None
+    assert unsafe_evidence["sandbox_runs"][0]["stdout_metadata_valid"] is False
+    assert unsafe_evidence["sandbox_runs"][0]["log_artifact_ref"] is None
+    assert unsafe_evidence["sandbox_runs"][0]["log_artifact_ref_valid"] is False
+    assert "/home/operator" not in unsafe_serialized
+    assert "storage://private" not in unsafe_serialized
+    assert unsafe_validation["passed"] is False
+    assert {
+        error["error_code"] for error in unsafe_validation["errors"]
+    } >= {
+        "live_sandbox_stdio_metadata_invalid",
+        "live_sandbox_log_ref_invalid",
     }
 
 

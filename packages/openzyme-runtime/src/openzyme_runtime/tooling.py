@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import replace
 from enum import StrEnum
 import json
 from typing import Any
 from typing import Protocol
+
+from .public_diagnostics import sanitize_public_diagnostic_payload
+from .public_diagnostics import sanitize_public_diagnostic_text
+from .public_diagnostics import safe_public_machine_identifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,55 @@ class ToolResult:
 
 
 ToolHandler = Callable[[Any, ToolInvocation], ToolResult | str]
+
+
+def sanitize_tool_result_diagnostics(result: ToolResult) -> ToolResult:
+    safe_status = safe_public_machine_identifier(
+        result.status,
+        fallback="ok" if result.ok else "failed",
+    )
+    safe_error_code = safe_public_machine_identifier(
+        result.error_code,
+        fallback=None if result.ok else "tool_error",
+    )
+    safe_terminal_action = safe_public_machine_identifier(
+        result.terminal_action,
+        fallback=None,
+    )
+    if result.ok:
+        return replace(
+            result,
+            status=safe_status,
+            error_code=safe_error_code,
+            terminal_action=safe_terminal_action,
+        )
+    try:
+        parsed_content = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        public_content = sanitize_public_diagnostic_text(result.content)
+    else:
+        if isinstance(parsed_content, (dict, list)):
+            public_content = json.dumps(
+                sanitize_public_diagnostic_payload(parsed_content),
+                sort_keys=True,
+            )
+        else:
+            public_content = sanitize_public_diagnostic_text(result.content)
+    safe_details = sanitize_public_diagnostic_payload(result.details or {})
+    return replace(
+        result,
+        status=safe_status,
+        content=public_content,
+        summary=None
+        if result.summary is None
+        else sanitize_public_diagnostic_text(result.summary),
+        hint=None
+        if result.hint is None
+        else sanitize_public_diagnostic_text(result.hint),
+        details=dict(safe_details) if isinstance(safe_details, dict) else {},
+        error_code=safe_error_code,
+        terminal_action=safe_terminal_action,
+    )
 
 
 class ToolSideEffect(StrEnum):
@@ -315,7 +369,11 @@ class LegacyFunctionToolRuntime:
         try:
             result = self.handler(runtime_context, invocation)
         except (KeyError, TypeError, ValueError) as exc:
-            message = f"Tool {invocation.tool_name} failed: {str(exc).strip() or exc.__class__.__name__}"
+            public_error = sanitize_public_diagnostic_text(str(exc)).strip()
+            message = (
+                f"Tool {invocation.tool_name} failed: "
+                f"{public_error or exc.__class__.__name__}"
+            )
             return ToolResult(
                 call_id=invocation.call_id,
                 tool_name=invocation.tool_name,
@@ -330,16 +388,16 @@ class LegacyFunctionToolRuntime:
                 details={"exception_type": exc.__class__.__name__},
             )
         if isinstance(result, ToolResult):
-            return result
+            return sanitize_tool_result_diagnostics(result)
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=str(result),
+            content=result,
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
             status="ok",
-            summary=str(result),
+            summary=result,
         )
 
 
@@ -434,7 +492,9 @@ class ToolRouter:
             )
         validation_error = self.validate(step_context, invocation)
         if validation_error is not None:
-            return validation_error.to_tool_result(invocation)
+            return sanitize_tool_result_diagnostics(
+                validation_error.to_tool_result(invocation)
+            )
         governance = runtime.governance(step_context)
         if governance.side_effect is not ToolSideEffect.READ:
             repositories = getattr(self.dispatch_context, "repositories", None)
@@ -458,10 +518,14 @@ class ToolRouter:
                         summary=message,
                         error_code="runtime_fencing_rejected",
                         hint="Allow the active runtime owner to resume this work.",
-                        details={"reason": str(exc)},
+                        details={
+                            "reason": sanitize_public_diagnostic_text(str(exc))
+                        },
                     )
         try:
-            return runtime.dispatch(step_context, invocation, self.dispatch_context)
+            return sanitize_tool_result_diagnostics(
+                runtime.dispatch(step_context, invocation, self.dispatch_context)
+            )
         except RuntimeError:
             if governance.side_effect is ToolSideEffect.READ:
                 raise
@@ -487,7 +551,7 @@ class ToolRouter:
                     summary=message,
                     error_code="runtime_fencing_rejected",
                     hint="Allow the active runtime owner to resume this work.",
-                    details={"reason": str(exc)},
+                    details={"reason": sanitize_public_diagnostic_text(str(exc))},
                 )
             raise
 
@@ -511,5 +575,6 @@ __all__ = [
     "ToolSpec",
     "ToolResult",
     "ToolValidationError",
+    "sanitize_tool_result_diagnostics",
     "validate_arguments_against_schema",
 ]

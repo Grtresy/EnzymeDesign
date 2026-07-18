@@ -105,6 +105,7 @@ class V3EventStore:
                 payload = event.get("payload", {})
                 if not isinstance(payload, dict):
                     raise ValueError("durable event payload must be an object")
+                visibility = str(event.get("visibility") or "public")
                 stored = self._repository().append(
                     DurableEventRecord(
                         event_id=str(event["event_id"]),
@@ -113,7 +114,7 @@ class V3EventStore:
                         schema_version=str(
                             event.get("schema_version") or "openzyme.v3.event.v1"
                         ),
-                        visibility=str(event.get("visibility") or "public"),
+                        visibility=visibility,
                         payload=payload,
                         command_id=event.get("command_id"),
                         correlation_id=event.get("correlation_id"),
@@ -136,14 +137,18 @@ class V3EventStore:
         limit: int = 1_000,
     ) -> list[dict[str, Any]]:
         with self._lock:
-            return [
-                event.to_dict()
-                for event in self._repository().list_by_session(
-                    session_id,
-                    after_cursor=after_cursor,
-                    limit=limit,
+            records = self._repository().list_by_session(
+                session_id,
+                after_cursor=after_cursor,
+                limit=limit,
+                # Audit/internal events require a separate authorized surface.
+                visibilities=("public",),
+            )
+            if any(record.visibility != "public" for record in records):
+                raise RuntimeError(
+                    "public durable event read returned a non-public record"
                 )
-            ]
+            return [record.to_dict() for record in records]
 
     def latest_cursor(self, session_id: str) -> int:
         with self._lock:

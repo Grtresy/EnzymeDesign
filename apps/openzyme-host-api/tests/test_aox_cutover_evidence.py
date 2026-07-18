@@ -14,6 +14,7 @@ from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
 from openzyme_host_api.aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from openzyme_host_api.aox_cutover_evidence import AttemptRunRecord
+from openzyme_host_api.aox_cutover_evidence import assert_public_safe_payload
 from openzyme_host_api.aox_cutover_evidence import aox_hpc_workspace_id
 from openzyme_host_api.aox_cutover_evidence import canonical_digest
 from openzyme_host_api.aox_cutover_evidence import canonical_json_bytes
@@ -5868,6 +5869,59 @@ def test_bundle_rejects_artifact_symlink_even_when_target_stays_in_root(
             ),
             "public_projection_private_url",
         ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"endpoint": "http://0x7f.0.0.1/private"}
+            ),
+            "public_projection_private_url",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"endpoint": "https://service.namespace.svc/private"}
+            ),
+            "public_projection_private_url",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"diagnostic": "/scratch/slurm/job-001/stderr"}
+            ),
+            "public_projection_host_path",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"diagnostic": "/custom/runner/private.json"}
+            ),
+            "public_projection_host_path",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"diagnostic": r"{\"path\":\"\/home\/user\/private\"}"}
+            ),
+            "public_projection_host_path",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"diagnostic": "%2Fhome%2Fuser%2Fprivate"}
+            ),
+            "public_projection_host_path",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {"locator": "s3://private-bucket/object"}
+            ),
+            "public_projection_private_locator",
+        ),
+        (
+            lambda evidence: evidence["provider_identities"][0].update(
+                {
+                    "endpoint": (
+                        "https://rest.uniprot.org/uniprotkb/search"
+                        "?X-Amz-Signature=deadbeef"
+                    )
+                }
+            ),
+            "public_projection_url_query",
+        ),
     ],
 )
 def test_bundle_rejects_secret_and_private_path_projection(
@@ -5879,6 +5933,83 @@ def test_bundle_rejects_secret_and_private_path_projection(
         _build_bundle(tmp_path, mutate_evidence=mutation)
 
     assert error.value.code == code
+
+
+def test_public_safety_verifier_preserves_logical_paths_routes_and_query_free_url() -> (
+    None
+):
+    payload = {
+        "workspace": "/workspace/src/probe.py",
+        "control_socket": "/openzyme/control.sock",
+        "route": "/v3/sessions/sess_001/events?replay=1&after_cursor=0",
+        "source_locator": "https://rest.uniprot.org/uniprotkb/P12345",
+        "public_ipv6_locator": "http://[2001:4860:4860::8888]/status",
+        "token_count": 42,
+        "tokenUsage": 7,
+    }
+
+    assert_public_safe_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "private_key",
+    (
+        "provider_access_token",
+        "micu_api_key",
+        "provider_client_secret",
+        "session_cookie",
+        "local_path",
+        "private_locator",
+        "runner_config",
+        "AWS_SECRET_ACCESS_KEY",
+        "MYSQL_PWD",
+        "REDISCLI_AUTH",
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "clientSecret",
+        "accessToken",
+        "refreshToken",
+        "privateKey",
+        "storageUri",
+        "sourceUri",
+        "hostPath",
+        "remotePath",
+        "localPath",
+        "runnerConfig",
+        "connectionString",
+    ),
+)
+def test_public_safety_verifier_rejects_sensitive_key_aliases(
+    private_key: str,
+) -> None:
+    with pytest.raises(CutoverEvidenceError) as error:
+        assert_public_safe_payload({private_key: "opaque"})
+
+    assert error.value.code == "public_projection_sensitive_key"
+
+
+@pytest.mark.parametrize(
+    "private_text",
+    (
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Set-Cookie: session=abc",
+        "cookie=sessionid",
+        "refresh_token=abc",
+        "credential=opaque",
+        "private_key=opaque",
+        "token=opaque",
+        "AWS_SECRET_ACCESS_KEY=opaque",
+        "MYSQL_PWD=opaque",
+        "REDISCLI_AUTH=opaque",
+        "AZURE_STORAGE_CONNECTION_STRING=opaque",
+    ),
+)
+def test_public_safety_verifier_rejects_sensitive_free_text(
+    private_text: str,
+) -> None:
+    with pytest.raises(CutoverEvidenceError) as error:
+        assert_public_safe_payload({"diagnostic": private_text})
+
+    assert error.value.code == "public_projection_secret_value"
 
 
 def test_probe_artifacts_cannot_enter_formal_operation(tmp_path: Path) -> None:
