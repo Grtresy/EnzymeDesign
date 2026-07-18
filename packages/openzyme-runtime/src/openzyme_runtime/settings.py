@@ -144,11 +144,11 @@ class LlmPurposePolicy:
 
 @dataclass(frozen=True, slots=True)
 class LlmSettings:
-    api_key: str | None
+    api_key: str | None = field(repr=False)
     model: str
     base_url: str
-    extra_body: dict[str, Any] | None
-    default_headers: dict[str, str] | None
+    extra_body: dict[str, Any] | None = field(repr=False)
+    default_headers: dict[str, str] | None = field(repr=False)
     use_responses_api: bool
     max_tokens: int | None
     timeout: float | None
@@ -307,16 +307,16 @@ class ResearchSettings:
     max_research_iterations: int
     max_react_tool_calls: int
     max_concurrent_research_units: int
-    tavily_api_key: str | None
+    tavily_api_key: str | None = field(repr=False)
     tavily_max_results: int
     tavily_topic: str
     mcp_enabled: bool
     mcp_tool_allowlist: tuple[str, ...] = ()
     tavily_timeout_seconds: float = 30.0
-    pubmed_email: str | None = None
+    pubmed_email: str | None = field(default=None, repr=False)
     pubmed_tool: str = "openzyme"
-    pubmed_api_key: str | None = None
-    semantic_scholar_api_key: str | None = None
+    pubmed_api_key: str | None = field(default=None, repr=False)
+    semantic_scholar_api_key: str | None = field(default=None, repr=False)
     provider_timeout_seconds: float = 30.0
     provider_max_attempts: int = 3
 

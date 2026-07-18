@@ -393,3 +393,24 @@ def test_settings_cache_can_be_reset(monkeypatch) -> None:
 
     reset_settings_cache()
     assert get_settings().llm.model == "second"
+
+
+def test_settings_repr_redacts_provider_credentials_and_identity(monkeypatch) -> None:
+    _disable_env_file_loading(monkeypatch)
+    secrets = {
+        "OPENZYME_LLM_API_KEY": "secret-llm-key",
+        "OPENZYME_LLM_EXTRA_BODY": '{"private":"secret-extra-body"}',
+        "OPENZYME_LLM_USER_AGENT": "secret-default-header",
+        "TAVILY_API_KEY": "secret-tavily-key",
+        "OPENZYME_NCBI_EMAIL": "secret-ncbi-identity@example.org",
+        "OPENZYME_NCBI_API_KEY": "secret-ncbi-key",
+        "SEMANTIC_SCHOLAR_API_KEY": "secret-semantic-scholar-key",
+    }
+    for key, value in secrets.items():
+        monkeypatch.setenv(key, value)
+
+    reset_settings_cache()
+    rendered = repr(get_settings())
+
+    for value in secrets.values():
+        assert value not in rendered
