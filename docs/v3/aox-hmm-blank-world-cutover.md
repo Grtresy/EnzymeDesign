@@ -133,6 +133,21 @@ old-session read cannot starve the next session. This does
 not add a second truth store or claim bounded process supervision; permanent
 worker retirement remains the separate process-isolation proposal.
 
+The next fresh campaign on commit `cde88dd` again remained strict **NO-GO**.
+Its real known-positive probe completed and the formal path entered research and
+execution, so it crossed the previous SSH/HPC transport blocker. However, the
+first real Chrome selection of the formal session exposed a browser-only timer
+receiver bug in the new reconciliation path: the controller stored
+`window.setTimeout` as an instance property and invoked it with the controller
+as its receiver, producing `Illegal invocation`. No approval was accepted and
+no eligible bundle or browser observation receipt was sealed. The operator
+terminated the disqualified attempt rather than spend more MICU/HPC resources.
+Its persistent ledger snapshot is 22,377,359 / 500,000,000 charged tokens with
+zero breaches; the interrupted in-flight call remains conservatively charged
+as an estimated reservation. Timer hooks are now invoked through detached
+wrappers, with a receiver-sensitive regression test. This failed campaign is
+diagnostic evidence only and cannot be reused by the next fresh pin.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model

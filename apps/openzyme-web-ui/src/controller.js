@@ -10,12 +10,18 @@ const DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS = 5_000;
 
 export class WorkspaceController {
   constructor(client, onChange = () => {}, options = {}) {
+    const setReconcileTimeout =
+      options.setReconcileTimeout ?? globalThis.setTimeout.bind(globalThis);
+    const clearReconcileTimeout =
+      options.clearReconcileTimeout ?? globalThis.clearTimeout.bind(globalThis);
     this.client = client;
     this.onChange = onChange;
     this.workspaceReconcileIntervalMs =
       options.workspaceReconcileIntervalMs ?? DEFAULT_WORKSPACE_RECONCILE_INTERVAL_MS;
-    this.setReconcileTimeout = options.setReconcileTimeout ?? setTimeout;
-    this.clearReconcileTimeout = options.clearReconcileTimeout ?? clearTimeout;
+    // Keep host timer functions detached from the controller instance. Browser
+    // timer APIs reject calls whose receiver is an arbitrary object.
+    this.setReconcileTimeout = (...args) => setReconcileTimeout(...args);
+    this.clearReconcileTimeout = (...args) => clearReconcileTimeout(...args);
     this.state = buildInitialViewState();
     this.stream = null;
     this.requestVersion = 0;

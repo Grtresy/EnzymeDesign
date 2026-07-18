@@ -170,6 +170,43 @@ test("selectSession loads a workspace and can switch inspector sections", async 
   assert.equal(controller.state.mobilePane, "sessions");
 });
 
+test("workspace reconciliation invokes timer hooks without a controller receiver", async () => {
+  let scheduledCallback = null;
+  let scheduledDelay = null;
+  function setReconcileTimeout(callback, delay) {
+    assert.equal(this, undefined);
+    scheduledCallback = callback;
+    scheduledDelay = delay;
+    return 17;
+  }
+  function clearReconcileTimeout() {
+    assert.equal(this, undefined);
+  }
+  const fakeClient = {
+    async listV3Sessions() {
+      return [];
+    },
+    async getV3Session() {
+      const workspace = buildV3Workspace();
+      return { session: workspace.session, workspace };
+    },
+    streamV3Session() {
+      return { close() {} };
+    },
+  };
+  const controller = new WorkspaceController(fakeClient, () => {}, {
+    workspaceReconcileIntervalMs: 5_000,
+    setReconcileTimeout,
+    clearReconcileTimeout,
+  });
+
+  await controller.selectSession("sess_001", "conversation");
+
+  assert.equal(typeof scheduledCallback, "function");
+  assert.equal(scheduledDelay, 5_000);
+  controller._disconnectStream();
+});
+
 test("periodic workspace reconciliation discovers a committed approval without an SSE event", async () => {
   const timeouts = buildManualTimeouts();
   let workspaceReads = 0;
