@@ -359,7 +359,60 @@ def test_attestation_ignores_path_shims_and_uses_fixed_absolute_executable(
     assert f"command {fake_path_shim} exec" not in command[2]
 
 
-def test_attestation_rejects_inherited_apptainer_runtime_control_environment(
+@pytest.mark.parametrize(
+    "runtime_environment_name",
+    ("APPTAINER_BIND", "SINGULARITY_BINDPATH"),
+)
+def test_attestation_scrubs_inherited_runtime_control_environment(
+    tmp_path: Path,
+    runtime_environment_name: str,
+) -> None:
+    home = tmp_path / "home"
+    sif_path = home / "containers" / "mafft_7.525.sif"
+    sif_path.parent.mkdir(parents=True)
+    sif_path.write_bytes(b"immutable-mafft-sif\n")
+    fake_apptainer = tmp_path / "bin" / "apptainer"
+    fake_apptainer.parent.mkdir()
+    invoked = tmp_path / "invoked"
+    fake_apptainer.write_text(
+        (
+            "#!/bin/sh\n"
+            'if [ "${APPTAINER_BIND+x}" = x ] || '
+            '[ "${SINGULARITY_BINDPATH+x}" = x ]; then exit 91; fi\n'
+            f"printf invoked > {invoked}\n"
+        ),
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+    command = _command_with_toolchain_attestation(
+        _spec(),
+        _runtime_request(),
+        apptainer_executable=str(fake_apptainer),
+    )
+
+    completed = subprocess.run(
+        ["bash", "-c", command[2]],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **_clean_subprocess_environment(
+                HOME=str(home),
+                MCP_WORKDIR=str(tmp_path / "work"),
+                MCP_OUTDIR=str(tmp_path / "out"),
+                MCP_TMPDIR=str(tmp_path / "tmp"),
+            ),
+            runtime_environment_name: str(tmp_path / "overlay") + ":/opt/openzyme",
+        },
+    )
+
+    digest = hashlib.sha256(sif_path.read_bytes()).hexdigest()
+    assert completed.returncode == 0
+    assert invoked.exists()
+    assert completed.stdout == f"{_TOOLCHAIN_IDENTITY_MARKER}{digest}\n"
+
+
+def test_attestation_fails_closed_when_runtime_control_environment_is_readonly(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -374,6 +427,11 @@ def test_attestation_rejects_inherited_apptainer_runtime_control_environment(
         encoding="utf-8",
     )
     fake_apptainer.chmod(0o755)
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(
+        "readonly APPTAINER_BIND=/blocked-runtime-control\n",
+        encoding="utf-8",
+    )
     command = _command_with_toolchain_attestation(
         _spec(),
         _runtime_request(),
@@ -390,7 +448,7 @@ def test_attestation_rejects_inherited_apptainer_runtime_control_environment(
             MCP_WORKDIR=str(tmp_path / "work"),
             MCP_OUTDIR=str(tmp_path / "out"),
             MCP_TMPDIR=str(tmp_path / "tmp"),
-            APPTAINER_BIND=str(tmp_path / "overlay") + ":/opt/openzyme",
+            BASH_ENV=str(bash_env),
         ),
     )
 

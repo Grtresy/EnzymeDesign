@@ -56,7 +56,11 @@ Every cutover-eligible MAFFT, hmmbuild, hmmalign, and CD-HIT operation SHALL car
 
 #### Scenario: Attest the actual SIF in the payload shell
 - **WHEN** the SSH runner executes an AOX toolchain payload
-- **THEN** the same SSH login shell directly executes the resolved runner-owned SIF pathname, computes SHA-256 over that same pathname immediately before and after the payload, requires both digests to be equal, and only after payload success returns the single equal observed image digest with `attestation_scope=same_ssh_login_shell_pre_exec`, `execution_mode=ssh`, exact tool/adapter/template ids, and runner contract digest through the existing closed public projection
+- **THEN** the same SSH login shell first scrubs every inherited `APPTAINER_*` and `SINGULARITY_*` runtime-control variable and verifies none remains, directly executes the resolved runner-owned SIF pathname, computes SHA-256 over that same pathname immediately before and after the payload, requires both digests to be equal, and only after payload success returns the single equal observed image digest with `attestation_scope=same_ssh_login_shell_pre_exec`, `execution_mode=ssh`, exact tool/adapter/template ids, and runner contract digest through the existing closed public projection
+
+#### Scenario: Fail closed when the runtime environment cannot be scrubbed
+- **WHEN** an inherited Apptainer/Singularity runtime-control variable cannot be removed in the payload login shell
+- **THEN** the runner stops before hashing or executing the payload and emits no toolchain runtime identity; ambient trusted-Host configuration is never reinterpreted as caller intent
 
 #### Scenario: Bound the narrow pathname guarantee
 - **WHEN** the pre/post hashes are equal and the closed identity is issued

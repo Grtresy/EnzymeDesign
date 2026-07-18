@@ -251,6 +251,9 @@ def _command_with_toolchain_attestation(
         "set -uo pipefail; "
         + 'for _oz_runtime_name in "${!APPTAINER_@}" "${!SINGULARITY_@}"; do '
         + 'if [ -n "$_oz_runtime_name" ] && [ "${!_oz_runtime_name+x}" = x ]; then '
+        + 'builtin unset -v -- "$_oz_runtime_name" || exit 87; fi; done; '
+        + 'for _oz_runtime_name in "${!APPTAINER_@}" "${!SINGULARITY_@}"; do '
+        + 'if [ -n "$_oz_runtime_name" ] && [ "${!_oz_runtime_name+x}" = x ]; then '
         + "exit 87; fi; done; "
         + f'readonly _oz_sif="$HOME/{home_relative}"; '
         + '_oz_digest_before="$(/usr/bin/sha256sum -- "$_oz_sif")"; '

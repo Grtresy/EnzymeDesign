@@ -222,7 +222,12 @@ Every cutover-eligible MAFFT, hmmbuild, hmmalign and CD-HIT operation must carry
 manifest binds the tool, adapter, command template, contract digest and private
 SIF locator; a caller cannot submit a locator, runtime request or runtime
 identity override. For the current narrow contract, the SSH runner executes the
-runner-owned SIF by its resolved pathname in one login shell, hashes that same
+runner-owned SIF by its resolved pathname in one login shell. Before the first
+hash or payload, that shell scrubs every inherited `APPTAINER_*` and
+`SINGULARITY_*` runtime-control variable and verifies none remains; inability to
+remove any such variable fails before execution. This prevents ambient
+trusted-Host configuration from influencing the SIF without requiring the
+agent to guess or override Host environment. The shell then hashes that same
 pathname immediately before and after the payload, requires both digests to be
 identical, removes the private markers from public stdout, and returns the
 closed attestation:
