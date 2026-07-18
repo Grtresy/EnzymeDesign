@@ -252,8 +252,12 @@ class RetryableProviderModelFactory:
 
 
 class ExplodingMasterModelFactory:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def create_tool_calling_invoker(self, *, purpose: str) -> object:
         del purpose
+        self.calls += 1
         raise ValueError("task '' does not exist")
 
 
@@ -526,7 +530,9 @@ def test_terminal_task_stale_signal_is_consumed_without_runtime_failure() -> Non
     assert model_factory.invoker.calls == 0
 
 
-def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> None:
+def _build_master_failure_context(
+    *, reason: AgentRuntimeSignalReason
+) -> tuple[CoreRepositories, SessionRuntimeContext, ExplodingMasterModelFactory]:
     connection = connect_sqlite(":memory:", check_same_thread=False)
     apply_sqlite_migrations(connection)
     repositories = CoreRepositories.from_connection(connection)
@@ -553,32 +559,68 @@ def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> N
             signal_id="sig_master_failure",
             session_id=session.session_id,
             agent_id="agent:master",
-            reason=AgentRuntimeSignalReason.INBOX_UNREAD,
+            reason=reason,
             status=AgentRuntimeSignalStatus.PENDING,
             created_at="2026-04-16T10:00:01+00:00",
         )
     )
+    model_factory = ExplodingMasterModelFactory()
     context = SessionRuntimeContext(
         repositories=repositories,
         event_sink=MemoryEventBus(),
         snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
         tool_registry=ToolRegistry(),
         restore_focus=RestoreFocus(),
-        model_factory=ExplodingMasterModelFactory(),
+        model_factory=model_factory,
+    )
+    return repositories, context, model_factory
+
+
+def test_scheduler_releases_master_agent_after_uncaught_runtime_exception() -> None:
+    repositories, context, model_factory = _build_master_failure_context(
+        reason=AgentRuntimeSignalReason.MANUAL_RESUME
     )
 
     outcomes = AgentRuntimeScheduler(
         context,
         worker_id="test:scheduler",
-    ).run_once_sync(session.session_id, max_signals=1)
+    ).run_once_sync("sess_master_failure", max_signals=1)
 
     failed = repositories.runtime_signals.get("sig_master_failure")
-    master = repositories.agents.get(session.session_id, "agent:master")
+    master = repositories.agents.get("sess_master_failure", "agent:master")
     assert len(outcomes) == 1
     assert outcomes[0].ok is False
     assert failed is not None
     assert failed.status is AgentRuntimeSignalStatus.FAILED
     assert "task '' does not exist" in (failed.last_error or "")
+    assert model_factory.calls == 1
+    assert master is not None
+    assert master.status is AgentMemberStatus.IDLE
+    assert master.runtime_state == "idle"
+    assert master.idle_since is not None
+    assert outcomes[0].agent == master
+
+
+def test_scheduler_fails_missing_master_inbox_source_before_provider() -> None:
+    repositories, context, model_factory = _build_master_failure_context(
+        reason=AgentRuntimeSignalReason.INBOX_UNREAD
+    )
+
+    outcomes = AgentRuntimeScheduler(
+        context,
+        worker_id="test:scheduler",
+    ).run_once_sync("sess_master_failure", max_signals=1)
+
+    failed = repositories.runtime_signals.get("sig_master_failure")
+    master = repositories.agents.get("sess_master_failure", "agent:master")
+    assert len(outcomes) == 1
+    assert outcomes[0].ok is False
+    assert failed is not None
+    assert failed.status is AgentRuntimeSignalStatus.FAILED
+    assert "master inbox_unread signal source message is missing" in (
+        failed.last_error or ""
+    )
+    assert model_factory.calls == 0
     assert master is not None
     assert master.status is AgentMemberStatus.IDLE
     assert master.runtime_state == "idle"

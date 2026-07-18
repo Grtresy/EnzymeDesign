@@ -52,6 +52,7 @@ from openzyme_domain import ContinuationState
 from openzyme_domain import ContinuationStateStatus
 from openzyme_domain import EngineInvocation
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import InboxParticipantKind
 from openzyme_domain import SandboxRunRecord
 from openzyme_domain import SandboxRunStatus
 from openzyme_domain import Session
@@ -62,6 +63,7 @@ from openzyme_domain import TaskStatus
 from openzyme_core import EngineDescriptor
 from openzyme_core import EngineDocumentRecord
 from openzyme_core import EngineRegistry
+from openzyme_core import ProtocolService
 from openzyme_core import CoreRepositories
 from openzyme_core import DurableEventRepository
 from openzyme_core import RuntimeWriteFencingError
@@ -70,6 +72,7 @@ from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import apply_sqlite_migrations as apply_v3_sqlite_migrations
 from openzyme_core import connect_sqlite as connect_v3_sqlite
 from openzyme_core import sandbox_image_record
+from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_engines import EvidenceSynthesis
 from openzyme_engines import EvidenceSynthesisItem
 from openzyme_engines import ExecutionParsedResult
@@ -1049,6 +1052,124 @@ class FakeHarnessModelFactory:
         if purpose not in self.invokers:
             self.invokers[purpose] = FakeHarnessInvoker()
         return self.invokers[purpose]
+
+
+class WorkflowFocusHarnessInvoker:
+    def __init__(self, *, selected_ref: str, unselected_ref: str) -> None:
+        self.selected_ref = selected_ref
+        self.unselected_ref = unselected_ref
+        self.calls = 0
+        self.system_prompts: list[str] = []
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del messages, tools
+        self.calls += 1
+        self.system_prompts.append(system_prompt)
+        if self.calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_create_selected_workflow_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_selected_workflow",
+                            "subject": "Delegate selected workflow",
+                            "description": "The exact selected workflow may be delegated.",
+                            "kind": "execution",
+                        },
+                    },
+                    {
+                        "id": "call_create_unselected_workflow_task",
+                        "name": "task.create",
+                        "args": {
+                            "task_id": "task_unselected_workflow",
+                            "subject": "Reject unselected workflow",
+                            "description": "An unselected workflow must remain unauthorized.",
+                            "kind": "execution",
+                        },
+                    },
+                ],
+            }
+        if self.calls == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_delegate_selected_workflow",
+                        "name": "task.delegate",
+                        "args": {
+                            "task_id": "task_selected_workflow",
+                            "agent_role": "executor",
+                            "workflow_refs": [self.selected_ref],
+                        },
+                    },
+                    {
+                        "id": "call_delegate_unselected_workflow",
+                        "name": "task.delegate",
+                        "args": {
+                            "task_id": "task_unselected_workflow",
+                            "agent_role": "executor",
+                            "workflow_refs": [self.unselected_ref],
+                        },
+                    },
+                ],
+            }
+        return {"content": "Workflow authorization checked.", "tool_calls": []}
+
+
+class WorkflowFocusHarnessModelFactory:
+    def __init__(self, *, selected_ref: str, unselected_ref: str) -> None:
+        self.invoker = WorkflowFocusHarnessInvoker(
+            selected_ref=selected_ref,
+            unselected_ref=unselected_ref,
+        )
+
+    def create_tool_calling_invoker(
+        self, *, purpose: str
+    ) -> WorkflowFocusHarnessInvoker:
+        assert purpose == "v3_harness_loop"
+        return self.invoker
+
+
+class WorkflowFocusExecutionEngine:
+    descriptor = EngineDescriptor(
+        engine_name="execution",
+        tool_names=(),
+        input_schema={},
+        output_schema={},
+        requires_approval=True,
+        supports_background=False,
+        idempotency_key_shape="",
+        produces_artifact_types=(),
+        capability_key="execution",
+    )
+
+    def register_tools(self, registry: object) -> None:
+        del registry
+
+
+class FocusRecordingInvoker:
+    def __init__(self, prompts: list[str]) -> None:
+        self.prompts = prompts
+
+    def invoke_with_tools(
+        self, *, system_prompt: str, messages: list[object], tools: list[object]
+    ) -> dict[str, object]:
+        del messages, tools
+        self.prompts.append(system_prompt)
+        return {"content": "Focus observed.", "tool_calls": []}
+
+
+class FocusRecordingModelFactory:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def create_tool_calling_invoker(self, *, purpose: str) -> FocusRecordingInvoker:
+        assert purpose == "v3_harness_loop"
+        return FocusRecordingInvoker(self.prompts)
 
 
 class BlockingHarnessInvoker(FakeHarnessInvoker):
@@ -2548,6 +2669,259 @@ def test_v3_post_message_only_enqueues_master_signal() -> None:
     assert signals[0].agent_id == "agent:master"
     assert signals[0].reason.value == "inbox_unread"
     assert signals[0].status.value == "pending"
+
+
+def test_v3_message_skill_focus_survives_explicit_drain_without_expanding_authority() -> (
+    None
+):
+    repositories = _build_v3_engine_repositories()
+    workflow_refs = {
+        manifest.workflow_id: manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+    }
+    selected_ref = workflow_refs["aox-hmm-live"]
+    unselected_ref = workflow_refs["generic-sandbox-execution"]
+    model_factory = WorkflowFocusHarnessModelFactory(
+        selected_ref=selected_ref,
+        unselected_ref=unselected_ref,
+    )
+    engine_registry = EngineRegistry()
+    engine_registry.register(WorkflowFocusExecutionEngine())
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        engine_registry=engine_registry,
+        model_factory=model_factory,
+    )
+    service.create_session(
+        session_id="sess_durable_workflow_focus",
+        project_id="proj_001",
+        objective="Preserve exact workflow authority across admission.",
+    )
+
+    admitted = service.post_message(
+        session_id="sess_durable_workflow_focus",
+        message="Delegate only the explicitly selected workflow.",
+        skill_keys=(selected_ref, selected_ref),
+    )
+    assert admitted.status == "completed"
+    source_message = repositories.inbox.list_by_session(
+        "sess_durable_workflow_focus"
+    )[0]
+    source_document = repositories.engine_documents.get(
+        str(source_message.payload_ref)
+    )
+    assert source_document is not None
+    assert source_document.payload["skill_keys"] == [selected_ref]
+
+    drained = service.drain_runtime(
+        session_id="sess_durable_workflow_focus",
+        max_signals=1,
+    )
+
+    tool_events = {
+        event["payload"]["call_id"]: event["payload"]
+        for event in drained.events
+        if event["event_type"] == "tool.completed"
+    }
+    assert tool_events["call_delegate_selected_workflow"]["ok"] is True
+    assert (
+        tool_events["call_delegate_unselected_workflow"]["error_code"]
+        == "workflow_ref_not_authorized"
+    )
+    selected_task = repositories.tasks.get("task_selected_workflow")
+    unselected_task = repositories.tasks.get("task_unselected_workflow")
+    assert selected_task is not None and selected_task.assigned_ref is not None
+    assert unselected_task is not None and unselected_task.assigned_ref is None
+    assert "# Explicitly selected workflow knowledge pack" in (
+        model_factory.invoker.system_prompts[0]
+    )
+
+
+def test_v3_master_fails_closed_before_provider_on_corrupt_user_focus_source() -> (
+    None
+):
+    repositories = _build_v3_engine_repositories()
+    model_factory = FakeHarnessModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Reject a corrupt user-message authority source.",
+        session_id="sess_corrupt_workflow_focus",
+    )
+    service.post_message(
+        session_id="sess_corrupt_workflow_focus",
+        message="This message source will be corrupted before drain.",
+        skill_keys=("skill:explicit",),
+    )
+    source_message = repositories.inbox.list_by_session(
+        "sess_corrupt_workflow_focus"
+    )[0]
+    source_document = repositories.engine_documents.get(
+        str(source_message.payload_ref)
+    )
+    assert source_document is not None
+    repositories.engine_documents.save(
+        replace(source_document, document_kind="delegation_request")
+    )
+
+    drained = service.drain_runtime(
+        session_id="sess_corrupt_workflow_focus",
+        max_signals=1,
+    )
+
+    assert drained.status == "failed"
+    assert model_factory.invokers == {}
+    signals = repositories.runtime_signals.list_by_session(
+        "sess_corrupt_workflow_focus"
+    )
+    assert len(signals) == 1
+    assert signals[0].status.value == "failed"
+    assert repositories.tasks.list_by_session("sess_corrupt_workflow_focus") == []
+    assert repositories.agents.list_by_session("sess_corrupt_workflow_focus") == [
+        repositories.agents.get("sess_corrupt_workflow_focus", "agent:master")
+    ]
+
+
+def test_v3_master_accepts_legacy_user_conversation_without_skill_keys() -> None:
+    repositories = _build_v3_engine_repositories()
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    model_factory = FocusRecordingModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Read a legacy canonical conversation document.",
+        session_id="sess_legacy_workflow_focus",
+    )
+    service.post_message(
+        session_id="sess_legacy_workflow_focus",
+        message="This canonical message predates durable workflow focus.",
+        skill_keys=(workflow_ref,),
+    )
+    source_message = repositories.inbox.list_by_session(
+        "sess_legacy_workflow_focus"
+    )[0]
+    source_document = repositories.engine_documents.get(
+        str(source_message.payload_ref)
+    )
+    assert source_document is not None
+    legacy_payload = dict(source_document.payload)
+    legacy_payload.pop("skill_keys")
+    repositories.engine_documents.save(
+        replace(source_document, payload=legacy_payload)
+    )
+
+    drained = service.drain_runtime(
+        session_id="sess_legacy_workflow_focus",
+        max_signals=1,
+    )
+
+    assert drained.status == "completed"
+    assert len(model_factory.prompts) == 1
+    assert "# Explicitly selected workflow knowledge pack" not in (
+        model_factory.prompts[0]
+    )
+
+
+def test_v3_master_restores_each_user_message_focus_without_sticky_union() -> None:
+    repositories = _build_v3_engine_repositories()
+    workflow_refs = {
+        manifest.workflow_id: manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+    }
+    aox_ref = workflow_refs["aox-hmm-live"]
+    generic_ref = workflow_refs["generic-sandbox-execution"]
+    model_factory = FocusRecordingModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Keep workflow focus scoped to each source message.",
+        session_id="sess_nonsticky_workflow_focus",
+    )
+    service.post_message(
+        session_id="sess_nonsticky_workflow_focus",
+        message="Use the AOX workflow for this turn.",
+        skill_keys=(aox_ref,),
+    )
+    service.post_message(
+        session_id="sess_nonsticky_workflow_focus",
+        message="Use only the generic workflow for this turn.",
+        skill_keys=(generic_ref,),
+    )
+
+    drained = service.drain_runtime(
+        session_id="sess_nonsticky_workflow_focus",
+        max_signals=2,
+    )
+
+    assert drained.status == "completed"
+    assert len(model_factory.prompts) == 2
+    assert "workflow_id: aox-hmm-live" in model_factory.prompts[0]
+    assert "workflow_id: generic-sandbox-execution" not in model_factory.prompts[0]
+    assert "workflow_id: generic-sandbox-execution" in model_factory.prompts[1]
+    assert "workflow_id: aox-hmm-live" not in model_factory.prompts[1]
+
+
+def test_v3_master_protocol_inbox_does_not_grant_workflow_authority() -> None:
+    repositories = _build_v3_engine_repositories()
+    workflow_ref = next(
+        manifest.selection_ref
+        for manifest in default_workflow_registry().list_manifests()
+        if manifest.workflow_id == "aox-hmm-live"
+    )
+    model_factory = FocusRecordingModelFactory()
+    service = V3HostApiService(
+        repositories=repositories,
+        event_store=V3EventStore(),
+        model_factory=model_factory,
+    )
+    service.create_session(
+        project_id="proj_001",
+        objective="Keep protocol payloads outside workflow authority.",
+        session_id="sess_protocol_without_workflow_focus",
+    )
+    protocol = ProtocolService(repositories)
+    payload_ref = protocol.persist_payload(
+        session_id="sess_protocol_without_workflow_focus",
+        document_kind="protocol_message",
+        payload={"skill_keys": [workflow_ref]},
+    )
+    protocol.send_message(
+        session_id="sess_protocol_without_workflow_focus",
+        sender="harness",
+        sender_kind=InboxParticipantKind.HARNESS,
+        recipient="agent:master",
+        recipient_kind=InboxParticipantKind.AGENT,
+        message_type="user_message",
+        payload_ref=payload_ref,
+    )
+
+    drained = service.drain_runtime(
+        session_id="sess_protocol_without_workflow_focus",
+        max_signals=1,
+    )
+
+    assert drained.status == "completed"
+    assert len(model_factory.prompts) == 1
+    assert "# Explicitly selected workflow knowledge pack" not in (
+        model_factory.prompts[0]
+    )
 
 
 def test_v3_background_runtime_processes_message_without_manual_drain(

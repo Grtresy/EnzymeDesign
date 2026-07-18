@@ -58,6 +58,8 @@ runtime / scheduler 应把以下 control-plane 变化转化为 wakeup signal：
 
 wakeup signal 至少需要记录 recipient agent、reason、session、task/lane/correlation 关联与创建时间。scheduler 恢复 master 或 teammate 时，应把 reason 注入 restore context，而不是只让模型从全局状态中猜测发生了什么。
 
+`inbox_unread` 的 focus 恢复以 exact source message 为界。signal 只持久化 `source_ref`，不复制 workflow authority：canonical public user message 的 conversation document 保存去重后的 `skill_keys`，runtime 在 agent 进入 `working` 和 provider call 前严格校验 signal/message/document 的 session、participant、type、message identity 与 role 后恢复。legacy 合法 document 缺少 `skill_keys` 等价于空选择；损坏 binding 显式失败。普通 `recipient_kind=agent` 且 recipient 等于 signal agent 的 protocol inbox 是合法 wakeup，但 workflow authority 恒为空；其他 routing shape 失败。每条 source 独立恢复，不能与前一 turn、worker context 或 drain 参数 sticky/union。
+
 ## 3.1 Scheduler / Worker Boundary
 
 第一版采用单进程 async scheduler：同一 Host 进程内的 scheduler/worker pool 从持久化 `AgentRuntimeSignal` 队列 claim work，并运行 bounded master 或 teammate turn。agent 本身不是常驻进程；常驻的是 `AgentMember` identity、inbox、task focus、memory 和 protocol state。

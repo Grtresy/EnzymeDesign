@@ -2673,6 +2673,54 @@ def test_chrome_observation_rejects_receipt_written_before_hold_end(
     assert error.value.code == "browser_observation_receipt_too_early"
 
 
+def test_positive_blocker_preserves_formal_failure_before_browser_gate(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    runner = live.LiveAoxAttemptRunner(
+        settings=_runner_settings(ledger_path),
+        ledger_path=ledger_path,
+    )
+    provider = SQLiteRepositoryProvider(str(tmp_path / "blank.sqlite3"))
+    failed_formal = live.SessionDriveResult(
+        session_id="sess_formal_failed",
+        purpose="formal",
+        state="failed",
+        blocker_code="workflow_ref_not_authorized",
+        workspace={},
+        workspace_response_binding={},
+        event_receipt={},
+        drain_count=1,
+        approval_ids=(),
+    )
+
+    assert runner._positive_blocker(
+        provider,
+        failed_formal,
+        browser_gate_required=True,
+    ) == {
+        "code": "workflow_ref_not_authorized",
+        "message": "formal product path did not reach its published-report exit",
+    }
+
+    completed_without_browser = replace(
+        failed_formal,
+        state="completed",
+        blocker_code=None,
+    )
+    assert runner._positive_blocker(
+        provider,
+        completed_without_browser,
+        browser_gate_required=True,
+    ) == {
+        "code": "browser_approval_not_observed",
+        "message": (
+            "first positive formal path did not preserve a Chrome-observed "
+            "same-operation approval receipt"
+        ),
+    }
+
+
 def test_chrome_observation_uses_independent_submission_timeout(
     tmp_path: Path,
 ) -> None:

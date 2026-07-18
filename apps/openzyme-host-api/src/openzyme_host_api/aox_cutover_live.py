@@ -2955,6 +2955,11 @@ class LiveAoxAttemptRunner:
         *,
         browser_gate_required: bool,
     ) -> dict[str, str] | None:
+        if formal.state != "completed":
+            return {
+                "code": formal.blocker_code or "canonical_product_path_incomplete",
+                "message": "formal product path did not reach its published-report exit",
+            }
         if browser_gate_required and formal.browser_approval_receipt is None:
             return {
                 "code": "browser_approval_not_observed",
@@ -2962,11 +2967,6 @@ class LiveAoxAttemptRunner:
                     "first positive formal path did not preserve a Chrome-observed "
                     "same-operation approval receipt"
                 ),
-            }
-        if formal.state != "completed":
-            return {
-                "code": formal.blocker_code or "canonical_product_path_incomplete",
-                "message": "formal product path did not reach its published-report exit",
             }
         with provider.read() as scope:
             repositories = scope.repositories

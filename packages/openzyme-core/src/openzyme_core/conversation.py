@@ -40,6 +40,7 @@ def persist_conversation_message(
     role: str,
     content: str,
     created_at: str,
+    skill_keys: tuple[str, ...] | None = None,
 ) -> str:
     document_id = _new_message_document_id()
     repositories.engine_documents.save(
@@ -52,6 +53,7 @@ def persist_conversation_message(
                 "message_id": message_id,
                 "role": role,
                 "content": content,
+                **({} if skill_keys is None else {"skill_keys": list(skill_keys)}),
             },
             created_at=created_at,
             updated_at=created_at,

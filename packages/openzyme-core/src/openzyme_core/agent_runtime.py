@@ -11,6 +11,7 @@ from openzyme_domain import AgentRuntimeSignal
 from openzyme_domain import AgentRuntimeSignalReason
 from openzyme_domain import AgentRuntimeSignalStatus
 from openzyme_domain import EngineInvocationStatus
+from openzyme_domain import InboxParticipantKind
 from openzyme_domain import InboxStatus
 from openzyme_domain import Task
 from openzyme_domain import TaskStatus
@@ -368,6 +369,7 @@ class AgentRuntimeService:
         *,
         max_steps: int,
     ) -> AgentRuntimeOutcome:
+        skill_keys = self._master_skill_keys_for_signal(claimed)
         now = utc_now_iso()
         agent = self._update_agent(
             agent,
@@ -400,6 +402,7 @@ class AgentRuntimeService:
                 restore_focus=RestoreFocus(
                     task_id=claimed.task_id,
                     lane_id=claimed.lane_id,
+                    skill_keys=skill_keys,
                 ),
                 persist_conversation=True,
                 agent_id=agent.agent_id,
@@ -730,6 +733,57 @@ class AgentRuntimeService:
         if document is None:
             return None
         return dict(document.payload)
+
+    def _master_skill_keys_for_signal(
+        self, signal: AgentRuntimeSignal
+    ) -> tuple[str, ...]:
+        """Restore only the explicit focus bound to a canonical user message."""
+
+        if signal.reason is not AgentRuntimeSignalReason.INBOX_UNREAD:
+            return ()
+        message = self._message_for_signal(signal)
+        if message is None:
+            raise ValueError(
+                "master inbox_unread signal source message is missing"
+            )
+        if message.session_id != signal.session_id:
+            raise ValueError(
+                "master inbox_unread signal source message session does not match"
+            )
+        if (
+            message.recipient_kind is InboxParticipantKind.AGENT
+            and message.recipient == signal.agent_id
+        ):
+            return ()
+        if (
+            message.message_type != "user_message"
+            or message.sender != "user"
+            or message.sender_kind is not InboxParticipantKind.USER
+            or message.recipient != "harness"
+            or message.recipient_kind is not InboxParticipantKind.HARNESS
+            or message.payload_ref is None
+        ):
+            raise ValueError("master inbox_unread signal source routing is invalid")
+        document = self.context.repositories.engine_documents.get(
+            message.payload_ref
+        )
+        if (
+            document is None
+            or document.session_id != signal.session_id
+            or document.invocation_id is not None
+            or document.document_kind != "conversation_message"
+            or document.payload.get("message_id") != message.message_id
+            or document.payload.get("role") != "user"
+        ):
+            raise ValueError("canonical user conversation document binding is invalid")
+        raw_skill_keys = document.payload.get("skill_keys", [])
+        if not isinstance(raw_skill_keys, list) or not all(
+            isinstance(item, str) for item in raw_skill_keys
+        ):
+            raise ValueError(
+                "user conversation focus skill_keys must be an array of strings"
+            )
+        return RestoreFocus(skill_keys=tuple(raw_skill_keys)).normalized().skill_keys
 
     def _message_for_signal(self, signal: AgentRuntimeSignal):
         if not signal.source_ref:

@@ -810,6 +810,11 @@ class V3HostApiService:
         self._ensure_master_agent(session_id)
         events: list[dict[str, Any]] = []
         message_id = None
+        normalized_focus = RestoreFocus(
+            task_id=task_id,
+            lane_id=lane_id,
+            skill_keys=skill_keys,
+        ).normalized()
         if message:
             message_id = _new_id("msg")
             created_at = utc_now_iso()
@@ -820,6 +825,7 @@ class V3HostApiService:
                 role="user",
                 content=message,
                 created_at=created_at,
+                skill_keys=normalized_focus.skill_keys,
             )
             self.repositories.inbox.save(
                 InboxMessage(
@@ -841,8 +847,12 @@ class V3HostApiService:
                 events,
                 [_event("conversation.user_message", session_id, {"content": message})],
             )
+        # Workflow authority remains solely in the canonical source document;
+        # this admission-only context carries scheduling focus, not skill focus.
         context = self._build_runtime_context(
-            session_id, task_id=task_id, lane_id=lane_id, skill_keys=skill_keys
+            session_id,
+            task_id=normalized_focus.task_id,
+            lane_id=normalized_focus.lane_id,
         )
         AgentRuntimeService(context).enqueue_signal(
             session_id=session_id,
