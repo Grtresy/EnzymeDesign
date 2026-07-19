@@ -24,6 +24,8 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
+from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
+from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
 from openzyme_core.sandbox_runtime import _structured_adapter_message
 from openzyme_core.sandbox_runtime import _tool_success
@@ -54,6 +56,26 @@ def _build_repositories() -> CoreRepositories:
 
 def _digest_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def test_sandbox_exec_v2_timeout_bound_is_finite_and_authoritative(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    service = SandboxRuntimeService(
+        repositories,
+        workspace_root=tmp_path / "workspaces",
+        log_root=tmp_path / "logs",
+    )
+
+    assert EXEC_MAX_TIMEOUT_SECONDS == 3_600
+    assert EXEC_POLICY_VERSION == "s09.exec_policy.v2"
+    assert service._bounded_timeout(EXEC_MAX_TIMEOUT_SECONDS) == 3_600
+    with pytest.raises(SandboxRuntimeError) as error:
+        service._bounded_timeout(EXEC_MAX_TIMEOUT_SECONDS + 1)
+
+    assert error.value.error_code == "sandbox_resource_exceeded"
+    assert "between 1 and 3600" in str(error.value)
 
 
 def test_structured_adapter_message_rejects_private_machine_fields() -> None:

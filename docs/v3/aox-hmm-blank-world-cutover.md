@@ -245,6 +245,26 @@ accepted/exploratory/failed/empty/superseded dispositions and a completeness
 root is a larger `@2` change recorded, but not implemented here, in
 [canonical research evidence adoption and invocation history](architecture-proposals/canonical-research-evidence-adoption-and-invocation-history.md).
 
+r14 pinned commit `1e0b5cfdb2d3014433d76e128ff9467611c8fbe3` and kept the
+corrected exactly-one PubMed adoption. Its real probe completed the exact six
+operations, and the formal path reached NCBI, MAFFT, hmmbuild and one EBI HMMER
+operation without duplicates. It nevertheless remains permanently **NO-GO**:
+the HMM-capable sandbox command used the former `900s` maximum and timed out at
+about `904.7s`, while the same Host worker completed HMMER only after about
+`1375.8s`; the `1800s` public/session deadline then produced
+`host_public_api_transport_failed`, and late server-side mutation occurred
+after the failure bundle decision time. No terminal Chrome receipt exists.
+The attempt added `1,397,357` charged tokens and closed at
+`35,275,944 / 500,000,000`, with no new reservation and no breach. Neither the
+late HMMER completion nor any r14 root/browser state may be adopted. The small
+availability correction fixes the observed hierarchy at HMMER polling
+`1800s`, HMM-capable `sandbox.exec=3600s` (`s09.exec_policy.v2`), and formal
+session/public request at least `7200s`, all checked before external dispatch.
+Durable asynchronous continuation, cancellation fencing and quiescent sealing
+are larger work recorded in
+[durable async controlled operation and quiescent sealing](architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
+and are not implemented in this goal.
+
 ## Formal AOX scientific closure
 
 The formal NCBI request contains exactly 14 identities: the fixed 13 HMM-model
@@ -438,7 +458,7 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover pin \
   --browser-approval-timeout-seconds 300 \
   --browser-completion-hold-seconds 60 \
   --browser-observation-submission-timeout-seconds 180 \
-  --timeout-seconds 1800 \
+  --timeout-seconds 7200 \
   --max-drains 120 \
   --max-signals-per-drain 10 \
   --max-steps-per-agent 16
@@ -677,7 +697,7 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --browser-approval-timeout-seconds 300 \
   --browser-completion-hold-seconds 60 \
   --browser-observation-submission-timeout-seconds 180 \
-  --timeout-seconds 1800 \
+  --timeout-seconds 7200 \
   --max-drains 120 \
   --max-signals-per-drain 10 \
   --max-steps-per-agent 16 \

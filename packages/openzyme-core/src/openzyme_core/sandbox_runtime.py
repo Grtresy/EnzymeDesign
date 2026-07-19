@@ -67,8 +67,8 @@ WRITE_MAX_BYTES = 256 * 1024
 LIST_MAX_ITEMS = 1000
 STDIO_INLINE_LIMIT = 32 * 1024
 EXEC_DEFAULT_TIMEOUT_SECONDS = 120
-EXEC_MAX_TIMEOUT_SECONDS = 900
-EXEC_POLICY_VERSION = "s09.exec_policy.v1"
+EXEC_MAX_TIMEOUT_SECONDS = 3_600
+EXEC_POLICY_VERSION = "s09.exec_policy.v2"
 S10_SUPERVISED_RPC_SCHEMA = "s10.supervised_rpc.v1"
 S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
 S12_HOST_RESULT_ORIGIN = "host_adapter_executor"
@@ -3163,7 +3163,10 @@ class SandboxRuntimeService:
     def _bounded_timeout(self, timeout_seconds: int) -> int:
         value = int(timeout_seconds)
         if value <= 0 or value > EXEC_MAX_TIMEOUT_SECONDS:
-            raise SandboxRuntimeError("sandbox_resource_exceeded", "timeout_seconds must be between 1 and 900")
+            raise SandboxRuntimeError(
+                "sandbox_resource_exceeded",
+                f"timeout_seconds must be between 1 and {EXEC_MAX_TIMEOUT_SECONDS}",
+            )
         return value
 
     def _bounded_read_limit(self, limit: int) -> int:

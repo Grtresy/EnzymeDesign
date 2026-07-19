@@ -148,6 +148,18 @@ executor still uses `hpc.workspace`, `hpc.stage_artifact`,
 `hpc.fetch_outputs`, and `artifacts.register` wherever the reached operation
 requires those Host-supervised mechanics.
 
+The current trusted-Host containment has an AOX-specific timeout hierarchy.
+EBI HMMER polling remains bounded at `1800s`; every `sandbox.exec` invocation
+whose source may reach `bio.hmmer_search` MUST request
+`timeout_seconds=3600` under `s09.exec_policy.v2`; the formal live session and
+public request are bounded at no less than `7200s`. Short inspection or
+source-repair commands that cannot reach HMMER may use shorter bounds. This
+fixes a world constraint, not an execution graph: the agent remains free to
+author, inspect and repair source, but an undersized HMM-capable command fails
+before approval/provider dispatch and never authorizes a duplicate operation.
+The `1800s` value bounds polling rather than claiming an aggregate bound over
+all result-page transfer. Any timeout still fails closed without hidden replay.
+
 This is a branch-derived evidence closure, not a unique execution order and not
 permission to omit a reached dependency. The offline verifier derives the
 branch from sealed raw/parsed and calculated artifacts, then requires the exact

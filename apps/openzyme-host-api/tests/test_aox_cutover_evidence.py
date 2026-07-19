@@ -189,7 +189,7 @@ def _effective_config(
             "scenario": "aox_blank_world_cutover",
             "approval_mode": "auto",
             "browser_observation_mode": "chrome_devtools_mcp_file_handoff",
-            "timeout_seconds": 1_800.0,
+            "timeout_seconds": 7_200.0,
             "max_drains": 120,
             "max_signals_per_drain": 10,
             "max_steps_per_agent": 16,

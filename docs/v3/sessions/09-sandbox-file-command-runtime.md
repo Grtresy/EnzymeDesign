@@ -36,15 +36,15 @@
 - 大文件读取必须分页；二进制文件只能返回 digest、size、mime/format summary。
 - 同一 `sandbox_workspace_id` 同时只允许一个 active `sandbox.exec`。`list/read` 可并发；agent-facing `write/patch/delete` 在 active exec 期间默认返回 conflict，避免与运行中进程产生不可审计的竞态。
 
-## V1 API Defaults
+## V1 Tool API Defaults
 
-S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
+S09 的 tool API 仍固定为 v1 机械默认值，不能留给实现者临场选择；具体资源策略通过独立的 `exec_policy_version` 演进，因此 `s09.exec_policy.v2` 不表示 tool API 升版：
 
 - `sandbox.file.patch.patch` 只接受 unified diff 文本，path 必须与 tool 参数 `path` 指向同一文件；不接受 arbitrary Python patcher、shell command、JSON patch 或多文件 patch。
 - `sandbox.file.write.content` 只接受 UTF-8 文本，单次写入上限 `256KiB`；二进制和更大内容必须走 artifact materialize/register/upload 或 sandbox 内生成文件。
 - `sandbox.file.read.limit` 默认 `64KiB`，最大 `256KiB`；超过范围返回 `sandbox_read_limit_exceeded`，二进制只返回 digest、size、mime/format summary。
 - `sandbox.file.list` 默认非递归；递归结果最多 `1000` 项，超出时返回 truncated summary 和 `sandbox_listing_truncated` warning。
-- `sandbox.exec.timeout_seconds` 默认 `120`，最大 `900`；CPU 默认 `2`、memory 默认 `2GiB`、pids 默认 `256`，超过 Host policy 返回 `sandbox_resource_exceeded`。
+- `sandbox.exec.timeout_seconds` 默认 `120`，`s09.exec_policy.v2` 的有限上限为 `3600`；CPU 默认 `2`、memory 默认 `2GiB`、pids 默认 `256`，超过 Host policy 返回 `sandbox_resource_exceeded`。上限扩大只为容纳 Host-supervised、可能等待真实长 provider 的命令；它不改变单 workspace 单 active exec、container retirement、无网络或资源隔离，也不授权 agent 无目的延长普通命令。
 - `sandbox.exec.env` 只能包含 allowlist key：`PYTHONPATH`、`OPENZYME_*` sandbox-safe SDK vars 和 task-scoped non-secret variables；任何 credential-like key、PATH override、LD_PRELOAD、SSH/Slurm/provider secret 都返回 `sandbox_env_forbidden`。
 - stdout/stderr inline summary 各最多 `32KiB`；超过时写 `CommandLogArtifact`，result 只返回截断摘要、digest、size 和 log artifact ref。
 - bounded stdout/stderr 与 exception summary 在写 run/workspace/tool result 前先经过 public diagnostic sanitizer：精确 workspace/control-socket Host location 只在 schema-declared field 中映射为逻辑 sandbox path，随后对已测试的 high-risk Unix/HPC、Windows、UNC、file URI、private URL/locator 与 credential corpus递归脱敏；不声称识别任意自由文本中的所有 private path。进程 stdio 以 binary capture，public summary 使用 UTF-8 replacement decode 后再脱敏；raw digest/size按捕获的原始 bytes计算，完整超限 payload仅写 attempt-local Host-private log。
@@ -151,7 +151,7 @@ S09 必须固定 v1 机械默认值，不能留给实现者临场选择：
 - Host 重启、stale active run lock、worker lease conflict 或 process state 丢失时，普通 `sandbox.exec` fail-closed 为 `sandbox_run_recovery_failed`，释放 active lock，保留诊断，并允许 executor 显式重新运行。
 - Host explicit cancel 终止进程树并返回 `sandbox_exec_cancelled`；cancel 不能被 executor 普通 tool call 伪造。
 - file patch 只接受 unified diff；digest 不匹配、多文件 patch、路径逃逸或 patch 不能干净应用时返回结构化错误，且不写成功 audit。
-- read/list/write/exec 的 size、timeout、resource 和 env 默认值按 V1 API Defaults 验收，不能依赖实现者自选 cap。
+- read/list/write/exec 的 size、timeout、resource 和 env 默认值按 V1 Tool API Defaults 验收，不能依赖实现者自选 cap。
 - 文件工具拒绝路径逃逸、symlink escape、写 input、删除 workspace 根目录、覆盖 digest 不匹配文件。
 - 同一 workspace active exec 期间第二个 exec 和 agent-facing write/patch/delete 返回 `sandbox_run_conflict`；read/list 不改变 workspace 状态且可并发。
 - 命令不能直接访问网络、Host repo、`.ssh`、runner config 或 provider secret；外部访问只能通过 Host-supervised SDK operation。

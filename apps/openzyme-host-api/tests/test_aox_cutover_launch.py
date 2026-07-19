@@ -300,6 +300,7 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
             "invalid_nested_range",
             "effective_config.driver.browser_approval_timeout_seconds",
         ),
+        ("unsafe_driver_timeout", "effective_config.driver.timeout_seconds"),
         ("missing_context_window", "effective_config.llm.context_window_tokens"),
         ("unsafe_context_window", "effective_config.llm.context_window_tokens"),
     ),
@@ -330,6 +331,8 @@ def test_effective_config_closed_schema_rejects_tamper(
         payload["llm"]["context_window_tokens"] = None
     elif tamper == "unsafe_context_window":
         payload["llm"]["context_window_tokens"] = 1_050_000
+    elif tamper == "unsafe_driver_timeout":
+        payload["driver"]["timeout_seconds"] = 3_599.0
     else:
         payload["driver"]["browser_approval_timeout_seconds"] = 0.0
 
@@ -350,11 +353,11 @@ def test_effective_config_normalizer_canonicalizes_numeric_durations(
     ledger = tmp_path / "micu.sqlite3"
     effective = launch.build_aox_cutover_effective_config(
         _settings(ledger_path=ledger, hpc_config_path=hpc_config),
-        driver=launch.AoxCutoverDriverConfig(timeout_seconds=1_800),
+        driver=launch.AoxCutoverDriverConfig(timeout_seconds=7_200),
         ledger_path=ledger,
     )
 
-    assert effective.payload["driver"]["timeout_seconds"] == 1_800.0
+    assert effective.payload["driver"]["timeout_seconds"] == 7_200.0
     assert type(effective.payload["driver"]["timeout_seconds"]) is float
     assert effective.payload["driver"]["browser_observation_mode"] == (
         "chrome_devtools_mcp_file_handoff"
@@ -386,6 +389,30 @@ def test_effective_config_rejects_nonpositive_observation_submission_timeout(
     assert error.value.code == "aox_launch_driver_bounds_invalid"
     assert error.value.details == {
         "fields": ["browser_observation_submission_timeout_seconds"]
+    }
+
+
+def test_effective_config_rejects_attempt_timeout_below_long_operation_hierarchy(
+    tmp_path: Path,
+) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+            driver=launch.AoxCutoverDriverConfig(timeout_seconds=7_199.0),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == "aox_launch_timeout_hierarchy_invalid"
+    assert error.value.details == {
+        "hmmer_poll_timeout_seconds": 1_800.0,
+        "sandbox_exec_timeout_seconds": 3_600,
+        "sandbox_exec_max_timeout_seconds": 3_600,
+        "minimum_timeout_seconds": 7_200.0,
+        "timeout_seconds": 7_199.0,
     }
 
 

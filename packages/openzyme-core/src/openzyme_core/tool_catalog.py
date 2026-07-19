@@ -8,6 +8,7 @@ from openzyme_runtime import ToolSpec
 from openzyme_runtime import ToolRuntime
 
 from .engines import EngineRegistry
+from .sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from .teammate_roster import TEAMMATE_ROLE_NAMES
 
 
@@ -346,7 +347,11 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "sandbox_workspace_id": {"type": "string"},
                     "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1},
                     "cwd": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": EXEC_MAX_TIMEOUT_SECONDS,
+                    },
                     "env": {"type": "object", "additionalProperties": {"type": "string"}},
                 },
                 "required": ["argv"],

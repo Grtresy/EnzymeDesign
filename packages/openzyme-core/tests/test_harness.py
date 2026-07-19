@@ -3908,6 +3908,20 @@ def test_builtin_tool_catalog_exposes_top_level_mutating_tools() -> None:
     } <= tool_names
 
 
+def test_sandbox_exec_catalog_exposes_v2_long_operation_timeout_bound() -> None:
+    sandbox_exec = next(
+        descriptor
+        for descriptor in builtin_tool_descriptors()
+        if descriptor.tool_name == "sandbox.exec"
+    )
+
+    assert sandbox_exec.input_schema["properties"]["timeout_seconds"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3_600,
+    }
+
+
 def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in top_level_tool_descriptors()}
     assert "deep_research.start" not in tool_names

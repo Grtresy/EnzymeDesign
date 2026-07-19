@@ -18,8 +18,10 @@ from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
 
 from mcp_hpc_runner.server import MCPHpcServer
+from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_engines import PodmanPipelineSandboxRunner
+from openzyme_engines.execution import BioProviderHttpConfig
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
 from openzyme_runtime import immutable_source_tree_digest
@@ -34,6 +36,9 @@ from .aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from .aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
 )
+from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
 from .aox_cutover_runtime_config import normalize_aox_blank_world_runtime_config
 from .foundation import resolve_configured_foundation_settings
@@ -124,7 +129,7 @@ class AoxCutoverLaunchError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class AoxCutoverDriverConfig:
     approval_mode: Literal["auto", "chrome-once"] = "auto"
-    timeout_seconds: float = 1_800.0
+    timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
     max_drains: int = 120
     max_signals_per_drain: int = 10
     max_steps_per_agent: int = 16
@@ -664,6 +669,30 @@ def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
             "aox_launch_driver_bounds_invalid",
             "AOX cutover driver bounds must be positive and finite",
             details={"fields": invalid},
+        )
+
+    hmmer_poll_timeout_seconds = float(
+        BioProviderHttpConfig.from_env().hmmer_poll_timeout_seconds
+    )
+    timeout_hierarchy_valid = (
+        hmmer_poll_timeout_seconds < AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+        and AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS == EXEC_MAX_TIMEOUT_SECONDS
+        and EXEC_MAX_TIMEOUT_SECONDS < AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
+        and AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS <= driver.timeout_seconds
+    )
+    if not timeout_hierarchy_valid:
+        raise AoxCutoverLaunchError(
+            "aox_launch_timeout_hierarchy_invalid",
+            "AOX cutover timeout policy is incompatible with the sealed HMM-capable hierarchy",
+            details={
+                "hmmer_poll_timeout_seconds": hmmer_poll_timeout_seconds,
+                "sandbox_exec_timeout_seconds": (
+                    AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+                ),
+                "sandbox_exec_max_timeout_seconds": EXEC_MAX_TIMEOUT_SECONDS,
+                "minimum_timeout_seconds": AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
+                "timeout_seconds": float(driver.timeout_seconds),
+            },
         )
 
 

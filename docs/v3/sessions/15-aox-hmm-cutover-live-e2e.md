@@ -164,6 +164,18 @@ artifact adoption，并由 collector/blocker/verifier 闭合 nullable task/lane 
 invocation universe 与 disposition 的 `@2` 设计只记录在
 [canonical research evidence adoption and invocation history](../architecture-proposals/canonical-research-evidence-adoption-and-invocation-history.md)，本 Goal 不实现。
 
+r14 在 commit `1e0b5cfdb2d3014433d76e128ff9467611c8fbe3` 上证明新的 PubMed
+adoption 合同可工作，probe 也再次完成 exact-six；formal NCBI/MAFFT/hmmbuild/HMMER
+各只有一次。但旧 `sandbox.exec` 最大 `900s` 先于耗时约 `1375.8s` 的真实 EBI HMMER
+完成而超时，随后 `1800s` public/session deadline 产生
+`host_public_api_transport_failed`；HMMER 又在 failure bundle decision 后迟到完成。
+r14 因此永久 NO-GO，无 terminal Chrome receipt，不能追认或复用。其 MICU 增量
+`1,397,357`，累计 `35,275,944 / 500,000,000`，无 breach。当前小修仅把 AOX
+HMM-capable path 固定为 poll `1800s`、`sandbox.exec=3600s`/`s09.exec_policy.v2`、
+formal session/public request `>=7200s`，并在 launch 与 HMMER approval 前 fail-fast；
+通用 async continuation/cancellation/quiescent sealing 只记录在
+[durable async controlled operation and quiescent sealing](../architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)，本 Goal 不实现。
+
 每个 MAFFT/hmmbuild/hmmalign/CD-HIT cutover receipt 还必须来自 runner-issued `mcp_hpc_toolchain_runtime_identity@1`：runner-owned manifest 决定私有 SIF locator；当前 SSH 窄保证在同一 login shell 中直接用该 resolved pathname 执行，并在 payload 前后哈希同一路径，两个 digest 必须相同。Host 只逐层传递闭集 public projection，collector/verifier 将观察到的 digest 与 sealed prerequisite 精确比较；caller override、missing/mismatch 均 fail closed。该机制证明“同一路径前后未变并被直接执行”，尚不证明 immutable inode/content-addressed snapshot；后者单独记录在 [immutable HPC SIF execution snapshot](../architecture-proposals/immutable-hpc-sif-execution-snapshot.md)，不在本 Goal 实现。Slurm 本身仍可用于一般 runner 任务，但当前没有 job-internal same-execution SIF attestation，因此 Slurm execution 不能构成此 cutover identity。跨层 toolchain 定义收敛属于大改，只记录在 [single-source HPC toolchain contract registry](../architecture-proposals/single-source-hpc-toolchain-contract-registry.md)，不在本 Goal 实现。
 
 GO 只由顺序固定的三次 campaign 聚合得出：

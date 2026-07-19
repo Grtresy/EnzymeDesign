@@ -14,6 +14,9 @@ from openzyme_runtime import LIVE_MICU_TOKEN_HARD_LIMIT
 AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID = "aox_blank_world_runtime_config@1"
 AOX_RUNNER_CONTRACT_EXPECTATIONS_SCHEMA_ID = "aox_runner_contract_expectations@1"
 AOX_BROWSER_OBSERVATION_MODE = "chrome_devtools_mcp_file_handoff"
+AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS = 3_600
+AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS = 2.0 * AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS = AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PURPOSE_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
@@ -816,8 +819,7 @@ def normalize_aox_blank_world_runtime_config(
         "timeout_seconds": _number(
             driver["timeout_seconds"],
             path="effective_config.driver.timeout_seconds",
-            minimum=0.0,
-            minimum_inclusive=False,
+            minimum=AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS,
         ),
         "max_drains": _integer(
             driver["max_drains"],

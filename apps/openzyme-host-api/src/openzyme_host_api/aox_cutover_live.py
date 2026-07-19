@@ -23,6 +23,7 @@ import httpx
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import build_conversation_projection
 from openzyme_core import sandbox_image_record
+from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_workspace import DEFAULT_SANDBOX_IMAGE_REF
 from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_domain import ArtifactKind
@@ -54,6 +55,8 @@ from .aox_cutover_evidence import project_formal_delegation_request
 from .aox_cutover_evidence import sandbox_calculation_digest
 from .aox_cutover_evidence import seal_source_tree_envelope
 from .aox_cutover_evidence import typed_empty_artifact_validation_receipt
+from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .app import HostApiDependencies
 from .app import create_app
 from .evals import S15_AOX_HMM_FIXED_DELIVERABLES
@@ -1298,7 +1301,7 @@ class LiveAoxAttemptRunner:
     ledger_path: Path = field(repr=False)
     effective_config: Mapping[str, object] | None = None
     approval_mode: Literal["auto", "chrome-once"] = "auto"
-    timeout_seconds: float = 1_800.0
+    timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
     max_drains: int = 120
     max_signals_per_drain: int = 10
     max_steps_per_agent: int = 16
@@ -3195,6 +3198,12 @@ class LiveAoxAttemptRunner:
             + "fails, repair it and reuse that completed response/artifact; never create a "
             + "second controlled operation for the same reached SDK method. If no trustworthy "
             + "attempt-local checkpoint remains, fail the task and let a fresh attempt retry. "
+            + "Every sandbox.exec invocation whose source may reach the real EBI HMMER wait "
+            + "must use timeout_seconds="
+            + str(int(AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS))
+            + ". Short inspection or source-repair commands that cannot reach HMMER may use "
+            + "shorter bounds. Do not shorten the HMM-capable containment timeout or use a "
+            + "later command to justify a duplicate operation. "
             + "Runner templates accept only the "
             + "fixed declared paths bio_tools/mafft/alignment.fasta, "
             + "bio_tools/hmmbuild/model.hmm, bio_tools/cdhit/clustered.fasta plus "
@@ -4482,6 +4491,43 @@ def _assert_cutover_operation_budget_before_approval(
                 ],
             },
         )
+    if current.sdk_module == "bio" and current.function_name == "hmmer_search":
+        with provider.read() as scope:
+            sandbox_run = scope.repositories.sandbox_runs.get(current.sandbox_run_id)
+        raw_policy = (
+            None
+            if sandbox_run is None
+            else getattr(sandbox_run, "resource_policy", None)
+        )
+        policy = {} if not isinstance(raw_policy, dict) else dict(raw_policy)
+        observed_timeout = policy.get("timeout_seconds")
+        observed_policy_version = policy.get("exec_policy_version")
+        if (
+            type(observed_timeout) is not int
+            or observed_timeout != AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+            or observed_policy_version != EXEC_POLICY_VERSION
+        ):
+            raise LiveProductPathError(
+                "cutover_hmmer_sandbox_timeout_invalid",
+                "AOX HMMER approval requires the sealed HMM-capable sandbox timeout policy",
+                details={
+                    "session_id": session_id,
+                    "approval_id": approval_id,
+                    "operation_id": current.operation_id,
+                    "expected_timeout_seconds": (
+                        AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
+                    ),
+                    "observed_timeout_seconds": (
+                        observed_timeout if type(observed_timeout) is int else None
+                    ),
+                    "expected_exec_policy_version": EXEC_POLICY_VERSION,
+                    "observed_exec_policy_version": (
+                        observed_policy_version
+                        if isinstance(observed_policy_version, str)
+                        else None
+                    ),
+                },
+            )
     failed = [
         operation
         for operation in operations

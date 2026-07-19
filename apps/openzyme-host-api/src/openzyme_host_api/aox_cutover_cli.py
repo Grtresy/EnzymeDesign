@@ -21,6 +21,7 @@ from .aox_cutover_launch import AoxCutoverDriverConfig
 from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import prepare_aox_cutover_launch
+from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
 
 
 _PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
@@ -564,7 +565,15 @@ def _add_driver_arguments(parser: argparse.ArgumentParser) -> None:
             "DevTools observation after the Host-held completion window"
         ),
     )
-    parser.add_argument("--timeout-seconds", type=float, default=1_800.0)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS,
+        help=(
+            "per-session AOX deadline; the launch gate rejects values below the "
+            "sealed long-operation hierarchy"
+        ),
+    )
     parser.add_argument("--max-drains", type=int, default=120)
     parser.add_argument("--max-signals-per-drain", type=int, default=10)
     parser.add_argument("--max-steps-per-agent", type=int, default=16)

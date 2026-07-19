@@ -61,7 +61,7 @@ def _pin_args(tmp_path: Path):
             "--browser-observation-submission-timeout-seconds",
             "181",
             "--timeout-seconds",
-            "1801",
+            "7201",
             "--max-drains",
             "121",
             "--max-signals-per-drain",
@@ -157,6 +157,7 @@ def test_run_live_passes_canonical_launch_snapshot_to_runner_and_campaign(
     assert result == 2
     assert captured["prepare"]["settings"] is raw_settings
     assert captured["prepare"]["driver"].approval_mode == "chrome-once"
+    assert captured["prepare"]["driver"].timeout_seconds == 7_200.0
     assert captured["runner"]["settings"] is effective_settings
     assert captured["runner"]["effective_config"] is launch_config
     assert captured["campaign"]["identity"] is launch_identity
@@ -205,7 +206,7 @@ def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
     assert driver.browser_approval_timeout_seconds == 301.0
     assert driver.browser_completion_hold_seconds == 61.0
     assert driver.browser_observation_submission_timeout_seconds == 181.0
-    assert driver.timeout_seconds == 1801.0
+    assert driver.timeout_seconds == 7201.0
     assert driver.max_drains == 121
     assert driver.max_signals_per_drain == 11
     assert driver.max_steps_per_agent == 17

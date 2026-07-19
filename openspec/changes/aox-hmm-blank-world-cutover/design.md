@@ -144,6 +144,8 @@ workspace/events/API/UI 只呈现 provider、status、citation、operation/artif
 
 本轮还发现跨 `sandbox.exec` 显式采用一个既有 completed operation、同时保留 failed/superseded/abandoned 全历史，需要 durable chain-selection 真状态、operation disposition、approval/public projection 与 bundle/verifier schema 升级，不能用“最新成功”或 content-digest 去重局部修补。详细方案单独记录在 `docs/v3/architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md`，本 Goal 不实现。
 
+r14 暴露了 AOX HMM-capable path 的直接可用性缺陷：真实 EBI HMMER 在约 `1375.8s` 完成，但旧 `sandbox.exec` `900s` 和 formal public/session `1800s` 先后截断调用。局部修正不新增真状态：S09 policy 升为 `v2`、默认仍 `120s` 而最大 `3600s`；任何可能到达 HMMER 的 command 要求 exact `3600s`，inspection/repair 可更短；AOX driver 默认和最小均为 `7200s`，launch 与 HMMER approval 对 canonical policy fail-fast。它只修当前 AOX 层级，不自动 replay。通用 durable async continuation、取消/lease fencing、Host writer quiescence 与封存顺序属于大改，单独记录在 `docs/v3/architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md`，本 Goal 不实现。
+
 ## Risks / Trade-offs
 
 - [整数十分制会显著改变历史候选数] → 将其声明为 correctional breaking change，以公式级 golden、边界测试和 legacy non-cutover 标记替代对历史行数的兼容。

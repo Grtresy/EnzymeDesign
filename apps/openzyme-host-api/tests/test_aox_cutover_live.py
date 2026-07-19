@@ -53,11 +53,16 @@ class _OperationReadProvider:
     """Read-only repository double for the cutover approval budget guard."""
 
     class _Scope:
-        def __init__(self, operations: tuple[ControlledOperation, ...]) -> None:
+        def __init__(
+            self,
+            operations: tuple[ControlledOperation, ...],
+            sandbox_runs: dict[str, object],
+        ) -> None:
             self.repositories = SimpleNamespace(
                 controlled_operations=SimpleNamespace(
                     list_by_session=lambda _session_id: operations
-                )
+                ),
+                sandbox_runs=SimpleNamespace(get=sandbox_runs.get),
             )
 
         def __enter__(self) -> _OperationReadProvider._Scope:
@@ -66,11 +71,18 @@ class _OperationReadProvider:
         def __exit__(self, *args: object) -> None:
             del args
 
-    def __init__(self, *operations: ControlledOperation) -> None:
+    def __init__(
+        self,
+        *operations: ControlledOperation,
+        sandbox_runs: tuple[object, ...] = (),
+    ) -> None:
         self._operations = tuple(operations)
+        self._sandbox_runs = {
+            str(getattr(run, "sandbox_run_id")): run for run in sandbox_runs
+        }
 
     def read(self) -> _OperationReadProvider._Scope:
-        return self._Scope(self._operations)
+        return self._Scope(self._operations, self._sandbox_runs)
 
 
 def _disable_cutover_operation_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -715,6 +727,90 @@ def test_cutover_operation_budget_rejects_duplicate_method_before_approval() -> 
     }
 
 
+def test_cutover_operation_budget_accepts_hmmer_with_v2_long_timeout() -> None:
+    current = replace(
+        _operation(),
+        operation_id="op_hmmer",
+        approval_id="approval_hmmer",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-hmmer"),
+        sdk_module="bio",
+        function_name="hmmer_search",
+        sandbox_run_id="srun_hmmer",
+    )
+    run = SimpleNamespace(
+        sandbox_run_id="srun_hmmer",
+        resource_policy={
+            "timeout_seconds": 3_600,
+            "exec_policy_version": "s09.exec_policy.v2",
+        },
+    )
+    provider = _OperationReadProvider(current, sandbox_runs=(run,))
+
+    live._assert_cutover_operation_budget_before_approval(
+        provider,  # type: ignore[arg-type]
+        session_id=current.session_id,
+        approval_id=current.approval_id or "",
+    )
+
+
+@pytest.mark.parametrize(
+    ("sandbox_runs", "observed_timeout", "observed_version"),
+    (
+        ((), None, None),
+        (
+            (
+                SimpleNamespace(
+                    sandbox_run_id="srun_hmmer",
+                    resource_policy={
+                        "timeout_seconds": 900,
+                        "exec_policy_version": "s09.exec_policy.v1",
+                    },
+                ),
+            ),
+            900,
+            "s09.exec_policy.v1",
+        ),
+    ),
+)
+def test_cutover_operation_budget_rejects_unsafe_hmmer_sandbox_timeout(
+    sandbox_runs: tuple[object, ...],
+    observed_timeout: int | None,
+    observed_version: str | None,
+) -> None:
+    current = replace(
+        _operation(),
+        operation_id="op_hmmer",
+        approval_id="approval_hmmer",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-hmmer"),
+        sdk_module="bio",
+        function_name="hmmer_search",
+        sandbox_run_id="srun_hmmer",
+    )
+    provider = _OperationReadProvider(current, sandbox_runs=sandbox_runs)
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._assert_cutover_operation_budget_before_approval(
+            provider,  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+        )
+
+    assert error.value.code == "cutover_hmmer_sandbox_timeout_invalid"
+    assert error.value.details == {
+        "session_id": "sess_001",
+        "approval_id": "approval_hmmer",
+        "operation_id": "op_hmmer",
+        "expected_timeout_seconds": 3_600,
+        "observed_timeout_seconds": observed_timeout,
+        "expected_exec_policy_version": "s09.exec_policy.v2",
+        "observed_exec_policy_version": observed_version,
+    }
+
+
 def test_cutover_operation_budget_rejects_prior_failed_operation() -> None:
     failed = replace(
         _operation(),
@@ -1301,6 +1397,10 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "artifacts.fetched_output_ref" in prompt
     assert "Persist each completed controlled-operation response" in prompt
     assert "never create a second controlled operation" in prompt
+    assert "whose source may reach the real EBI HMMER wait" in prompt
+    assert "must use timeout_seconds=3600" in prompt
+    assert "Short inspection or source-repair commands" in prompt
+    assert "Do not shorten the HMM-capable containment timeout" in prompt
     assert "exact fetched hmmbuild artifact id and content digest" in prompt
     assert "validation_profile='fasta_zero_records@1'" in prompt
     assert (
