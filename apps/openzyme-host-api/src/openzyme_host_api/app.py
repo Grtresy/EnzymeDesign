@@ -627,7 +627,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
     return _http_exception(
         500,
         code=str(error_code or "internal_error"),
-        message=str(exc),
+        message=str(getattr(exc, "public_message", None) or exc),
         hint=None if hint is None else str(hint),
         details=details,
     )

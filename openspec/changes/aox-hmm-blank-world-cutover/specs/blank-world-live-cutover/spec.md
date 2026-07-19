@@ -222,6 +222,21 @@ The public scanner MAY classify only the four exact AOX logical manifest suffixe
 - **WHEN** public evidence contains `/provider_parsed/private.txt`, traversal, `/home/...`, `/tmp/...`, `prefix)/p.name`, or an arbitrary `/p.name` outside the recognized sealed-source syntax
 - **THEN** public-safety verification fails as an unrecognized absolute path and the attempt is not cutover eligible
 
+#### Scenario: Seal the known-positive probe source without path ambiguity
+- **WHEN** the known-positive probe supplies its NCBI and UniProt output directories
+- **THEN** the source uses complete `/workspace/output/provider/ncbi` and `/workspace/output/provider/uniprot` literals and passes the unchanged sealed-source public-safety verifier
+
+### Requirement: Runtime lease liveness remains independent and fail closed
+During a file-backed runtime turn, every session-lease heartbeat and contention retry SHALL open and close a fresh repository connection rather than reuse the coordinator or blocking worker connection. Only SQLite `BUSY` and `LOCKED` MAY be retried, with capped backoff that continues only until success or the currently observed lease expiry. The repository SHALL acquire SQLite writer authority before calculating heartbeat/acquire timestamps; waiting across the old expiry MUST NOT revive a lease. Other exceptions SHALL propagate after scheduler cleanup restores the prior context and releases any releasable row, and confirmed or locally observed lease loss SHALL stop renewal. Any subsequent stale canonical write SHALL remain rejected and SHALL cross sandbox control, Pipeline SDK, and Host API as non-retryable `runtime_write_fenced` with a safe fixed public diagnostic.
+
+#### Scenario: Recover from repeated transient SQLite contention
+- **WHEN** repeated heartbeat attempts during a blocking provider turn raise SQLite `database is locked` and a later fresh-scope retry succeeds before lease expiry
+- **THEN** the original runtime owner retains authority and a contender cannot reclaim at the original expiry
+
+#### Scenario: Preserve confirmed stale-write fencing
+- **WHEN** the lease is no longer active and a sandbox callback attempts a canonical write
+- **THEN** the write is not applied and the public error is non-retryable `runtime_write_fenced`, not a generic or retryable transport error
+
 ### Requirement: Closed artifact kinds and fixed AOX deliverable contracts
 Artifact registration SHALL accept only the exact nine control-plane kind values `code`, `log`, `sequence`, `structure`, `report`, `research_dossier`, `result`, `cache`, and `other`. The dependency-free SDK and every Host/raw-control registration boundary SHALL reject another value before sealing or external dispatch with non-retryable `artifact_kind_invalid`. `directory` MAY remain an `expected_outputs` shape sentinel but SHALL NOT be stored as an artifact kind.
 

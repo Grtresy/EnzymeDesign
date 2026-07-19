@@ -2,20 +2,25 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
 import sqlite3
 from threading import Event
 from threading import Thread
+import time
 
 import pytest
 
 from openzyme_core import CoreRepositories
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import RuntimeWriteFencingError
+from openzyme_core import SessionRuntimeLeaseAcquireResult
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_domain import Lane
 from openzyme_domain import LaneStatus
 from openzyme_domain import Session
+from openzyme_domain import SessionRuntimeLease
 from openzyme_domain import SessionRuntimeLeaseMode
 from openzyme_domain import Task
 
@@ -339,6 +344,104 @@ def test_concurrent_short_write_scopes_serialize_without_shared_connection(
     with provider.read() as uow:
         assert uow.repositories.sessions.get(first_session.session_id) == first_session
         assert uow.repositories.sessions.get(second_session.session_id) == second_session
+
+
+def test_heartbeat_cannot_revive_lease_expired_while_waiting_for_write_lock(
+    tmp_path,
+) -> None:
+    provider = _provider(tmp_path)
+    session = Session.create(
+        "sess_heartbeat_lock",
+        "proj_001",
+        "Heartbeat lock",
+        "Do not revive an expired lease.",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+    with provider.connection_scope() as owner:
+        acquired = owner.repositories.session_runtime_leases.acquire(
+            session_id=session.session_id,
+            owner_id="worker:heartbeat",
+            mode=SessionRuntimeLeaseMode.TEST,
+            lease_seconds=1,
+        )
+    assert acquired.lease is not None
+    original_lease = acquired.lease
+    heartbeat_attempting = Event()
+
+    def heartbeat_after_lock() -> SessionRuntimeLease | None:
+        with provider.connection_scope() as owner:
+            heartbeat_attempting.set()
+            return owner.repositories.session_runtime_leases.heartbeat(
+                session_id=session.session_id,
+                owner_id=original_lease.owner_id,
+                lease_token=original_lease.lease_token,
+                lease_seconds=30,
+            )
+
+    with provider.connection_scope() as blocker:
+        blocker.connection.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(heartbeat_after_lock)
+            assert heartbeat_attempting.wait(timeout=5)
+            expiry = datetime.fromisoformat(original_lease.expires_at)
+            time.sleep(
+                max(0.0, (expiry - datetime.now(tz=UTC)).total_seconds()) + 0.2
+            )
+            assert future.done() is False
+            blocker.connection.rollback()
+            heartbeat = future.result(timeout=5)
+
+    assert heartbeat is None
+    with provider.read() as owner:
+        persisted = owner.repositories.session_runtime_leases.get_by_token(
+            original_lease.lease_token
+        )
+        assert persisted is not None
+        assert persisted.heartbeat_at == original_lease.heartbeat_at
+        assert persisted.expires_at == original_lease.expires_at
+        assert (
+            owner.repositories.session_runtime_leases.get_active(session.session_id)
+            is None
+        )
+
+
+def test_lease_acquire_timestamps_after_waiting_for_write_lock(tmp_path) -> None:
+    provider = _provider(tmp_path)
+    session = Session.create(
+        "sess_acquire_lock",
+        "proj_001",
+        "Acquire lock",
+        "Start the lease only after acquiring the writer lock.",
+    )
+    with provider.write() as owner:
+        owner.repositories.sessions.save(session)
+    acquire_attempting = Event()
+
+    def acquire_after_lock() -> SessionRuntimeLeaseAcquireResult:
+        with provider.connection_scope() as owner:
+            acquire_attempting.set()
+            return owner.repositories.session_runtime_leases.acquire(
+                session_id=session.session_id,
+                owner_id="worker:acquire",
+                mode=SessionRuntimeLeaseMode.TEST,
+                lease_seconds=1,
+            )
+
+    with provider.connection_scope() as blocker:
+        blocker.connection.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(acquire_after_lock)
+            assert acquire_attempting.wait(timeout=5)
+            time.sleep(1.2)
+            assert future.done() is False
+            blocker.connection.rollback()
+            acquired = future.result(timeout=5)
+
+    assert acquired.acquired is True
+    lease = acquired.lease
+    assert lease is not None
+    assert datetime.fromisoformat(lease.expires_at) > datetime.now(tz=UTC)
 
 
 def _save_session(provider: SQLiteRepositoryProvider, session: Session) -> None:

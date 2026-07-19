@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:1afbeb39a02202c3a583c30dc189f611b5dda6150d192a738719956ea766ac8c"
+        "sha256:f4babf1951c22f53c3e4eb8a20517915970deaf944d39b70096d6b8900ee3bda"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:7a64557355a4e65f42757b36a9e32ca7a8d365657c049a094b577c5a5c0604dd"
+            "sha256:c877569c8e3e0fedd9628dfc236183fd7db6a64be454bd4282e928fc9626fa51"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"

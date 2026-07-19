@@ -100,6 +100,24 @@ class CommandIdempotencyConflictError(ValueError):
 class RuntimeWriteFencingError(RuntimeError):
     """Raised when a runtime worker attempts a write without its active lease."""
 
+    error_code = "runtime_write_fenced"
+    public_message = (
+        "session runtime write was rejected because its lease fence is no longer "
+        "authoritative"
+    )
+    hint = (
+        "Fail closed for the current runtime attempt; acquire a fresh session runtime "
+        "lease before any further write."
+    )
+    retryable = False
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.details = {
+            "boundary": "session_runtime_write_fence",
+            "disposition": "fail_closed",
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class SessionRuntimeLeaseAcquireResult:
@@ -3084,14 +3102,14 @@ class SessionRuntimeLeaseRepository:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
         _require_session_exists(self.connection, session_id)
-        now = _utc_now_iso()
-        expires_at = _utc_after_iso(lease_seconds)
         resolved_mode = SessionRuntimeLeaseMode(str(mode))
         try:
             with _repository_immediate_transaction(
                 self.connection,
                 prefix="session_runtime_lease_acquire",
             ):
+                now = _utc_now_iso()
+                expires_at = _utc_after_iso(lease_seconds)
                 active = self._get_unreleased_row(session_id)
                 if active is not None and str(active["expires_at"]) > now:
                     lease = self._row_to_lease(active)
@@ -3153,6 +3171,7 @@ class SessionRuntimeLeaseRepository:
             active_lease = self.get_active(session_id)
             if active_lease is None:
                 raise
+            now = _utc_now_iso()
             return SessionRuntimeLeaseAcquireResult(
                 acquired=False,
                 active_lease=active_lease,
@@ -3201,31 +3220,40 @@ class SessionRuntimeLeaseRepository:
     ) -> SessionRuntimeLease | None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
-        now = _utc_now_iso()
-        cursor = self.connection.execute(
-            """
-            UPDATE session_runtime_leases
-            SET heartbeat_at = ?,
-                expires_at = ?
-            WHERE session_id = ?
-              AND owner_id = ?
-              AND lease_token = ?
-              AND released_at IS NULL
-              AND expires_at > ?
-            """,
-            (
-                now,
-                _utc_after_iso(lease_seconds),
-                session_id,
-                owner_id,
-                lease_token,
-                now,
-            ),
-        )
-        _commit(self.connection)
-        if cursor.rowcount != 1:
-            return None
-        return self.get_by_token(lease_token)
+        with _repository_immediate_transaction(
+            self.connection,
+            prefix="session_runtime_lease_heartbeat",
+        ):
+            now = _utc_now_iso()
+            cursor = self.connection.execute(
+                """
+                UPDATE session_runtime_leases
+                SET heartbeat_at = ?,
+                    expires_at = ?
+                WHERE session_id = ?
+                  AND owner_id = ?
+                  AND lease_token = ?
+                  AND released_at IS NULL
+                  AND expires_at > ?
+                """,
+                (
+                    now,
+                    _utc_after_iso(lease_seconds),
+                    session_id,
+                    owner_id,
+                    lease_token,
+                    now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self.connection.execute(
+                "SELECT * FROM session_runtime_leases WHERE lease_token = ?",
+                (lease_token,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("renewed session runtime lease disappeared")
+            return self._row_to_lease(row)
 
     def release(
         self,

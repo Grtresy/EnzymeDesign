@@ -1374,6 +1374,11 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "one operation-bearing sandbox.exec run" in prompt
     assert "Cross-run effect adoption is not available" in prompt
     assert "Persist each completed operation response under /workspace/work" in prompt
+    assert "output_dir='/workspace/output/provider/ncbi'" in prompt
+    assert "output_dir='/workspace/output/provider/uniprot'" in prompt
+    assert "Do not derive either value from an OUT constant" in prompt
+    assert "never interpolate a sandbox root constant" in prompt
+    assert "raw source snapshot must remain eligible" in prompt.casefold()
     assert "do not start another controlled operation in this attempt" in prompt
     assert "bio_tools/mafft/alignment.fasta" in prompt
     assert "bio_tools/hmmbuild/model.hmm" in prompt
@@ -1629,6 +1634,85 @@ def test_catalog_source_snapshot_directory_is_sealed_as_self_verifying_envelope(
 
     assert envelope["schema_id"] == "openzyme_sealed_source_tree@1"
     assert [item["relative_path"] for item in envelope["files"]] == sorted(files)
+
+
+def test_probe_provider_output_literals_are_self_verifying_source(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "ledger.sqlite3"
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source_root = roots.blob_root / "sealed" / "source" / "probe-snapshot"
+    source_root.mkdir(parents=True)
+    content = b'''\
+from openzyme_pipeline import artifacts, bio
+
+WORK = "/workspace/work"
+OUT = "/workspace/output"
+
+ncbi = bio.ncbi_fetch_proteins(
+    accessions=["NP_000509.1", "NP_000549.1"],
+    output_dir="/workspace/output/provider/ncbi",
+)
+ncbi_ref = artifacts.provider_file_ref(
+    ncbi,
+    relative_path_suffix="/provider_parsed/proteins.fasta",
+)
+uniprot = bio.uniprot_fetch(
+    accessions=["P68871", "P69905"],
+    output_dir="/workspace/output/provider/uniprot",
+)
+uniprot_ref = artifacts.provider_file_ref(
+    uniprot,
+    relative_path_suffix="/provider_parsed/sequences.fasta",
+)
+expected_outputs = [
+    "bio_tools/mafft/alignment.fasta",
+    "bio_tools/hmmbuild/model.hmm",
+    "bio_tools/cdhit/clustered.fasta",
+    "bio_tools/cdhit/clusters.csv",
+    "bio_tools/hmmalign/aligned.fasta",
+]
+'''
+    source_path = source_root / "aox_probe.py"
+    source_path.write_bytes(content)
+    tree_digest = live.canonical_digest(
+        [
+            {
+                "relative_path": "aox_probe.py",
+                "content_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            }
+        ]
+    )
+    artifact = SimpleNamespace(
+        artifact_id="art_probe_source_snapshot",
+        storage_uri=str(source_root),
+        kind=ArtifactKind.CODE,
+        metadata={
+            "semantic_type": "pipeline_source_snapshot",
+            "format": "source_tree",
+            "source_tree_digest": tree_digest,
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(ledger_path),
+        attempt_number=1,
+    )
+
+    sealed = live._artifact_bytes(context, artifact)
+    envelope = cutover_evidence.verify_sealed_source_tree_envelope(
+        sealed,
+        expected_source_tree_digest=tree_digest,
+    )
+
+    assert envelope["schema_id"] == "openzyme_sealed_source_tree@1"
+    assert envelope["files"][0]["relative_path"] == "aox_probe.py"
 
 
 def test_catalog_source_snapshot_directory_rejects_metadata_digest_drift(

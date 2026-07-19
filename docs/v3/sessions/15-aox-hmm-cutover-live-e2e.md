@@ -348,6 +348,57 @@ JSON=`result/json`；只有三个声明的 derived-empty FASTA 额外允许
 缺失均不能形成 cutover-eligible evidence。该 correction 不新增顶层状态、重放或跨 run
 adoption 语义。
 
+r23 在 commit `3e9d9d3ddc74bbce063d68cb7ee4c802b05c585a` 上建立全新 pin/campaign，
+effective config digest 仍为
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`，
+workflow ref 为
+`workflow:aox-hmm-live@2.0.0#sha256:1afbeb39a02202c3a583c30dc189f611b5dda6150d192a738719956ea766ac8c`；
+pin identity/prerequisite 文件的 byte digest 分别是
+`sha256:6ec59662e93fadc3304869e0fcc6d28c9bb88f3f479e50b1e57e6e46f332ddca` 与
+`sha256:9ba810d3603528a052bf38f97190f34f9bcf4afa863721916ba8064b3e080a7e`。
+真实 known-positive run 精确完成 NCBI `op_fa2b75ad4e98`、UniProt
+`op_1927c012673f`、MAFFT `op_4bebc9b67883`、hmmbuild `op_ec1ccc3a9872`、
+CD-HIT `op_42ebf76047a7` 和 HMMalign `op_a987f91a77aa`。但生成源码使用
+`f"{OUT}/provider/ncbi"` / `f"{OUT}/provider/uniprot"`，public-safe raw source
+scanner 把其中 slash-prefixed suffix 误判为未知 Host absolute path，最终以
+`probe_attestation_unavailable` 把六项全标失败。该结果是 attestation false negative，
+不能事后追认为 probe pass。局部修复要求完整 `/workspace/output/provider/...` literal，
+并用真实 sealed-source envelope verifier 做回归；全局 public-safe scanner 没有放宽。
+
+独立 formal run 完成真实 NCBI `op_68e06baa18d6`、MAFFT
+`op_cc9aa132aa4c`、hmmbuild `op_344f8fcce571` 与 EBI HMMER
+`op_df69465ad7a8`。HMMER 产生 68,542 条 parsed row，score-filter 精确产生
+37,722 个 UniProt accession。Chrome 对 formal NCBI approval
+`appr_3c8927f9fcb6` 批准并恢复同一 operation；这只证明 approval-resume，
+不是缺失的 terminal Chrome receipt。随后唯一 UniProt operation
+`op_b5db24e5be07` 进入 running/approved，并开始 378 个 Host 内部 query batch。
+session lease 最后一次 heartbeat 是 `2026-07-19T07:44:21Z`，expiry 为
+`07:49:21Z`；旧 scheduler 在 approval/provider 等待期间遇到一次 SQLite contention 后
+永久停止 heartbeat。租约过期后 repository 正确拒绝下一次 canonical write。
+`RUN_FAILURE.json` digest 为
+`sha256:d294b1e243c274c444b3a7b6655d2397c6877c8b40a2e599738d2ab820688a80`，
+记录 `bio.uniprot_fetch` 的 stale-business-write fence。这是 runtime ownership failure，
+不是科学 empty/negative；不存在 post-UniProt target、HMMalign、motif、CD-HIT、graph、
+summary、published report 或 terminal browser receipt。
+
+r23 永久 **NO-GO**。离线 verifier 无问题通过的 non-eligible failure bundle 是
+`sha256:cd48188a02cf970a2c392a226d97972675a548c86eb8abe67b9fe4d134d2def8`，
+sealed decision 是
+`sha256:93d652032d8098bdab668fe3e4cc7c5d7311a8632c57b0cb78b9838c0c1376c9`，
+blocker 为 `internal_error` / `attempt[1].scientific_outcome`。MICU 从
+`43,593,190` 增至 `45,455,060 / 500,000,000`，remaining `454,544,940`，
+零 breach/overage；driver 没有浪费预算继续 positive 2 或 fault。r23 的 root、operation、
+provider response、browser state 与 scientific bytes 均不得进入新 attempt。
+
+对应小修让 file-backed heartbeat 的每次尝试和 contention retry 都新建/关闭独立
+repository connection，只对 SQLite `BUSY` / `LOCKED` 在 active lease deadline 内有界退避，
+其他异常显式传播，confirmed lease loss 与 commit fencing 保持 fail closed。stale write
+跨 sandbox control、Pipeline SDK 与 Host API 稳定映射为 non-retryable
+`runtime_write_fenced`，不再退化为 generic `sandbox_transport_error`。原始异常文本不进入公开
+投影；既有 Host-private logging 语义保持不变。
+这不把 37,722-accession request 拆成多个 controlled operation，也不实施 durable async
+controlled-operation continuation；后者仍属于已记录但本 Goal 不实施的大架构调整。
+
 collector 当前仍是逐文件写最终 evidence root，单文件 no-replace 不等于 attempt 事务，
 也不能统一证明 actual artifact root 与 declared root exact equality。两阶段 prepare/commit、
 artifact-root 全闭包、失败原子性与迁移计划已单独记录在

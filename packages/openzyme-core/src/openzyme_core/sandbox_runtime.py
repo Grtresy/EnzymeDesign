@@ -738,11 +738,12 @@ class _ControlSocketServer:
 
     @staticmethod
     def _error_response(*, request_id: Any, exc: Exception) -> dict[str, Any]:
+        public_message = getattr(exc, "public_message", None) or str(exc)
         return {
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {
-                "message": sanitize_public_diagnostic_text(str(exc)),
+                "message": sanitize_public_diagnostic_text(public_message),
                 "type": safe_public_machine_identifier(
                     exc.__class__.__name__,
                     fallback="Exception",

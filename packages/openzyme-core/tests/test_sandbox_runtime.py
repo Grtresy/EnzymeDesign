@@ -19,6 +19,7 @@ from openzyme_core import SandboxRuntimeError
 from openzyme_core import SandboxRuntimeService
 from openzyme_core import SandboxWorkspaceService
 from openzyme_core import SQLiteRepositoryProvider
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_core import ToolInvocation
 from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
@@ -188,6 +189,62 @@ def test_control_socket_error_envelope_rejects_private_machine_code(
     assert "/tmp/private-hint" not in serialized
     assert "sk-abcdefghijklmnop" not in serialized
     assert "host_path" not in serialized
+
+
+def test_control_socket_runtime_write_fence_is_typed_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_stale_write(
+        _server: _ControlSocketServer,
+        _request: dict[str, object],
+        _params: dict[str, object],
+    ) -> dict[str, object]:
+        raise RuntimeWriteFencingError(
+            "stale lease sk-abcdefghijklmnop rejected at /tmp/private-runtime.sock"
+        )
+
+    monkeypatch.setattr(
+        _ControlSocketServer,
+        "_handle_transport_smoke",
+        reject_stale_write,
+    )
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "control.sock",
+        repositories=_build_repositories(),
+        session_id="sess_001",
+        sandbox_workspace_id="sw_001",
+        sandbox_run_id="srun_001",
+        agent_id="agent:executor",
+        source_snapshot_artifact_id="art_source",
+        source_tree_digest=_digest_text("source"),
+    )
+
+    response = server._handle(
+        {"jsonrpc": "2.0", "id": "call_1", "method": "s09.transport_smoke"}
+    )
+    error = response["error"]
+    serialized = json.dumps(response, sort_keys=True)
+
+    assert error == {
+        "message": (
+            "session runtime write was rejected because its lease fence is no longer "
+            "authoritative"
+        ),
+        "type": "RuntimeWriteFencingError",
+        "error_code": "runtime_write_fenced",
+        "hint": (
+            "Fail closed for the current runtime attempt; acquire a fresh session "
+            "runtime lease before any further write."
+        ),
+        "details": {
+            "boundary": "session_runtime_write_fence",
+            "disposition": "fail_closed",
+        },
+        "retryable": False,
+    }
+    assert "sk-abcdefghijklmnop" not in serialized
+    assert "/tmp/private-runtime.sock" not in serialized
 
 
 def test_control_socket_round_trips_frames_larger_than_one_recv(

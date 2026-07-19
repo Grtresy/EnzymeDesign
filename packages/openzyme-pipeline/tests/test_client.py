@@ -122,6 +122,51 @@ def test_control_client_rejects_oversized_request_before_connect(
     assert error.value.details["size_bytes"] > 1024
 
 
+def test_control_client_preserves_runtime_write_fence_contract(
+    tmp_path: Path,
+) -> None:
+    def respond(conn: socket.socket, frame: bytes) -> None:
+        request = json.loads(frame.decode("utf-8"))
+        conn.sendall(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {
+                        "message": (
+                            "session runtime write was rejected because its lease "
+                            "fence is no longer authoritative"
+                        ),
+                        "error_code": "runtime_write_fenced",
+                        "hint": "Fail closed for the current runtime attempt.",
+                        "details": {
+                            "boundary": "session_runtime_write_fence",
+                            "disposition": "fail_closed",
+                        },
+                        "retryable": False,
+                    },
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+    with _fake_control_server(tmp_path, respond) as (socket_path, _requests):
+        with pytest.raises(client.PipelineSdkError) as error:
+            client.ControlClient(socket_path=socket_path).call(
+                "s09.transport_smoke",
+                {},
+            )
+
+    assert error.value.error_code == "runtime_write_fenced"
+    assert error.value.retryable is False
+    assert error.value.hint == "Fail closed for the current runtime attempt."
+    assert error.value.details == {
+        "boundary": "session_runtime_write_fence",
+        "disposition": "fail_closed",
+    }
+
+
 def test_control_client_rejects_recursive_request_before_connect(
     tmp_path: Path,
 ) -> None:

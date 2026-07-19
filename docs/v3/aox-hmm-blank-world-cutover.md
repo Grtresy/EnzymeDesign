@@ -494,6 +494,71 @@ binding, renamed path or kind/format drift fails closed. This is a local
 contract/error-taxonomy correction, not a new control-plane state or replay
 authority.
 
+r23 used a fresh pin and campaign on commit
+`3e9d9d3ddc74bbce063d68cb7ee4c802b05c585a`, the same effective config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`,
+and workflow
+`workflow:aox-hmm-live@2.0.0#sha256:1afbeb39a02202c3a583c30dc189f611b5dda6150d192a738719956ea766ac8c`.
+Its pin identity and prerequisite files have byte digests
+`sha256:6ec59662e93fadc3304869e0fcc6d28c9bb88f3f479e50b1e57e6e46f332ddca`
+and
+`sha256:9ba810d3603528a052bf38f97190f34f9bcf4afa863721916ba8064b3e080a7e`.
+The real known-positive run completed exactly six operations: NCBI
+`op_fa2b75ad4e98`, UniProt `op_1927c012673f`, MAFFT `op_4bebc9b67883`,
+hmmbuild `op_ec1ccc3a9872`, CD-HIT `op_42ebf76047a7`, and HMMalign
+`op_a987f91a77aa`. However, its source used
+`f"{OUT}/provider/ncbi"` and `f"{OUT}/provider/uniprot"`. The public-safe raw
+source scanner treated the slash-prefixed suffixes as unknown absolute Host
+paths, so sealing classified all six checks as
+`probe_attestation_unavailable` even though the durable operations completed.
+That classification is a false negative, not probe evidence that can be
+retroactively adopted. The local correction makes the prompt require complete
+`/workspace/output/provider/...` literals and proves that representative source
+through the real sealed-source envelope verifier; it does not loosen the
+public-safe scanner.
+
+The separate formal run completed real NCBI `op_68e06baa18d6`, MAFFT
+`op_cc9aa132aa4c`, hmmbuild `op_344f8fcce571`, and EBI HMMER
+`op_df69465ad7a8`. HMMER produced 68,542 parsed rows and the exact score filter
+produced 37,722 UniProt accessions. Chrome approved formal NCBI approval
+`appr_3c8927f9fcb6` for that same operation; this is an approval-resume
+observation, not the missing terminal Chrome receipt. The following single
+UniProt operation `op_b5db24e5be07` entered `running`, was approved, and began
+its 378 Host-internal query batches. The session lease's last heartbeat was
+`2026-07-19T07:44:21Z`, with expiry `07:49:21Z`; the old scheduler stopped the
+heartbeat loop after one SQLite contention exception while approval/provider
+work continued. Once the lease expired, the repository correctly rejected the
+next canonical write. `RUN_FAILURE.json` has digest
+`sha256:d294b1e243c274c444b3a7b6655d2397c6877c8b40a2e599738d2ab820688a80`
+and records the stale-business-write fence at `bio.uniprot_fetch`. This is a
+runtime ownership failure, not a scientific empty or negative result; no
+post-UniProt target, HMMalign, motif, CD-HIT, graph, summary, report, or terminal
+browser receipt exists.
+
+r23 is permanently **NO-GO**. Its internally consistent but non-eligible
+failure bundle is
+`sha256:cd48188a02cf970a2c392a226d97972675a548c86eb8abe67b9fe4d134d2def8`;
+the sealed decision is
+`sha256:93d652032d8098bdab668fe3e4cc7c5d7311a8632c57b0cb78b9838c0c1376c9`
+with blocker `internal_error` / `attempt[1].scientific_outcome`. The cumulative
+MICU ledger moved from `43,593,190` to
+`45,455,060 / 500,000,000`, remaining `454,544,940`, with zero breach or
+reservation overage. The campaign correctly stopped before positive 2 and the
+fault attempt. No r23 root, operation, provider response, browser state, or
+scientific byte may enter a later attempt.
+
+The bounded correction gives each file-backed heartbeat attempt and contention
+retry a fresh repository connection, retries only SQLite `BUSY` / `LOCKED`
+within the active lease deadline, propagates other errors, and preserves
+confirmed lease loss and commit fencing. A stale canonical write now crosses
+sandbox control, Pipeline SDK, and Host API as non-retryable
+`runtime_write_fenced` with a fixed public message instead of generic
+`sandbox_transport_error`. The original exception text does not enter the
+public projection; existing Host-private logging semantics are unchanged.
+This does not split the 37,722-accession request into multiple controlled
+operations and does not implement durable asynchronous controlled-operation
+continuation; that larger design remains outside this Goal.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger

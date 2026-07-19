@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from dataclasses import replace
+import sqlite3
 from threading import Event
 from threading import Thread
 import time
+
+import pytest
 
 from openzyme_core import AgentRuntimeScheduler
 from openzyme_core import AgentRuntimeService
@@ -14,6 +17,7 @@ from openzyme_core import MemoryEventBus
 from openzyme_core import RestoreFocus
 from openzyme_core import SQLiteRepositoryProvider
 from openzyme_core import SessionRuntimeContext
+from openzyme_core import SessionRuntimeLeaseRepository
 from openzyme_core import SessionRuntimeSnapshot
 from openzyme_core import ToolRegistry
 from openzyme_core import apply_sqlite_migrations
@@ -344,6 +348,7 @@ def test_scheduler_respects_max_signals_and_session_concurrency() -> None:
 
 def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
     tmp_path,
+    monkeypatch,
 ) -> None:
     provider = SQLiteRepositoryProvider(str(tmp_path / "heartbeat.sqlite3"))
     started = Event()
@@ -387,23 +392,44 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
         with provider.connection_scope() as owner:
             yield owner.repositories
 
+    heartbeat_connections = []
+    busy_failures = 7
+    original_heartbeat = SessionRuntimeLeaseRepository.heartbeat
+
+    def heartbeat_busy_seven_times(self, **kwargs):
+        heartbeat_connections.append(self.connection)
+        if len(heartbeat_connections) <= busy_failures:
+            raise sqlite3.OperationalError("database is locked")
+        return original_heartbeat(self, **kwargs)
+
+    monkeypatch.setattr(
+        SessionRuntimeLeaseRepository,
+        "heartbeat",
+        heartbeat_busy_seven_times,
+    )
+
     contender_result: dict[str, object] = {}
 
     def attempt_reclaim_after_original_expiry() -> None:
         assert started.wait(timeout=5)
-        time.sleep(3.5)
+        time.sleep(4.5)
         with provider.connection_scope() as owner:
-            contender_result["result"] = owner.repositories.session_runtime_leases.acquire(
-                session_id=session.session_id,
-                owner_id="test:contender",
-                mode="test",
-                lease_seconds=3,
+            contender_result["result"] = (
+                owner.repositories.session_runtime_leases.acquire(
+                    session_id=session.session_id,
+                    owner_id="test:contender",
+                    mode="test",
+                    lease_seconds=4,
+                )
             )
         release.set()
 
     contender = Thread(target=attempt_reclaim_after_original_expiry)
     contender.start()
     with provider.connection_scope() as coordinator:
+        coordinator_connection = (
+            coordinator.repositories.session_runtime_leases.connection
+        )
         context = SessionRuntimeContext(
             repositories=coordinator.repositories,
             event_sink=MemoryEventBus(),
@@ -418,16 +444,86 @@ def test_scheduler_heartbeats_session_lease_during_blocking_provider_call(
         outcomes = AgentRuntimeScheduler(
             context,
             worker_id="test:heartbeat-owner",
-            session_lease_seconds=3,
+            session_lease_seconds=4,
             repository_scope_factory=repository_scope,
         ).run_once_sync(session.session_id, max_signals=1)
-    contender.join(timeout=5)
+    contender.join(timeout=7)
 
     assert not contender.is_alive()
     contender_attempt = contender_result["result"]
     assert getattr(contender_attempt, "acquired") is False
     assert len(outcomes) == 1
     assert outcomes[0].ok is True
+    assert len(heartbeat_connections) >= busy_failures + 1
+    assert all(
+        connection is not coordinator_connection for connection in heartbeat_connections
+    )
+    assert len({id(connection) for connection in heartbeat_connections}) == len(
+        heartbeat_connections
+    )
+
+
+def test_scheduler_releases_lease_and_preserves_heartbeat_error(monkeypatch) -> None:
+    started = Event()
+    release = Event()
+    repositories, context = _build_context(
+        model_factory=BlockingHeartbeatModelFactory(started, release)
+    )
+
+    def raise_programming_error(self, **kwargs):
+        del self, kwargs
+        raise ValueError("heartbeat programming error")
+
+    original_emit = SessionRuntimeContext.emit
+
+    def fail_heartbeat_event(self, event_type, payload):
+        if event_type == "runtime.lease_heartbeat_failed":
+            raise RuntimeError("heartbeat event sink failed")
+        return original_emit(self, event_type, payload)
+
+    monkeypatch.setattr(
+        SessionRuntimeLeaseRepository,
+        "heartbeat",
+        raise_programming_error,
+    )
+    monkeypatch.setattr(SessionRuntimeContext, "emit", fail_heartbeat_event)
+
+    def release_provider_call() -> None:
+        started.wait(timeout=5)
+        time.sleep(1.25)
+        release.set()
+
+    releaser = Thread(target=release_provider_call)
+    releaser.start()
+
+    scheduler = AgentRuntimeScheduler(
+        context,
+        worker_id="test:heartbeat-programming-error",
+        session_lease_seconds=3,
+    )
+    with pytest.raises(ValueError, match="heartbeat programming error") as exc_info:
+        scheduler.run_once_sync("sess_scheduler", max_signals=1)
+    releaser.join(timeout=5)
+
+    assert not releaser.is_alive()
+    assert started.is_set()
+    assert context.session_runtime_lease is None
+    lease_row = repositories.session_runtime_leases.connection.execute(
+        """
+        SELECT released_at
+        FROM session_runtime_leases
+        WHERE session_id = ?
+        ORDER BY fencing_token DESC
+        LIMIT 1
+        """,
+        ("sess_scheduler",),
+    ).fetchone()
+    assert lease_row is not None
+    assert lease_row["released_at"] is not None
+    assert any(
+        "heartbeat failure event emission also failed: RuntimeError" in note
+        for note in getattr(exc_info.value, "__notes__", ())
+    )
 
 
 def test_reporter_can_publish_report_and_finish_delegated_task() -> None:

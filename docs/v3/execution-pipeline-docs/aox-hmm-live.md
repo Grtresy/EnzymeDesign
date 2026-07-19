@@ -616,6 +616,14 @@ path always reaches that provider. Probe operations, bytes and conclusions
 cannot appear in formal artifact roles, formal task/report claims or the AOX
 scientific outcome.
 
+The one operation-bearing probe source passes the two provider output roots as
+complete literals `/workspace/output/provider/ncbi` and
+`/workspace/output/provider/uniprot`. It must not interpolate a sandbox root
+constant immediately before slash-prefixed suffixes: the sealed raw source is
+itself public evidence, so an ambiguous suffix that resembles an unknown Host
+absolute path fails attestation. This source-shape constraint does not grant a
+new path authority or relax the public-safe scanner.
+
 ## Registered deliverable contract
 
 A passed run registers at least these normalized final relative paths, all

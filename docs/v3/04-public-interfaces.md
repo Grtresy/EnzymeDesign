@@ -418,7 +418,7 @@ V3 streaming 默认围绕 control-plane events，而不是围绕 graph implement
 - `signal.*` 是 scheduler/debug 诊断事件，默认不作为用户 workspace projection 的产品语义
 - `runtime.session_locked` 表示某个 session 当前由另一个 runtime owner 持有推进权；manual drain / background tick 必须尊重该状态
 - `runtime.lease_heartbeat_failed` / `runtime.lease_lost` 表示当前 scheduler 无法继续证明 session ownership；payload 只暴露非凭据型 fencing/worker identity 与安全 error type，不暴露 lease token、数据库路径或内部异常全文
-- `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果
+- `runtime.fencing_rejected` 表示 stale worker 的 signal 写回被 session lease fencing 拒绝，不能覆盖新 owner 的结果；同一 fence 从 sandbox control / Host API 暴露时使用 non-retryable `runtime_write_fenced`，不泄露 lease token、数据库路径或原始异常全文
 - `runtime.consistency.warning` / `runtime.state_attention` 是只读诊断事件；它们可提示 operator 或 master follow-up，但不得自动把 task 写为 completed / failed
 
 ## 7. Legacy Boundary

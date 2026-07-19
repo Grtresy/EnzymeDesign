@@ -5,6 +5,7 @@ import hashlib
 from fastapi.testclient import TestClient
 import pytest
 
+from openzyme_core import RuntimeWriteFencingError
 from openzyme_domain import ApprovalRequest
 from openzyme_domain import ApprovalRequestStatus
 from openzyme_domain.control_plane import utc_now_iso
@@ -14,6 +15,7 @@ from openzyme_host_api import HostSecurityPolicy
 from openzyme_host_api import build_local_eval_foundation
 from openzyme_host_api import create_app
 from openzyme_host_api.app import _api_error_payload
+from openzyme_host_api.app import _as_http_error
 from openzyme_runtime import get_llm_debug_recorder
 
 
@@ -262,6 +264,34 @@ def test_public_api_error_payload_sanitizes_private_diagnostics() -> None:
     assert "storage://" not in serialized
     assert "raw-token" not in serialized
     assert "access_token" not in serialized
+
+
+def test_public_api_runtime_write_fence_is_typed_and_fail_closed() -> None:
+    error = _as_http_error(
+        RuntimeWriteFencingError(
+            "stale lease sk-abcdefghijklmnop rejected at /tmp/private-runtime.sock"
+        )
+    )
+    serialized = str(error.detail)
+
+    assert error.status_code == 500
+    assert error.detail == {
+        "code": "runtime_write_fenced",
+        "message": (
+            "session runtime write was rejected because its lease fence is no longer "
+            "authoritative"
+        ),
+        "hint": (
+            "Fail closed for the current runtime attempt; acquire a fresh session "
+            "runtime lease before any further write."
+        ),
+        "details": {
+            "boundary": "session_runtime_write_fence",
+            "disposition": "fail_closed",
+        },
+    }
+    assert "sk-abcdefghijklmnop" not in serialized
+    assert "/tmp/private-runtime.sock" not in serialized
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,9 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+import sqlite3
 from typing import Any
 from typing import Callable
 
@@ -24,6 +27,37 @@ from .engines import EngineRegistry
 from .repositories import CoreRepositories
 from .harness import SessionRuntimeContext
 from .harness import SessionRuntimeSnapshot
+
+
+_SESSION_LEASE_HEARTBEAT_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.25)
+
+
+def _is_transient_sqlite_contention(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int) and error_code & 0xFF in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }:
+        return True
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "database is busy",
+            "database is locked",
+            "database table is locked",
+            "database schema is locked",
+        )
+    )
+
+
+def _seconds_until(expires_at: str) -> float:
+    deadline = datetime.fromisoformat(expires_at)
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    return max(0.0, (deadline - datetime.now(tz=UTC)).total_seconds())
 
 
 class SessionRuntimeLeaseLockedError(RuntimeError):
@@ -195,17 +229,19 @@ class AgentRuntimeScheduler:
                 )
             return tuple(outcomes)
         finally:
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await heartbeat_task
-            self.context.session_runtime_lease = previous_session_lease
-            if owns_session_lease:
-                self.context.repositories.session_runtime_leases.release(
-                    session_id=session_id,
-                    owner_id=self.worker_id,
-                    lease_token=session_lease.lease_token,
-                )
+            try:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await heartbeat_task
+            finally:
+                self.context.session_runtime_lease = previous_session_lease
+                if owns_session_lease:
+                    self.context.repositories.session_runtime_leases.release(
+                        session_id=session_id,
+                        owner_id=self.worker_id,
+                        lease_token=session_lease.lease_token,
+                    )
 
     def _wake_signal_in_worker(
         self,
@@ -268,26 +304,71 @@ class AgentRuntimeScheduler:
 
     async def _maintain_session_lease(self, lease: SessionRuntimeLease) -> None:
         interval = max(0.25, min(self.session_lease_seconds / 3, 30.0))
+        loop = asyncio.get_running_loop()
+        lease_deadline = loop.time() + _seconds_until(lease.expires_at)
         while True:
             await asyncio.sleep(interval)
-            try:
-                heartbeat = self.context.repositories.session_runtime_leases.heartbeat(
-                    session_id=lease.session_id,
-                    owner_id=self.worker_id,
-                    lease_token=lease.lease_token,
-                    lease_seconds=self.session_lease_seconds,
-                )
-            except Exception as exc:
-                self.context.emit(
-                    "runtime.lease_heartbeat_failed",
-                    {
-                        "session_id": lease.session_id,
-                        "fencing_token": lease.fencing_token,
-                        "worker_id": self.worker_id,
-                        "error_type": exc.__class__.__name__,
-                    },
-                )
-                return
+            retry_count = 0
+            while True:
+                if retry_count > 0 and loop.time() >= lease_deadline:
+                    self.context.emit(
+                        "runtime.lease_heartbeat_failed",
+                        {
+                            "session_id": lease.session_id,
+                            "fencing_token": lease.fencing_token,
+                            "worker_id": self.worker_id,
+                            "error_type": "OperationalError",
+                            "retry_count": retry_count,
+                            "lease_deadline_expired": True,
+                        },
+                    )
+                    return
+                try:
+                    heartbeat = self._heartbeat_session_lease(lease)
+                    break
+                except Exception as exc:
+                    if not _is_transient_sqlite_contention(exc):
+                        try:
+                            self.context.emit(
+                                "runtime.lease_heartbeat_failed",
+                                {
+                                    "session_id": lease.session_id,
+                                    "fencing_token": lease.fencing_token,
+                                    "worker_id": self.worker_id,
+                                    "error_type": exc.__class__.__name__,
+                                },
+                            )
+                        except Exception as emit_exc:
+                            exc.add_note(
+                                "heartbeat failure event emission also failed: "
+                                f"{emit_exc.__class__.__name__}"
+                            )
+                        raise
+                    remaining_seconds = lease_deadline - loop.time()
+                    if remaining_seconds <= 0:
+                        self.context.emit(
+                            "runtime.lease_heartbeat_failed",
+                            {
+                                "session_id": lease.session_id,
+                                "fencing_token": lease.fencing_token,
+                                "worker_id": self.worker_id,
+                                "error_type": exc.__class__.__name__,
+                                "retry_count": retry_count,
+                                "lease_deadline_expired": remaining_seconds <= 0,
+                            },
+                        )
+                        return
+                    retry_delay = min(
+                        _SESSION_LEASE_HEARTBEAT_RETRY_DELAYS_SECONDS[
+                            min(
+                                retry_count,
+                                len(_SESSION_LEASE_HEARTBEAT_RETRY_DELAYS_SECONDS) - 1,
+                            )
+                        ],
+                        remaining_seconds,
+                    )
+                    retry_count += 1
+                    await asyncio.sleep(retry_delay)
             if heartbeat is None:
                 self.context.emit(
                     "runtime.lease_lost",
@@ -298,6 +379,26 @@ class AgentRuntimeScheduler:
                     },
                 )
                 return
+            lease_deadline = loop.time() + _seconds_until(heartbeat.expires_at)
+
+    def _heartbeat_session_lease(
+        self,
+        lease: SessionRuntimeLease,
+    ) -> SessionRuntimeLease | None:
+        if self.repository_scope_factory is None:
+            return self.context.repositories.session_runtime_leases.heartbeat(
+                session_id=lease.session_id,
+                owner_id=self.worker_id,
+                lease_token=lease.lease_token,
+                lease_seconds=self.session_lease_seconds,
+            )
+        with self.repository_scope_factory() as repositories:
+            return repositories.session_runtime_leases.heartbeat(
+                session_id=lease.session_id,
+                owner_id=self.worker_id,
+                lease_token=lease.lease_token,
+                lease_seconds=self.session_lease_seconds,
+            )
 
     async def run_forever(
         self,

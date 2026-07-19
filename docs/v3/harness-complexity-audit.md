@@ -53,6 +53,8 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：runtime 推进权已从 signal-level claim 扩展为 session-level `SessionRuntimeLease`。background runtime、manual `/runtime/drain`、recovery/test scheduler 共享同一 session ownership；signal claim 绑定 lease token / fencing token，过期 worker 迟到 complete/fail 会被拒绝并产生 diagnostic，而不是覆盖新 owner 的状态。
 
+  追加修正记录：长时 provider/runner 调用期间的 session heartbeat 不再复用 coordinator connection；每次续租与 SQLite contention retry 都使用 fresh scope，只对 `BUSY` / `LOCKED` 在当前 lease deadline 内有界重试。其他错误显式失败，确认 stale 的任何 sandbox/adapter 写回统一以 non-retryable `runtime_write_fenced` fail closed。
+
   追加修正记录：message admission 不再把临时 `SessionRuntimeContext.restore_focus` 当作异步 turn 的权威。去重后的显式 `skill_keys` 与 canonical user conversation document 一起持久化，`AgentRuntimeSignal` 仍只保留 `source_ref`；master 在 `working` / `agent.woken` / provider 之前按 exact source 校验并恢复。普通 agent protocol inbox 只提供 wakeup context、不授予 workflow refs；损坏 public user binding fail closed；每条 user source 独立生效，background/manual drain 都不能注入、sticky 或 union authority。
 
 - [x] Host API 在 teammate 终态结果后触发 service-level master response turn，而不是排队 master wakeup。
