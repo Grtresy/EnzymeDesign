@@ -176,6 +176,14 @@ mafft_output = artifacts.fetched_output_ref(
 )
 ```
 
+The three selectors above are mutually exclusive by response origin:
+`provider_file_ref` consumes a provider operation response,
+`fetched_output_ref` consumes `workspace.fetch_outputs(...)`, and
+`registered_artifact_ref` consumes only the direct response of
+`artifacts.register(...)`. The first two already return terminal canonical
+refs. Do not chain selectors, pass their result into
+`registered_artifact_ref`, or construct a synthetic registration envelope.
+
 `provider_file_ref` reads only
 `result_summary.transcript_manifest.files`, `registered_artifact_ref` reads only
 the closed registration projection, and `fetched_output_ref` reads only the
@@ -187,14 +195,17 @@ fallback, or recursive selection.
 
 After every controlled operation completes, persist its full response in the
 same sandbox's mutable `/workspace/work` before doing downstream local parsing.
-On a later `sandbox.exec` after a source/parser error, load that attempt-local
-checkpoint first and verify/reuse its catalog artifact. Do not overwrite the
-checkpoint before reading it. A completed operation MUST NOT be replayed merely
-because response selection, serialization, or later Python source failed. If a
-trustworthy attempt-local response is unavailable, explicitly fail the task and
-start a fresh blank-world attempt; do not create a replacement operation in the
-same formal session. `/workspace/work` checkpoints are agent working state, not
-scientific evidence, and never authorize cross-session or cross-attempt reuse.
+Before the first operation-bearing run, use bounded read-only inspection to
+resolve any uncertain helper contract and finalize the source. A completed
+operation MUST NOT be replayed merely because response selection,
+serialization, or later Python source failed. Under bundle/probe `@1`/`@2`, a
+terminal failed sandbox run makes the attempt ineligible and its effects cannot
+be adopted by a later run: retain checkpoints for failure evidence, start no
+further controlled operation, explicitly fail the task, and use a fresh
+blank-world attempt. `/workspace/work` checkpoints are agent working state, not
+scientific evidence or cross-run adoption authority. Supporting explicit
+same-attempt cross-run adoption remains proposal-only in
+[canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md).
 
 The formal scientific closure always reaches `bio.ncbi_fetch_proteins`,
 `bio_tools.mafft`, `bio_tools.hmmbuild`, and

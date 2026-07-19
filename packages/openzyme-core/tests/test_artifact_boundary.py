@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -280,6 +281,96 @@ def test_register_requires_source_snapshot(tmp_path: Path) -> None:
 
     assert exc_info.value.error_code == "source_snapshot_required"
     assert repositories.artifacts.list_by_session(session.session_id) == []
+
+
+def test_register_rejects_explicit_non_source_snapshot_artifact(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    input_artifact = _save_input_artifact(
+        repositories,
+        tmp_path,
+        session_id=session.session_id,
+    )
+    output = workspace_root / workspace.sandbox_workspace_id / "output" / "result.csv"
+    output.write_text("id,score\nA,1\n", encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/result.csv",
+            kind="result",
+            format="csv",
+            metadata={"required_columns": ["id", "score"]},
+            source_snapshot_artifact_id=input_artifact.artifact_id,
+        )
+
+    assert exc_info.value.error_code == "source_snapshot_unavailable"
+    assert not any(
+        artifact.relative_path == "result.csv"
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+    )
+
+
+def test_register_fallback_prefers_latest_source_snapshot_over_command_summary(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    workspace_path = workspace_root / workspace.sandbox_workspace_id
+    source = workspace_path / "src" / "main.py"
+    source.write_text("print('v1')\n", encoding="utf-8")
+    output = workspace_path / "output" / "result.csv"
+    output.write_text("id,score\nA,1\n", encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+    prior_snapshot = service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+    )
+    source.write_text("print('v2')\n", encoding="utf-8")
+    current_snapshot = service.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths="/workspace/src",
+        entrypoint="/workspace/src/main.py",
+    )
+    refreshed = repositories.sandbox_workspaces.get(workspace.sandbox_workspace_id)
+    assert refreshed is not None
+    repositories.sandbox_workspaces.save(
+        replace(
+            refreshed,
+            last_command_summary={
+                "source_snapshot_artifact_id": prior_snapshot.artifact.artifact_id,
+            },
+        )
+    )
+
+    registered = service.register(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        path="/workspace/output/result.csv",
+        kind="result",
+        format="csv",
+        metadata={"required_columns": ["id", "score"]},
+    )
+
+    assert (
+        dict(registered.artifact.metadata or {})["source_snapshot_artifact_id"]
+        == current_snapshot.artifact.artifact_id
+    )
 
 
 def test_snapshot_code_then_register_seals_output_and_keeps_duplicate_paths(tmp_path: Path) -> None:

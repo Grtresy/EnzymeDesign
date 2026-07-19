@@ -831,6 +831,7 @@ class _ControlSocketServer:
                         else str(params.get("validation_profile"))
                     ),
                     metadata=dict(params.get("metadata") or {}),
+                    source_snapshot_artifact_id=self.source_snapshot_artifact_id,
                 ).to_payload()
             elif method == "artifacts.register_many":
                 items = params.get("items") or []
@@ -850,6 +851,7 @@ class _ControlSocketServer:
                             else str(item.get("validation_profile"))
                         ),
                         metadata=dict(item.get("metadata") or {}),
+                        source_snapshot_artifact_id=self.source_snapshot_artifact_id,
                     ).to_payload()
                     for item in items
                 ]

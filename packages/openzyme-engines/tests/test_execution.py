@@ -1418,6 +1418,7 @@ def _seed_sandbox_adapter_workspace(
             metadata={
                 "semantic_type": "pipeline_source_snapshot",
                 "format": "source_tree",
+                "sandbox_workspace_id": sandbox_workspace_id,
                 "source_tree_digest": "sha256:source",
             },
             created_at="2026-04-20T12:00:05+00:00",
@@ -2990,9 +2991,10 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(
         workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
     )
     source_path.write_text("from openzyme_pipeline import bio\n", encoding="utf-8")
-    snapshot = ArtifactBoundaryService(
+    boundary = ArtifactBoundaryService(
         repositories, workspace_root=workspace_root
-    ).snapshot_code(
+    )
+    snapshot = boundary.snapshot_code(
         session_id=session.session_id,
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         paths=["pipeline.py"],
@@ -3041,6 +3043,18 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(
         sandbox_workspace_id=workspace.sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
+    source_path.write_text(
+        "from openzyme_pipeline import bio\n# later unrelated snapshot\n",
+        encoding="utf-8",
+    )
+    later_snapshot = boundary.snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths=["pipeline.py"],
+        entrypoint="pipeline.py",
+        metadata={"producer": "test-later"},
+    )
+    assert later_snapshot.artifact.artifact_id != operation.source_snapshot_artifact_id
     engine = ExecutionEngine(
         repositories,
         ImmediateSuccessRunner(),
@@ -3082,6 +3096,20 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(
     assert (
         fasta_artifact.metadata["source_code_artifact_id"]
         == snapshot.artifact.artifact_id
+    )
+    assert (
+        fasta_artifact.metadata["source_snapshot_artifact_id"]
+        == operation.source_snapshot_artifact_id
+    )
+    assert (
+        fasta_artifact.metadata["source_tree_digest"]
+        == operation.source_snapshot_digest
+    )
+    assert (
+        dict(fasta_artifact.metadata["provenance"])[
+            "source_snapshot_artifact_id"
+        ]
+        == operation.source_snapshot_artifact_id
     )
     assert (
         Path(fasta_artifact.storage_uri)
@@ -3269,6 +3297,22 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         sandbox_workspace_id=sandbox_workspace_id,
         sandbox_run_id=operation.sandbox_run_id,
     )
+    source_path = workspace_root / sandbox_workspace_id / "src" / "pipeline.py"
+    source_path.write_text(
+        "from openzyme_pipeline import bio_tools\n# later unrelated snapshot\n",
+        encoding="utf-8",
+    )
+    later_snapshot = ArtifactBoundaryService(
+        repositories,
+        workspace_root=workspace_root,
+    ).snapshot_code(
+        session_id="sess_001",
+        sandbox_workspace_id=sandbox_workspace_id,
+        paths=["pipeline.py"],
+        entrypoint="pipeline.py",
+        metadata={"producer": "test-later"},
+    )
+    assert later_snapshot.artifact.artifact_id != operation.source_snapshot_artifact_id
     engine = ExecutionEngine(
         repositories,
         ToolchainIdentitySuccessRunner(),
@@ -3324,6 +3368,15 @@ def test_sandbox_adapter_executor_runs_bio_tools_hpc_and_fetches_outputs(
         == "inv_sandbox_adapter_op_sandbox_hpc_mafft"
     )
     assert artifact.metadata["sdk_method"] == "bio_tools.mafft"
+    assert (
+        artifact.metadata["source_snapshot_artifact_id"]
+        == operation.source_snapshot_artifact_id
+    )
+    assert artifact.metadata["source_tree_digest"] == operation.source_snapshot_digest
+    assert (
+        dict(artifact.metadata["provenance"])["source_snapshot_artifact_id"]
+        == operation.source_snapshot_artifact_id
+    )
 
 
 def test_sandbox_adapter_executor_rejects_mutated_sealed_input_before_hpc_submit(

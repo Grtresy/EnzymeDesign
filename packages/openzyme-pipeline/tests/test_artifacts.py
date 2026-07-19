@@ -79,6 +79,24 @@ def test_registered_artifact_ref_rejects_inconsistent_digest_projection() -> Non
         )
 
 
+def test_registered_artifact_ref_rejects_already_selected_canonical_ref() -> None:
+    canonical_ref = {
+        "artifact_id": "art_provider_fasta",
+        "content_digest": f"sha256:{'c' * 64}",
+    }
+
+    with pytest.raises(PipelineSdkError) as error:
+        artifacts.registered_artifact_ref(canonical_ref)
+
+    assert error.value.error_code == "artifact_ref_already_canonical"
+    assert error.value.stage == "artifacts.response_selection"
+    assert error.value.retryable is False
+    assert "already a canonical artifact ref" in str(error.value)
+    assert "provider_file_ref and fetched_output_ref are terminal selectors" in str(
+        error.value.hint
+    )
+
+
 def test_provider_file_ref_reads_only_direct_transcript_manifest() -> None:
     digest = f"sha256:{'c' * 64}"
     canonical_file = {

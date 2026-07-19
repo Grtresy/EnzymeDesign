@@ -773,6 +773,83 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
 
 
+def test_second_sandbox_exec_registration_binds_current_source_snapshot(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "attempt-blobs",
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/pipeline.py",
+        content="print('inspect')\n",
+        create_dirs=True,
+    )
+
+    prior_run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/pipeline.py"],
+        timeout_seconds=10,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/pipeline.py",
+        content=(
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "target = Path('output/current.json')\n"
+            "target.parent.mkdir(parents=True, exist_ok=True)\n"
+            "target.write_text('{\"status\":\"current\"}\\n', encoding='utf-8')\n"
+            "artifacts.register('/workspace/output/current.json', "
+            "kind='result', format='json')\n"
+        ),
+    )
+
+    current_run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/pipeline.py"],
+        timeout_seconds=10,
+    )
+
+    assert prior_run.status is SandboxRunStatus.COMPLETED, prior_run.stderr_summary
+    assert current_run.status is SandboxRunStatus.COMPLETED, current_run.stderr_summary
+    assert (
+        current_run.source_snapshot_artifact_id
+        != prior_run.source_snapshot_artifact_id
+    )
+    artifact = next(
+        item
+        for item in repositories.artifacts.list_by_session(session.session_id)
+        if item.relative_path == "current.json"
+    )
+    metadata = dict(artifact.metadata or {})
+    assert (
+        metadata["source_snapshot_artifact_id"]
+        == current_run.source_snapshot_artifact_id
+    )
+    assert metadata["source_tree_digest"] == current_run.source_tree_digest
+    assert (
+        dict(metadata["provenance"])["source_snapshot_artifact_id"]
+        == current_run.source_snapshot_artifact_id
+    )
+
+
 def test_sandbox_sdk_forwards_typed_zero_record_fasta_profile(
     tmp_path: Path,
 ) -> None:
@@ -2412,6 +2489,20 @@ def test_sandbox_exec_public_bio_tools_hpc_run_can_fetch_declared_outputs(
     run = holder["run"]
     assert isinstance(run, SandboxRunRecord)
     assert run.status is SandboxRunStatus.COMPLETED
+    assert operation.sandbox_run_id == run.sandbox_run_id
+    assert operation.source_snapshot_artifact_id == run.source_snapshot_artifact_id
+    assert operation.source_snapshot_digest == run.source_tree_digest
+    input_artifact = repositories.artifacts.get(operation.input_artifact_ids[0])
+    assert input_artifact is not None
+    input_metadata = dict(input_artifact.metadata or {})
+    assert (
+        input_metadata["source_snapshot_artifact_id"]
+        == run.source_snapshot_artifact_id
+    )
+    assert (
+        dict(input_metadata["provenance"])["source_snapshot_artifact_id"]
+        == run.source_snapshot_artifact_id
+    )
     payload = json.loads(str(run.stdout_summary))
     assert payload["run"]["kind"] == "hpc_run_handle"
     assert payload["run"]["run_id"] == "run_hpc_core"

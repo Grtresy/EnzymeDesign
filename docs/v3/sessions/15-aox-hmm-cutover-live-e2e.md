@@ -254,6 +254,52 @@ source 中识别 `Path("aox_hmm")/p.name` 这类真实 `/` path-join syntax，�
 误判为 Host absolute path。它不开放整个 `/provider_parsed/`；unknown suffix、traversal、
 任意 `prefix)/p.name`、`/home/...`、`/tmp/...` 与其他未知 absolute path 仍 fail closed。
 
+r16-r19 继续提供真实诊断，但全部是严格、永久 **NO-GO**。r16 的 launch env 漏掉
+`OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`，在任何科学 I/O 前以
+`aox_launch_effective_config_schema_invalid` 停止；r17 随后因 transient
+`aox_launch_toolchain_pin_execution_failed` 停止，紧接的独立只读 full-pin probe 虽通过，
+也不能复活该失败 pin root。r18 在 commit
+`e6aaa085c94cb1b63bbda5ff44395817495a88cc` 上成功 pin，config digest 为
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`；
+attempt `positive-bb0e97ce9db847c58c9c0dc0b7d0bddf` 的 NCBI probe 完成后，MAFFT
+controlled operation 在约 `64s` 以 `hpc_runner_timeout` 停止，与 runner 的 `60s`
+preflight/default bound 一致。后续独立四工具链 recovery probe 通过，因此保持 transient
+failure 分类而没有放宽 gate。r18 non-eligible
+bundle 为
+`sha256:4770bdb0d327adfd55826181b5fafbc6de3312e5953e745fefc7562627e5fbf1`，
+sealed decision 为
+`sha256:f5521eb8e0de8dab60c7dc139dcdfd22515859d7701e234c1f17fa0108e8f520`，
+ledger 累计 `41,023,337 / 500,000,000`，零 breach/overage。
+
+r19 attempt `positive-98b4c1cdab5a47e6bd83d3c91b64d9fe` 最终完成六个真实 probe
+operation：NCBI `op_2bfe8f7ec798`、UniProt `op_077c1756762a`、MAFFT
+`op_4b74f52b785f`、hmmbuild `op_6d911baa02ef`、CD-HIT
+`op_0c33b3927655` 与 HMMalign `op_cfd9780670c5`。但第一段 operation-bearing
+`sandbox.exec` 在 NCBI 完成后把
+`registered_artifact_ref(provider_file_ref(...))` 错误串联，产生
+`artifact_registration_projection_invalid` / `sandbox_exec_nonzero`；修复 source 后，
+第二段 run 复用 attempt-local NCBI checkpoint 并执行其余五个 operation。结果横跨两个
+operation-bearing run、两个 source snapshot，且历史中仍有 failed sandbox run，不满足 probe
+exact-one successful run/source 与无 failed-run history 的资格合同。non-eligible bundle
+`sha256:d811da6e9fd0f291413c7f0369c6399f24e38d94997dc0d24516155773a72f16`
+和 sealed **NO-GO** decision
+`sha256:f067ac844a5cd2df557d8b03b6ad89eb05c2b58f94fc502f04e976d9e55ccf84`
+均只封存失败事实；ledger 累计 `41,557,461 / 500,000,000`，remaining
+`458,442,539`，零 breach/overage。r16-r19 的 pin/campaign roots、operation、artifact、
+browser state 与 scientific response 均不得进入 fresh attempt。
+
+对应小修不改变 exact-operation-set：三个 selector 是互斥终点，而非可组合转换。
+`provider_file_ref` 只消费 direct provider response，`fetched_output_ref` 只消费 direct
+`ws.fetch_outputs` response，`registered_artifact_ref` 只消费 direct real
+`artifacts.register` response；禁止 selector chaining 与 synthetic registration envelope。
+任何 operation-bearing sandbox run 一旦 failed，该 attempt 在下一次外部 dispatch approval 前
+即 fail closed，checkpoint 只作失败诊断。artifact source provenance 由 Host 绑定：control
+socket register、provider artifactization 与 HPC fetch 必须显式使用当前 Host-sealed run/operation
+source snapshot，不能从 stale `last_command_summary` 猜测，也不能信任 sandbox 自报。若未来要
+采用 r19 式 same-attempt cross-run completed effect，必须实施
+[canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
+中的 durable adoption/closure 与 bundle/verifier 升级；该大改不在本 Goal 实现。
+
 collector 当前仍是逐文件写最终 evidence root，单文件 no-replace 不等于 attempt 事务，
 也不能统一证明 actual artifact root 与 declared root exact equality。两阶段 prepare/commit、
 artifact-root 全闭包、失败原子性与迁移计划已单独记录在

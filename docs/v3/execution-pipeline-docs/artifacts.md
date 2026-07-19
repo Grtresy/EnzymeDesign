@@ -109,11 +109,18 @@ Fetched outputs must be declared, actually returned as readable content by the r
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
 
+The source snapshot is Host authority, not a caller-supplied claim. Control-socket
+registration binds the snapshot sealed for the current `sandbox.exec`; provider
+artifactization and adapter-backed HPC output fetch bind their controlled
+operation snapshot. A stale prior command summary must not override that current
+run/operation identity.
+
 ## Closed response selectors
 
 Rich Host responses may repeat one artifact in nested provenance projections.
 Do not recursively search them. The sandbox SDK provides three pure,
-non-I/O selectors:
+non-I/O selectors. They are alternatives for three different response types,
+not a selector pipeline:
 
 - `artifacts.registered_artifact_ref(response)` reads only the closed
   `artifacts.register` response and returns canonical `artifact_id` plus
@@ -124,11 +131,20 @@ non-I/O selectors:
 - `artifacts.fetched_output_ref(fetch, declared_output_path=...)` reads only the
   top-level `fetch_refs` list and requires one exact declared-path match.
 
+`provider_file_ref` and `fetched_output_ref` already return the terminal
+canonical `{artifact_id, content_digest}` reference. Stage or consume that
+mapping directly. Never pass it to `registered_artifact_ref`, and never
+synthesize an `artifacts.register`-shaped envelope. The latter selector accepts
+only the direct response returned by a real `artifacts.register(...)` call.
+
 All three validate non-empty identities and lowercase canonical SHA-256
 digests. Missing, duplicate, malformed, or nested-only data raises a
 non-retryable `PipelineSdkError` at `artifacts.response_selection`. The helpers
 never choose list order, search a fallback projection, register or materialize
 content, replay a provider/tool operation, or conceal an ambiguous response.
+Passing an already-selected canonical ref to `registered_artifact_ref` fails as
+`artifact_ref_already_canonical` rather than silently treating selector output
+as a registration response.
 
 Built-in validators normally enforce non-empty output plus format checks for
 FASTA, HMM, CSV, JSON, and text-like outputs. `metadata.required_columns` can

@@ -139,9 +139,11 @@ run = structure_tools.fpocket(
     ],
 )
 result = ws.fetch_outputs(run)
-
-for item in result.get("artifacts", []):
-    print(item["artifact_id"])
+output = artifacts.fetched_output_ref(
+    result,
+    declared_output_path="target_out",
+)
+print(output["artifact_id"], output["content_digest"])
 ```
 
 Before execution, the system runs a dry-run / validation pass. Fix dry-run errors in the sandbox working copy, snapshot source again when code changes, and resubmit. Dry-run output may also describe which SDK operations are expected to require approval.

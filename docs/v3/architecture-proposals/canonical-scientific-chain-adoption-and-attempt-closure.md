@@ -4,19 +4,27 @@ Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
 
 ## Decision boundary for the current Goal
 
-当前 Goal 只实施两类有边界的小修：
+当前 Goal 只实施三类有边界的小修：
 
-1. `openzyme_pipeline.artifacts` 的 strict direct-field selectors，只从各自闭集
-   projection 读取 provider file、registered artifact 和 fetched output，拒绝递归遍历
-   rich envelope 后把同一 artifact 的 provenance 副本误计为第二个结果；
-2. AOX live driver 的 pre-approval exact-operation budget guard，在 provider/runner dispatch
-   前拒绝同一 reached SDK method 的第二个 controlled operation，并在已有 terminal
-   `failed` / `recovery_failed` operation 时停止批准后续科学 operation。
+1. `openzyme_pipeline.artifacts` 的 strict direct-field selectors 是三个互斥终点：
+   `provider_file_ref` 只读取 direct provider-operation response，`fetched_output_ref` 只读取
+   direct `ws.fetch_outputs` response，`registered_artifact_ref` 只读取 direct real
+   `artifacts.register` response；递归遍历、selector chaining、把 canonical ref 再包装，以及
+   synthetic registration envelope 都不是合法 artifact authority；
+2. artifact source provenance 由 Host 显式绑定当前 Host-sealed run/operation source snapshot；
+   control-socket registration、provider artifactization 与 HPC fetch 不能从 stale
+   `last_command_summary` 推断旧 snapshot，也不能接受 sandbox 自报 source id；
+3. AOX live driver 的 pre-approval exact-operation budget/history guard，在 provider/runner
+   dispatch 前拒绝同一 reached SDK method 的第二个 controlled operation、已有 terminal
+   `failed` / `recovery_failed` operation，以及任何已经 failed 的 operation-bearing sandbox
+   run。
 
-配套 workflow guidance 要求 executor 在每个 controlled operation 完成后，先把完整响应保存到
-同一 sandbox 的 `/workspace/work`，本地 parser/source 修复只能复用该 response 和 catalog
-artifact。checkpoint 是 attempt-local mutable working state，不是 canonical evidence，也不授权跨
-sandbox run、session 或 attempt 复用。
+配套 workflow guidance 允许在 operation-bearing run 前使用短 inspection/source-repair run，并
+要求 executor 在每个 controlled operation 完成后，先把完整响应保存到同一 sandbox 的
+`/workspace/work`。controlled operations 开始后，该 checkpoint 只服务同一个仍成功的
+operation-bearing run。它是 attempt-local mutable working state，不是 canonical evidence；一旦
+该 run failed，checkpoint 只保留为失败诊断，不授权继续外部 dispatch，更不授权跨 sandbox
+run、session 或 attempt 复用。
 
 本 Goal **没有**新增 `scientific_chain_selection`、operation disposition、cross-run
 adoption/materialization、attempt closure、bundle `@2` 或 verifier `@2`；也没有改变当前
@@ -67,6 +75,52 @@ r12b 暴露的设计问题是：严格拒绝重复 operation 能安全阻止 sel
 blank-world attempt 内跨 sandbox run 恢复，就需要在重放前显式表达“采用哪一个已发生 effect、
 为何排除其余 operation、bytes 如何进入新 workspace、所有失败如何闭合”。这不能继续由
 `list_by_session()` 后的 selector 猜测。
+
+## Real r19 evidence: six completed effects still do not form an eligible chain
+
+r19 pinned commit `e6aaa085c94cb1b63bbda5ff44395817495a88cc` 与 config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`。
+其 positive attempt `positive-98b4c1cdab5a47e6bd83d3c91b64d9fe` 最终存在六个真实
+completed probe operation：
+
+- NCBI `op_2bfe8f7ec798`；
+- UniProt `op_077c1756762a`；
+- MAFFT `op_4b74f52b785f`；
+- hmmbuild `op_6d911baa02ef`；
+- CD-HIT `op_0c33b3927655`；
+- HMMalign `op_cfd9780670c5`。
+
+但这些 effect 不是在一个成功的 operation-bearing run/source 下产生。首个 run
+`srun_bff58c931ec3` 完成 NCBI 后，agent 将已经 terminal 的
+`provider_file_ref(...)` 结果错误送入 `registered_artifact_ref(...)`，触发
+`artifact_registration_projection_invalid`，该 sandbox run 以
+`sandbox_exec_nonzero` failed。第二个 run `srun_66720840bd4a` 使用修复后的新 source，读取
+attempt-local NCBI checkpoint，并且没有重放 NCBI；它执行了其余五个 operation。于是外部 effect
+集合看似 exact-six，durable provenance 却包含两个 operation-bearing run、两个 source snapshot，
+以及一个不可删除的 failed run。当前 `aox_known_positive_probe@2` 明确要求一个成功 run、一个
+source snapshot 和无 failed-run history，collector 不能把第二个 source 追溯解释为已采用第一个
+run 的 NCBI effect。
+
+r19 还暴露了相邻但可局部修正的 source-authority 问题：第二个 run 创建的 controlled operations
+正确绑定当前 source snapshot，部分 registered provider/HPC artifacts 却可能因 Host 优先读取
+stale `workspace.last_command_summary` 而绑定旧 inspection/command snapshot。修复边界是 Host 在
+control-socket register、provider artifactization 和 HPC fetch 内部显式传递当前 run/operation
+snapshot，并只把 latest source-code id 当遗留 fallback；sandbox caller 没有自报该 authority 的
+权限。这只纠正新 artifact provenance，不会生成 r19 当时不存在的 cross-run adoption record。
+
+r19 的 non-eligible bundle digest 是
+`sha256:d811da6e9fd0f291413c7f0369c6399f24e38d94997dc0d24516155773a72f16`，sealed
+**NO-GO** decision digest 是
+`sha256:f067ac844a5cd2df557d8b03b6ad89eb05c2b58f94fc502f04e976d9e55ccf84`；MICU ledger
+累计 `41,557,461 / 500,000,000`，remaining `458,442,539`，零 breach/overage。该 bundle
+与 decision 只能证明 failure evidence 的可封存性，未来 `@2` schema 也不得回填、升级或复用其
+run、source、operation、artifact、root 或 browser state。
+
+r19 使本提案的分界更具体：**阻止 failed run 后继续 dispatch 是当前 Goal 的 fail-closed 小修；
+允许同一 attempt 从 failed run 显式采用一个已完成 effect，并在新 run 继续，则是本提案的大架构
+能力。** 后者必须先有 durable selection/disposition、effect adoption/materialization、source/bytes
+handoff、approval/public projection、attempt closure 与 bundle/verifier `@2`；仅凭 checkpoint、
+相同 workspace、exact-six operation ids 或 agent prose 均不成立。
 
 ## Current exact-operation-set semantics
 

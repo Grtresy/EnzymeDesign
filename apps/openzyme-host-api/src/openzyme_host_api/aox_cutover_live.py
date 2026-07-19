@@ -3118,8 +3118,9 @@ class LiveAoxAttemptRunner:
         return (
             "Run only the independent bounded known-positive probe; do not create AOX "
             "candidates, formal result artifacts, or a report. Delegate exactly one execution "
-            "task and use one persistent sandbox, one source snapshot, and one Host-supervised "
-            "HPC workspace for exactly six controlled operations. The campaign already enforces "
+            "task and use one persistent sandbox, one operation-bearing sandbox.exec run, one "
+            "source snapshot, and one Host-supervised HPC workspace for exactly six controlled "
+            "operations. The campaign already enforces "
             "provider cache bypass; do not invent unsupported cache flags. Fetch NCBI protein "
             "accessions NP_000509.1 and NP_000549.1, then run MAFFT on that "
             "sealed FASTA and hmmbuild on the MAFFT alignment. Independently fetch UniProt "
@@ -3130,11 +3131,18 @@ class LiveAoxAttemptRunner:
             "relative_path ends with /provider_parsed/proteins.fasta for NCBI or "
             "/provider_parsed/sequences.fasta for UniProt, and use that file's artifact_id. "
             "Do not select from adapter_result_envelope ID lists or any positional list order. "
-            "Use artifacts.provider_file_ref, artifacts.registered_artifact_ref, and "
-            "artifacts.fetched_output_ref rather than recursively searching rich response "
-            "envelopes. Persist each completed operation response under /workspace/work "
-            "before downstream parsing and reuse it after a local source error; never create "
-            "a replacement operation because this probe admits exactly six operations. "
+            "Use artifacts.provider_file_ref only for provider operation responses and "
+            "artifacts.fetched_output_ref only for ws.fetch_outputs responses. Both helpers "
+            "already return the terminal canonical artifact_id/content_digest ref; stage or "
+            "consume that ref directly and never chain selectors. This probe does not call "
+            "artifacts.register, so do not call artifacts.registered_artifact_ref or synthesize "
+            "a registration envelope. Before writing the one operation-bearing source, read "
+            "docs.read('artifacts') and inspect installed helper signatures if anything is "
+            "unclear. Persist each completed operation response under /workspace/work before "
+            "downstream parsing. A local failure after the operation-bearing run starts makes "
+            "this @2 probe ineligible: keep checkpoints only as failure evidence, do not start "
+            "another controlled operation in this attempt, explicitly fail the task, and let a "
+            "fresh attempt retry. Cross-run effect adoption is not available. "
             "The fixed runner templates require exactly these "
             "declared outputs: MAFFT bio_tools/mafft/alignment.fasta; hmmbuild "
             "bio_tools/hmmbuild/model.hmm; CD-HIT bio_tools/cdhit/clustered.fasta and "
@@ -3189,19 +3197,24 @@ class LiveAoxAttemptRunner:
             + "entry ending in /provider_parsed/proteins.fasta for NCBI, "
             + "/provider_parsed/parsed_hits.csv for EBI HMMER, and both "
             + "/provider_parsed/sequences.fasta and /provider_parsed/metadata.json for UniProt. "
-            + "Use the installed strict helpers artifacts.provider_file_ref, "
-            + "artifacts.registered_artifact_ref, and artifacts.fetched_output_ref for those "
-            + "closed response projections; never recursively search a rich operation, "
-            + "registration, or fetch envelope because nested provenance may repeat the same "
-            + "artifact. Persist each completed controlled-operation response under "
-            + "/workspace/work before any downstream local parsing. If local source later "
-            + "fails, repair it and reuse that completed response/artifact; never create a "
-            + "second controlled operation for the same reached SDK method. If no trustworthy "
-            + "attempt-local checkpoint remains, fail the task and let a fresh attempt retry. "
+            + "Map each closed response to exactly one installed strict helper: provider "
+            + "operation response to artifacts.provider_file_ref, ws.fetch_outputs response "
+            + "to artifacts.fetched_output_ref, and only the direct response returned by "
+            + "artifacts.register to artifacts.registered_artifact_ref. Provider and fetched "
+            + "selectors already return terminal canonical artifact_id/content_digest refs; "
+            + "never chain selectors, synthesize a registration envelope, or recursively search "
+            + "rich provenance. Before the first operation-bearing run, read docs.read('artifacts') "
+            + "and validate any uncertain installed signatures. Persist each completed "
+            + "controlled-operation response under /workspace/work before downstream parsing. "
+            + "Current bundle @1 cannot adopt effects across a failed sandbox run: after any "
+            + "local nonzero run, preserve checkpoints only as failure evidence, start no more "
+            + "controlled operations in that attempt, explicitly fail the task, and let a fresh "
+            + "attempt retry. "
             + "Every sandbox.exec invocation whose source may reach the real EBI HMMER wait "
             + "must use timeout_seconds="
             + str(int(AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS))
-            + ". Short inspection or source-repair commands that cannot reach HMMER may use "
+            + ". Short preflight inspection or post-failure diagnostic commands that cannot "
+            + "reach HMMER may use "
             + "shorter bounds. Do not shorten the HMM-capable containment timeout or use a "
             + "later command to justify a duplicate operation. "
             + "Runner templates accept only the "
@@ -4443,15 +4456,18 @@ def _assert_cutover_operation_budget_before_approval(
     """Reject an already-ineligible operation history before external execution.
 
     The cutover evidence contract admits one controlled operation for every
-    reached SDK method.  A model may repair local source after a sandbox error,
-    but it must reuse an already completed operation response instead of
-    creating a replacement operation.  Checking at approval time prevents the
-    replacement from consuming provider or runner resources.
+    reached SDK method and does not adopt effects across a failed sandbox run.
+    Checking both histories at approval time prevents a replacement or a later
+    operation in an already-ineligible source lineage from consuming provider
+    or runner resources.
     """
 
     with provider.read() as scope:
         operations = tuple(
             scope.repositories.controlled_operations.list_by_session(session_id)
+        )
+        sandbox_runs = tuple(
+            scope.repositories.sandbox_runs.list_by_session(session_id)
         )
     approval_matches = [
         operation for operation in operations if operation.approval_id == approval_id
@@ -4488,6 +4504,31 @@ def _assert_cutover_operation_budget_before_approval(
                         "status": operation.status.value,
                     }
                     for operation in same_method
+                ],
+            },
+        )
+    failed_sandbox_runs = [
+        run
+        for run in sandbox_runs
+        if getattr(getattr(run, "status", None), "value", None)
+        in (_TERMINAL_SANDBOX_STATUSES - {"completed"})
+    ]
+    if failed_sandbox_runs:
+        raise LiveProductPathError(
+            "cutover_sandbox_history_failed",
+            "cutover sandbox history already contains a terminal failed run",
+            details={
+                "session_id": session_id,
+                "approval_id": approval_id,
+                "sandbox_runs": [
+                    {
+                        "sandbox_run_id": str(
+                            getattr(run, "sandbox_run_id", "") or ""
+                        ),
+                        "status": str(getattr(run.status, "value", "")),
+                        "error_code": getattr(run, "error_code", None),
+                    }
+                    for run in failed_sandbox_runs
                 ],
             },
         )

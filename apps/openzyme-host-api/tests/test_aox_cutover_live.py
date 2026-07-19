@@ -62,7 +62,12 @@ class _OperationReadProvider:
                 controlled_operations=SimpleNamespace(
                     list_by_session=lambda _session_id: operations
                 ),
-                sandbox_runs=SimpleNamespace(get=sandbox_runs.get),
+                sandbox_runs=SimpleNamespace(
+                    get=sandbox_runs.get,
+                    list_by_session=lambda _session_id: tuple(
+                        sandbox_runs.values()
+                    ),
+                ),
             )
 
         def __enter__(self) -> _OperationReadProvider._Scope:
@@ -856,6 +861,44 @@ def test_cutover_operation_budget_rejects_prior_failed_operation() -> None:
     }
 
 
+def test_cutover_operation_budget_rejects_prior_failed_sandbox_run() -> None:
+    current = replace(
+        _operation(),
+        operation_id="op_current",
+        approval_id="approval_current",
+        approval_state="pending",
+        status=ControlledOperationStatus.WAITING_APPROVAL,
+        operation_digest=_digest("op-current"),
+    )
+    failed_run = SimpleNamespace(
+        sandbox_run_id="srun_failed",
+        status=SimpleNamespace(value="failed"),
+        error_code="sandbox_exec_nonzero",
+        resource_policy={},
+    )
+    provider = _OperationReadProvider(current, sandbox_runs=(failed_run,))
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._assert_cutover_operation_budget_before_approval(
+            provider,  # type: ignore[arg-type]
+            session_id=current.session_id,
+            approval_id=current.approval_id or "",
+        )
+
+    assert error.value.code == "cutover_sandbox_history_failed"
+    assert error.value.details == {
+        "session_id": "sess_001",
+        "approval_id": "approval_current",
+        "sandbox_runs": [
+            {
+                "sandbox_run_id": "srun_failed",
+                "status": "failed",
+                "error_code": "sandbox_exec_nonzero",
+            }
+        ],
+    }
+
+
 def test_public_api_receipt_normalizes_events_query_to_canonical_route() -> None:
     client = live._PublicHostClient(object())
 
@@ -1323,10 +1366,15 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "/provider_parsed/sequences.fasta" in prompt
     assert "adapter_result_envelope ID lists" in prompt
     assert "artifacts.provider_file_ref" in prompt
-    assert "artifacts.registered_artifact_ref" in prompt
+    assert "do not call artifacts.registered_artifact_ref" in prompt
     assert "artifacts.fetched_output_ref" in prompt
+    assert "Both helpers already return the terminal canonical" in prompt
+    assert "never chain selectors" in prompt
+    assert "docs.read('artifacts')" in prompt
+    assert "one operation-bearing sandbox.exec run" in prompt
+    assert "Cross-run effect adoption is not available" in prompt
     assert "Persist each completed operation response under /workspace/work" in prompt
-    assert "never create a replacement operation" in prompt
+    assert "do not start another controlled operation in this attempt" in prompt
     assert "bio_tools/mafft/alignment.fasta" in prompt
     assert "bio_tools/hmmbuild/model.hmm" in prompt
     assert "bio_tools/cdhit/clustered.fasta" in prompt
@@ -1395,11 +1443,14 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "artifacts.provider_file_ref" in prompt
     assert "artifacts.registered_artifact_ref" in prompt
     assert "artifacts.fetched_output_ref" in prompt
+    assert "only the direct response returned by artifacts.register" in prompt
+    assert "never chain selectors, synthesize a registration envelope" in prompt
+    assert "Current bundle @1 cannot adopt effects across a failed sandbox run" in prompt
     assert "Persist each completed controlled-operation response" in prompt
-    assert "never create a second controlled operation" in prompt
+    assert "start no more controlled operations in that attempt" in prompt
     assert "whose source may reach the real EBI HMMER wait" in prompt
     assert "must use timeout_seconds=3600" in prompt
-    assert "Short inspection or source-repair commands" in prompt
+    assert "Short preflight inspection or post-failure diagnostic commands" in prompt
     assert "Do not shorten the HMM-capable containment timeout" in prompt
     assert "exact fetched hmmbuild artifact id and content digest" in prompt
     assert "validation_profile='fasta_zero_records@1'" in prompt

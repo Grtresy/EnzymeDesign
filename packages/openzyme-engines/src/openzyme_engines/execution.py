@@ -7404,6 +7404,14 @@ class ExecutionEngine:
                 }
             )
         format_value = pending.get("format") or declared.get("format")
+        pipeline = dict(
+            self._require_input_payload(invocation).get("pipeline") or {}
+        )
+        source_snapshot_artifact_id = None
+        if pipeline.get("adapter_operation_id"):
+            source_snapshot_artifact_id = str(
+                pipeline.get("source_code_artifact_id") or ""
+            )
         try:
             result = boundary.register(
                 session_id=session_id,
@@ -7414,6 +7422,7 @@ class ExecutionEngine:
                 metadata=metadata,
                 invocation_id=invocation.invocation_id,
                 run_id=run.run_id,
+                source_snapshot_artifact_id=source_snapshot_artifact_id,
             )
         except ArtifactBoundaryError as exc:
             raise PipelineSdkFailure(
@@ -11438,6 +11447,9 @@ class ExecutionEngine:
                     metadata=metadata,
                     invocation_id=None,
                     run_id=None,
+                    source_snapshot_artifact_id=(
+                        operation.source_snapshot_artifact_id
+                    ),
                 )
             except ArtifactBoundaryError as exc:
                 raise PipelineSdkFailure(

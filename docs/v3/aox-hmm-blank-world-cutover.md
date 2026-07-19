@@ -368,6 +368,70 @@ join. There is no general provider-path or slash exception: an unknown suffix,
 traversal, arbitrary `prefix)/p.name`, `/home/...`, `/tmp/...`, or any other
 unrecognized absolute path remains rejected.
 
+The r16-r19 reruns all remain strict **NO-GO** and none of their roots may be
+reused. r16 stopped before science because its launch environment omitted the
+required `OPENZYME_LLM_CONTEXT_WINDOW_TOKENS=200000`, producing
+`aox_launch_effective_config_schema_invalid`. r17 then stopped in pinning with
+the transient `aox_launch_toolchain_pin_execution_failed`; a separate
+read-only full pin probe passed immediately afterwards, but that observation
+cannot turn the failed pin root into an attempt. r18 successfully pinned commit
+`e6aaa085c94cb1b63bbda5ff44395817495a88cc`, config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`,
+identity digest
+`sha256:71c2c4f30efaa63852a5a29f8dd41b56ec4a9d8adfd622a48073cbafb0288aa4`
+and prerequisite digest
+`sha256:89a1dc43e0b048d5c076d7b67a72b2634ef30e15686a1c2548ebf35c6a70f8a1`.
+Its positive attempt `positive-bb0e97ce9db847c58c9c0dc0b7d0bddf` completed
+the real NCBI probe call, then its MAFFT controlled operation ended in
+`hpc_runner_timeout` after about `64s`, consistent with the runner's `60s`
+preflight/default bound. A subsequent
+read-only four-toolchain recovery probe passed, so no scientific gate was
+relaxed and no code correction was inferred from that transient result. r18's
+non-eligible bundle is
+`sha256:4770bdb0d327adfd55826181b5fafbc6de3312e5953e745fefc7562627e5fbf1`;
+its sealed **NO-GO** decision is
+`sha256:f5521eb8e0de8dab60c7dc139dcdfd22515859d7701e234c1f17fa0108e8f520`,
+and the cumulative MICU ledger closed at
+`41,023,337 / 500,000,000` with zero breach or overage.
+
+r19 exposed a different local harness defect but cannot be repaired in place.
+Attempt `positive-98b4c1cdab5a47e6bd83d3c91b64d9fe` did eventually complete
+all six real probe operations: NCBI `op_2bfe8f7ec798`, UniProt
+`op_077c1756762a`, MAFFT `op_4b74f52b785f`, hmmbuild
+`op_6d911baa02ef`, CD-HIT `op_0c33b3927655`, and HMMalign
+`op_cfd9780670c5`. However, the first operation-bearing sandbox run failed
+locally after NCBI because its source incorrectly chained
+`registered_artifact_ref(provider_file_ref(...))`, producing
+`artifact_registration_projection_invalid` and `sandbox_exec_nonzero`. A
+source repair then reused the attempt-local NCBI checkpoint and completed the
+other five operations in a second sandbox run. The six effects therefore span
+two operation-bearing runs and two source snapshots, while a historical failed
+run remains in the durable attempt. This violates the current probe's one
+successful operation-bearing run, one source snapshot, and no failed-run
+history contract even though every external capability ultimately completed.
+r19's non-eligible bundle is
+`sha256:d811da6e9fd0f291413c7f0369c6399f24e38d94997dc0d24516155773a72f16`;
+its sealed **NO-GO** decision is
+`sha256:f067ac844a5cd2df557d8b03b6ad89eb05c2b58f94fc502f04e976d9e55ccf84`,
+with cumulative MICU ledger `41,557,461 / 500,000,000`, remaining
+`458,442,539`, and zero breach or overage.
+
+The bounded correction keeps selectors mutually exclusive and terminal:
+`provider_file_ref` accepts only a direct provider-operation response,
+`fetched_output_ref` accepts only a direct `ws.fetch_outputs` response, and
+`registered_artifact_ref` accepts only a direct real `artifacts.register`
+response. A canonical artifact ref must never be chained through another
+selector, and a synthetic registration envelope is not evidence. Once an
+operation-bearing sandbox run has failed, the attempt must stop approving any
+further external dispatch; its checkpoint remains failure evidence, not reuse
+authority. Source provenance is Host-owned: control-socket registrations,
+provider artifactization, and HPC output fetches must bind the current
+Host-sealed run/operation source snapshot explicitly rather than infer an older
+`last_command_summary` snapshot or accept a sandbox-reported id. These local
+corrections do not adopt r19. Supporting same-attempt cross-run corrective
+adoption remains the unimplemented major design in
+[canonical scientific chain adoption and attempt closure](architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md).
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger

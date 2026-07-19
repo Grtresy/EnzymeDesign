@@ -19,17 +19,34 @@ def get(artifact_id: str) -> dict[str, Any]:
 
 
 def registered_artifact_ref(response: dict[str, Any]) -> dict[str, str]:
-    """Return the canonical id/digest pair from ``artifacts.register``.
+    """Select the canonical ref from a direct ``artifacts.register`` response.
 
     The Host response intentionally carries both a public artifact projection and
     registration metadata.  Callers must not recursively search that envelope,
     because the same artifact can appear in more than one provenance projection.
+    ``provider_file_ref`` and ``fetched_output_ref`` already return terminal
+    canonical refs; pass those values directly to their consumer instead of
+    chaining them through this selector.
     """
 
     artifact = response.get("artifact")
     if not isinstance(artifact, dict):
+        if isinstance(response.get("artifact_id"), str) and isinstance(
+            response.get("content_digest"), str
+        ):
+            raise _projection_error(
+                "artifact selector output is already a canonical artifact ref; "
+                "use it directly instead of passing it to registered_artifact_ref",
+                error_code="artifact_ref_already_canonical",
+                hint=(
+                    "provider_file_ref and fetched_output_ref are terminal selectors. "
+                    "registered_artifact_ref accepts only the direct response returned "
+                    "by artifacts.register."
+                ),
+            )
         raise _projection_error(
-            "artifact registration response has no artifact object",
+            "artifact registration response has no artifact object; pass only the "
+            "direct response returned by artifacts.register",
             error_code="artifact_registration_projection_invalid",
         )
     artifact_id = _required_text(artifact.get("artifact_id"), label="artifact_id")
@@ -58,7 +75,11 @@ def provider_file_ref(
     *,
     relative_path_suffix: str,
 ) -> dict[str, str]:
-    """Select one provider file from the canonical transcript manifest only."""
+    """Return one terminal canonical ref from a provider transcript manifest.
+
+    The returned ``artifact_id``/``content_digest`` pair is ready for direct
+    staging or downstream consumption.  Do not pass it through another selector.
+    """
 
     if not relative_path_suffix.startswith("/"):
         raise PipelineSdkError(
@@ -120,7 +141,11 @@ def fetched_output_ref(
     *,
     declared_output_path: str,
 ) -> dict[str, str]:
-    """Select one fetched runner output from the canonical ``fetch_refs`` list."""
+    """Return one terminal canonical ref from the direct ``fetch_refs`` list.
+
+    The returned ``artifact_id``/``content_digest`` pair is ready for direct
+    staging or downstream consumption.  Do not pass it through another selector.
+    """
 
     expected_path = _required_text(
         declared_output_path,
@@ -276,13 +301,15 @@ def _projection_error(
     *,
     error_code: str,
     details: dict[str, Any] | None = None,
+    hint: str | None = None,
 ) -> PipelineSdkError:
     return PipelineSdkError(
         message,
         error_code=error_code,
         stage="artifacts.response_selection",
         retryable=False,
-        hint=(
+        hint=hint
+        or (
             "Use only the documented direct response field; do not recursively "
             "search nested provenance projections or replay the completed operation."
         ),

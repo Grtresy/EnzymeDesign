@@ -660,14 +660,35 @@ class ArtifactBoundaryService:
         metadata: dict[str, Any] | None = None,
         invocation_id: str | None = None,
         run_id: str | None = None,
+        source_snapshot_artifact_id: str | None = None,
     ) -> RegisterResult:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
-        source_snapshot_id = self._latest_source_snapshot_id(workspace)
+        explicit_source_snapshot = source_snapshot_artifact_id is not None
+        if source_snapshot_artifact_id is None:
+            source_snapshot_id = self._latest_source_snapshot_id(workspace)
+        else:
+            source_snapshot_id = str(source_snapshot_artifact_id).strip()
         if source_snapshot_id is None:
+            raise ArtifactBoundaryError("source_snapshot_required", "artifacts.register requires a source snapshot")
+        if not source_snapshot_id:
             raise ArtifactBoundaryError("source_snapshot_required", "artifacts.register requires a source snapshot")
         source_snapshot = self.repositories.artifacts.get(source_snapshot_id)
         if source_snapshot is None or source_snapshot.session_id != session_id:
             raise ArtifactBoundaryError("source_snapshot_unavailable", "source snapshot artifact is unavailable")
+        source_snapshot_metadata = dict(source_snapshot.metadata or {})
+        if explicit_source_snapshot and (
+            source_snapshot.kind is not ArtifactKind.CODE
+            or source_snapshot_metadata.get("semantic_type")
+            != "pipeline_source_snapshot"
+            or source_snapshot_metadata.get("format") != "source_tree"
+            or source_snapshot_metadata.get("sandbox_workspace_id")
+            != sandbox_workspace_id
+            or not source_snapshot_metadata.get("source_tree_digest")
+        ):
+            raise ArtifactBoundaryError(
+                "source_snapshot_unavailable",
+                "source snapshot artifact is not bound to this sandbox workspace",
+            )
         metadata_payload = dict(metadata or {})
         kind_value = kind if isinstance(kind, ArtifactKind) else ArtifactKind(str(kind))
         if format is not None:
@@ -765,7 +786,6 @@ class ArtifactBoundaryService:
                 created_at=utc_now_iso(),
             )
             raise ArtifactBoundaryError("artifact_sealed_digest_mismatch", "sealed artifact digest does not match source")
-        source_snapshot_metadata = dict(source_snapshot.metadata or {})
         artifact_metadata = {
             **metadata_payload,
             "source": "sandbox_artifact_boundary",
@@ -1254,12 +1274,12 @@ class ArtifactBoundaryService:
         return any(part.endswith((".tmp", ".lock")) for part in relative_parts)
 
     def _latest_source_snapshot_id(self, workspace: SandboxWorkspaceRecord) -> str | None:
+        if workspace.source_code_artifact_ids:
+            return workspace.source_code_artifact_ids[-1]
         if workspace.last_command_summary:
             snapshot_id = workspace.last_command_summary.get("source_snapshot_artifact_id")
             if snapshot_id:
                 return str(snapshot_id)
-        if workspace.source_code_artifact_ids:
-            return workspace.source_code_artifact_ids[-1]
         return None
 
     def _update_workspace(
