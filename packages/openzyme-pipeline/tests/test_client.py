@@ -61,9 +61,11 @@ def _fake_control_server(
     assert errors == []
 
 
-def test_control_client_transports_37722_accessions_and_large_fragmented_response(
+def test_control_client_transports_historical_r15_large_frame(
     tmp_path: Path,
 ) -> None:
+    # Preserve the exact r15 framing-regression payload; this is not the corrected
+    # r25 HMMER accession-count oracle.
     accessions = [f"A0A{i:07d}" for i in range(37_722)]
     response_padding = "result-" * 20_000
 

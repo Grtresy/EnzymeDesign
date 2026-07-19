@@ -56,12 +56,23 @@ error preserves that id. If the id itself is oversized/invalid or cannot be
 safely decoded, the error uses `id: null`. The client still requires exact
 response identity and rejects drift.
 
-For UniProt, `provider_config:uniprot:v2` keeps the whole accession set inside
+For EBI HMMER, `provider_config:ebi_hmmer:v2` defaults and caps result
+`page_size` at `1000`. Polling explicitly requests `page=1` with that page size
+but consumes the terminal payload only as status plus `stats.nreported`.
+Materialization always issues a separate explicit result `page=1` request and
+continues through a stable cross-page `page_count`; terminal-poll hits never
+stand in for result bytes. A non-truncated result must materialize exactly
+`nreported` raw hits. Successful empty output requires provider
+`nreported=0/page_count=0/hits=[]`.
+
+For UniProt, `provider_config:uniprot:v3` and
+`uniprot_primary_sequence_identity@2` keep the whole accession set inside
 one SDK call, one controlled operation, and one approval. The operation cap is
 `100000` accessions; the Host creates fixed queries of at most `100` accessions
 and applies the `Link` page cap independently to each query. `batch_size`
 remains response page size, not query width. Approval resource projection must
-show the estimated query count before provider I/O (`37722` accessions means
+show the estimated query count before provider I/O (the corrected complete
+`37772` accessions means
 `378` queries under the default cap), and the transcript must preserve
 query/page coordinates. Each response page is validated against the exact
 accession slice that produced its query; a requested identity returned under a
@@ -72,6 +83,26 @@ and performs final pre-I/O validation. The Host-authoritative estimate/limit
 snapshot is a deferred architecture proposal. This bounded synchronous topology
 does not introduce UniProt async ID-mapping jobs or authorize per-query
 operation replay.
+
+The UniProt result must exactly partition the requested identities into strict
+active sequence records and typed exact-requested `Inactive/DELETED|MERGED`
+records. `DELETED` preserves a non-empty deletion reason; `MERGED` preserves
+non-empty, unique replacement-target annotations. Both variants preserve a
+UniParc id, release/retrieval and response/record digests and are never
+followed, fetched, replaced, or supplied sequence bytes. The join mapping fixes
+`identity_replaced=false` for either variant, and every MERGED annotation also
+fixes `target_followed=false`. Unknown, `DEMERGED`, or malformed inactive records, a
+missing identity, or partition drift fail closed. `aox_sequence_length_join@2`
+excludes both inactive variants before applying the inclusive active-sequence
+length filter and emits offline-verifiable active/inactive-reason/output/rejected
+counts and identity mappings. UniProt HTTP errors expose only safe batch/page
+coordinates, never raw URLs, accession values, or cursors.
+
+Once a sandbox provider request draft exists, `PipelineSdkFailure` persists the
+request, observation, and error diagnostic artifacts through the normal sandbox
+artifact boundary, then returns the unchanged canonical failure semantics with
+safe refs. It does not replay the operation or turn diagnostics into provider
+success or one of the 17 normalized AOX deliverables.
 
 The S12 sandbox request envelope is plan-only. `adapter_result` and
 `result_summary` are not SDK inputs and are rejected if sandbox code puts them

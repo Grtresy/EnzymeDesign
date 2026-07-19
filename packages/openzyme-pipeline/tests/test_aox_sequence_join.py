@@ -58,11 +58,19 @@ def _provider_mapping(requested: str, primary: str) -> dict[str, object]:
 def _uniprot_inputs(
     records: list[tuple[str, str, str, bool]],
     *,
+    inactive_records: list[tuple[str, str, str]] | None = None,
+    merged_inactive_records: list[tuple[str, tuple[str, ...], str]] | None = None,
+    requested_order: list[str] | None = None,
     header_styles: dict[str, str] | None = None,
     fasta_order: list[str] | None = None,
 ) -> tuple[str, str]:
     header_styles = header_styles or {}
-    by_primary = {primary: (requested, sequence, reviewed) for requested, primary, sequence, reviewed in records}
+    inactive_records = inactive_records or []
+    merged_inactive_records = merged_inactive_records or []
+    by_primary = {
+        primary: (requested, sequence, reviewed)
+        for requested, primary, sequence, reviewed in records
+    }
     order = fasta_order or [primary for _, primary, _, _ in records]
     fasta_parts: list[str] = []
     for primary in order:
@@ -114,6 +122,110 @@ def _uniprot_inputs(
                 },
             }
         )
+    metadata_inactive_records = [
+        {
+            "requested_accession": requested,
+            "primary_accession": requested,
+            "uniprot_identifier": f"{requested}_AOX",
+            "entry_type": "Inactive",
+            "inactive_reason": {
+                "inactive_reason_type": "DELETED",
+                "deleted_reason": deleted_reason,
+            },
+            "uniparc_id": uniparc_id,
+            "uniprot_release": "2026_03",
+            "uniprot_release_date": "15-July-2026",
+            "retrieved_at": "2026-07-17T00:00:00+00:00",
+            "response_digest": _digest(f"response:{requested}"),
+            "record_digest": _digest(f"record:{requested}"),
+            "provider_metadata": {
+                "entryType": "Inactive",
+                "primaryAccession": requested,
+                "uniProtkbId": f"{requested}_AOX",
+                "inactiveReason": {
+                    "inactiveReasonType": "DELETED",
+                    "deletedReason": deleted_reason,
+                    "providerExtension": "allowed",
+                },
+                "extraAttributes": {
+                    "uniParcId": uniparc_id,
+                    "providerExtension": "allowed",
+                },
+                "providerExtension": "allowed",
+            },
+        }
+        for requested, deleted_reason, uniparc_id in inactive_records
+    ]
+    metadata_inactive_records.extend(
+        {
+            "requested_accession": requested,
+            "primary_accession": requested,
+            "uniprot_identifier": f"{requested}_AOX",
+            "entry_type": "Inactive",
+            "inactive_reason": {
+                "inactive_reason_type": "MERGED",
+                "replacement_target_annotations": [
+                    {
+                        "annotation_type": "provider_inactive_replacement",
+                        "source_database": "uniprotkb",
+                        "source_accession": requested,
+                        "target_database": "uniprotkb",
+                        "target_accession": target,
+                        "relationship": "merged_into",
+                        "identity_replaced": False,
+                        "target_followed": False,
+                    }
+                    for target in sorted(replacement_targets)
+                ],
+            },
+            "uniparc_id": uniparc_id,
+            "uniprot_release": "2026_03",
+            "uniprot_release_date": "15-July-2026",
+            "retrieved_at": "2026-07-17T00:00:00+00:00",
+            "response_digest": _digest(f"response:{requested}"),
+            "record_digest": _digest(f"record:{requested}"),
+            "provider_metadata": {
+                "entryType": "Inactive",
+                "primaryAccession": requested,
+                "uniProtkbId": f"{requested}_AOX",
+                "inactiveReason": {
+                    "inactiveReasonType": "MERGED",
+                    "mergeDemergeTo": list(replacement_targets),
+                    "providerExtension": "allowed",
+                },
+                "extraAttributes": {
+                    "uniParcId": uniparc_id,
+                    "providerExtension": "allowed",
+                },
+                "providerExtension": "allowed",
+            },
+        }
+        for requested, replacement_targets, uniparc_id in merged_inactive_records
+    )
+    requested_accessions = requested_order or [
+        *[record[0] for record in records],
+        *[record[0] for record in inactive_records],
+        *[record[0] for record in merged_inactive_records],
+    ]
+    requested_index = {
+        accession: index for index, accession in enumerate(requested_accessions)
+    }
+    metadata_inactive_records.sort(
+        key=lambda record: requested_index[str(record["requested_accession"])]
+    )
+    for record in metadata_inactive_records:
+        record["record_digest"] = _digest(
+            json.dumps(record["provider_metadata"], sort_keys=True, indent=2)
+            + "\n"
+        )
+    records_by_requested = {
+        str(record["requested_accession"]): record
+        for record in [*metadata_records, *metadata_inactive_records]
+    }
+    response_digests = [
+        str(records_by_requested[accession]["response_digest"])
+        for accession in requested_accessions
+    ]
     metadata = {
         "provider": "uniprot",
         "database": "uniprotkb",
@@ -127,14 +239,22 @@ def _uniprot_inputs(
             "length",
         ],
         "batch_size": 100,
-        "identity_contract_id": "uniprot_primary_sequence_identity@1",
-        "requested_accessions": [record[0] for record in records],
+        "identity_contract_id": "uniprot_primary_sequence_identity@2",
+        "requested_accessions": requested_accessions,
         "records": metadata_records,
+        "inactive_records": metadata_inactive_records,
+        "active_record_count": len(metadata_records),
+        "inactive_record_count": len(metadata_inactive_records),
+        "inactive_deleted_record_count": len(inactive_records),
+        "inactive_merged_record_count": len(merged_inactive_records),
         "warnings": [],
         "retrieved_at": "2026-07-17T00:00:00+00:00",
         "uniprot_release": "2026_03",
         "uniprot_release_date": "15-July-2026",
-        "aggregate_response_digest": _digest("aggregate-response"),
+        "response_digests": response_digests,
+        "aggregate_response_digest": _digest(
+            json.dumps(response_digests, sort_keys=True, indent=2) + "\n"
+        ),
         "source_sequence_identity_count": 0,
         "sequence_mismatch_resolution_count": 0,
         "api_version": "provider-http-v1",
@@ -146,6 +266,16 @@ def _mutate_metadata(metadata: str, mutate) -> str:  # type: ignore[no-untyped-d
     payload = json.loads(metadata)
     mutate(payload)
     return json.dumps(payload, sort_keys=True, indent=2) + "\n"
+
+
+def _set_inactive_reason_type(payload: dict[str, object], reason_type: str) -> None:
+    record = payload["inactive_records"][0]  # type: ignore[index]
+    record["inactive_reason"]["inactive_reason_type"] = reason_type
+    provider_metadata = record["provider_metadata"]
+    provider_metadata["inactiveReason"]["inactiveReasonType"] = reason_type
+    record["record_digest"] = _digest(
+        json.dumps(provider_metadata, sort_keys=True, indent=2) + "\n"
+    )
 
 
 def _code(
@@ -204,6 +334,7 @@ def test_join_accepts_bare_sp_tr_headers_and_preserves_requested_identity() -> N
     assert result.metadata()["identity_mappings"][1] == {
         "requested_accession": "Q8XYZ1",
         "primary_accession": "A0A123",
+        "status": "active_sequence",
         "identity_replaced": False,
         "sequence_digest": _digest(q_sequence),
         "reviewed": False,
@@ -236,6 +367,307 @@ def test_join_accepts_current_ten_character_uniprot_accession() -> None:
     assert result.target_fasta() == f">{accession}\n{sequence}\n"
 
 
+def test_inactive_deleted_identity_is_typed_and_excluded_before_length_join() -> None:
+    score_csv = _hmmer_csv(
+        [
+            ("P12345", "AOX_P12345", "1E-20", "250"),
+            ("Q8XYZ1", "AOX_Q8XYZ1", "1E-10", "240"),
+        ]
+    )
+    sequence = _sequence(675)
+    fasta, metadata = _uniprot_inputs(
+        [("P12345", "P12345", sequence, True)],
+        inactive_records=[
+            (
+                "Q8XYZ1",
+                "Not part of a reference proteome",
+                "UPI000453BEA2",
+            )
+        ],
+        requested_order=["P12345", "Q8XYZ1"],
+    )
+    expected_inactive_record_digest = json.loads(metadata)["inactive_records"][0][
+        "record_digest"
+    ]
+
+    result = aox_sequence_join.join_score_filtered_accessions(
+        score_csv,
+        fasta,
+        metadata,
+    )
+
+    assert [hit.uniprot_accession for hit in result.hits] == ["P12345"]
+    assert [
+        record.requested_accession for record in result.uniprot_inactive_records
+    ] == ["Q8XYZ1"]
+    manifest = result.metadata()
+    assert manifest["counts"] == {
+        "input_hit_count": 2,
+        "uniprot_record_count": 2,
+        "uniprot_active_record_count": 1,
+        "uniprot_inactive_record_count": 1,
+        "uniprot_inactive_deleted_record_count": 1,
+        "uniprot_inactive_merged_record_count": 0,
+        "output_hit_count": 1,
+        "inactive_excluded_count": 1,
+        "inactive_deleted_excluded_count": 1,
+        "inactive_merged_excluded_count": 0,
+        "length_rejected_count": 0,
+    }
+    assert manifest["identity_mappings"][1] == {
+        "requested_accession": "Q8XYZ1",
+        "primary_accession": "Q8XYZ1",
+        "status": "inactive",
+        "identity_replaced": False,
+        "inactive_reason": {
+            "inactive_reason_type": "DELETED",
+            "deleted_reason": "Not part of a reference proteome",
+        },
+        "uniparc_id": "UPI000453BEA2",
+        "response_digest": _digest("response:Q8XYZ1"),
+        "record_digest": expected_inactive_record_digest,
+    }
+
+
+def test_all_inactive_deleted_partition_is_a_healthy_empty_join() -> None:
+    score_csv = _hmmer_csv(
+        [("Q8XYZ1", "AOX_Q8XYZ1", "1E-10", "240")]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [],
+        inactive_records=[("Q8XYZ1", "Deleted entry", "UPI000453BEA2")],
+    )
+
+    result = aox_sequence_join.join_score_filtered_accessions(
+        score_csv,
+        fasta,
+        metadata,
+    )
+
+    assert result.hits == ()
+    assert result.target_fasta() == ""
+    assert result.metadata()["counts"]["length_rejected_count"] == 0
+    assert result.metadata()["counts"]["inactive_excluded_count"] == 1
+    assert result.metadata()["counts"]["inactive_deleted_excluded_count"] == 1
+
+
+def test_inactive_merged_identity_preserves_targets_without_following_them() -> None:
+    score_csv = _hmmer_csv(
+        [("A0A2U8U0K3", "A0A2U8U0K3_DROME", "1E-10", "240")]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [],
+        merged_inactive_records=[
+            ("A0A2U8U0K3", ("P18173",), "UPI000A0F4040")
+        ],
+    )
+    expected_inactive_record_digest = json.loads(metadata)["inactive_records"][0][
+        "record_digest"
+    ]
+
+    result = aox_sequence_join.join_score_filtered_accessions(
+        score_csv,
+        fasta,
+        metadata,
+    )
+
+    assert result.hits == ()
+    assert result.target_fasta() == ""
+    inactive = result.uniprot_inactive_records[0]
+    assert isinstance(
+        inactive, aox_sequence_join.UniProtMergedInactiveIdentity
+    )
+    assert [
+        annotation.target_accession
+        for annotation in inactive.replacement_target_annotations
+    ] == ["P18173"]
+    manifest = result.metadata()
+    assert manifest["counts"]["uniprot_inactive_merged_record_count"] == 1
+    assert manifest["counts"]["inactive_merged_excluded_count"] == 1
+    assert manifest["identity_mappings"] == [
+        {
+            "requested_accession": "A0A2U8U0K3",
+            "primary_accession": "A0A2U8U0K3",
+            "status": "inactive",
+            "identity_replaced": False,
+            "inactive_reason": {
+                "inactive_reason_type": "MERGED",
+                "replacement_target_annotations": [
+                    {
+                        "annotation_type": "provider_inactive_replacement",
+                        "source_database": "uniprotkb",
+                        "source_accession": "A0A2U8U0K3",
+                        "target_database": "uniprotkb",
+                        "target_accession": "P18173",
+                        "relationship": "merged_into",
+                        "identity_replaced": False,
+                        "target_followed": False,
+                    }
+                ],
+            },
+            "uniparc_id": "UPI000A0F4040",
+            "response_digest": _digest("response:A0A2U8U0K3"),
+            "record_digest": expected_inactive_record_digest,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (
+            lambda payload: payload["inactive_records"][0][
+                "inactive_reason"
+            ]["replacement_target_annotations"].clear(),
+            "sequence_join_uniprot_inactive_replacement_invalid",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0][
+                "inactive_reason"
+            ]["replacement_target_annotations"][0].update(
+                {"target_followed": True}
+            ),
+            "sequence_join_uniprot_inactive_replacement_invalid",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0][
+                "provider_metadata"
+            ]["inactiveReason"].update({"mergeDemergeTo": ["Q9XYZ1"]}),
+            "sequence_join_uniprot_record_digest_mismatch",
+        ),
+    ],
+)
+def test_merged_replacement_annotations_fail_closed_on_tamper(
+    mutation,
+    expected_code: str,
+) -> None:  # type: ignore[no-untyped-def]
+    score_csv = _hmmer_csv(
+        [("A0A2U8U0K3", "A0A2U8U0K3_DROME", "1E-10", "240")]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [],
+        merged_inactive_records=[
+            ("A0A2U8U0K3", ("P18173",), "UPI000A0F4040")
+        ],
+    )
+
+    with pytest.raises(aox_sequence_join.ScientificPrerequisiteError) as error:
+        aox_sequence_join.join_score_filtered_accessions(
+            score_csv,
+            fasta,
+            _mutate_metadata(metadata, mutation),
+        )
+
+    assert _code(error) == expected_code
+
+
+def test_interleaved_active_inactive_order_is_exact_and_reorder_fails() -> None:
+    score_csv = _hmmer_csv(
+        [
+            ("A0A2U8U0K3", "A0A2U8U0K3_DROME", "1E-20", "260"),
+            ("P12345", "AOX_P12345", "1E-15", "250"),
+            ("Q8XYZ1", "AOX_Q8XYZ1", "1E-10", "240"),
+        ]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [("P12345", "P12345", _sequence(675), True)],
+        inactive_records=[("Q8XYZ1", "Deleted entry", "UPI000453BEA2")],
+        merged_inactive_records=[
+            ("A0A2U8U0K3", ("P18173",), "UPI000A0F4040")
+        ],
+        requested_order=["A0A2U8U0K3", "P12345", "Q8XYZ1"],
+    )
+
+    result = aox_sequence_join.join_score_filtered_accessions(
+        score_csv, fasta, metadata
+    )
+    assert [record.requested_accession for record in result.uniprot_records] == [
+        "P12345"
+    ]
+    assert [
+        record.requested_accession for record in result.uniprot_inactive_records
+    ] == ["A0A2U8U0K3", "Q8XYZ1"]
+
+    with pytest.raises(aox_sequence_join.ScientificPrerequisiteError) as error:
+        aox_sequence_join.join_score_filtered_accessions(
+            score_csv,
+            fasta,
+            _mutate_metadata(
+                metadata,
+                lambda payload: payload["inactive_records"].reverse(),
+            ),
+        )
+    assert _code(error) == "sequence_join_uniprot_partition_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        (
+            lambda payload: _set_inactive_reason_type(payload, "DEMERGED"),
+            "sequence_join_uniprot_inactive_reason_unsupported",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0].update(
+                {"uniparc_id": "bad"}
+            ),
+            "sequence_join_uniprot_inactive_record_invalid",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0].update(
+                {"record_digest": "sha256:" + "0" * 64}
+            ),
+            "sequence_join_uniprot_record_digest_mismatch",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0].update(
+                {"response_digest": "sha256:" + "0" * 64}
+            ),
+            "sequence_join_uniprot_response_digest_unbound",
+        ),
+        (
+            lambda payload: payload["inactive_records"][0][
+                "provider_metadata"
+            ].update({"sequence": {"value": "AAAA"}}),
+            "sequence_join_uniprot_provider_record_mismatch",
+        ),
+        (
+            lambda payload: payload["inactive_records"].clear(),
+            "sequence_join_uniprot_record_count_mismatch",
+        ),
+        (
+            lambda payload: payload.update(
+                {
+                    "inactive_deleted_record_count": 0,
+                    "inactive_merged_record_count": 1,
+                }
+            ),
+            "sequence_join_uniprot_record_count_mismatch",
+        ),
+    ],
+)
+def test_malformed_or_incomplete_inactive_partition_fails_closed(
+    mutation,
+    expected_code: str,
+) -> None:  # type: ignore[no-untyped-def]
+    score_csv = _hmmer_csv(
+        [("Q8XYZ1", "AOX_Q8XYZ1", "1E-10", "240")]
+    )
+    fasta, metadata = _uniprot_inputs(
+        [],
+        inactive_records=[("Q8XYZ1", "Deleted entry", "UPI000453BEA2")],
+    )
+
+    with pytest.raises(aox_sequence_join.ScientificPrerequisiteError) as error:
+        aox_sequence_join.join_score_filtered_accessions(
+            score_csv,
+            fasta,
+            _mutate_metadata(metadata, mutation),
+        )
+
+    assert _code(error) == expected_code
+
+
 def test_length_filter_is_inclusive_and_supports_healthy_empty_output() -> None:
     score_csv = _hmmer_csv(
         [
@@ -263,7 +695,14 @@ def test_length_filter_is_inclusive_and_supports_healthy_empty_output() -> None:
     assert result.metadata()["counts"] == {
         "input_hit_count": 2,
         "uniprot_record_count": 2,
+        "uniprot_active_record_count": 2,
+        "uniprot_inactive_record_count": 0,
+        "uniprot_inactive_deleted_record_count": 0,
+        "uniprot_inactive_merged_record_count": 0,
         "output_hit_count": 0,
+        "inactive_excluded_count": 0,
+        "inactive_deleted_excluded_count": 0,
+        "inactive_merged_excluded_count": 0,
         "length_rejected_count": 2,
     }
 
@@ -286,8 +725,9 @@ def test_metadata_binds_contract_input_output_provider_and_counts() -> None:
         expected_uniprot_metadata_digest=_digest(metadata),
     )
     manifest = result.metadata()
+    metadata_payload = json.loads(metadata)
 
-    assert manifest["contract_id"] == "aox_sequence_length_join@1"
+    assert manifest["contract_id"] == "aox_sequence_length_join@2"
     assert manifest["contract_digest"] == aox_sequence_join.CONTRACT_DIGEST
     assert manifest["implementation_digest"] == aox_sequence_join.IMPLEMENTATION_DIGEST
     assert manifest["upstream_hmmer_contract"] == {
@@ -305,11 +745,14 @@ def test_metadata_binds_contract_input_output_provider_and_counts() -> None:
         "target.fasta": _digest(result.target_fasta()),
     }
     assert manifest["uniprot_provider"] == {
-        "identity_contract_id": "uniprot_primary_sequence_identity@1",
+        "identity_contract_id": "uniprot_primary_sequence_identity@2",
         "release": "2026_03",
         "release_date": "15-July-2026",
         "retrieved_at": "2026-07-17T00:00:00+00:00",
-        "aggregate_response_digest": _digest("aggregate-response"),
+        "response_digests": metadata_payload["response_digests"],
+        "aggregate_response_digest": metadata_payload[
+            "aggregate_response_digest"
+        ],
         "api_version": "provider-http-v1",
         "warning_count": 0,
         "source_sequence_identity_count": 0,
@@ -457,6 +900,18 @@ def test_sp_tr_header_must_match_reviewed_status() -> None:
             ),
             "sequence_join_uniprot_provider_record_mismatch",
         ),
+        (
+            lambda payload: payload.update(
+                {"aggregate_response_digest": "sha256:" + "0" * 64}
+            ),
+            "sequence_join_uniprot_aggregate_response_digest_mismatch",
+        ),
+        (
+            lambda payload: payload["records"][0].update(
+                {"response_digest": "sha256:" + "0" * 64}
+            ),
+            "sequence_join_uniprot_response_digest_unbound",
+        ),
     ],
 )
 def test_uniprot_identity_provenance_and_mapping_drift_fail_closed(
@@ -546,7 +1001,7 @@ def test_provider_identifier_can_use_the_adapter_primary_accession_fallback() ->
 @pytest.mark.parametrize(
     "binding",
     [
-        {"expected_contract_id": "aox_sequence_length_join@2"},
+        {"expected_contract_id": "aox_sequence_length_join@1"},
         {"expected_contract_digest": "sha256:" + "0" * 64},
         {"expected_implementation_digest": "sha256:" + "0" * 64},
         {"expected_hmmer_contract_id": "hmmer_score_filtered_accessions@2"},

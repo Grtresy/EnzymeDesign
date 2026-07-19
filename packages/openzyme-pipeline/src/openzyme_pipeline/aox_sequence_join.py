@@ -16,7 +16,7 @@ from . import aox_hmmer
 from .aox_motif import ScientificPrerequisiteError
 
 
-CONTRACT_ID = "aox_sequence_length_join@1"
+CONTRACT_ID = "aox_sequence_length_join@2"
 LENGTH_MIN = 650
 LENGTH_MAX = 700
 HITS_OUTPUT_NAME = "hits_len650_700_200.csv"
@@ -30,7 +30,7 @@ OUTPUT_COLUMNS = (
     "sequence",
 )
 
-_UNIPROT_IDENTITY_CONTRACT_ID = "uniprot_primary_sequence_identity@1"
+_UNIPROT_IDENTITY_CONTRACT_ID = "uniprot_primary_sequence_identity@2"
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _UNIPROT_ACCESSION_SOURCE = (
     r"(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|"
@@ -55,10 +55,16 @@ _UNIPROT_METADATA_KEYS = frozenset(
         "identity_contract_id",
         "requested_accessions",
         "records",
+        "inactive_records",
+        "active_record_count",
+        "inactive_record_count",
+        "inactive_deleted_record_count",
+        "inactive_merged_record_count",
         "warnings",
         "retrieved_at",
         "uniprot_release",
         "uniprot_release_date",
+        "response_digests",
         "aggregate_response_digest",
         "source_sequence_identity_count",
         "sequence_mismatch_resolution_count",
@@ -83,6 +89,40 @@ _UNIPROT_RECORD_KEYS = frozenset(
         "record_digest",
         "mapping_annotations",
         "provider_metadata",
+    }
+)
+_UNIPROT_INACTIVE_RECORD_KEYS = frozenset(
+    {
+        "requested_accession",
+        "primary_accession",
+        "uniprot_identifier",
+        "entry_type",
+        "inactive_reason",
+        "uniparc_id",
+        "uniprot_release",
+        "uniprot_release_date",
+        "retrieved_at",
+        "response_digest",
+        "record_digest",
+        "provider_metadata",
+    }
+)
+_UNIPROT_DELETED_REASON_KEYS = frozenset(
+    {"inactive_reason_type", "deleted_reason"}
+)
+_UNIPROT_MERGED_REASON_KEYS = frozenset(
+    {"inactive_reason_type", "replacement_target_annotations"}
+)
+_UNIPROT_REPLACEMENT_ANNOTATION_KEYS = frozenset(
+    {
+        "annotation_type",
+        "source_database",
+        "source_accession",
+        "target_database",
+        "target_accession",
+        "relationship",
+        "identity_replaced",
+        "target_followed",
     }
 )
 
@@ -124,11 +164,53 @@ class UniProtIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class UniProtInactiveIdentity:
+    requested_accession: str
+    primary_accession: str
+    uniprot_identifier: str
+    inactive_reason_type: str
+    uniparc_id: str
+    response_digest: str
+    record_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class UniProtDeletedInactiveIdentity(UniProtInactiveIdentity):
+    deleted_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class InactiveReplacementTargetAnnotation:
+    target_accession: str
+
+    def to_mapping(self, *, source_accession: str) -> dict[str, object]:
+        return {
+            "annotation_type": "provider_inactive_replacement",
+            "source_database": "uniprotkb",
+            "source_accession": source_accession,
+            "target_database": "uniprotkb",
+            "target_accession": self.target_accession,
+            "relationship": "merged_into",
+            "identity_replaced": False,
+            "target_followed": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UniProtMergedInactiveIdentity(UniProtInactiveIdentity):
+    replacement_target_annotations: tuple[
+        InactiveReplacementTargetAnnotation, ...
+    ]
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedUniProtEvidence:
     records: tuple[UniProtIdentity, ...]
+    inactive_records: tuple[UniProtInactiveIdentity, ...]
     release: str
     release_date: str | None
     retrieved_at: str
+    response_digests: tuple[str, ...]
     aggregate_response_digest: str
     api_version: str
     warning_count: int
@@ -161,6 +243,7 @@ class JoinedHit:
 class SequenceLengthJoinResult:
     input_hits: tuple[ScoreFilteredHit, ...]
     uniprot_records: tuple[UniProtIdentity, ...]
+    uniprot_inactive_records: tuple[UniProtInactiveIdentity, ...]
     hits: tuple[JoinedHit, ...]
     score_filtered_csv_digest: str
     uniprot_fasta_digest: str
@@ -168,6 +251,7 @@ class SequenceLengthJoinResult:
     uniprot_release: str
     uniprot_release_date: str | None
     retrieved_at: str
+    response_digests: tuple[str, ...]
     aggregate_response_digest: str
     api_version: str
     warning_count: int
@@ -185,6 +269,14 @@ class SequenceLengthJoinResult:
     def metadata(self) -> dict[str, object]:
         hits_bytes = self.hits_csv().encode("utf-8")
         fasta_bytes = self.target_fasta().encode("utf-8")
+        inactive_deleted_count = sum(
+            isinstance(record, UniProtDeletedInactiveIdentity)
+            for record in self.uniprot_inactive_records
+        )
+        inactive_merged_count = sum(
+            isinstance(record, UniProtMergedInactiveIdentity)
+            for record in self.uniprot_inactive_records
+        )
         return {
             "contract_id": CONTRACT_ID,
             "contract_digest": CONTRACT_DIGEST,
@@ -213,15 +305,29 @@ class SequenceLengthJoinResult:
             },
             "counts": {
                 "input_hit_count": len(self.input_hits),
-                "uniprot_record_count": len(self.uniprot_records),
+                "uniprot_record_count": len(self.uniprot_records)
+                + len(self.uniprot_inactive_records),
+                "uniprot_active_record_count": len(self.uniprot_records),
+                "uniprot_inactive_record_count": len(
+                    self.uniprot_inactive_records
+                ),
+                "uniprot_inactive_deleted_record_count": inactive_deleted_count,
+                "uniprot_inactive_merged_record_count": inactive_merged_count,
                 "output_hit_count": len(self.hits),
-                "length_rejected_count": len(self.input_hits) - len(self.hits),
+                "inactive_excluded_count": len(
+                    self.uniprot_inactive_records
+                ),
+                "inactive_deleted_excluded_count": inactive_deleted_count,
+                "inactive_merged_excluded_count": inactive_merged_count,
+                "length_rejected_count": len(self.uniprot_records)
+                - len(self.hits),
             },
             "uniprot_provider": {
                 "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
                 "release": self.uniprot_release,
                 "release_date": self.uniprot_release_date,
                 "retrieved_at": self.retrieved_at,
+                "response_digests": list(self.response_digests),
                 "aggregate_response_digest": self.aggregate_response_digest,
                 "api_version": self.api_version,
                 "warning_count": self.warning_count,
@@ -232,25 +338,65 @@ class SequenceLengthJoinResult:
                     self.sequence_mismatch_resolution_count
                 ),
             },
-            "identity_mappings": [
-                {
-                    "requested_accession": record.requested_accession,
-                    "primary_accession": record.primary_accession,
-                    "identity_replaced": False,
-                    "sequence_digest": record.sequence_digest,
-                    "reviewed": record.reviewed,
-                    "entry_version": record.entry_version,
-                    "sequence_version": record.sequence_version,
-                    "response_digest": record.response_digest,
-                    "record_digest": record.record_digest,
-                }
-                for record in self.uniprot_records
-            ],
+            "identity_mappings": sorted(
+                [
+                    {
+                        "requested_accession": record.requested_accession,
+                        "primary_accession": record.primary_accession,
+                        "status": "active_sequence",
+                        "identity_replaced": False,
+                        "sequence_digest": record.sequence_digest,
+                        "reviewed": record.reviewed,
+                        "entry_version": record.entry_version,
+                        "sequence_version": record.sequence_version,
+                        "response_digest": record.response_digest,
+                        "record_digest": record.record_digest,
+                    }
+                    for record in self.uniprot_records
+                ]
+                + [
+                    _inactive_identity_mapping(record)
+                    for record in self.uniprot_inactive_records
+                ],
+                key=lambda mapping: str(mapping["requested_accession"]),
+            ),
             "healthy_empty": not self.hits,
         }
 
     def metadata_json(self) -> str:
         return _canonical_json_bytes(self.metadata()).decode("utf-8") + "\n"
+
+
+def _inactive_identity_mapping(
+    record: UniProtInactiveIdentity,
+) -> dict[str, object]:
+    common: dict[str, object] = {
+        "requested_accession": record.requested_accession,
+        "primary_accession": record.primary_accession,
+        "status": "inactive",
+        "identity_replaced": False,
+        "uniparc_id": record.uniparc_id,
+        "response_digest": record.response_digest,
+        "record_digest": record.record_digest,
+    }
+    if isinstance(record, UniProtDeletedInactiveIdentity):
+        common["inactive_reason"] = {
+            "inactive_reason_type": "DELETED",
+            "deleted_reason": record.deleted_reason,
+        }
+        return common
+    if isinstance(record, UniProtMergedInactiveIdentity):
+        common["inactive_reason"] = {
+            "inactive_reason_type": "MERGED",
+            "replacement_target_annotations": [
+                annotation.to_mapping(
+                    source_accession=record.requested_accession
+                )
+                for annotation in record.replacement_target_annotations
+            ],
+        }
+        return common
+    raise TypeError("unsupported UniProt inactive identity variant")
 
 
 def _sha256(content: bytes) -> str:
@@ -266,6 +412,12 @@ def _canonical_json_bytes(payload: object) -> bytes:
     ).encode("utf-8")
 
 
+def _provider_json_digest(payload: object) -> str:
+    return _sha256(
+        (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    )
+
+
 def implementation_digest() -> str:
     return _sha256(Path(__file__).read_bytes())
 
@@ -278,7 +430,8 @@ def contract_payload(
         "contract_id": CONTRACT_ID,
         "scientific_claim": (
             "deterministic identity-preserving join of HMMER-selected accessions "
-            "to exact UniProt sequence bytes, followed only by an inclusive "
+            "to an exact active-sequence or typed inactive UniProt "
+            "partition; inactive identities are excluded before the inclusive "
             "protein-length filter; not an activity prediction"
         ),
         "upstream_hmmer_contract": {
@@ -300,15 +453,21 @@ def contract_payload(
             ],
             "mapping_semantics": (
                 "requested HMMER accession remains the candidate identity; "
-                "resolved primary accession is an append-only annotation"
+                "resolved active primary accession is an append-only annotation; "
+                "inactive identities require exact requested-primary equality and "
+                "DELETED or MERGED discriminated details; replacement targets are "
+                "annotations only and are never followed or used as sequences"
             ),
             "required_metadata": [
                 "release",
                 "retrieved_at",
+                "ordered_response_digests_and_recomputable_aggregate",
                 "requested_to_primary_mapping",
                 "sequence_digest",
                 "response_digest",
                 "record_digest",
+                "active_plus_inactive_exact_partition",
+                "inactive_reason_union_and_uniparc_id",
             ],
         },
         "validation": {
@@ -316,6 +475,8 @@ def contract_payload(
             "exact_uniprot_metadata_schema_and_serialization": True,
             "accession_set_equality": True,
             "missing_duplicate_or_extra_sequence": "fail_closed",
+            "unknown_or_malformed_inactive_record": "fail_closed",
+            "inactive_sequence_or_replacement_follow": "forbidden",
             "sequence_alphabet": "ACDEFGHIKLMNPQRSTVWYBXZJUO",
             "sequence_identity_replacement": "forbidden",
         },
@@ -918,12 +1079,35 @@ def _parse_uniprot_metadata(
     else:
         release_date = None
     retrieved_at = _timestamp(payload["retrieved_at"], field="retrieved_at")
+    response_digests_payload = payload["response_digests"]
+    if (
+        not isinstance(response_digests_payload, list)
+        or not response_digests_payload
+        or any(not isinstance(value, str) for value in response_digests_payload)
+    ):
+        raise ScientificPrerequisiteError(
+            "sequence_join_uniprot_metadata_invalid",
+            "UniProt metadata does not contain ordered provider response digests",
+            details={"field": "response_digests"},
+        )
+    response_digests = tuple(response_digests_payload)
+    for response_digest in response_digests:
+        _validate_digest(
+            response_digest,
+            field="response_digests",
+            code="sequence_join_uniprot_digest_invalid",
+        )
     aggregate_response_digest = str(payload["aggregate_response_digest"])
     _validate_digest(
         aggregate_response_digest,
         field="aggregate_response_digest",
         code="sequence_join_uniprot_digest_invalid",
     )
+    if aggregate_response_digest != _provider_json_digest(response_digests_payload):
+        raise ScientificPrerequisiteError(
+            "sequence_join_uniprot_aggregate_response_digest_mismatch",
+            "the UniProt aggregate response digest is not recomputable from its ordered pages",
+        )
     api_version = _nonempty_string(payload["api_version"], field="api_version")
     warnings = payload["warnings"]
     if not isinstance(warnings, list):
@@ -952,6 +1136,7 @@ def _parse_uniprot_metadata(
             },
         )
     records_payload = payload["records"]
+    inactive_records_payload = payload["inactive_records"]
     if not isinstance(records_payload, list) or any(
         not isinstance(record, dict) for record in records_payload
     ):
@@ -960,22 +1145,61 @@ def _parse_uniprot_metadata(
             "UniProt records are not an object list",
             details={"field": "records"},
         )
-    if len(records_payload) != len(input_hits):
+    if not isinstance(inactive_records_payload, list) or any(
+        not isinstance(record, dict) for record in inactive_records_payload
+    ):
+        raise ScientificPrerequisiteError(
+            "sequence_join_uniprot_metadata_invalid",
+            "UniProt inactive records are not an object list",
+            details={"field": "inactive_records"},
+        )
+    declared_active_count = _nonnegative_integer(
+        payload["active_record_count"],
+        field="active_record_count",
+    )
+    declared_inactive_count = _nonnegative_integer(
+        payload["inactive_record_count"],
+        field="inactive_record_count",
+    )
+    declared_inactive_deleted_count = _nonnegative_integer(
+        payload["inactive_deleted_record_count"],
+        field="inactive_deleted_record_count",
+    )
+    declared_inactive_merged_count = _nonnegative_integer(
+        payload["inactive_merged_record_count"],
+        field="inactive_merged_record_count",
+    )
+    if (
+        declared_active_count != len(records_payload)
+        or declared_inactive_count != len(inactive_records_payload)
+        or declared_inactive_deleted_count + declared_inactive_merged_count
+        != declared_inactive_count
+        or declared_active_count + declared_inactive_count != len(input_hits)
+    ):
         raise ScientificPrerequisiteError(
             "sequence_join_uniprot_record_count_mismatch",
-            "UniProt metadata does not contain one record per HMMER-selected accession",
-            details={"expected": len(input_hits), "actual": len(records_payload)},
+            "UniProt active and inactive counts do not partition the HMMER-selected set",
+            details={
+                "expected": len(input_hits),
+                "declared_active": declared_active_count,
+                "actual_active": len(records_payload),
+                "declared_inactive": declared_inactive_count,
+                "declared_inactive_deleted": declared_inactive_deleted_count,
+                "declared_inactive_merged": declared_inactive_merged_count,
+                "actual_inactive": len(inactive_records_payload),
+            },
         )
     fasta_by_primary = {record.primary_accession: record for record in fasta_records}
+    hit_by_accession = {hit.accession: hit for hit in input_hits}
     identities: list[UniProtIdentity] = []
+    inactive_identities: list[UniProtInactiveIdentity] = []
     used_primary: set[str] = set()
+    used_fasta_primary: set[str] = set()
+    used_requested: set[str] = set()
     actual_source_count = 0
     actual_mismatch_count = 0
 
-    for index, (hit, record) in enumerate(
-        zip(input_hits, records_payload, strict=True),
-        start=1,
-    ):
+    for index, record in enumerate(records_payload, start=1):
         if frozenset(record) != _UNIPROT_RECORD_KEYS:
             raise ScientificPrerequisiteError(
                 "sequence_join_uniprot_record_schema_mismatch",
@@ -988,11 +1212,12 @@ def _parse_uniprot_metadata(
             )
         requested = str(record["requested_accession"])
         primary = str(record["primary_accession"])
-        if requested != hit.accession:
+        hit = hit_by_accession.get(requested)
+        if hit is None or requested in used_requested:
             raise ScientificPrerequisiteError(
                 "sequence_join_uniprot_requested_accessions_mismatch",
-                "a UniProt record does not preserve the HMMER requested accession",
-                details={"record": index, "expected": hit.accession, "actual": requested},
+                "an active UniProt record does not map uniquely to the HMMER requested set",
+                details={"record": index, "requested_accession": requested},
             )
         if _UNIPROT_ACCESSION_PATTERN.fullmatch(primary) is None:
             raise ScientificPrerequisiteError(
@@ -1052,6 +1277,12 @@ def _parse_uniprot_metadata(
                 value,
                 field=field,
                 code="sequence_join_uniprot_digest_invalid",
+            )
+        if response_digest not in response_digests:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_response_digest_unbound",
+                "a UniProt active record response digest is not in the ordered page set",
+                details={"requested_accession": requested},
             )
         if sequence_digest != fasta.sequence_digest:
             raise ScientificPrerequisiteError(
@@ -1126,8 +1357,302 @@ def _parse_uniprot_metadata(
             )
         )
         used_primary.add(primary)
+        used_fasta_primary.add(primary)
+        used_requested.add(requested)
 
-    extra_fasta = sorted(set(fasta_by_primary) - used_primary)
+    for index, record in enumerate(inactive_records_payload, start=1):
+        if frozenset(record) != _UNIPROT_INACTIVE_RECORD_KEYS:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_inactive_record_schema_mismatch",
+                "a UniProt inactive identity record does not match the closed provider schema",
+                details={
+                    "record": index,
+                    "expected": sorted(_UNIPROT_INACTIVE_RECORD_KEYS),
+                    "actual": sorted(record),
+                },
+            )
+        requested = str(record["requested_accession"])
+        primary = str(record["primary_accession"])
+        if (
+            requested not in hit_by_accession
+            or requested in used_requested
+            or primary != requested
+            or _UNIPROT_ACCESSION_PATTERN.fullmatch(primary) is None
+        ):
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_requested_accessions_mismatch",
+                "an inactive UniProt identity does not exactly preserve one requested accession",
+                details={
+                    "record": index,
+                    "requested_accession": requested,
+                    "primary_accession": primary,
+                },
+            )
+        if primary in used_primary:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_duplicate_primary_accession",
+                "multiple HMMER identities map to one active or inactive UniProt identity",
+                details={"primary_accession": primary},
+            )
+        identifier = _nonempty_string(
+            record["uniprot_identifier"],
+            field=f"inactive_records[{index}].uniprot_identifier",
+        )
+        uniparc_id = _nonempty_string(
+            record["uniparc_id"],
+            field=f"inactive_records[{index}].uniparc_id",
+        )
+        if (
+            record["entry_type"] != "Inactive"
+            or re.fullmatch(r"UPI[0-9A-F]{10}", uniparc_id) is None
+            or record["uniprot_release"] != release
+            or record["uniprot_release_date"] != release_date
+            or record["retrieved_at"] != retrieved_at
+        ):
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_inactive_record_invalid",
+                "a UniProt inactive record is not an explicit release-bound identity",
+                details={"requested_accession": requested},
+            )
+        response_digest = str(record["response_digest"])
+        record_digest = str(record["record_digest"])
+        for field, value in (
+            ("response_digest", response_digest),
+            ("record_digest", record_digest),
+        ):
+            _validate_digest(
+                value,
+                field=field,
+                code="sequence_join_uniprot_digest_invalid",
+            )
+        if response_digest not in response_digests:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_response_digest_unbound",
+                "a UniProt inactive record response digest is not in the ordered page set",
+                details={"requested_accession": requested},
+            )
+        provider_metadata = record["provider_metadata"]
+        inactive_reason = (
+            provider_metadata.get("inactiveReason")
+            if isinstance(provider_metadata, dict)
+            else None
+        )
+        extra_attributes = (
+            provider_metadata.get("extraAttributes")
+            if isinstance(provider_metadata, dict)
+            else None
+        )
+        canonical_reason = record["inactive_reason"]
+        if (
+            not isinstance(provider_metadata, dict)
+            or "sequence" in provider_metadata
+            or "entryAudit" in provider_metadata
+            or provider_metadata.get("primaryAccession") != primary
+            or provider_metadata.get("uniProtkbId") != identifier
+            or provider_metadata.get("entryType") != "Inactive"
+            or not isinstance(inactive_reason, dict)
+            or not isinstance(canonical_reason, dict)
+            or not isinstance(extra_attributes, dict)
+            or extra_attributes.get("uniParcId") != uniparc_id
+        ):
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_provider_record_mismatch",
+                "the safe inactive UniProt provider summary disagrees with its canonical projection",
+                details={"requested_accession": requested},
+            )
+        if record_digest != _provider_json_digest(provider_metadata):
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_record_digest_mismatch",
+                "an inactive UniProt record digest is not recomputable from its provider metadata",
+                details={"requested_accession": requested},
+            )
+        reason_type = canonical_reason.get("inactive_reason_type")
+        if inactive_reason.get("inactiveReasonType") != reason_type:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_provider_record_mismatch",
+                "the provider inactive reason type differs from its canonical projection",
+                details={"requested_accession": requested},
+            )
+        if reason_type == "DELETED":
+            if frozenset(canonical_reason) != _UNIPROT_DELETED_REASON_KEYS:
+                raise ScientificPrerequisiteError(
+                    "sequence_join_uniprot_inactive_reason_schema_mismatch",
+                    "a DELETED inactive reason does not match its closed schema",
+                    details={"requested_accession": requested},
+                )
+            deleted_reason = _nonempty_string(
+                canonical_reason["deleted_reason"],
+                field=f"inactive_records[{index}].inactive_reason.deleted_reason",
+            )
+            if (
+                inactive_reason.get("deletedReason") != deleted_reason
+                or "mergeDemergeTo" in inactive_reason
+            ):
+                raise ScientificPrerequisiteError(
+                    "sequence_join_uniprot_provider_record_mismatch",
+                    "the provider DELETED reason differs from its canonical projection",
+                    details={"requested_accession": requested},
+                )
+            identity: UniProtInactiveIdentity = UniProtDeletedInactiveIdentity(
+                requested_accession=requested,
+                primary_accession=primary,
+                uniprot_identifier=identifier,
+                inactive_reason_type="DELETED",
+                uniparc_id=uniparc_id,
+                response_digest=response_digest,
+                record_digest=record_digest,
+                deleted_reason=deleted_reason,
+            )
+        elif reason_type == "MERGED":
+            if frozenset(canonical_reason) != _UNIPROT_MERGED_REASON_KEYS:
+                raise ScientificPrerequisiteError(
+                    "sequence_join_uniprot_inactive_reason_schema_mismatch",
+                    "a MERGED inactive reason does not match its closed schema",
+                    details={"requested_accession": requested},
+                )
+            raw_annotations = canonical_reason["replacement_target_annotations"]
+            if (
+                not isinstance(raw_annotations, list)
+                or not raw_annotations
+                or any(not isinstance(value, dict) for value in raw_annotations)
+            ):
+                raise ScientificPrerequisiteError(
+                    "sequence_join_uniprot_inactive_replacement_invalid",
+                    "a MERGED inactive reason lacks replacement target annotations",
+                    details={"requested_accession": requested},
+                )
+            replacement_annotations: list[
+                InactiveReplacementTargetAnnotation
+            ] = []
+            previous_target: str | None = None
+            for annotation in raw_annotations:
+                target = str(annotation.get("target_accession") or "")
+                expected_annotation = {
+                    "annotation_type": "provider_inactive_replacement",
+                    "source_database": "uniprotkb",
+                    "source_accession": requested,
+                    "target_database": "uniprotkb",
+                    "target_accession": target,
+                    "relationship": "merged_into",
+                    "identity_replaced": False,
+                    "target_followed": False,
+                }
+                if (
+                    frozenset(annotation)
+                    != _UNIPROT_REPLACEMENT_ANNOTATION_KEYS
+                    or annotation != expected_annotation
+                    or _UNIPROT_ACCESSION_PATTERN.fullmatch(target) is None
+                    or target == requested
+                    or (previous_target is not None and target <= previous_target)
+                ):
+                    raise ScientificPrerequisiteError(
+                        "sequence_join_uniprot_inactive_replacement_invalid",
+                        "a MERGED replacement target annotation is malformed or noncanonical",
+                        details={"requested_accession": requested},
+                    )
+                replacement_annotations.append(
+                    InactiveReplacementTargetAnnotation(
+                        target_accession=target
+                    )
+                )
+                previous_target = target
+            provider_targets = inactive_reason.get("mergeDemergeTo")
+            if (
+                not isinstance(provider_targets, list)
+                or any(not isinstance(value, str) for value in provider_targets)
+                or len(provider_targets) != len(set(provider_targets))
+                or sorted(provider_targets)
+                != [
+                    annotation.target_accession
+                    for annotation in replacement_annotations
+                ]
+                or "deletedReason" in inactive_reason
+            ):
+                raise ScientificPrerequisiteError(
+                    "sequence_join_uniprot_provider_record_mismatch",
+                    "the provider MERGED targets differ from their canonical annotations",
+                    details={"requested_accession": requested},
+                )
+            identity = UniProtMergedInactiveIdentity(
+                requested_accession=requested,
+                primary_accession=primary,
+                uniprot_identifier=identifier,
+                inactive_reason_type="MERGED",
+                uniparc_id=uniparc_id,
+                response_digest=response_digest,
+                record_digest=record_digest,
+                replacement_target_annotations=tuple(
+                    replacement_annotations
+                ),
+            )
+        else:
+            raise ScientificPrerequisiteError(
+                "sequence_join_uniprot_inactive_reason_unsupported",
+                "a UniProt inactive identity uses an unsupported reason type",
+                details={
+                    "requested_accession": requested,
+                    "inactive_reason_type": reason_type,
+                },
+            )
+        inactive_identities.append(identity)
+        used_primary.add(primary)
+        used_requested.add(requested)
+
+    actual_inactive_deleted_count = sum(
+        isinstance(record, UniProtDeletedInactiveIdentity)
+        for record in inactive_identities
+    )
+    actual_inactive_merged_count = sum(
+        isinstance(record, UniProtMergedInactiveIdentity)
+        for record in inactive_identities
+    )
+    if (
+        actual_inactive_deleted_count != declared_inactive_deleted_count
+        or actual_inactive_merged_count != declared_inactive_merged_count
+    ):
+        raise ScientificPrerequisiteError(
+            "sequence_join_uniprot_record_count_mismatch",
+            "UniProt inactive reason counts do not match the typed partition",
+            details={
+                "declared_inactive_deleted": declared_inactive_deleted_count,
+                "actual_inactive_deleted": actual_inactive_deleted_count,
+                "declared_inactive_merged": declared_inactive_merged_count,
+                "actual_inactive_merged": actual_inactive_merged_count,
+            },
+        )
+
+    active_requested = [record.requested_accession for record in identities]
+    inactive_requested = [
+        record.requested_accession for record in inactive_identities
+    ]
+    active_requested_set = set(active_requested)
+    inactive_requested_set = set(inactive_requested)
+    expected_active_order = [
+        accession
+        for accession in expected_accessions
+        if accession in active_requested_set
+    ]
+    expected_inactive_order = [
+        accession
+        for accession in expected_accessions
+        if accession in inactive_requested_set
+    ]
+    if (
+        used_requested != set(expected_accessions)
+        or active_requested != expected_active_order
+        or inactive_requested != expected_inactive_order
+    ):
+        raise ScientificPrerequisiteError(
+            "sequence_join_uniprot_partition_mismatch",
+            "UniProt active and inactive records do not form the exact requested partition",
+            details={
+                "expected": expected_accessions,
+                "active": active_requested,
+                "inactive": inactive_requested,
+            },
+        )
+
+    extra_fasta = sorted(set(fasta_by_primary) - used_fasta_primary)
     if extra_fasta:
         raise ScientificPrerequisiteError(
             "sequence_join_uniprot_sequence_extra",
@@ -1150,9 +1675,11 @@ def _parse_uniprot_metadata(
         )
     return ParsedUniProtEvidence(
         records=tuple(identities),
+        inactive_records=tuple(inactive_identities),
         release=release,
         release_date=release_date,
         retrieved_at=retrieved_at,
+        response_digests=response_digests,
         aggregate_response_digest=aggregate_response_digest,
         api_version=api_version,
         warning_count=len(warnings),
@@ -1220,13 +1747,15 @@ def join_score_filtered_accessions(
             sequence_digest=evidence_by_requested[hit.accession].sequence_digest,
         )
         for hit in input_hits
-        if LENGTH_MIN
+        if hit.accession in evidence_by_requested
+        and LENGTH_MIN
         <= len(evidence_by_requested[hit.accession].sequence)
         <= LENGTH_MAX
     )
     return SequenceLengthJoinResult(
         input_hits=input_hits,
         uniprot_records=evidence.records,
+        uniprot_inactive_records=evidence.inactive_records,
         hits=joined,
         score_filtered_csv_digest=score_digest,
         uniprot_fasta_digest=fasta_digest,
@@ -1234,6 +1763,7 @@ def join_score_filtered_accessions(
         uniprot_release=evidence.release,
         uniprot_release_date=evidence.release_date,
         retrieved_at=evidence.retrieved_at,
+        response_digests=evidence.response_digests,
         aggregate_response_digest=evidence.aggregate_response_digest,
         api_version=evidence.api_version,
         warning_count=evidence.warning_count,
@@ -1321,12 +1851,16 @@ __all__ = [
     "LENGTH_MIN",
     "OUTPUT_COLUMNS",
     "FastaSequence",
+    "InactiveReplacementTargetAnnotation",
     "JoinedHit",
     "ParsedUniProtEvidence",
     "ScientificPrerequisiteError",
     "ScoreFilteredHit",
     "SequenceLengthJoinResult",
     "UniProtIdentity",
+    "UniProtDeletedInactiveIdentity",
+    "UniProtInactiveIdentity",
+    "UniProtMergedInactiveIdentity",
     "canonical_hits_to_csv",
     "contract_digest",
     "contract_payload",

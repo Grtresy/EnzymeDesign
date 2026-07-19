@@ -1,9 +1,11 @@
 {
   "status": "SUCCESS",
+  "page_count": 1,
   "result": {
     "stats": {
       "elapsed": 0.321,
       "nhits": 1,
+      "nreported": 1,
       "provider_extension": "allowed"
     },
     "hits": [

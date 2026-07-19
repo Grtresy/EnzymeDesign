@@ -234,6 +234,9 @@ def _closed_browser_durable_event(
 
 
 def _strict_json_object(content: str) -> dict[str, object]:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -242,7 +245,11 @@ def _strict_json_object(content: str) -> dict[str, object]:
             result[key] = value
         return result
 
-    parsed = json.loads(content, object_pairs_hook=pairs_hook)
+    parsed = json.loads(
+        content,
+        parse_constant=reject_constant,
+        object_pairs_hook=pairs_hook,
+    )
     if not isinstance(parsed, dict):
         raise ValueError("JSON receipt must be an object")
     return dict(parsed)
@@ -4341,8 +4348,8 @@ def _provider_request_parameters(
 
 def _raw_provider_response_digests(content: bytes) -> tuple[str, ...]:
     try:
-        payload = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        payload = _strict_json_object(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return ()
     if (
         not isinstance(payload, dict)
@@ -4366,8 +4373,17 @@ def _raw_provider_response_digests(content: bytes) -> tuple[str, ...]:
             raw_record.get("body_encoding") != "base64"
             or raw_record.get("size_bytes") != len(raw)
             or raw_record.get("body_digest") != digest
+            or base64.b64encode(raw).decode("ascii")
+            != raw_record.get("body_base64")
         ):
             return ()
+        if payload.get("provider") == "uniprot":
+            try:
+                body = _strict_json_object(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                return ()
+            if not isinstance(body.get("results"), list):
+                return ()
         digests.append(digest)
     return tuple(digests)
 
@@ -6552,6 +6568,7 @@ def _collect_positive_evidence(
     )
     uniprot_sequences: CatalogArtifactCopy | None = None
     uniprot_metadata: CatalogArtifactCopy | None = None
+    uniprot_raw_response: CatalogArtifactCopy | None = None
     sequence_join_result: aox_sequence_join.SequenceLengthJoinResult | None = None
     if hmmer_upstream_empty:
         if "uniprot_fetch" in operation_by_role:
@@ -6583,6 +6600,16 @@ def _collect_positive_evidence(
             names={"metadata.json"},
             identity="uniprot_metadata",
         )
+        uniprot_raw_response = _copy_with_name(
+            output_copies["uniprot_fetch"],
+            names={"pages.json"},
+            identity="uniprot_raw_response",
+        )
+        if not _raw_provider_response_digests(uniprot_raw_response.content):
+            raise LiveProductPathError(
+                "uniprot_raw_response_invalid",
+                "sealed UniProt pages.json is not one strict raw HTTP response envelope",
+            )
         uniprot_params = provider_parameters["uniprot_fetch"]
         source_hit_artifact = dict(uniprot_params.get("source_hit_artifact") or {})
         if sorted(
@@ -6617,7 +6644,7 @@ def _collect_positive_evidence(
         except ValueError as exc:
             raise LiveProductPathError(
                 "sequence_length_join_invalid",
-                "sealed UniProt outputs do not satisfy aox_sequence_length_join@1",
+                "sealed UniProt outputs do not satisfy aox_sequence_length_join@2",
             ) from exc
         if filtered_hits.content != sequence_join_result.hits_csv().encode(
             "utf-8"
@@ -7287,10 +7314,14 @@ def _collect_positive_evidence(
         "graph_manifest": str(graph_manifest.record["artifact_id"]),
     }
     if uniprot_sequences is not None and uniprot_metadata is not None:
+        assert uniprot_raw_response is not None
         artifact_roles.update(
             {
                 "uniprot_sequences": str(uniprot_sequences.record["artifact_id"]),
                 "uniprot_metadata": str(uniprot_metadata.record["artifact_id"]),
+                "uniprot_raw_response": str(
+                    uniprot_raw_response.record["artifact_id"]
+                ),
             }
         )
     provider_dependency: dict[str, object] = {
@@ -7389,12 +7420,16 @@ def _collect_positive_evidence(
     if sequence_join_result is not None:
         assert uniprot_sequences is not None
         assert uniprot_metadata is not None
+        assert uniprot_raw_response is not None
         sequence_join_check = {
             "score_filtered_artifact_id": str(
                 score_filtered_accessions.record["artifact_id"]
             ),
             "uniprot_fasta_artifact_id": str(uniprot_sequences.record["artifact_id"]),
             "uniprot_metadata_artifact_id": str(uniprot_metadata.record["artifact_id"]),
+            "uniprot_raw_response_artifact_id": str(
+                uniprot_raw_response.record["artifact_id"]
+            ),
             "filtered_hits_artifact_id": str(filtered_hits.record["artifact_id"]),
             "target_fasta_artifact_id": str(target_sequences.record["artifact_id"]),
             "contract_id": aox_sequence_join.CONTRACT_ID,

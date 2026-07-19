@@ -73,11 +73,72 @@ EBI HMMER REST 固定使用 `refprot`。其 provider parsed artifact 保留 exac
 
 `hmmer_score_filtered_accessions@1` 只保留 score 严格 `>200` 的 canonical UniProt accession；其七列 output artifact 和 exact non-empty accession set 是 `bio.uniprot_fetch` 的唯一允许输入。HMMER 的记录不提供下游 sequence/length 真值。
 
-UniProt 保留 primary accession、reviewed status、release/version、retrieved time、raw response/record/sequence digest 和 append-only cross-source mapping。`aox_sequence_length_join@1` 按 identity 严格连接 HMMER accession 与 UniProt record，用 UniProt sequence 实际长度应用 inclusive `650..700` 过滤，产生 `target.fasta` 和 `hits_len650_700_200.csv`。两源 sequence bytes 不一致时保留双方 digest 并要求显式 selection，不静默 overwrite。
+UniProt 使用 `uniprot_primary_sequence_identity@2`，对 complete requested set 精确分为 active sequence records 与 exact-requested typed `Inactive/DELETED|MERGED` records。active 的 provider `entryType` 只能精确为 `UniProtKB reviewed (Swiss-Prot)` 或 `UniProtKB unreviewed (TrEMBL)`，分别派生 `reviewed=true|false`；若 raw result 另有 `reviewed` 字段，它必须是与该派生值相同的 boolean，active 带 `inactiveReason` 或任何组合漂移都 fail closed。active 保留 primary accession、reviewed status、release/version、retrieved time、raw response/record/sequence digest 和 append-only cross-source mapping；`DELETED` 保留非空 canonical reason，`MERGED` 保留非空、去重 replacement-target annotations，两类 inactive 均保留 UniParc id、release/retrieval 与 response/record digests，固定 `identity_replaced=false`，无 sequence/audit，不跟随或抓取 replacement。`DEMERGED`、unknown 或 malformed inactive fail closed。`aox_sequence_length_join@2` 先确定性排除两类 inactive，再对 active UniProt sequence 实际长度应用 inclusive `650..700` 过滤，产生 `target.fasta` 和 `hits_len650_700_200.csv`，并封存可离线重算的 active/inactive-reason/output/rejected counts 与 mappings。两源 sequence bytes 不一致时保留双方 digest 并要求显式 selection，不静默 overwrite。
+
+任何到达 UniProt 的 cutover-eligible positive 都必须在
+`scientific_checks.sequence_join.uniprot_raw_response_artifact_id` 指明同一个
+formal `uniprot_fetch` operation 的 output，并与 artifact provenance、该
+operation 的 UniProt provider receipt `artifact_ids` 三方闭合。provider
+`request_digest` 必须等于同一 operation 由封存 canonical params 重算的
+`params_digest`。completed operation outputs 与 completed provider
+`artifact_ids` 必须精确包含三个不同且各出现一次的 same-operation artifact：
+`uniprot_raw_response`、`uniprot_metadata`、`uniprot_sequences`；role、formal
+scope、origin operation 与 content digest 必须逐项一致，request/observation/error
+diagnostic 不得混入或替代。offline verifier
+从 closed raw envelope/response rows 重放 canonical base64、size、ordinal、status、
+body digest 与 ordered response chain；所有页的 `x-uniprot-release` 必须同值并
+等于 metadata，optional release-date 只允许全缺/null 或全页同值。raw result
+经 engine sanitizer 与 metadata 做 requested/primary 双射；active sequence 的
+规范化 bytes、raw/metadata length 与 digest 必须闭合并继续绑定 FASTA，inactive
+明确禁止 sequence/entryAudit 且必须重建 exact DELETED reason 或不跟随的 MERGED
+annotation。未来无关 raw result 字段不会按 census exact-five shape 锁死，但必须
+把完整 sanitized non-sequence object 保存在 `provider_metadata`，并由
+`record_digest` 绑定完整 sanitized result。
+
+最终代码路径的只读 full-set diagnostic 用时 `679.154s`，确认
+`37,772 = 32,176 active + 5,596 inactive`、`5,594 DELETED + 2 MERGED`、
+`378` 个 response digest、release `2026_02` 和 `2,561` 个 length-filtered hit。
+score-filter input、provider metadata、hits CSV 与 join manifest 的完整 digest
+依次为
+`sha256:c4f1e134c4e38fcda5424706544cccf0bf65b4187be2ce6d2f30114aeaf69b8f`、
+`sha256:9deaebcf2c674cc8a7af52c1c00384fe2798b6d364f7d09e50c002abdcc89109`、
+`sha256:6a2aa371c2c366c9f539e23e4df9c6e1528c735be8515be5bff7bf2031237d67`、
+`sha256:d768beb08f1bf5e5905e63249db352e1bcfe3e9eaea2d5be871e3adba39d8bca`。
+这些 `/tmp` 文件没有 seal，也不是 cutover/GO evidence，不得 adoption。
 
 ### Scoring 与结果分支
 
 非空 target 时 HMMalign 同时消费真实 `AOX_ref.hmm` 和 `AOX_scoring_input.fasta`，产生 `AOX_scoring_alignment.fasta`。`aox_motif_rule_score@1` 在 AAB 的 one-based ungapped coordinate 上使用 exact integer tenths，threshold 是 `336`，`33.6` 只是展示值；它是 reference-coordinate heuristic，不是实验活性预测。旧 `activity_score`、`seq_score`、`pass_rule` 无 alias，直接使 attempt 失效。
+
+HMMalign AFA 统一绑定 `hmmer_afa_alignment_canonicalization@1`：只按 LF
+分段，只有 LF 终止段可去掉一个紧邻 CR，header 的 `>` 必须在 raw column 0，
+只忽略真正空物理行；raw sequence line 必须先完整匹配 ASCII
+`^[A-Za-z.-]+$`，再做 ASCII uppercase 和 `.`→`-`。因此 whitespace、lone/重复/
+其他 CR、非 ASCII 与 Unicode uppercase expansion 都 fail closed。raw input digest
+绑定原 bytes，合法大小写和 `.`/`-` 差异只在 canonical alignment digest 收敛。
+
+`aox_global_sequence_identity@1` 以 `R=max(m,n)+1` 将
+`(score_half_units, exact_matches, aligned_residue_pairs)` 精确编码为
+`score_half_units * R^2 + exact_matches * R + aligned_residue_pairs`，整数比较
+与原 tuple lexicographic tie-break 完全等价。冻结 backend
+`biopython_trace_guarded_numpy_gotoh@1` 使用 Biopython `1.87`、NumPy `2.4.4`
+和经 `<2^53` bound 证明的 binary64 integral packed score；首个 optimal trace
+出现相邻 opposite gap-state switch 时，必须调用 exact NumPy `int64`
+`numpy_three_state_gap_switch_correction@1`。这是 calculation contract 内的纠正，
+不是 fallback；import/version/algorithm/numeric/trace/correction drift 一律 fail closed，
+也不得切换到纯 Python、其它 NumPy patch 或其它 library。
+reference recurrence state order 仅是 tie provenance；graph 不发布或承诺 alignment
+coordinates/path。未来需要 path 时必须新建 calculation id 和显式 trace contract。
+
+pair 依 lexical order；少于 `128` 必串行，至少 `128` 时 parallel-eligible。
+worker count 取 pair count、`16`、affinity（仅 affinity 不可用时使用 `cpu_count`）
+以及所有可用 cgroup v2/v1 quota/period 向上取整值的最小值；存在但不可读、
+不完整或 malformed 的 cgroup limit fail closed。worker=`1` 在执行前选择串行；只有
+worker>`1` 才使用 `chunksize=64` 的 ordered process map。parallel branch 开始后的
+pool/worker/serialization/result failure 固定为
+`scientific_prerequisite_missing:similarity_parallel_execution_failed`，不得隐藏
+串行 fallback。offline verifier 每次 invocation 只重算一次 graph，并将该本地结果
+同时比对 nodes、edges 和 manifest；它不跨 invocation/attempt 缓存。
 
 offline verifier 从封存 bytes 推导分支，而不信任 execution summary 或 agent 自报：
 
@@ -103,7 +164,7 @@ upstream empty 的 `provider_upstream_empty_receipt@1` 必须绑定 HMMER score-
 | `aox_hmm/AOX_ref.hmm` | HMMER3 profile built only from the exact-13 model references |
 | `aox_hmm/hits_raw.csv` | exact 11-column sealed EBI parsed bytes |
 | `aox_hmm/hmmer_score_filtered_accessions.csv` | exact seven-column score-`>200` result |
-| `aox_hmm/hits_len650_700_200.csv` | canonical `aox_sequence_length_join@1` result |
+| `aox_hmm/hits_len650_700_200.csv` | canonical `aox_sequence_length_join@2` result |
 | `aox_hmm/AOX_scoring_alignment.fasta` | HMMalign output or verified AAB-only empty-target materialization |
 | `aox_hmm/scored_ref_plus_hits.csv` | exact canonical `aox_motif_rule_score@1` rows |
 | `aox_hmm/AOX_candidates.fasta` | real target rows with `passes_motif_rule=true` |
@@ -221,13 +282,12 @@ SDK 对请求 preflight 和响应聚合实施对称边界。此 correction 不�
 不合法。request 其他 semantic validation 失败时 error 保留已安全提取的 id；id 自身超限、
 非法或无法提取时 error 使用 `id=null`，SDK 仍要求 response id 精确相等。
 
-后续 UniProt 小修固定为 `provider_config:uniprot:v2`，但 route policy id 仍是
+后续 UniProt correction 固定为 `provider_config:uniprot:v3` / `uniprot_primary_sequence_identity@2`，但 route policy id 仍是
 `bio.uniprot_fetch.provider:v1`。exact HMMER accession set 通过一次 SDK call、一次
 approval 和一个 controlled operation 提交；operation 总 cap 是 `100000`，Host 固定按
 每 query 最多 `100` accession 拆分。SDK `batch_size` 仍是每 response page 的 `size`
 （上限 `100`），每个 query 独立跟随 `Link: rel=next` 且各自最多 `100` 页。approval
-前 resource estimate 显式记录 accession/query batch 数，因此 37,722 accession 等于
-378 个内部 query，而不是 378 个 operation/approval。transcript 记录 query/page index、
+前 resource estimate 显式记录 accession/query batch 数：历史有缺口的 r15 集合是 37,722，纠正后当前完整集合是 37,772，两者都是 378 个内部 query，而不是 378 个 operation/approval。transcript 记录 query/page index、
 accession range/count/digest 与 response digest；duplicate 检测使用 frequency-map 单次扫描，
 只对重复 key 稳定排序。当前输入已是 primary UniProt accession，切换 async ID Mapping
 会引入 durable job handle、submit/poll/result resume、幂等、approval 以及 evidence/verifier
@@ -246,6 +306,27 @@ UniProt `Link: rel=next` 还必须停留在 exact
 `https://rest.uniprot.org[:443]/uniprotkb/search`，不得携带 userinfo/fragment。malformed 或
 off-origin link 以 `provider_schema_drift` fail closed；diagnostic 只记录 link digest 和固定
 expected endpoint，不回显潜在私有/恶意 URL。
+
+active sequence 与 exact-requested typed `Inactive/DELETED|MERGED` 必须对 complete
+requested set 形成互斥分区。`DELETED` 封存非空 canonical reason，`MERGED`
+封存非空、去重 replacement-target annotations；两类均封存 UniParc id、
+release/retrieval 与 response/record digests，固定 `identity_replaced=false`，不含
+sequence/audit，不跟随或抓取 replacement。`DEMERGED`、unknown/malformed/missing
+identity 仍 fail closed。UniProt HTTP failure 只附 query-batch
+index/count/start/count/digest 和 completed/requested page progress，不回显 raw URL、
+accession values/list 或 cursor。
+
+EBI HMMER correction 绑定 `provider_config:ebi_hmmer:v2`，result `page_size`
+默认/上限是 `1000`。poll 显式请求 `page=1&page_size=<configured>`，但
+terminal payload 只作 status 和 `stats.nreported` closure；result 必须从独立
+显式 page 1 开始并用同宽读取全部稳定 `page_count`。非截断 raw
+count 必须等于 `nreported`，SUCCESS empty 只是
+`nreported=0/page_count=0/hits=[]`；terminal body 的 hits 不得当 page 1。
+`max_hits`、provider order、score filter 和 parsed schema 不变。
+
+sandbox provider request draft 建立后的 `PipelineSdkFailure` 先通过同一 artifact
+boundary 登记 request/observation/error exact-three diagnostic artifacts，再保留原
+canonical failure 并附 safe refs；不 retry/replay，不改变 17 件 deliverable。
 
 public evidence scanner 的修复同样保持窄边界：只新增四个 AOX logical manifest suffix
 `/provider_parsed/metadata.json`、`/provider_parsed/parsed_hits.csv`、
@@ -399,6 +480,42 @@ repository connection，只对 SQLite `BUSY` / `LOCKED` 在 active lease deadlin
 这不把 37,722-accession request 拆成多个 controlled operation，也不实施 durable async
 controlled-operation continuation；后者仍属于已记录但本 Goal 不实施的大架构调整。
 
+r25 pinned commit `6b9ac473fe01376d144ae800352a06e5d016223c`，但其 scientific
+artifact 与 operation-bearing run 都不可用，因此永久 **NO-GO**。EBI HMMER
+remote job 约 `24s` 已 terminal；旧 adapter 把 provider 默认 50-hit terminal body
+当 page 1，再从 `page=2&page_size=100` 开始，漏掉索引 50..99。terminal
+`stats.nreported` 是 68,592，r25 却只封存 68,542，且缺失的 50 条全部
+高于 AOX score threshold。同 job 的只读恢复诊断以统一
+`page_size=1000` 显式读取 page 1..69，得到完整 68,592 条（末页
+592）与 37,772 个 score-`>200` accession。这些恢复 bytes/count 只是
+diagnostic，不能回填 r25 bundle 或当 cutover result。
+
+旧有缺口的 37,722-accession UniProt request 还首次确认 `A0A034VJ94`
+是 exact typed inactive identity：`entryType=Inactive`、
+`inactiveReasonType=DELETED`、reason `Not part of a reference proteome`、
+`uniParcId=UPI000453BEA2`，无 sequence/audit。旧 contract 将这一 provider-valid
+outcome 错误归类为 schema drift。纠正后完整 `37,772` accession set 的 read-only
+census 覆盖 `378/378` query batches，枚举出 `5,596` 个 inactive：
+`5,594 DELETED`、`2 MERGED`、无其他 reason type；全部 UniParc identity 有效且
+raw inactive record 共享 exact-five-key 顶层 shape：`entryType`、
+`primaryAccession`、`uniProtkbId`、`inactiveReason` 和
+`extraAttributes`。两条 MERGED 分别为
+`A0A2U8U0K3 → P18173`（`uniParcId=UPI000A0F4040`）和
+`A0A8N4L368 → A0A034VJ86`（`uniParcId=UPI001114BBC8`），均为单
+replacement target、无 sequence/audit。
+scan manifest 为
+`sha256:4d734dd881829450178ed260ef331f7c3a21cdf0006f14ad3daa886c36125458`；
+该 census 只是 schema diagnostic，不固定未来 provider cardinality，也不能作为
+positive/cutover artifact。当前 correction 接受 exact
+requested-primary `DELETED|MERGED` 判别联合，在 length filter 前排除两类 inactive；
+MERGED target 只作为 annotation 封存，不跟随、不抓取、不从 replacement/UniParc/HMMER
+取 sequence。`DEMERGED`、malformed/unknown/missing partition 仍 fail closed。
+
+r25 的 HMMER bytes、provider responses、checkpoint、operation、artifact refs 和只读
+recovery 都不得 adoption。fresh attempt 仍必须独立产生无缺口 HMMER closure、
+UniProt active/inactive exact partition、`aox_sequence_length_join@2`、原 17 件固定
+deliverable、published report 与 passed offline verification。
+
 collector 当前仍是逐文件写最终 evidence root，单文件 no-replace 不等于 attempt 事务，
 也不能统一证明 actual artifact root 与 declared root exact equality。两阶段 prepare/commit、
 artifact-root 全闭包、失败原子性与迁移计划已单独记录在
@@ -433,6 +550,65 @@ API reject 后来出现的 pending approval，cleanup 的瞬时 GET/resolve 失�
 single-flight-per-generation 的只读 workspace reconciliation 补充 SSE refresh；
 session 切换、workspace mutation 和 SSE reducer 写入必须 abort/失效旧 generation，
 阻止旧在途响应覆盖较新状态，也不能让挂起的旧 session GET 饿死新 session。
+
+## r26 post-correction 只读预检
+
+最终冻结的 motif implementation/contract digest 分别为
+`sha256:795535d9d6c232a79bc9791f8c2780c2f4aa64b234b15a83deb8c76d3406871c`
+与
+`sha256:71aff3b872aaef3254550db53c7554011923d19293f9c5837ddc4bb8ca0bec10`；
+similarity implementation/calculation digest 分别为
+`sha256:300ea35bff801782b6bde96d12f206881a6a5aac26a96708ae6756c800aab9b5`
+与
+`sha256:12f98c34460aa3bc59b84c5553771b0bbfb25354febd6558ec381535a0e8286d`。
+
+最终 parser/scorer 对真实 HMMER 3.4 AFA 的只读预检覆盖
+`12,273,402` raw bytes、`2,562` records、width `4,700`；raw digest 是
+`sha256:d72e36bc5c0431d8f3806eb4d0d0cadb51e7d3825c873610d8e4c0098eccf7a6`，
+canonical alignment digest 是
+`sha256:2df12971eae2d83c390f22e689e04e493539cf6be2d79599f33823f0f52df836`，
+结果为 `517` total pass（含 AAB）和 `516` non-reference pass，约 `0.507s`。
+历史 pure-v3 similarity receipt 位于
+`/tmp/openzyme-aox-similarity-diagnostic-20260720-final-v3/receipt.json`，digest 为
+`sha256:caf483bedbe2865cdf3be0677dbcb3a27d6ccfb9fd1a57bbc0093a35ef90bcf5`。
+它在 516 candidates / 132,870 pairs 上得到 516 nodes / 13,778 edges，旧 affinity-only
+16-worker graph 用时 `2929.494427s`，32-pair tuple oracle 用时 `16.717732s` 且
+mismatch=0；但它绑定的
+`sha256:9df7a2afb72ae46473fc20c0a8ceb7b5d3f83ad5e2144bfebeb9bbd88800548d`
+与
+`sha256:31df5ca6eaf079073bd290550f70646f2ab845faf2dcdae43ffb3fff0c3a7499`
+均为 superseded identities，只能作为 `non_cutover=true` 历史诊断，绝不是当前 pin。
+
+临时真实 Podman 2-CPU calibration receipt 位于
+`/tmp/openzyme-aox-bio-podman-audit/comparison-receipt.json`，digest 为
+`sha256:b9749e6c3f23dd553a1e33b55f7cb9a67a1aee6dfbfae8fb4235ce0aa52f563c`。
+它使用 Python `3.12.13`、Biopython `1.87`、NumPy `2.4.4`，完整 132,870 pairs
+的 affinity-only 16-worker 和 forced 2-worker 用时分别为 `168.766s` 和 `84.087s`，
+均得到 13,778 edges，且 nodes/edges/manifest bytes 与 pure-v3 一致。该普通 `/tmp`
+receipt 只证明当前 2-CPU/3600s sandbox 足够且 worker 必须识别 cgroup quota，同样未 seal、
+不是 cutover evidence。
+
+reference validation 使用 NumPy `2.4.6`，cutover runtime 则 exact pin NumPy `2.4.4`；
+两者 patch 不同且不存在 fallback。最终 independent current-backend comparison receipt
+位于 `/tmp/openzyme-aox-final-backend-podman-20260720/aggregate-comparison-receipt.json`，
+digest 为
+`sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e`。
+两次 authoritative-source/no-monkeypatch、NumPy `2.4.4`、2-CPU/2-worker run receipt
+分别为
+`sha256:e48ab741b511aa40e3b056421b3222245ca4e0de2a16eda5843663603d423234`
+与
+`sha256:e3e89cd85e9cf99756b0fba7ba329baa03cb746d3bcf1993193b282be4f4453b`；
+graph/total time 分别为 `393.206478s`/`393.835379s`、
+`397.540161s`/`398.171785s`，均完成 516 nodes / 132,870 pairs / 13,778 edges。
+两次 raw current-contract nodes/edges/manifest 完全相同；只规范化 pin fields 与
+pin-induced manifest closure 后又与 old pure-v3 逐字节相等，non-pin fields 全相等。
+production 无 activation counter 且禁止 wrapping，故 correction activation 如实记录
+`unavailable`，不伪造 zero。
+
+这不是一次 direct full-set NumPy `2.4.6`/`2.4.4` patch A/B；前者仍仅是 reference
+validation context，后者是唯一 cutover pin。最终 receipt 完成 r26 diagnostic/reviewer 与
+workflow knowledge repin 前置条件，但自身仍是 ordinary `/tmp`、`non_cutover=true`，
+不会改变当前 **NO-GO**，也不得被 fresh attempt adoption。
 
 ## 当前实施状态的表述规则
 

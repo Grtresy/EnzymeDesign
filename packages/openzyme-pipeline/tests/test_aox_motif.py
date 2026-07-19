@@ -24,7 +24,9 @@ def _expected() -> dict[str, object]:
     return json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
 
 
-def _error_code(error: pytest.ExceptionInfo[aox_motif.ScientificPrerequisiteError]) -> str:
+def _error_code(
+    error: pytest.ExceptionInfo[aox_motif.ScientificPrerequisiteError],
+) -> str:
     assert error.value.to_dict()["error_type"] == "scientific_prerequisite_missing"
     return error.value.code
 
@@ -121,6 +123,34 @@ def test_contract_payload_covers_rules_schema_and_non_activity_claim() -> None:
         "coordinate_convention": "one-based ungapped reference coordinates",
         "resolution": "exact FASTA sequence identifier",
     }
+    assert payload["alignment_input"] == {
+        "canonicalization_id": "hmmer_afa_alignment_canonicalization@1",
+        "format": "aligned_fasta",
+        "raw_sequence_line_pattern": "^[A-Za-z.-]+$",
+        "empty_lines": "ignored",
+        "sequence_line_whitespace": "rejected",
+        "physical_lines": (
+            "split_on_lf_and_remove_one_immediately_preceding_cr_only_"
+            "from_lf_terminated_lines"
+        ),
+        "header_start": "raw_column_zero_greater_than",
+        "bare_header_carriage_return": "forbidden",
+        "residue_case": ("case_insensitive_ascii_letters_canonicalized_to_uppercase"),
+        "accepted_gap_characters": ["-", "."],
+        "gap_semantics": {
+            "-": "canonical_alignment_gap",
+            ".": "hmmer_insert_column_gap",
+        },
+        "canonical_gap_character": "-",
+        "canonicalization_order": (
+            "validate_raw_alignment_characters_then_uppercase_residues_"
+            "then_replace_hmmer_insert_column_dots_with_hyphens"
+        ),
+        "input_digest_semantics": "sha256_of_exact_precanonicalization_bytes",
+        "alignment_digest_semantics": (
+            "sha256_of_canonical_uppercase_hyphen_gap_alignment_records"
+        ),
+    }
     calculation = payload["calculation"]
     assert isinstance(calculation, dict)
     assert calculation["threshold_tenths"] == 336
@@ -151,9 +181,10 @@ def test_implementation_digest_is_the_installed_source_digest() -> None:
 
     assert aox_motif.implementation_digest() == expected
     assert aox_motif.IMPLEMENTATION_DIGEST == expected
-    assert aox_motif.contract_digest(
-        implementation_digest_value=expected
-    ) == aox_motif.CONTRACT_DIGEST
+    assert (
+        aox_motif.contract_digest(implementation_digest_value=expected)
+        == aox_motif.CONTRACT_DIGEST
+    )
 
 
 def test_canonical_alignment_and_row_order_do_not_depend_on_record_order() -> None:
@@ -179,10 +210,24 @@ def test_canonical_alignment_and_row_order_do_not_depend_on_record_order() -> No
     [
         (b"", "empty_alignment"),
         (b"AAAA\n", "sequence_before_header"),
+        (b" >record\nAAAA\n", "sequence_before_header"),
+        (b"\t>record\nAAAA\n", "sequence_before_header"),
         (b">\nAAAA\n", "empty_fasta_header"),
+        (b">record\r", "fasta_header_carriage_return"),
+        (b">rec\rord\nAAAA\n", "fasta_header_carriage_return"),
+        (b">record\r\r\nAAAA\n", "fasta_header_carriage_return"),
         (b">record\n", "empty_alignment_sequence"),
-        (b">record\nAA.A\n", "invalid_alignment_residue"),
+        (b">record\nAA*A\n", "invalid_alignment_residue"),
         (b">record\nAA AA\n", "whitespace_in_alignment_sequence"),
+        (b">record\n AAA\n", "whitespace_in_alignment_sequence"),
+        (b">record\nAAA \n", "whitespace_in_alignment_sequence"),
+        (b">record\nAAA\r", "whitespace_in_alignment_sequence"),
+        (b">record\nAA\rA\n", "whitespace_in_alignment_sequence"),
+        (b">record\nAA\tAA\n", "whitespace_in_alignment_sequence"),
+        (">record\nAA\u00a0AA\n".encode(), "whitespace_in_alignment_sequence"),
+        (">record\nAA\u2028AA\n".encode(), "whitespace_in_alignment_sequence"),
+        (">record\nAAßAA\n".encode(), "invalid_alignment_residue"),
+        (">record\nAAſAA\n".encode(), "invalid_alignment_residue"),
         (b">record\n\xff\n", "alignment_not_utf8"),
     ],
 )
@@ -203,6 +248,62 @@ def test_parser_normalizes_sequence_case_and_line_wrapping() -> None:
 
     assert normalized.input_digest != original.input_digest
     assert normalized.alignment_digest == original.alignment_digest
+
+
+def test_parser_allows_explicit_empty_lines_and_crlf_delimiters() -> None:
+    with_blank_lines = b"\n>first\r\n\r\nAa.-\r\n\r\n>second\r\nAa.-\r\n\n"
+    canonical = b">first\nAA--\n>second\nAA--\n"
+
+    parsed = aox_motif.parse_aligned_fasta(with_blank_lines)
+    canonical_parsed = aox_motif.parse_aligned_fasta(canonical)
+
+    assert parsed.input_digest == (
+        "sha256:" + hashlib.sha256(with_blank_lines).hexdigest()
+    )
+    assert parsed.input_digest != canonical_parsed.input_digest
+    assert parsed.alignment_digest == canonical_parsed.alignment_digest
+    assert [record.aligned_sequence for record in parsed.records] == ["AA--", "AA--"]
+
+
+def test_hmmer_insert_gap_and_lowercase_residue_input_canonicalize_to_hyphens() -> None:
+    hyphen_input = _fixture_bytes()
+    hmmer_style_input = "\n".join(
+        line if line.startswith(">") else line.lower().replace("-", ".")
+        for line in hyphen_input.decode("utf-8").splitlines()
+    ).encode("utf-8")
+
+    hyphen_result = aox_motif.score_aligned_fasta(hyphen_input)
+    hmmer_style_result = aox_motif.score_aligned_fasta(hmmer_style_input)
+
+    assert hyphen_result.alignment.input_digest == (
+        "sha256:" + hashlib.sha256(hyphen_input).hexdigest()
+    )
+    assert hmmer_style_result.alignment.input_digest == (
+        "sha256:" + hashlib.sha256(hmmer_style_input).hexdigest()
+    )
+    assert hmmer_style_result.alignment.input_digest != (
+        hyphen_result.alignment.input_digest
+    )
+    assert hmmer_style_result.alignment.alignment_digest == (
+        hyphen_result.alignment.alignment_digest
+    )
+    assert [
+        record.aligned_sequence for record in hmmer_style_result.alignment.records
+    ] == [record.aligned_sequence for record in hyphen_result.alignment.records]
+    assert all(
+        "." not in record.aligned_sequence
+        for record in hmmer_style_result.alignment.records
+    )
+
+    for canonical, hmmer_style in zip(
+        hyphen_result.canonical_rows(),
+        hmmer_style_result.canonical_rows(),
+        strict=True,
+    ):
+        assert canonical["input_digest"] != hmmer_style["input_digest"]
+        assert {
+            key: value for key, value in canonical.items() if key != "input_digest"
+        } == {key: value for key, value in hmmer_style.items() if key != "input_digest"}
 
 
 def test_missing_reference_fails_exactly() -> None:
@@ -274,6 +375,9 @@ def test_unequal_alignment_width_fails_before_scoring() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
+        {"expected_contract_id": ""},
+        {"expected_contract_digest": ""},
+        {"expected_implementation_digest": ""},
         {"expected_contract_id": "aox_motif_rule_score@2"},
         {"expected_contract_digest": "sha256:" + "0" * 64},
         {"expected_implementation_digest": "sha256:" + "0" * 64},

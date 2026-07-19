@@ -997,7 +997,7 @@ def test_sandbox_sdk_forwards_typed_zero_record_fasta_profile(
             "    validation_profile='fasta_zero_records@1',\n"
             "    metadata={\n"
             "        'empty_result_reason': 'no_candidates_after_length_filter',\n"
-            "        'derivation_contract_id': 'aox_sequence_length_join@1',\n"
+            "        'derivation_contract_id': 'aox_sequence_length_join@2',\n"
             "    },\n"
             ")[\"artifact\"][\"artifact_id\"])\n"
         ),
@@ -1025,7 +1025,7 @@ def test_sandbox_sdk_forwards_typed_zero_record_fasta_profile(
         "required_columns": [],
         "validation_profile": "fasta_zero_records@1",
         "empty_result_reason": "no_candidates_after_length_filter",
-        "derivation_contract_id": "aox_sequence_length_join@1",
+        "derivation_contract_id": "aox_sequence_length_join@2",
     }
 
 

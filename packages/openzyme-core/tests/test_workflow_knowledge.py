@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:f4babf1951c22f53c3e4eb8a20517915970deaf944d39b70096d6b8900ee3bda"
+        "sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,13 +96,13 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:c877569c8e3e0fedd9628dfc236183fd7db6a64be454bd4282e928fc9626fa51"
+            "sha256:4dcd18bc0a65161770fdddcb7f53ac3be245ddaf60cb04c06dd0f496dbbca7c0"
         ),
         "aox-motif-rule-score-v1": (
-            "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"
+            "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
         ),
         "aox-sequence-similarity-v1": (
-            "sha256:99147d4332068ae75ea1dd424887c90b6a56ba8ebc7b52ac04bf38f64ac22eb5"
+            "sha256:b003cd392e851b6ecfaf9a5c46d52a58b84f962dfca7476b878c08aaaa712a0f"
         ),
     }
 
@@ -136,9 +136,10 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "`aox_reference_selection@1`",
         "`aox_scoring_input_assembly@1`",
         "`hmmer_score_filtered_accessions@1`",
-        "`aox_sequence_length_join@1`",
+        "`aox_sequence_length_join@2`",
         "`aox_known_positive_probe@2`",
         "`aox_motif_rule_score@1`",
+        "`hmmer_afa_alignment_canonicalization@1`",
         "`cdhit_cluster_membership@1`",
         "`aox_candidate_graph_nodes@1`",
         "`aox_candidate_graph_edges@1`",
@@ -154,6 +155,21 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions",
         "openzyme_pipeline.aox_motif.score_aligned_fasta",
         "openzyme_pipeline.aox_similarity.build_similarity_graph",
+        "`biopython_trace_guarded_numpy_gotoh@1`",
+        "`numpy_three_state_gap_switch_correction@1`",
+        "`similarity_parallel_execution_failed`",
+        "available cgroup v2/v1 CPU quota",
+        "Reference validation used NumPy `2.4.6`",
+        "cutover runtime pin",
+        "NumPy `2.4.4`",
+        "new calculation id",
+        "sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e",
+        "`request_digest`",
+        "`params_digest`",
+        "`uniprot_raw_response`",
+        "`uniprot_metadata`",
+        "`uniprot_sequences`",
+        "UniProtKB reviewed (Swiss-Prot)",
         "expected_score_filtered_csv_digest",
         "expected_uniprot_fasta_digest",
         "expected_uniprot_metadata_digest",

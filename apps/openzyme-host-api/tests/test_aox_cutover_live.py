@@ -539,6 +539,50 @@ def _identity() -> dict[str, str]:
     }
 
 
+def test_live_uniprot_raw_response_parser_is_strict_and_digest_bound() -> None:
+    body = b'{"results":[{"primaryAccession":"P12345"}]}\n'
+    body_digest = hashlib.sha256(body).hexdigest()
+    response = {
+        "schema_id": "provider_raw_http_response_set@1",
+        "provider": "uniprot",
+        "operation": "bio.uniprot_fetch",
+        "responses": [
+            {
+                "ordinal": 1,
+                "phase": "page:1",
+                "status_code": 200,
+                "headers": {},
+                "body_encoding": "base64",
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_digest": f"sha256:{body_digest}",
+                "size_bytes": len(body),
+            }
+        ],
+    }
+    content = (json.dumps(response, sort_keys=True, indent=2) + "\n").encode()
+
+    assert live._raw_provider_response_digests(content) == (
+        f"sha256:{body_digest}",
+    )
+
+    duplicate_body = (
+        b'{"results":[{"primaryAccession":"P12345",'
+        b'"primaryAccession":"P12345"}]}\n'
+    )
+    response["responses"][0].update(
+        {
+            "body_base64": base64.b64encode(duplicate_body).decode("ascii"),
+            "body_digest": "sha256:" + hashlib.sha256(duplicate_body).hexdigest(),
+            "size_bytes": len(duplicate_body),
+        }
+    )
+    duplicate_content = (
+        json.dumps(response, sort_keys=True, indent=2) + "\n"
+    ).encode()
+
+    assert live._raw_provider_response_digests(duplicate_content) == ()
+
+
 def _allowed_prerequisites() -> dict[str, object]:
     identity = _identity()
     hmmer_digest = _digest("hmmer-sif")

@@ -75,6 +75,21 @@ _PIPELINE_WORKSPACE_DIRECTORIES = (
 )
 
 
+class _DuplicateJsonKey(ValueError):
+    def __init__(self, key: str) -> None:
+        self.key = key
+        super().__init__("duplicate JSON key")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKey(key)
+        result[key] = value
+    return result
+
+
 def _ensure_pipeline_workspace_layout(
     workspace_path: Path,
     *,
@@ -678,6 +693,9 @@ class BioProviderHttpResponse:
         return _sha256_bytes(self.body_bytes)
 
 
+_UNIPROT_IDENTITY_CONTRACT_ID = "uniprot_primary_sequence_identity@2"
+
+
 @dataclass(frozen=True, slots=True)
 class BioProviderHttpConfig:
     ncbi_email: str | None = None
@@ -691,7 +709,7 @@ class BioProviderHttpConfig:
     uniprot_page_cap_per_query: int = 100
     hmmer_poll_interval_seconds: float = 5.0
     hmmer_poll_timeout_seconds: float = 1800.0
-    hmmer_page_size: int = 100
+    hmmer_page_size: int = 1000
     hmmer_max_hits: int = 100000
     user_agent: str = "OpenZyme/3 provider adapter"
 
@@ -1551,15 +1569,66 @@ class ProviderHttpBioDatabaseAdapter:
                 + urllib_parse.urlencode(params)
             )
             page_in_query = 0
+            query_accessions_digest = _sha256_text(
+                _json_text(list(query_accessions))
+            )
+            query_accession_start = (
+                query_batch_index - 1
+            ) * self.config.batch_size_cap
             while next_url is not None:
-                response = self._http_request(
-                    "GET",
-                    next_url,
-                    sdk_method="bio.uniprot_fetch",
-                    stage="provider_request",
-                )
                 try:
-                    payload = json.loads(response.body)
+                    response = self._http_request(
+                        "GET",
+                        next_url,
+                        sdk_method="bio.uniprot_fetch",
+                        stage="provider_request",
+                    )
+                except PipelineSdkFailure as exc:
+                    safe_http_details = {
+                        key: value
+                        for key, value in exc.details.items()
+                        if key in {"status_code", "headers", "response_digest"}
+                    }
+                    if exc.details.get("reason") is not None:
+                        safe_http_details["reason_digest"] = _sha256_text(
+                            str(exc.details["reason"])
+                        )
+                    raise PipelineSdkFailure(
+                        error_type=exc.error_type,
+                        message=exc.message,
+                        hint=exc.hint,
+                        stage=exc.stage,
+                        retryable=exc.retryable,
+                        sdk_method=exc.sdk_method,
+                        hpc_failure=exc.hpc_failure,
+                        details={
+                            **safe_http_details,
+                            "query_batch_index": query_batch_index,
+                            "query_batch_count": len(query_batches),
+                            "query_accession_start": query_accession_start,
+                            "query_accession_count": len(query_accessions),
+                            "query_accessions_digest": query_accessions_digest,
+                            "completed_page_count": len(pages),
+                            "completed_pages_in_query": page_in_query,
+                            "requested_page_in_query": page_in_query + 1,
+                        },
+                    ) from exc
+                try:
+                    payload = json.loads(
+                        response.body,
+                        object_pairs_hook=_unique_json_object,
+                    )
+                except _DuplicateJsonKey as exc:
+                    raise self._uniprot_schema_failure(
+                        "UniProt response contained a duplicate JSON key.",
+                        details={
+                            "duplicate_key_digest": _sha256_text(exc.key),
+                            "duplicate_key_explanation": (
+                                "A JSON object repeated one member name."
+                            ),
+                            "response_digest": response.body_digest,
+                        },
+                    ) from exc
                 except json.JSONDecodeError as exc:
                     raise self._schema_failure(
                         "bio.uniprot_fetch",
@@ -1583,13 +1652,9 @@ class ProviderHttpBioDatabaseAdapter:
                         "page": len(pages),
                         "query_batch_index": query_batch_index,
                         "query_batch_count": len(query_batches),
-                        "query_accession_start": (
-                            (query_batch_index - 1) * self.config.batch_size_cap
-                        ),
+                        "query_accession_start": query_accession_start,
                         "query_accession_count": len(query_accessions),
-                        "query_accessions_digest": _sha256_text(
-                            _json_text(list(query_accessions))
-                        ),
+                        "query_accessions_digest": query_accessions_digest,
                         "page_in_query": page_in_query,
                         "status_code": response.status_code,
                         "headers": _sanitize_provider_headers(response.headers),
@@ -1633,7 +1698,7 @@ class ProviderHttpBioDatabaseAdapter:
                 },
             )
         warnings: list[dict[str, Any]] = []
-        normalized_records = self._normalize_uniprot_records(
+        normalized_records, inactive_records = self._normalize_uniprot_records(
             requested_accessions=normalized,
             pages=pages,
             requests=requests,
@@ -1641,18 +1706,25 @@ class ProviderHttpBioDatabaseAdapter:
             source_sequence_identities=source_sequence_identities,
             sequence_mismatch_choices=sequence_mismatch_choices,
         )
+        inactive_deleted_record_count = sum(
+            record["inactive_reason"]["inactive_reason_type"] == "DELETED"
+            for record in inactive_records
+        )
+        inactive_merged_record_count = sum(
+            record["inactive_reason"]["inactive_reason_type"] == "MERGED"
+            for record in inactive_records
+        )
         fasta = "".join(str(record["fasta_record"]) for record in normalized_records)
         release = self._uniprot_release(requests)
         release_date = self._uniprot_release_date(requests)
-        aggregate_response_digest = _sha256_text(
-            _json_text([response.body_digest for response in page_responses])
-        )
+        response_digests = [response.body_digest for response in page_responses]
+        aggregate_response_digest = _sha256_text(_json_text(response_digests))
         metadata_payload = {
             "provider": "uniprot",
             "database": "uniprotkb",
             "fields": requested_fields,
             "batch_size": effective_batch_size,
-            "identity_contract_id": "uniprot_primary_sequence_identity@1",
+            "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
             "requested_accessions": list(normalized),
             "records": [
                 {
@@ -1662,10 +1734,16 @@ class ProviderHttpBioDatabaseAdapter:
                 }
                 for record in normalized_records
             ],
+            "inactive_records": inactive_records,
+            "active_record_count": len(normalized_records),
+            "inactive_record_count": len(inactive_records),
+            "inactive_deleted_record_count": inactive_deleted_record_count,
+            "inactive_merged_record_count": inactive_merged_record_count,
             "warnings": warnings,
             "retrieved_at": retrieved_at,
             "uniprot_release": release,
             "uniprot_release_date": release_date,
+            "response_digests": response_digests,
             "aggregate_response_digest": aggregate_response_digest,
             "source_sequence_identity_count": len(source_sequence_identities or {}),
             "sequence_mismatch_resolution_count": len(
@@ -1677,7 +1755,11 @@ class ProviderHttpBioDatabaseAdapter:
             "provider": "uniprot",
             "database": "uniprotkb",
             "accession_count": len(normalized),
-            "record_count": len(results),
+            "record_count": len(normalized_records) + len(inactive_records),
+            "active_record_count": len(normalized_records),
+            "inactive_record_count": len(inactive_records),
+            "inactive_deleted_record_count": inactive_deleted_record_count,
+            "inactive_merged_record_count": inactive_merged_record_count,
             "warning_count": len(warnings),
             "request_window": {"start": 0, "size": effective_batch_size},
             "pagination": {
@@ -1687,9 +1769,10 @@ class ProviderHttpBioDatabaseAdapter:
                 "query_batch_count": len(query_batches),
                 "query_batch_size_cap": self.config.batch_size_cap,
             },
-            "identity_complete": bool(normalized_records)
-            and len(normalized_records) == len(normalized),
-            "identity_contract_id": "uniprot_primary_sequence_identity@1",
+            "identity_complete": (
+                len(normalized_records) + len(inactive_records) == len(normalized)
+            ),
+            "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
             "uniprot_release": release,
             "uniprot_release_date": release_date,
             "aggregate_response_digest": aggregate_response_digest,
@@ -1726,30 +1809,36 @@ class ProviderHttpBioDatabaseAdapter:
                 },
             )
         ]
-        if fasta:
-            artifacts.append(
-                self._draft(
-                    provider="uniprot",
-                    relative_path="provider_parsed/sequences.fasta",
-                    kind=ArtifactKind.SEQUENCE,
-                    title="sequences.fasta",
-                    content=fasta,
-                    format="fasta",
-                    metadata={
-                        "database": "uniprotkb",
-                        "retrieved_at": retrieved_at,
-                        "uniprot_release": release,
-                        "uniprot_release_date": release_date,
-                        "identity_contract_id": "uniprot_primary_sequence_identity@1",
-                        "sequence_digests": {
-                            str(record["primary_accession"]): str(
-                                record["sequence_digest"]
-                            )
-                            for record in normalized_records
-                        },
-                    },
-                )
+        fasta_metadata = {
+            "database": "uniprotkb",
+            "retrieved_at": retrieved_at,
+            "uniprot_release": release,
+            "uniprot_release_date": release_date,
+            "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
+            "sequence_digests": {
+                str(record["primary_accession"]): str(record["sequence_digest"])
+                for record in normalized_records
+            },
+        }
+        if not fasta:
+            fasta_metadata.update(
+                {
+                    "validation_profile": "fasta_zero_records@1",
+                    "empty_result_reason": "uniprot_no_active_sequence_records",
+                    "derivation_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
+                }
             )
+        artifacts.append(
+            self._draft(
+                provider="uniprot",
+                relative_path="provider_parsed/sequences.fasta",
+                kind=ArtifactKind.SEQUENCE,
+                title="sequences.fasta",
+                content=fasta,
+                format="fasta",
+                metadata=fasta_metadata,
+            )
+        )
         artifacts.append(
             self._draft(
                 provider="uniprot",
@@ -1763,7 +1852,7 @@ class ProviderHttpBioDatabaseAdapter:
                     "retrieved_at": retrieved_at,
                     "uniprot_release": release,
                     "uniprot_release_date": release_date,
-                    "identity_contract_id": "uniprot_primary_sequence_identity@1",
+                    "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
                     "aggregate_response_digest": aggregate_response_digest,
                 },
             )
@@ -1785,11 +1874,19 @@ class ProviderHttpBioDatabaseAdapter:
                     "query_batch_count": len(query_batches),
                     "query_batch_size_cap": self.config.batch_size_cap,
                 },
-                "identity_contract_id": "uniprot_primary_sequence_identity@1",
+                "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
                 "requested_accessions": list(normalized),
                 "primary_accessions": [
                     str(record["primary_accession"]) for record in normalized_records
                 ],
+                "inactive_accessions": [
+                    str(record["requested_accession"])
+                    for record in inactive_records
+                ],
+                "active_record_count": len(normalized_records),
+                "inactive_record_count": len(inactive_records),
+                "inactive_deleted_record_count": inactive_deleted_record_count,
+                "inactive_merged_record_count": inactive_merged_record_count,
                 "uniprot_release": release,
                 "uniprot_release_date": release_date,
                 "aggregate_response_digest": aggregate_response_digest,
@@ -1951,7 +2048,11 @@ class ProviderHttpBioDatabaseAdapter:
             stage="provider_submit",
         )
         job_id = self._extract_hmmer_job_id(submit.body)
-        status_payload, status_requests = self._poll_hmmer_job(base, job_id)
+        status_payload, status_requests = self._poll_hmmer_job(
+            base,
+            job_id,
+            page_size=page_size,
+        )
         if str(status_payload.get("status") or "").upper() not in {"SUCCESS", "DONE"}:
             raise PipelineSdkFailure(
                 error_type="provider_invalid_request",
@@ -1967,34 +2068,19 @@ class ProviderHttpBioDatabaseAdapter:
                     "job_payload": _sanitize_provider_value(status_payload),
                 },
             )
+        reported_hit_count = self._hmmer_reported_hit_count(status_payload)
         result_payloads, result_requests = self._fetch_hmmer_result_pages(
             base,
             job_id,
-            first_payload=status_payload,
             page_size=page_size,
             max_hits=max_hits,
+            expected_reported_hit_count=reported_hit_count,
         )
         page_digests = {
             int(request["page"]): str(request["response_digest"])
             for request in result_requests
             if request.get("page") is not None
         }
-        if result_payloads and result_payloads[0] is status_payload:
-            if not status_requests:
-                raise PipelineSdkFailure(
-                    error_type="provider_schema_drift",
-                    message="EBI HMMER result page had no raw response provenance.",
-                    hint="Inspect the provider request log before retrying.",
-                    stage="provider_results",
-                    retryable=False,
-                    sdk_method="bio.hmmer_search",
-                    details={
-                        "provider": "ebi_hmmer",
-                        "provider_job_id": job_id,
-                        "page": 1,
-                    },
-                )
-            page_digests[1] = str(status_requests[-1]["response_digest"])
         raw_hits_with_provenance: list[tuple[int, str, dict[str, Any]]] = []
         for page_number, payload in enumerate(result_payloads, start=1):
             page_hits = self._hmmer_result_hits(
@@ -2025,8 +2111,44 @@ class ProviderHttpBioDatabaseAdapter:
             if result_payloads
             else None
         )
-        truncated = len(raw_hits_with_provenance) > max_hits or (
-            page_count is not None and len(result_payloads) < page_count
+        retrieved_raw_hit_count = len(raw_hits_with_provenance)
+        bounded_partial_result = (
+            reported_hit_count > max_hits
+            and retrieved_raw_hit_count >= max_hits
+        )
+        if (
+            (reported_hit_count == 0 and (retrieved_raw_hit_count != 0 or page_count != 0))
+            or (reported_hit_count > 0 and page_count in {None, 0})
+            or (
+                retrieved_raw_hit_count != reported_hit_count
+                and not bounded_partial_result
+            )
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_partial_result",
+                message="EBI HMMER result pages did not materialize the terminal reported hit set.",
+                hint=(
+                    "Do not continue with a gapped HMMER result; inspect the sealed poll "
+                    "and explicit result-page transcript."
+                ),
+                stage="provider_results",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={
+                    "provider": "ebi_hmmer",
+                    "provider_job_id": job_id,
+                    "reported_hit_count": reported_hit_count,
+                    "retrieved_raw_hit_count": retrieved_raw_hit_count,
+                    "declared_page_count": page_count,
+                    "retrieved_page_count": len(result_payloads),
+                    "page_size": page_size,
+                    "max_hits": max_hits,
+                },
+            )
+        truncated = (
+            reported_hit_count > max_hits
+            or len(raw_hits_with_provenance) > max_hits
+            or (page_count is not None and len(result_payloads) < page_count)
         )
         hits = self._normalize_hmmer_hits(
             raw_hits_with_provenance[:max_hits],
@@ -2048,7 +2170,7 @@ class ProviderHttpBioDatabaseAdapter:
                     "warning_code": "provider_result_truncated",
                     "stage": "provider_pagination",
                     "hint": "Only the top S13-capped HMMER hits were artifactized.",
-                    "limit": self.config.hmmer_max_hits,
+                    "limit": max_hits,
                 }
             )
         status_response_records = [
@@ -2083,8 +2205,11 @@ class ProviderHttpBioDatabaseAdapter:
             if normalized_database == "refprot"
             else "ebi_hmmer_hit@1",
             "parsed_hits_digest": parsed_hits_digest,
+            "reported_hit_count": reported_hit_count,
+            "retrieved_raw_hit_count": retrieved_raw_hit_count,
             "pagination": {
                 "page_count": len(result_payloads),
+                "declared_page_count": page_count,
                 "truncated": truncated,
                 "page_size": page_size,
                 "max_hits": max_hits,
@@ -2119,9 +2244,12 @@ class ProviderHttpBioDatabaseAdapter:
                 ],
                 "pagination": {
                     "page_count": len(result_payloads),
+                    "declared_page_count": page_count,
                     "truncated": truncated,
                     "page_size": page_size,
                     "max_hits": max_hits,
+                    "reported_hit_count": reported_hit_count,
+                    "retrieved_raw_hit_count": retrieved_raw_hit_count,
                 },
                 "raw_page_digests": {
                     str(page): digest for page, digest in sorted(page_digests.items())
@@ -2285,11 +2413,16 @@ class ProviderHttpBioDatabaseAdapter:
         cap: int,
     ) -> int:
         value = params.get(key)
-        if value in {None, ""}:
+        if value is None or value == "":
             return max(1, int(default))
         try:
+            if isinstance(value, bool):
+                raise ValueError("boolean is not an integer parameter")
             parsed = int(value)
-        except (TypeError, ValueError) as exc:
+            exact_value = Decimal(str(value))
+            if not exact_value.is_finite() or exact_value != parsed:
+                raise ValueError("value would be truncated to an integer")
+        except (InvalidOperation, TypeError, ValueError) as exc:
             raise PipelineSdkFailure(
                 error_type="provider_invalid_request",
                 message=f"bio.hmmer_search params.{key} must be a positive integer.",
@@ -2797,9 +2930,9 @@ class ProviderHttpBioDatabaseAdapter:
         retrieved_at: str,
         source_sequence_identities: dict[str, dict[str, str]] | None,
         sequence_mismatch_choices: dict[str, str] | None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if not any(list(page.get("results") or []) for page in pages):
-            return []
+            return [], []
         release = self._uniprot_release(requests)
         release_date = self._uniprot_release_date(requests)
         requested_lookup = {
@@ -2884,6 +3017,7 @@ class ProviderHttpBioDatabaseAdapter:
                 )
             normalized_choices[requested_accession] = choice
         records_by_request: dict[str, dict[str, Any]] = {}
+        inactive_records_by_request: dict[str, dict[str, Any]] = {}
         primary_to_request: dict[str, str] = {}
 
         for page_number, page in enumerate(pages, start=1):
@@ -2922,6 +3056,153 @@ class ProviderHttpBioDatabaseAdapter:
                             "response_digest": page_response_digest,
                         },
                     )
+                if result.get("entryType") == "Inactive":
+                    requested_accession = requested_lookup.get(primary_accession)
+                    if (
+                        requested_accession is None
+                        or requested_accession not in query_requested_accessions
+                    ):
+                        raise PipelineSdkFailure(
+                            error_type="provider_identity_mismatch",
+                            message=(
+                                "A UniProt inactive identity did not exactly match one "
+                                "accession from its producing query batch."
+                            ),
+                            hint=(
+                                "Do not follow, replace, or infer an inactive identity; "
+                                "inspect the sealed response and query-batch transcript."
+                            ),
+                            stage="provider_response_validation",
+                            retryable=False,
+                            sdk_method="bio.uniprot_fetch",
+                            details={
+                                "provider": "uniprot",
+                                "primary_accession": primary_accession,
+                                "query_batch_index": page_request[
+                                    "query_batch_index"
+                                ],
+                                "query_accession_start": query_accession_start,
+                                "query_accession_count": query_accession_count,
+                                "query_accessions_digest": page_request[
+                                    "query_accessions_digest"
+                                ],
+                                "response_digest": page_response_digest,
+                                "selection_required": False,
+                            },
+                        )
+                    if (
+                        requested_accession in records_by_request
+                        or requested_accession in inactive_records_by_request
+                    ):
+                        raise PipelineSdkFailure(
+                            error_type="provider_duplicate_identity",
+                            message=(
+                                "UniProt returned more than one record for one requested "
+                                "accession."
+                            ),
+                            hint="Do not choose between active and inactive records implicitly.",
+                            stage="provider_response_validation",
+                            retryable=False,
+                            sdk_method="bio.uniprot_fetch",
+                            details={
+                                "provider": "uniprot",
+                                "requested_accession": requested_accession,
+                                "response_digest": page_response_digest,
+                            },
+                        )
+                    inactive_reason = result.get("inactiveReason")
+                    extra_attributes = result.get("extraAttributes")
+                    if (
+                        not isinstance(inactive_reason, dict)
+                        or not isinstance(extra_attributes, dict)
+                        or "uniParcId" not in extra_attributes
+                        or extra_attributes["uniParcId"]
+                        != str(extra_attributes["uniParcId"]).strip()
+                        or re.fullmatch(
+                            r"UPI[0-9A-F]{10}",
+                            str(extra_attributes.get("uniParcId") or "").strip(),
+                        )
+                        is None
+                        or "sequence" in result
+                        or "entryAudit" in result
+                    ):
+                        raise self._uniprot_schema_failure(
+                            "UniProt inactive record did not expose a typed sequence-free identity.",
+                            details={
+                                "primary_accession": primary_accession,
+                                "response_digest": page_response_digest,
+                                "expected_entry_type": "Inactive",
+                                "accepted_inactive_reason_types": [
+                                    "DELETED",
+                                    "MERGED",
+                                ],
+                            },
+                        )
+                    normalized_inactive_reason = (
+                        self._normalize_uniprot_inactive_reason(
+                            inactive_reason,
+                            requested_accession=requested_accession,
+                            primary_accession=primary_accession,
+                            response_digest=page_response_digest,
+                        )
+                    )
+                    identifier = str(result.get("uniProtkbId") or "").strip()
+                    if (
+                        not identifier
+                        or result.get("uniProtkbId") != identifier
+                        or any(ord(character) < 32 for character in identifier)
+                    ):
+                        raise self._uniprot_schema_failure(
+                            "UniProt inactive record did not contain its identifier.",
+                            details={
+                                "primary_accession": primary_accession,
+                                "response_digest": page_response_digest,
+                            },
+                        )
+                    primary_owner = primary_to_request.get(primary_accession)
+                    if (
+                        primary_owner is not None
+                        and primary_owner != requested_accession
+                    ):
+                        raise PipelineSdkFailure(
+                            error_type="provider_identity_mismatch",
+                            message=(
+                                "Multiple requested accessions resolved to one UniProt "
+                                "identity."
+                            ),
+                            hint="Do not infer or replace an inactive identity.",
+                            stage="provider_response_validation",
+                            retryable=False,
+                            sdk_method="bio.uniprot_fetch",
+                            details={
+                                "provider": "uniprot",
+                                "primary_accession": primary_accession,
+                                "requested_accessions": [
+                                    primary_owner,
+                                    requested_accession,
+                                ],
+                                "selection_required": False,
+                            },
+                        )
+                    raw_record_digest = _sha256_text(
+                        _json_text(_sanitize_provider_value(result))
+                    )
+                    inactive_records_by_request[requested_accession] = {
+                        "requested_accession": requested_accession,
+                        "primary_accession": primary_accession,
+                        "uniprot_identifier": identifier,
+                        "entry_type": "Inactive",
+                        "inactive_reason": normalized_inactive_reason,
+                        "uniparc_id": str(extra_attributes["uniParcId"]).strip(),
+                        "uniprot_release": release,
+                        "uniprot_release_date": release_date,
+                        "retrieved_at": retrieved_at,
+                        "response_digest": page_response_digest,
+                        "record_digest": raw_record_digest,
+                        "provider_metadata": self._uniprot_metadata(result),
+                    }
+                    primary_to_request[primary_accession] = requested_accession
+                    continue
                 secondary_raw = result.get("secondaryAccessions") or []
                 if not isinstance(secondary_raw, list) or any(
                     not isinstance(accession, str) for accession in secondary_raw
@@ -3032,6 +3313,24 @@ class ProviderHttpBioDatabaseAdapter:
                 )
                 sequence_digest = _sha256_text(sequence)
                 existing = records_by_request.get(requested_accession)
+                if requested_accession in inactive_records_by_request:
+                    raise PipelineSdkFailure(
+                        error_type="provider_duplicate_identity",
+                        message=(
+                            "UniProt returned active and inactive records for one requested "
+                            "accession."
+                        ),
+                        hint="Do not choose between conflicting provider records implicitly.",
+                        stage="provider_response_validation",
+                        retryable=False,
+                        sdk_method="bio.uniprot_fetch",
+                        details={
+                            "provider": "uniprot",
+                            "requested_accession": requested_accession,
+                            "primary_accession": primary_accession,
+                            "response_digest": page_response_digest,
+                        },
+                    )
                 if existing is not None:
                     if existing["sequence_digest"] != sequence_digest:
                         raise self._uniprot_sequence_conflict(
@@ -3061,8 +3360,8 @@ class ProviderHttpBioDatabaseAdapter:
                     )
                 primary_owner = primary_to_request.get(primary_accession)
                 if primary_owner is not None and primary_owner != requested_accession:
-                    other = records_by_request[primary_owner]
-                    if other["sequence_digest"] != sequence_digest:
+                    other = records_by_request.get(primary_owner)
+                    if other is not None and other["sequence_digest"] != sequence_digest:
                         raise self._uniprot_sequence_conflict(
                             requested_accession=requested_accession,
                             identities=[
@@ -3091,6 +3390,17 @@ class ProviderHttpBioDatabaseAdapter:
                         },
                     )
                 identifier = str(result.get("uniProtkbId") or primary_accession).strip()
+                if (
+                    result.get("uniProtkbId") not in {None, identifier}
+                    or any(ord(character) < 32 for character in identifier)
+                ):
+                    raise self._uniprot_schema_failure(
+                        "UniProt active record contained a malformed identifier.",
+                        details={
+                            "primary_accession": primary_accession,
+                            "response_digest": page_response_digest,
+                        },
+                    )
                 mapping_annotation = {
                     "annotation_type": "provider_identity_mapping",
                     "source_database": "requested_identifier",
@@ -3174,6 +3484,7 @@ class ProviderHttpBioDatabaseAdapter:
             accession
             for accession in requested_accessions
             if accession not in records_by_request
+            and accession not in inactive_records_by_request
         ]
         if missing:
             raise PipelineSdkFailure(
@@ -3187,10 +3498,41 @@ class ProviderHttpBioDatabaseAdapter:
                     "provider": "uniprot",
                     "requested_accessions": list(requested_accessions),
                     "missing_accessions": missing,
-                    "resolved_accessions": sorted(records_by_request),
+                    "resolved_accessions": sorted(
+                        {*records_by_request, *inactive_records_by_request}
+                    ),
                 },
             )
-        return [records_by_request[accession] for accession in requested_accessions]
+        source_identities_for_inactive = sorted(
+            set(normalized_sources).intersection(inactive_records_by_request)
+        )
+        if source_identities_for_inactive:
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="A source sequence identity was supplied for an inactive UniProt record.",
+                hint=(
+                    "Remove source sequence assertions for inactive records; no sequence "
+                    "comparison or replacement is allowed."
+                ),
+                stage="bio_input_validation",
+                retryable=False,
+                sdk_method="bio.uniprot_fetch",
+                details={
+                    "inactive_source_identity_accessions": source_identities_for_inactive
+                },
+            )
+        return (
+            [
+                records_by_request[accession]
+                for accession in requested_accessions
+                if accession in records_by_request
+            ],
+            [
+                inactive_records_by_request[accession]
+                for accession in requested_accessions
+                if accession in inactive_records_by_request
+            ],
+        )
 
     def _uniprot_release(self, requests: list[dict[str, Any]]) -> str | None:
         return self._consistent_uniprot_header(
@@ -3230,6 +3572,11 @@ class ProviderHttpBioDatabaseAdapter:
                 f"UniProt response did not preserve the required {header} header.",
                 details={"missing_pages": missing_pages, "header": header},
             )
+        if not required and values and missing_pages:
+            raise self._uniprot_schema_failure(
+                f"UniProt response only partially preserved the optional {header} header.",
+                details={"missing_pages": missing_pages, "header": header},
+            )
         unique = sorted(set(values))
         if len(unique) > 1:
             raise self._uniprot_schema_failure(
@@ -3239,19 +3586,38 @@ class ProviderHttpBioDatabaseAdapter:
         return unique[0] if unique else None
 
     def _uniprot_reviewed_status(self, result: dict[str, Any]) -> tuple[bool, str]:
-        entry_type = str(result.get("entryType") or "").strip()
+        raw_entry_type = result.get("entryType")
+        entry_type = str(raw_entry_type or "").strip()
+        reviewed_by_entry_type = {
+            "UniProtKB reviewed (Swiss-Prot)": True,
+            "UniProtKB unreviewed (TrEMBL)": False,
+        }
+        reviewed = reviewed_by_entry_type.get(entry_type)
+        if (
+            not isinstance(raw_entry_type, str)
+            or raw_entry_type != entry_type
+            or reviewed is None
+            or "inactiveReason" in result
+        ):
+            raise self._uniprot_schema_failure(
+                "UniProt active result did not expose one supported active entry type.",
+                details={
+                    "primary_accession": result.get("primaryAccession"),
+                    "entry_type": entry_type,
+                },
+            )
         explicit = result.get("reviewed")
-        if isinstance(explicit, bool):
-            return explicit, entry_type
-        lowered = entry_type.lower()
-        if "unreviewed" in lowered:
-            return False, entry_type
-        if "reviewed" in lowered:
-            return True, entry_type
-        raise self._uniprot_schema_failure(
-            "UniProt result did not expose reviewed status.",
-            details={"primary_accession": result.get("primaryAccession")},
-        )
+        if explicit is not None and (
+            not isinstance(explicit, bool) or explicit is not reviewed
+        ):
+            raise self._uniprot_schema_failure(
+                "UniProt reviewed flag disagreed with its active entry type.",
+                details={
+                    "primary_accession": result.get("primaryAccession"),
+                    "entry_type": entry_type,
+                },
+            )
+        return reviewed, entry_type
 
     def _positive_uniprot_version(
         self,
@@ -3323,6 +3689,103 @@ class ProviderHttpBioDatabaseAdapter:
             is not None
         )
 
+    def _normalize_uniprot_inactive_reason(
+        self,
+        inactive_reason: dict[str, Any],
+        *,
+        requested_accession: str,
+        primary_accession: str,
+        response_digest: str,
+    ) -> dict[str, Any]:
+        reason_type = inactive_reason.get("inactiveReasonType")
+        if reason_type == "DELETED":
+            deleted_reason = inactive_reason.get("deletedReason")
+            if (
+                not isinstance(deleted_reason, str)
+                or not deleted_reason.strip()
+                or deleted_reason != deleted_reason.strip()
+                or any(ord(character) < 32 for character in deleted_reason)
+                or "mergeDemergeTo" in inactive_reason
+            ):
+                raise self._uniprot_schema_failure(
+                    "UniProt DELETED identity did not contain one canonical deletion reason.",
+                    details={
+                        "primary_accession": primary_accession,
+                        "response_digest": response_digest,
+                        "inactive_reason_type": "DELETED",
+                    },
+                )
+            return {
+                "inactive_reason_type": "DELETED",
+                "deleted_reason": deleted_reason,
+            }
+        if reason_type == "MERGED":
+            raw_targets = inactive_reason.get("mergeDemergeTo")
+            if (
+                not isinstance(raw_targets, list)
+                or not raw_targets
+                or "deletedReason" in inactive_reason
+            ):
+                raise self._uniprot_schema_failure(
+                    "UniProt MERGED identity did not contain replacement targets.",
+                    details={
+                        "primary_accession": primary_accession,
+                        "response_digest": response_digest,
+                        "inactive_reason_type": "MERGED",
+                    },
+                )
+            targets: list[str] = []
+            for target in raw_targets:
+                if (
+                    not isinstance(target, str)
+                    or target != target.strip().upper()
+                    or not self._is_uniprot_accession(target)
+                    or target == requested_accession
+                ):
+                    raise self._uniprot_schema_failure(
+                        "UniProt MERGED identity contained a malformed replacement target.",
+                        details={
+                            "primary_accession": primary_accession,
+                            "response_digest": response_digest,
+                            "inactive_reason_type": "MERGED",
+                        },
+                    )
+                targets.append(target)
+            if len(targets) != len(set(targets)):
+                raise self._uniprot_schema_failure(
+                    "UniProt MERGED identity contained duplicate replacement targets.",
+                    details={
+                        "primary_accession": primary_accession,
+                        "response_digest": response_digest,
+                        "inactive_reason_type": "MERGED",
+                    },
+                )
+            return {
+                "inactive_reason_type": "MERGED",
+                "replacement_target_annotations": [
+                    {
+                        "annotation_type": "provider_inactive_replacement",
+                        "source_database": "uniprotkb",
+                        "source_accession": requested_accession,
+                        "target_database": "uniprotkb",
+                        "target_accession": target,
+                        "relationship": "merged_into",
+                        "identity_replaced": False,
+                        "target_followed": False,
+                    }
+                    for target in sorted(targets)
+                ],
+            }
+        raise self._uniprot_schema_failure(
+            "UniProt inactive identity used an unsupported reason type.",
+            details={
+                "primary_accession": primary_accession,
+                "response_digest": response_digest,
+                "accepted_inactive_reason_types": ["DELETED", "MERGED"],
+                "actual_inactive_reason_type": str(reason_type),
+            },
+        )
+
     def _uniprot_metadata(self, result: dict[str, Any]) -> dict[str, Any]:
         metadata = dict(result)
         metadata.pop("sequence", None)
@@ -3358,14 +3821,21 @@ class ProviderHttpBioDatabaseAdapter:
         )
 
     def _poll_hmmer_job(
-        self, base: str, job_id: str
+        self,
+        base: str,
+        job_id: str,
+        *,
+        page_size: int,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         deadline = time.monotonic() + self.config.hmmer_poll_timeout_seconds
         requests: list[dict[str, Any]] = []
         while True:
             response = self._http_request(
                 "GET",
-                f"{base}/result/{urllib_parse.quote(job_id)}",
+                f"{base}/result/{urllib_parse.quote(job_id)}?"
+                + urllib_parse.urlencode(
+                    {"format": "json", "page": 1, "page_size": page_size}
+                ),
                 sdk_method="bio.hmmer_search",
                 stage="provider_poll",
             )
@@ -3390,6 +3860,8 @@ class ProviderHttpBioDatabaseAdapter:
                     "headers": _sanitize_provider_headers(response.headers),
                     "response_digest": response.body_digest,
                     "job_status": payload.get("status"),
+                    "page": 1,
+                    "page_size": page_size,
                     "_raw_response": response,
                 }
             )
@@ -3417,46 +3889,15 @@ class ProviderHttpBioDatabaseAdapter:
         base: str,
         job_id: str,
         *,
-        first_payload: dict[str, Any] | None = None,
         page_size: int,
         max_hits: int,
+        expected_reported_hit_count: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         payloads: list[dict[str, Any]] = []
         requests: list[dict[str, Any]] = []
-        if first_payload is not None:
-            result = first_payload.get("result")
-            if result is not None and not isinstance(result, dict):
-                raise PipelineSdkFailure(
-                    error_type="provider_schema_drift",
-                    message="EBI HMMER result was not an object.",
-                    hint="Inspect the provider response before updating the parser.",
-                    stage="provider_results",
-                    retryable=False,
-                    sdk_method="bio.hmmer_search",
-                    details={"provider": "ebi_hmmer"},
-                )
-            if isinstance(result, dict) and "hits" in result:
-                if not isinstance(result.get("hits"), list):
-                    raise PipelineSdkFailure(
-                        error_type="provider_schema_drift",
-                        message="EBI HMMER result hits were not a list.",
-                        hint="Inspect the provider response before updating the parser.",
-                        stage="provider_results",
-                        retryable=False,
-                        sdk_method="bio.hmmer_search",
-                        details={"provider": "ebi_hmmer"},
-                    )
-                payloads.append(first_payload)
-                if self._hmmer_payload_hit_count(payloads) >= max_hits:
-                    return payloads, requests
+        declared_page_count: int | None = None
         page = 1
         while True:
-            if page == 1 and payloads:
-                page_count = self._hmmer_page_count(payloads[0].get("page_count"))
-                if page_count is None or page_count <= 1:
-                    return payloads, requests
-                page += 1
-                continue
             result_url = (
                 f"{base}/result/{urllib_parse.quote(job_id)}?"
                 + urllib_parse.urlencode(
@@ -3490,6 +3931,87 @@ class ProviderHttpBioDatabaseAdapter:
                     "EBI HMMER result page did not contain a hits list.",
                     response=response,
                 )
+            page_count = self._hmmer_page_count(payload.get("page_count"))
+            if page_count is None:
+                raise self._schema_failure(
+                    "bio.hmmer_search",
+                    "EBI HMMER result page did not declare page_count.",
+                    response=response,
+                )
+            if declared_page_count is None:
+                declared_page_count = page_count
+            elif page_count != declared_page_count:
+                raise PipelineSdkFailure(
+                    error_type="provider_schema_drift",
+                    message="EBI HMMER result page_count changed across pages.",
+                    hint="Inspect the sealed result-page transcript before retrying.",
+                    stage="provider_results",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                    details={
+                        "provider": "ebi_hmmer",
+                        "page": page,
+                        "expected_page_count": declared_page_count,
+                        "actual_page_count": page_count,
+                        "response_digest": response.body_digest,
+                    },
+                )
+            page_reported_hit_count = self._hmmer_reported_hit_count(
+                payload,
+                source=f"result_page:{page}",
+            )
+            if page_reported_hit_count != expected_reported_hit_count:
+                raise PipelineSdkFailure(
+                    error_type="provider_schema_drift",
+                    message="EBI HMMER stats.nreported changed between terminal poll and result pages.",
+                    hint="Inspect the sealed poll and result-page transcript before retrying.",
+                    stage="provider_results",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                    details={
+                        "provider": "ebi_hmmer",
+                        "page": page,
+                        "expected_reported_hit_count": expected_reported_hit_count,
+                        "actual_reported_hit_count": page_reported_hit_count,
+                        "response_digest": response.body_digest,
+                    },
+                )
+            if page_count == 0 and (page != 1 or result["hits"]):
+                raise PipelineSdkFailure(
+                    error_type="provider_schema_drift",
+                    message="EBI HMMER zero-page result was not an exact empty first page.",
+                    hint="Inspect the sealed result response before retrying.",
+                    stage="provider_results",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                    details={
+                        "provider": "ebi_hmmer",
+                        "page": page,
+                        "page_count": page_count,
+                        "hit_count": len(result["hits"]),
+                        "response_digest": response.body_digest,
+                    },
+                )
+            if 0 < page < page_count and len(result["hits"]) != page_size:
+                raise PipelineSdkFailure(
+                    error_type="provider_partial_result",
+                    message="EBI HMMER returned a short non-terminal result page.",
+                    hint=(
+                        "Do not continue with a gapped pagination window; inspect the "
+                        "sealed explicit result-page transcript."
+                    ),
+                    stage="provider_results",
+                    retryable=False,
+                    sdk_method="bio.hmmer_search",
+                    details={
+                        "provider": "ebi_hmmer",
+                        "page": page,
+                        "page_count": page_count,
+                        "page_size": page_size,
+                        "hit_count": len(result["hits"]),
+                        "response_digest": response.body_digest,
+                    },
+                )
             payloads.append(payload)
             requests.append(
                 {
@@ -3498,13 +4020,13 @@ class ProviderHttpBioDatabaseAdapter:
                     "headers": _sanitize_provider_headers(response.headers),
                     "response_digest": response.body_digest,
                     "page": page,
+                    "page_size": page_size,
                     "_raw_response": response,
                 }
             )
             if self._hmmer_payload_hit_count(payloads) >= max_hits:
                 return payloads, requests
-            page_count = self._hmmer_page_count(payload.get("page_count"))
-            if page_count is None or page >= page_count:
+            if page >= page_count:
                 return payloads, requests
             page += 1
 
@@ -3517,7 +4039,7 @@ class ProviderHttpBioDatabaseAdapter:
         )
 
     def _hmmer_page_count(self, page_count: Any) -> int | None:
-        if page_count in {None, ""}:
+        if page_count is None or page_count == "":
             return None
         if isinstance(page_count, bool):
             value = None
@@ -3527,17 +4049,50 @@ class ProviderHttpBioDatabaseAdapter:
             value = int(page_count)
         else:
             value = None
-        if value is not None and value > 0:
+        if value is not None and value >= 0:
             return value
         raise PipelineSdkFailure(
             error_type="provider_schema_drift",
-            message="EBI HMMER result page_count was not a positive integer.",
+            message="EBI HMMER result page_count was not a non-negative integer.",
             hint="Inspect provider_observation.json before retrying.",
             stage="provider_results",
             retryable=False,
             sdk_method="bio.hmmer_search",
             details={"provider": "ebi_hmmer", "page_count": str(page_count)},
         )
+
+    def _hmmer_reported_hit_count(
+        self,
+        payload: dict[str, Any],
+        *,
+        source: str = "terminal_poll",
+    ) -> int:
+        result = payload.get("result")
+        stats = result.get("stats") if isinstance(result, dict) else None
+        raw_count = stats.get("nreported") if isinstance(stats, dict) else None
+        if isinstance(raw_count, bool):
+            count = None
+        elif isinstance(raw_count, int):
+            count = raw_count
+        elif isinstance(raw_count, str) and raw_count.isdigit():
+            count = int(raw_count)
+        else:
+            count = None
+        if count is None or count < 0:
+            raise PipelineSdkFailure(
+                error_type="provider_schema_drift",
+                message="EBI HMMER payload did not declare a non-negative stats.nreported.",
+                hint="Inspect the sealed poll and result-page responses before retrying.",
+                stage="provider_results",
+                retryable=False,
+                sdk_method="bio.hmmer_search",
+                details={
+                    "provider": "ebi_hmmer",
+                    "source": source,
+                    "nreported": str(raw_count),
+                },
+            )
+        return count
 
     def _hmmer_hits_csv(self, hits: list[dict[str, Any]]) -> str:
         columns = (
@@ -8887,6 +9442,66 @@ class ExecutionEngine:
             details=details,
         )
 
+    def _persist_sandbox_bio_failure_transcript(
+        self,
+        *,
+        operation: ControlledOperation,
+        failure: PipelineSdkFailure,
+        output_dir_relative: str,
+        request_metadata: dict[str, Any],
+        request_draft: BioArtifactDraft,
+    ) -> PipelineSdkFailure:
+        error_payload = {
+            "code": failure.error_type,
+            "stage": failure.stage,
+            "retryable": failure.retryable,
+            "summary": failure.message,
+            "safe_diagnostics": _sanitize_provider_value(failure.details),
+        }
+        observation_draft = self._bio_provider_observation_draft(
+            request_metadata=request_metadata,
+            result=None,
+            warnings=[],
+            error=error_payload,
+        )
+        error_draft = self._bio_provider_error_draft(
+            request_metadata=request_metadata,
+            failure=failure,
+        )
+        records = self._persist_sandbox_bio_artifacts(
+            operation=operation,
+            output_dir_relative=output_dir_relative,
+            operation_key=operation.operation_id,
+            drafts=(request_draft, observation_draft, error_draft),
+            request_metadata=request_metadata,
+        )
+        details = {
+            **failure.details,
+            "provider_request_id": request_metadata.get("provider_request_id"),
+            "diagnostic_artifact_ids": [record.artifact_id for record in records],
+            "diagnostic_artifact_refs": [
+                {
+                    "artifact_id": record.artifact_id,
+                    "relative_path": record.relative_path,
+                }
+                for record in records
+            ],
+            "details_ref": (
+                f"artifact://{request_metadata.get('provider_request_id')}"
+                "/provider_error.json"
+            ),
+        }
+        return PipelineSdkFailure(
+            error_type=failure.error_type,
+            message=failure.message,
+            hint=failure.hint,
+            stage=failure.stage,
+            retryable=failure.retryable,
+            sdk_method=failure.sdk_method,
+            hpc_failure=failure.hpc_failure,
+            details=details,
+        )
+
     def _bio_transcript_manifest(
         self,
         *,
@@ -9137,7 +9752,14 @@ class ExecutionEngine:
                     details={"method": method},
                 )
         except PipelineSdkFailure as exc:
-            raise self._normalize_bio_failure(exc) from exc
+            normalized_failure = self._normalize_bio_failure(exc)
+            raise self._persist_sandbox_bio_failure_transcript(
+                operation=operation,
+                failure=normalized_failure,
+                output_dir_relative=output_dir_relative,
+                request_metadata=request_metadata,
+                request_draft=request_draft,
+            ) from exc
         observation_draft = self._bio_provider_observation_draft(
             request_metadata=request_metadata,
             result=result,
@@ -11425,6 +12047,11 @@ class ExecutionEngine:
                     kind=draft.kind,
                     format=draft.format,
                     metadata=metadata,
+                    validation_profile=(
+                        None
+                        if metadata.get("validation_profile") in {None, ""}
+                        else str(metadata["validation_profile"])
+                    ),
                     invocation_id=invocation.invocation_id,
                     run_id=run_id,
                 )
@@ -11541,6 +12168,11 @@ class ExecutionEngine:
                     kind=draft.kind,
                     format=draft.format,
                     metadata=metadata,
+                    validation_profile=(
+                        None
+                        if metadata.get("validation_profile") in {None, ""}
+                        else str(metadata["validation_profile"])
+                    ),
                     invocation_id=None,
                     run_id=None,
                     source_snapshot_artifact_id=(

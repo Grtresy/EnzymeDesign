@@ -12,10 +12,10 @@
   "expected": {
     "alignment_digest": "sha256:da5a3f49f3a03b985d143f262eb30b0967a50bbdf12cbe82d0eff0826afd0b9b",
     "alignment_width": 663,
-    "canonical_csv_digest": "sha256:4904c94f320674e7af61c8b7592ed34d3f6f7d0bfb7d942ae3ceafd867377df2",
-    "contract_digest": "sha256:7f79044132e0f45afa5cb47776ad9c3bc10cea25c7c6de1007e50325ea49a086",
+    "canonical_csv_digest": "sha256:8dde77f5cbf86d861b37da25fabb4cd68d2159e2a9e0304608ac28ee5ecd0cc9",
+    "contract_digest": "sha256:71aff3b872aaef3254550db53c7554011923d19293f9c5837ddc4bb8ca0bec10",
     "contract_id": "aox_motif_rule_score@1",
-    "implementation_digest": "sha256:0eb1c4a28160389b805d3b9a28b9d664cad532082a08df206e12ee5d09c9d0f7",
+    "implementation_digest": "sha256:795535d9d6c232a79bc9791f8c2780c2f4aa64b234b15a83deb8c76d3406871c",
     "input_digest": "sha256:f8fd28b9c1e6f7963a9ae4deb488b79ad1bbd00c3d3630e194f058f72be9ae29",
     "reference_sequence_digest": "sha256:fbaeadaa0f7fc110bc024ee8dbe9608b3f5cf055a1099e003518ead9a053ce7f",
     "rows": [

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from openzyme_core.workflow_knowledge import default_workflow_registry
+import openzyme_host_api.aox_cutover_evidence as cutover_evidence
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
@@ -1711,7 +1712,11 @@ def _apply_hmmer_upstream_empty_fixture(
         {"artifact_id": "art_graph_manifest", "content_digest": manifest_digest},
     ]
 
-    removed_artifact_ids = {"art_uniprot_candidates", "art_uniprot_metadata"}
+    removed_artifact_ids = {
+        "art_uniprot_candidates",
+        "art_uniprot_raw_response",
+        "art_uniprot_metadata",
+    }
     evidence["artifacts"] = [
         artifact
         for artifact in evidence["artifacts"]
@@ -2099,29 +2104,83 @@ def _valid_evidence(
     uniprot_retrieved_at = "2026-07-17T00:00:00+00:00"
     uniprot_release = "2026_03"
     uniprot_release_date = "2026-06-17"
-    uniprot_page_response_digest = _digest("uniprot-page-response")
     uniprot_bytes = "".join(
         f">{accession} {accession}_AOX\n"
         f"{normalized_hit_sequences[hit_id_by_accession[accession]]}\n"
         for accession in derived_accessions
     ).encode("utf-8")
+    uniprot_provider_results: dict[str, dict[str, object]] = {}
+    for accession in derived_accessions:
+        sequence = normalized_hit_sequences[hit_id_by_accession[accession]]
+        uniprot_provider_results[accession] = {
+            "primaryAccession": accession,
+            "secondaryAccessions": [],
+            "uniProtkbId": f"{accession}_AOX",
+            "entryType": "UniProtKB reviewed (Swiss-Prot)",
+            "entryAudit": {"entryVersion": 1, "sequenceVersion": 1},
+            "sequence": {"value": sequence, "length": len(sequence)},
+        }
+    uniprot_response_bodies = [
+        (
+            json.dumps(
+                {"results": [uniprot_provider_results[accession]]},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        for accession in derived_accessions
+    ]
+    uniprot_response_digests = [
+        _digest_bytes(body) for body in uniprot_response_bodies
+    ]
+    uniprot_response_digest_by_accession = dict(
+        zip(derived_accessions, uniprot_response_digests, strict=True)
+    )
+    uniprot_raw_bytes = (
+        json.dumps(
+            {
+                "schema_id": "provider_raw_http_response_set@1",
+                "provider": "uniprot",
+                "operation": "bio.uniprot_fetch",
+                "responses": [
+                    {
+                        "ordinal": ordinal,
+                        "phase": f"page:{ordinal}",
+                        "status_code": 200,
+                        "headers": {
+                            "x-uniprot-release": uniprot_release,
+                            "x-uniprot-release-date": uniprot_release_date,
+                        },
+                        "body_encoding": "base64",
+                        "body_base64": base64.b64encode(body).decode("ascii"),
+                        "body_digest": response_digest,
+                        "size_bytes": len(body),
+                    }
+                    for ordinal, (body, response_digest) in enumerate(
+                        zip(
+                            uniprot_response_bodies,
+                            uniprot_response_digests,
+                            strict=True,
+                        ),
+                        start=1,
+                    )
+                ],
+            },
+            sort_keys=True,
+            indent=2,
+        ).encode("utf-8")
+        + b"\n"
+    )
     uniprot_metadata_records: list[dict[str, object]] = []
     for accession in derived_accessions:
         sequence = normalized_hit_sequences[hit_id_by_accession[accession]]
         sequence_digest = _digest_bytes(sequence.encode("ascii"))
         identifier = f"{accession}_AOX"
         entry_type = "UniProtKB reviewed (Swiss-Prot)"
-        provider_metadata = {
-            "primaryAccession": accession,
-            "secondaryAccessions": [],
-            "uniProtkbId": identifier,
-            "entryType": entry_type,
-            "entryAudit": {"entryVersion": 1, "sequenceVersion": 1},
-        }
-        provider_result = {
-            **provider_metadata,
-            "sequence": {"value": sequence, "length": len(sequence)},
-        }
+        provider_result = uniprot_provider_results[accession]
+        provider_metadata = dict(provider_result)
+        provider_metadata.pop("sequence")
         uniprot_metadata_records.append(
             {
                 "requested_accession": accession,
@@ -2136,7 +2195,7 @@ def _valid_evidence(
                 "sequence_version": 1,
                 "sequence_length": len(sequence),
                 "sequence_digest": sequence_digest,
-                "response_digest": uniprot_page_response_digest,
+                "response_digest": uniprot_response_digest_by_accession[accession],
                 "record_digest": _digest_bytes(
                     (
                         json.dumps(provider_result, sort_keys=True, indent=2) + "\n"
@@ -2159,7 +2218,7 @@ def _valid_evidence(
     uniprot_aggregate_response_digest = _digest_bytes(
         (
             json.dumps(
-                [uniprot_page_response_digest],
+                uniprot_response_digests,
                 sort_keys=True,
                 indent=2,
             )
@@ -2180,13 +2239,19 @@ def _valid_evidence(
                     "version",
                 ],
                 "batch_size": 100,
-                "identity_contract_id": "uniprot_primary_sequence_identity@1",
+                "identity_contract_id": "uniprot_primary_sequence_identity@2",
                 "requested_accessions": derived_accessions,
                 "records": uniprot_metadata_records,
+                "inactive_records": [],
+                "active_record_count": len(uniprot_metadata_records),
+                "inactive_record_count": 0,
+                "inactive_deleted_record_count": 0,
+                "inactive_merged_record_count": 0,
                 "warnings": [],
                 "retrieved_at": uniprot_retrieved_at,
                 "uniprot_release": uniprot_release,
                 "uniprot_release_date": uniprot_release_date,
+                "response_digests": uniprot_response_digests,
                 "aggregate_response_digest": uniprot_aggregate_response_digest,
                 "source_sequence_identity_count": 0,
                 "sequence_mismatch_resolution_count": 0,
@@ -2296,6 +2361,11 @@ def _valid_evidence(
     )
     uniprot_digest = _write_artifact(
         artifact_root, "formal/provider/uniprot-candidates.fasta", uniprot_bytes
+    )
+    uniprot_raw_digest = _write_artifact(
+        artifact_root,
+        "formal/provider/uniprot-raw-pages.json",
+        uniprot_raw_bytes,
     )
     uniprot_metadata_digest = _write_artifact(
         artifact_root,
@@ -2469,6 +2539,14 @@ def _valid_evidence(
             "provenance": {"operation_id": "op_uniprot", "provider": "uniprot"},
         },
         {
+            "artifact_id": "art_uniprot_raw_response",
+            "relative_path": "formal/provider/uniprot-raw-pages.json",
+            "scope": "formal",
+            "origin": "operation",
+            "kind": "provider_evidence",
+            "provenance": {"operation_id": "op_uniprot", "provider": "uniprot"},
+        },
+        {
             "artifact_id": "art_uniprot_metadata",
             "relative_path": "formal/provider/uniprot-metadata.json",
             "scope": "formal",
@@ -2477,7 +2555,7 @@ def _valid_evidence(
             "provenance": {
                 "operation_id": "op_uniprot",
                 "provider": "uniprot",
-                "identity_contract_id": "uniprot_primary_sequence_identity@1",
+                "identity_contract_id": "uniprot_primary_sequence_identity@2",
             },
         },
         {
@@ -2702,6 +2780,7 @@ def _valid_evidence(
             ],
             outputs=[
                 ("art_uniprot_candidates", uniprot_digest),
+                ("art_uniprot_raw_response", uniprot_raw_digest),
                 ("art_uniprot_metadata", uniprot_metadata_digest),
             ],
         ),
@@ -3114,10 +3193,11 @@ def _valid_evidence(
                 "invocation_id": "invocation_uniprot",
                 "operation_id": "op_uniprot",
                 "cache_hit": False,
-                "request_digest": _digest("uniprot-request"),
-                "response_digest": uniprot_digest,
+                "request_digest": operation_by_id["op_uniprot"]["params_digest"],
+                "response_digest": uniprot_response_digests[-1],
                 "artifact_ids": [
                     "art_uniprot_candidates",
+                    "art_uniprot_raw_response",
                     "art_uniprot_metadata",
                 ],
                 "source_ref_ids": [],
@@ -3324,6 +3404,9 @@ def _valid_evidence(
                     ),
                     "uniprot_fasta_artifact_id": "art_uniprot_candidates",
                     "uniprot_metadata_artifact_id": "art_uniprot_metadata",
+                    "uniprot_raw_response_artifact_id": (
+                        "art_uniprot_raw_response"
+                    ),
                     "filtered_hits_artifact_id": ("art_post_uniprot_filtered_hits"),
                     "target_fasta_artifact_id": "art_target_sequences",
                     "contract_id": aox_sequence_join.CONTRACT_ID,
@@ -3410,6 +3493,7 @@ def _valid_evidence(
                         ),
                         "uniprot_sequences": "art_uniprot_candidates",
                         "uniprot_metadata": "art_uniprot_metadata",
+                        "uniprot_raw_response": "art_uniprot_raw_response",
                         "post_uniprot_filtered_hits": (
                             "art_post_uniprot_filtered_hits"
                         ),
@@ -3564,6 +3648,19 @@ def _namespace_evidence(
         approval["operation_identity_digest"] = operation_identities[
             approval["operation_id"]
         ]
+    operation_by_id = {
+        operation["operation_id"]: operation
+        for operation in namespaced["operations"]
+    }
+    for provider in namespaced["provider_identities"]:
+        operation_id = provider.get("operation_id")
+        if (
+            provider.get("canonical_ref_kind") == "controlled_operation"
+            and operation_id in operation_by_id
+        ):
+            provider["request_digest"] = operation_by_id[operation_id][
+                "params_digest"
+            ]
     for task in namespaced["tasks"]:
         task["delegation_request_digest"] = canonical_digest(
             task["delegation_request"]
@@ -6492,8 +6589,34 @@ def test_scoring_is_recomputed_not_trusted_from_declared_digest(tmp_path: Path) 
     assert any(issue.code == "scoring_output_mismatch" for issue in result.issues)
 
 
+def test_valid_similarity_graph_is_validated_once_per_verifier_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    original_validate = aox_similarity.validate_graph_artifacts
+    call_count = 0
+
+    def counting_validate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        aox_similarity,
+        "validate_graph_artifacts",
+        counting_validate,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is True
+    assert call_count == 1
+
+
 def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     roots = create_blank_world_roots(
         tmp_path / "campaign",
@@ -6523,10 +6646,55 @@ def test_similarity_graph_is_recomputed_from_candidate_and_membership_bytes(
     )
     bundle_path = roots.evidence_root / "attempt-bundle.json"
     seal_attempt_bundle(payload, bundle_path)
+    original_validate = aox_similarity.validate_graph_artifacts
+    call_count = 0
+
+    def counting_validate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        aox_similarity,
+        "validate_graph_artifacts",
+        counting_validate,
+    )
 
     result = verify_attempt_bundle(bundle_path, artifact_root=roots.artifact_root)
 
     assert any(issue.code == "similarity_recompute_failed" for issue in result.issues)
+    assert any(
+        issue.code == "scientific_outcome_recompute_failed"
+        for issue in result.issues
+    )
+    assert call_count == 2
+
+
+def test_similarity_graph_validation_is_fresh_across_verifier_invocations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    original_validate = aox_similarity.validate_graph_artifacts
+    call_count = 0
+
+    def counting_validate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        aox_similarity,
+        "validate_graph_artifacts",
+        counting_validate,
+    )
+
+    first = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+    second = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert first.passed is True
+    assert second.passed is True
+    assert call_count == 2
 
 
 def test_offline_verifier_rejects_non_finite_json_without_crashing(
@@ -7345,6 +7513,940 @@ def test_upstream_empty_provider_receipt_rejects_tampered_skip_digest(
         )
 
     assert error.value.code == "provider_receipt_invalid"
+
+
+def _reseal_sequence_join_artifact(
+    *,
+    bundle_path: Path,
+    artifact_root: Path,
+    artifact_id: str,
+    content: bytes,
+    provider_response_digest: str | None = None,
+) -> None:
+    envelope = json.loads(bundle_path.read_text(encoding="utf-8"))
+    artifact = next(
+        item
+        for item in envelope["payload"]["artifacts"]
+        if item["artifact_id"] == artifact_id
+    )
+    (artifact_root / artifact["relative_path"]).write_bytes(content)
+    content_digest = _digest_bytes(content)
+
+    def reseal(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        artifact_record = next(
+            item
+            for item in payload["artifacts"]
+            if item["artifact_id"] == artifact_id
+        )
+        artifact_record["content_digest"] = content_digest
+        artifact_record["size_bytes"] = len(content)
+        for operation in payload["operations"]:
+            changed = False
+            for direction in ("inputs", "outputs"):
+                for ref in operation.get(direction) or []:
+                    if ref.get("artifact_id") == artifact_id:
+                        ref["content_digest"] = content_digest
+                        changed = True
+            if changed:
+                _refresh_operation_identity(operation)
+                operation["record_digest"] = canonical_digest(
+                    {
+                        key: value
+                        for key, value in operation.items()
+                        if key != "record_digest"
+                    }
+                )
+        if provider_response_digest is not None:
+            provider = next(
+                item
+                for item in payload["provider_identities"]
+                if item["provider"] == "uniprot"
+            )
+            provider["response_digest"] = provider_response_digest
+            provider["record_digest"] = canonical_digest(
+                {
+                    key: value
+                    for key, value in provider.items()
+                    if key != "record_digest"
+                }
+            )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, reseal)
+
+
+def _rewrite_uniprot_raw_response(
+    *,
+    bundle_path: Path,
+    artifact_root: Path,
+    mutate,
+) -> None:
+    envelope = json.loads(bundle_path.read_text(encoding="utf-8"))
+    raw_artifact = next(
+        item
+        for item in envelope["payload"]["artifacts"]
+        if item["artifact_id"] == "art_uniprot_raw_response"
+    )
+    raw_path = artifact_root / raw_artifact["relative_path"]
+    raw_envelope = json.loads(raw_path.read_text(encoding="utf-8"))
+    mutate(raw_envelope)
+    content = (json.dumps(raw_envelope, sort_keys=True, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_raw_response",
+        content=content,
+        provider_response_digest=raw_envelope["responses"][-1]["body_digest"],
+    )
+
+
+def _rewrite_uniprot_active_record_with_closed_metadata(
+    *,
+    bundle_path: Path,
+    artifact_root: Path,
+    mutate_raw,
+) -> None:
+    changed: dict[str, object] = {}
+
+    def mutate_envelope(raw_envelope: dict[str, object]) -> None:
+        response = raw_envelope["responses"][0]
+        body = json.loads(base64.b64decode(response["body_base64"]))
+        raw_result = body["results"][0]
+        mutate_raw(raw_result)
+        body_bytes = (
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            + b"\n"
+        )
+        response_digest = _digest_bytes(body_bytes)
+        response.update(
+            {
+                "body_base64": base64.b64encode(body_bytes).decode("ascii"),
+                "body_digest": response_digest,
+                "size_bytes": len(body_bytes),
+            }
+        )
+        changed["raw_result"] = raw_result
+        changed["response_digest"] = response_digest
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=mutate_envelope,
+    )
+    raw_result = changed["raw_result"]
+    response_digest = changed["response_digest"]
+    assert isinstance(raw_result, dict)
+    assert isinstance(response_digest, str)
+    metadata_path = artifact_root / "formal/provider/uniprot-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    record = metadata["records"][0]
+    provider_metadata = dict(raw_result)
+    provider_metadata.pop("sequence", None)
+    record.update(
+        {
+            "entry_type": raw_result.get("entryType"),
+            "response_digest": response_digest,
+            "record_digest": cutover_evidence._provider_canonical_digest(raw_result),
+            "provider_metadata": provider_metadata,
+        }
+    )
+    explicit_reviewed = raw_result.get("reviewed")
+    if isinstance(explicit_reviewed, bool):
+        record["reviewed"] = explicit_reviewed
+    metadata["response_digests"][0] = response_digest
+    metadata["aggregate_response_digest"] = (
+        cutover_evidence._provider_canonical_digest(metadata["response_digests"])
+    )
+    content = (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_metadata",
+        content=content,
+    )
+
+
+def test_sequence_join_closes_uniprot_raw_body_bytes(tmp_path: Path) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def tamper_raw_body(raw_envelope: dict[str, object]) -> None:
+        response = raw_envelope["responses"][0]
+        body = json.loads(base64.b64decode(response["body_base64"]))
+        body["results"][0]["uniProtkbId"] = "TAMPERED_AOX"
+        body_bytes = (
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            + b"\n"
+        )
+        response.update(
+            {
+                "body_base64": base64.b64encode(body_bytes).decode("ascii"),
+                "body_digest": _digest_bytes(body_bytes),
+                "size_bytes": len(body_bytes),
+            }
+        )
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=tamper_raw_body,
+    )
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_response_digest_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_recomputes_active_sequence_from_raw_after_reseal(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    changed: dict[str, str] = {}
+
+    def tamper_raw_sequence(raw_envelope: dict[str, object]) -> None:
+        response = raw_envelope["responses"][0]
+        body = json.loads(base64.b64decode(response["body_base64"]))
+        raw_result = body["results"][0]
+        raw_result["sequence"] = {"value": "A" * 650, "length": 650}
+        body_bytes = (
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            + b"\n"
+        )
+        changed["response_digest"] = _digest_bytes(body_bytes)
+        changed["record_digest"] = cutover_evidence._provider_canonical_digest(
+            raw_result
+        )
+        response.update(
+            {
+                "body_base64": base64.b64encode(body_bytes).decode("ascii"),
+                "body_digest": changed["response_digest"],
+                "size_bytes": len(body_bytes),
+            }
+        )
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=tamper_raw_sequence,
+    )
+    metadata_path = artifact_root / "formal/provider/uniprot-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["records"][0]["record_digest"] = changed["record_digest"]
+    metadata["records"][0]["response_digest"] = changed["response_digest"]
+    metadata["response_digests"][0] = changed["response_digest"]
+    metadata["aggregate_response_digest"] = (
+        cutover_evidence._provider_canonical_digest(metadata["response_digests"])
+    )
+    metadata_content = (
+        json.dumps(metadata, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_metadata",
+        content=metadata_content,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_sequence_mismatch"
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ("unknown_entry_type", "active_inactive_reason", "raw_reviewed_mismatch"),
+)
+def test_sequence_join_replays_online_uniprot_active_discriminator(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_raw(raw_result: dict[str, object]) -> None:
+        if tamper == "unknown_entry_type":
+            raw_result["entryType"] = "Future active entry"
+        elif tamper == "active_inactive_reason":
+            raw_result["inactiveReason"] = {
+                "inactiveReasonType": "DELETED",
+                "deletedReason": "invalid active discriminator",
+            }
+        else:
+            raw_result["reviewed"] = False
+
+    _rewrite_uniprot_active_record_with_closed_metadata(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate_raw=mutate_raw,
+    )
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_record_mismatch" for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_metadata_reviewed_entry_type_mismatch(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    metadata_path = artifact_root / "formal/provider/uniprot-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["records"][0]["reviewed"] = False
+    content = (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_metadata",
+        content=content,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_record_mismatch" for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("tamper", ("release", "partial_release_date"))
+def test_sequence_join_binds_uniprot_release_headers(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def tamper_headers(raw_envelope: dict[str, object]) -> None:
+        headers = raw_envelope["responses"][0]["headers"]
+        if tamper == "release":
+            headers["x-uniprot-release"] = "2026_04"
+        else:
+            headers.pop("x-uniprot-release-date")
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=tamper_headers,
+    )
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_release_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_reordered_uniprot_raw_responses(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def reorder(raw_envelope: dict[str, object]) -> None:
+        raw_envelope["responses"].reverse()
+        for ordinal, response in enumerate(raw_envelope["responses"], start=1):
+            response["ordinal"] = ordinal
+            response["phase"] = f"page:{ordinal}"
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=reorder,
+    )
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_response_digest_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_duplicate_key_in_uniprot_raw_body(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def duplicate_key(raw_envelope: dict[str, object]) -> None:
+        response = raw_envelope["responses"][0]
+        body = base64.b64decode(response["body_base64"])
+        duplicate = b'"primaryAccession":"K3VE05",'
+        body = body.replace(duplicate, duplicate + duplicate, 1)
+        assert body.count(duplicate) == 2
+        response.update(
+            {
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_digest": _digest_bytes(body),
+                "size_bytes": len(body),
+            }
+        )
+
+    _rewrite_uniprot_raw_response(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        mutate=duplicate_key,
+    )
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_response_invalid"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_uniprot_raw_record_digest_tamper(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    metadata_path = artifact_root / "formal/provider/uniprot-metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["records"][0]["record_digest"] = _digest("tampered-record")
+    content = (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_metadata",
+        content=content,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_record_mismatch" for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize("tamper", ("wrong_artifact", "wrong_operation"))
+def test_sequence_join_rejects_uniprot_raw_operation_artifact_drift(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        if tamper == "wrong_artifact":
+            payload["scientific_checks"]["sequence_join"][
+                "uniprot_raw_response_artifact_id"
+            ] = "art_uniprot_metadata"
+        else:
+            artifact = next(
+                item
+                for item in payload["artifacts"]
+                if item["artifact_id"] == "art_uniprot_raw_response"
+            )
+            artifact["provenance"]["operation_id"] = "op_ebi_hmmer"
+            artifact["provenance_digest"] = canonical_digest(
+                artifact["provenance"]
+            )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, drift)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_operation_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_binds_uniprot_request_to_operation_params_digest(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        provider = next(
+            item
+            for item in payload["provider_identities"]
+            if item["provider"] == "uniprot"
+        )
+        provider["request_digest"] = _digest("different-uniprot-request")
+        provider["record_digest"] = canonical_digest(
+            {key: value for key, value in provider.items() if key != "record_digest"}
+        )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, drift)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_operation_mismatch"
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "provider_missing",
+        "provider_extra",
+        "operation_missing",
+        "operation_extra",
+        "operation_duplicate",
+    ),
+)
+def test_sequence_join_requires_exact_uniprot_scientific_output_set(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        provider = next(
+            item
+            for item in payload["provider_identities"]
+            if item["provider"] == "uniprot"
+        )
+        operation = next(
+            item
+            for item in payload["operations"]
+            if item["operation_id"] == "op_uniprot"
+        )
+        if tamper == "provider_missing":
+            provider["artifact_ids"].remove("art_uniprot_metadata")
+        elif tamper == "provider_extra":
+            provider["artifact_ids"].append("art_ebi_hmmer_response")
+        elif tamper == "operation_missing":
+            operation["outputs"] = [
+                ref
+                for ref in operation["outputs"]
+                if ref["artifact_id"] != "art_uniprot_metadata"
+            ]
+        elif tamper == "operation_duplicate":
+            raw_ref = next(
+                ref
+                for ref in operation["outputs"]
+                if ref["artifact_id"] == "art_uniprot_raw_response"
+            )
+            operation["outputs"].append(dict(raw_ref))
+        else:
+            extra = next(
+                item
+                for item in payload["artifacts"]
+                if item["artifact_id"] == "art_ebi_hmmer_response"
+            )
+            operation["outputs"].append(
+                {
+                    "artifact_id": extra["artifact_id"],
+                    "content_digest": extra["content_digest"],
+                }
+            )
+        provider["record_digest"] = canonical_digest(
+            {key: value for key, value in provider.items() if key != "record_digest"}
+        )
+        operation["record_digest"] = canonical_digest(
+            {key: value for key, value in operation.items() if key != "record_digest"}
+        )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, drift)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_operation_mismatch"
+        for issue in result.issues
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "replacement"),
+    (
+        ("uniprot_raw_response", "art_uniprot_metadata"),
+        ("uniprot_metadata", "art_uniprot_candidates"),
+        ("uniprot_sequences", "art_uniprot_raw_response"),
+    ),
+)
+def test_sequence_join_binds_each_uniprot_check_to_its_aox_artifact_role(
+    tmp_path: Path,
+    role: str,
+    replacement: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def drift(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        payload["scientific_checks"]["aox_chain"]["artifact_roles"][role] = (
+            replacement
+        )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, drift)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_operation_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_same_bytes_from_different_operation_provenance(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def substitute(bundle: dict[str, object]) -> None:
+        payload = bundle["payload"]
+        original = next(
+            item
+            for item in payload["artifacts"]
+            if item["artifact_id"] == "art_uniprot_metadata"
+        )
+        replacement = json.loads(json.dumps(original))
+        replacement["artifact_id"] = "art_uniprot_metadata_same_bytes_other_source"
+        replacement["provenance"]["operation_id"] = "op_ebi_hmmer"
+        replacement["provenance_digest"] = canonical_digest(
+            replacement["provenance"]
+        )
+        replacement["record_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in replacement.items()
+                if key != "record_digest"
+            }
+        )
+        payload["artifacts"].append(replacement)
+        replacement_id = replacement["artifact_id"]
+        payload["scientific_checks"]["sequence_join"][
+            "uniprot_metadata_artifact_id"
+        ] = replacement_id
+        payload["scientific_checks"]["aox_chain"]["artifact_roles"][
+            "uniprot_metadata"
+        ] = replacement_id
+        operation = next(
+            item
+            for item in payload["operations"]
+            if item["operation_id"] == "op_uniprot"
+        )
+        next(
+            ref
+            for ref in operation["outputs"]
+            if ref["artifact_id"] == "art_uniprot_metadata"
+        )["artifact_id"] = replacement_id
+        operation["record_digest"] = canonical_digest(
+            {key: value for key, value in operation.items() if key != "record_digest"}
+        )
+        provider = next(
+            item
+            for item in payload["provider_identities"]
+            if item["provider"] == "uniprot"
+        )
+        provider["artifact_ids"] = [
+            replacement_id if item == "art_uniprot_metadata" else item
+            for item in provider["artifact_ids"]
+        ]
+        provider["record_digest"] = canonical_digest(
+            {key: value for key, value in provider.items() if key != "record_digest"}
+        )
+        bundle["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, substitute)
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_operation_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_rejects_duplicate_key_in_uniprot_metadata(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    metadata_path = artifact_root / "formal/provider/uniprot-metadata.json"
+    content = metadata_path.read_text(encoding="utf-8").replace(
+        '  "provider": "uniprot",',
+        '  "provider": "uniprot",\n  "provider": "uniprot",',
+        1,
+    ).encode("utf-8")
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_metadata",
+        content=content,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_raw_metadata_invalid"
+        for issue in result.issues
+    )
+
+
+def test_sequence_join_raw_closure_rejects_followed_merged_target(
+    tmp_path: Path,
+) -> None:
+    active_result = {
+        "primaryAccession": "K3VE05",
+        "secondaryAccessions": [],
+        "uniProtkbId": "K3VE05_AOX",
+        "entryType": "UniProtKB reviewed (Swiss-Prot)",
+        "entryAudit": {"entryVersion": 1, "sequenceVersion": 1},
+        "sequence": {"value": "M" * 650, "length": 650},
+    }
+    merged_result = {
+        "primaryAccession": "Q9XYZ1",
+        "uniProtkbId": "Q9XYZ1_INACTIVE",
+        "entryType": "Inactive",
+        "inactiveReason": {
+            "inactiveReasonType": "MERGED",
+            "mergeDemergeTo": ["P12345"],
+        },
+        "extraAttributes": {"uniParcId": "UPI0000000001"},
+    }
+    bodies = [
+        (
+            json.dumps({"results": [result]}, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode("utf-8")
+        for result in (active_result, merged_result)
+    ]
+    response_digests = [_digest_bytes(body) for body in bodies]
+    raw_envelope = {
+        "schema_id": "provider_raw_http_response_set@1",
+        "provider": "uniprot",
+        "operation": "bio.uniprot_fetch",
+        "responses": [
+            {
+                "ordinal": ordinal,
+                "phase": f"page:{ordinal}",
+                "status_code": 200,
+                "headers": {
+                    "x-uniprot-release": "2026_03",
+                    "x-uniprot-release-date": "2026-06-17",
+                },
+                "body_encoding": "base64",
+                "body_base64": base64.b64encode(body).decode("ascii"),
+                "body_digest": response_digest,
+                "size_bytes": len(body),
+            }
+            for ordinal, (body, response_digest) in enumerate(
+                zip(bodies, response_digests, strict=True),
+                start=1,
+            )
+        ],
+    }
+    raw_content = (json.dumps(raw_envelope, sort_keys=True, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    raw_path = tmp_path / "uniprot-raw.json"
+    raw_path.write_bytes(raw_content)
+    raw_artifact_id = "art_uniprot_raw"
+    raw_digest = _digest_bytes(raw_content)
+    expected_annotation = {
+        "annotation_type": "provider_inactive_replacement",
+        "source_database": "uniprotkb",
+        "source_accession": "Q9XYZ1",
+        "target_database": "uniprotkb",
+        "target_accession": "P12345",
+        "relationship": "merged_into",
+        "identity_replaced": False,
+        "target_followed": False,
+    }
+    active_metadata = dict(active_result)
+    active_metadata.pop("sequence")
+    merged_metadata = dict(merged_result)
+    metadata = {
+        "requested_accessions": ["K3VE05", "Q9XYZ1"],
+        "records": [
+            {
+                "requested_accession": "K3VE05",
+                "primary_accession": "K3VE05",
+                "entry_type": active_result["entryType"],
+                "reviewed": True,
+                "sequence_length": 650,
+                "sequence_digest": _digest_bytes(("M" * 650).encode("ascii")),
+                "record_digest": cutover_evidence._provider_canonical_digest(
+                    active_result
+                ),
+                "response_digest": response_digests[0],
+                "provider_metadata": active_metadata,
+            }
+        ],
+        "inactive_records": [
+            {
+                "requested_accession": "Q9XYZ1",
+                "primary_accession": "Q9XYZ1",
+                "entry_type": "Inactive",
+                "inactive_reason": {
+                    "inactive_reason_type": "MERGED",
+                    "replacement_target_annotations": [expected_annotation],
+                },
+                "record_digest": cutover_evidence._provider_canonical_digest(
+                    merged_result
+                ),
+                "response_digest": response_digests[1],
+                "provider_metadata": merged_metadata,
+            }
+        ],
+        "active_record_count": 1,
+        "inactive_record_count": 1,
+        "uniprot_release": "2026_03",
+        "uniprot_release_date": "2026-06-17",
+        "response_digests": response_digests,
+        "aggregate_response_digest": (
+            cutover_evidence._provider_canonical_digest(response_digests)
+        ),
+    }
+    metadata_content = (json.dumps(metadata, sort_keys=True) + "\n").encode()
+    fasta_content = b">K3VE05 K3VE05_AOX\n" + (b"M" * 650) + b"\n"
+    metadata_artifact_id = "art_uniprot_metadata"
+    fasta_artifact_id = "art_uniprot_fasta"
+    metadata_digest = _digest_bytes(metadata_content)
+    fasta_digest = _digest_bytes(fasta_content)
+    artifact_map = {
+        raw_artifact_id: {
+            "artifact_id": raw_artifact_id,
+            "relative_path": raw_path.name,
+            "scope": "formal",
+            "origin": "operation",
+            "content_digest": raw_digest,
+            "provenance": {"operation_id": "op_uniprot"},
+        },
+        metadata_artifact_id: {
+            "artifact_id": metadata_artifact_id,
+            "scope": "formal",
+            "origin": "operation",
+            "content_digest": metadata_digest,
+            "provenance": {"operation_id": "op_uniprot"},
+        },
+        fasta_artifact_id: {
+            "artifact_id": fasta_artifact_id,
+            "scope": "formal",
+            "origin": "operation",
+            "content_digest": fasta_digest,
+            "provenance": {"operation_id": "op_uniprot"},
+        },
+    }
+    operation_parameters = {"accessions": ["K3VE05", "Q9XYZ1"]}
+    params_digest = canonical_digest(operation_parameters)
+    payload = {
+        "scientific_checks": {
+            "aox_chain": {
+                "operation_roles": {"uniprot_fetch": "op_uniprot"},
+                "artifact_roles": {
+                    "uniprot_raw_response": raw_artifact_id,
+                    "uniprot_metadata": metadata_artifact_id,
+                    "uniprot_sequences": fasta_artifact_id,
+                },
+            }
+        },
+        "operations": [
+            {
+                "operation_id": "op_uniprot",
+                "scope": "formal",
+                "status": "completed",
+                "parameters": operation_parameters,
+                "params_digest": params_digest,
+                "outputs": [
+                    {"artifact_id": raw_artifact_id, "content_digest": raw_digest},
+                    {
+                        "artifact_id": metadata_artifact_id,
+                        "content_digest": metadata_digest,
+                    },
+                    {
+                        "artifact_id": fasta_artifact_id,
+                        "content_digest": fasta_digest,
+                    },
+                ],
+            }
+        ],
+        "provider_identities": [
+            {
+                "provider": "uniprot",
+                "status": "completed",
+                "canonical_ref_kind": "controlled_operation",
+                "operation_id": "op_uniprot",
+                "request_digest": params_digest,
+                "response_digest": response_digests[-1],
+                "artifact_ids": [
+                    raw_artifact_id,
+                    metadata_artifact_id,
+                    fasta_artifact_id,
+                ],
+            }
+        ],
+    }
+    check = {
+        "uniprot_raw_response_artifact_id": raw_artifact_id,
+        "uniprot_metadata_artifact_id": metadata_artifact_id,
+        "uniprot_fasta_artifact_id": fasta_artifact_id,
+    }
+    issues = []
+    assert cutover_evidence._verify_uniprot_raw_sequence_join_closure(
+        payload,
+        check=check,
+        artifact_root=tmp_path,
+        artifact_map=artifact_map,
+        metadata_bytes=metadata_content,
+        issues=issues,
+    )
+    assert issues == []
+
+    metadata["inactive_records"][0]["inactive_reason"][
+        "replacement_target_annotations"
+    ][0]["target_followed"] = True
+    issues = []
+    assert not cutover_evidence._verify_uniprot_raw_sequence_join_closure(
+        payload,
+        check=check,
+        artifact_root=tmp_path,
+        artifact_map=artifact_map,
+        metadata_bytes=(json.dumps(metadata, sort_keys=True) + "\n").encode(),
+        issues=issues,
+    )
+    assert any(issue.code == "sequence_join_raw_record_mismatch" for issue in issues)
+
+    metadata["inactive_records"][0]["inactive_reason"][
+        "replacement_target_annotations"
+    ][0]["target_followed"] = False
+    inactive_body = json.loads(bodies[1])
+    inactive_body["results"][0]["sequence"] = {"value": "M", "length": 1}
+    bodies[1] = (
+        json.dumps(inactive_body, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    response_digests[1] = _digest_bytes(bodies[1])
+    raw_envelope["responses"][1].update(
+        {
+            "body_base64": base64.b64encode(bodies[1]).decode("ascii"),
+            "body_digest": response_digests[1],
+            "size_bytes": len(bodies[1]),
+        }
+    )
+    raw_content = (
+        json.dumps(raw_envelope, sort_keys=True, indent=2) + "\n"
+    ).encode("utf-8")
+    raw_path.write_bytes(raw_content)
+    raw_digest = _digest_bytes(raw_content)
+    artifact_map[raw_artifact_id]["content_digest"] = raw_digest
+    payload["operations"][0]["outputs"][0]["content_digest"] = raw_digest
+    payload["provider_identities"][0]["response_digest"] = response_digests[-1]
+    metadata["response_digests"] = response_digests
+    metadata["aggregate_response_digest"] = (
+        cutover_evidence._provider_canonical_digest(response_digests)
+    )
+    issues = []
+    assert not cutover_evidence._verify_uniprot_raw_sequence_join_closure(
+        payload,
+        check=check,
+        artifact_root=tmp_path,
+        artifact_map=artifact_map,
+        metadata_bytes=(json.dumps(metadata, sort_keys=True) + "\n").encode(),
+        issues=issues,
+    )
+    assert any(issue.code == "sequence_join_raw_record_mismatch" for issue in issues)
 
 
 def test_sequence_join_rejects_uniprot_mapping_tamper(tmp_path: Path) -> None:

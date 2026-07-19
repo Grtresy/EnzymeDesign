@@ -170,7 +170,7 @@ def test_uniprot_real_scale_list_remains_one_controlled_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = _capture_controlled_operation(monkeypatch)
-    accessions = [f"P{index:05d}" for index in range(37_722)]
+    accessions = [f"P{index:05d}" for index in range(37_772)]
 
     result = bio.uniprot_fetch(
         accessions=accessions,
@@ -184,7 +184,7 @@ def test_uniprot_real_scale_list_remains_one_controlled_operation(
     assert envelope["params"]["accessions"] == accessions
     assert envelope["resource_estimate"] == {
         "network_io": True,
-        "accession_count": 37_722,
+        "accession_count": 37_772,
         "estimated_query_batch_count": 378,
         "query_batch_size_cap": 100,
     }

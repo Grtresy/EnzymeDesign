@@ -12,12 +12,17 @@ from typing import Any
 
 
 CONTRACT_ID = "aox_motif_rule_score@1"
+ALIGNMENT_CANONICALIZATION_ID = "hmmer_afa_alignment_canonicalization@1"
 REFERENCE_ACCESSION = "AAB57849.1"
 THRESHOLD_TENTHS = 336
 THRESHOLD_DISPLAY = "33.6"
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-_SEQUENCE_PATTERN = re.compile(r"^[A-Z-]+$")
+_RAW_SEQUENCE_PATTERN = re.compile(r"^[A-Za-z.-]+$")
+_CANONICAL_RESIDUE_PATTERN = re.compile(r"^[A-Z-]+$")
+_ACCEPTED_RAW_ALIGNMENT_CHARACTERS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-."
+)
 _LEGACY_FIELDS = frozenset({"activity_score", "pass_rule", "seq_score"})
 
 
@@ -39,7 +44,9 @@ POSITIVE_RULES = (
     PositiveRule(616, ("H", "N", "P"), 50),
 )
 PENALTY_COORDINATES = (660, 661, 662, 663)
-RULE_COORDINATES = tuple(rule.coordinate for rule in POSITIVE_RULES) + PENALTY_COORDINATES
+RULE_COORDINATES = (
+    tuple(rule.coordinate for rule in POSITIVE_RULES) + PENALTY_COORDINATES
+)
 MAX_RULE_COORDINATE = max(RULE_COORDINATES)
 
 RESIDUE_COLUMNS = tuple(f"residue_{coordinate}" for coordinate in RULE_COORDINATES)
@@ -177,7 +184,9 @@ class ScoredSequence:
             "motif_rule_score": self.score_display,
             "passes_motif_rule": self.passes_motif_rule,
         }
-        row.update({f"residue_{coordinate}": residue for coordinate, residue in self.residues})
+        row.update(
+            {f"residue_{coordinate}": residue for coordinate, residue in self.residues}
+        )
         return row
 
 
@@ -230,7 +239,9 @@ def implementation_digest() -> str:
     return _sha256(Path(__file__).read_bytes())
 
 
-def contract_payload(*, implementation_digest_value: str | None = None) -> dict[str, object]:
+def contract_payload(
+    *, implementation_digest_value: str | None = None
+) -> dict[str, object]:
     source_digest = implementation_digest_value or implementation_digest()
     return {
         "contract_id": CONTRACT_ID,
@@ -239,6 +250,34 @@ def contract_payload(*, implementation_digest_value: str | None = None) -> dict[
             "accession": REFERENCE_ACCESSION,
             "coordinate_convention": "one-based ungapped reference coordinates",
             "resolution": "exact FASTA sequence identifier",
+        },
+        "alignment_input": {
+            "canonicalization_id": ALIGNMENT_CANONICALIZATION_ID,
+            "format": "aligned_fasta",
+            "raw_sequence_line_pattern": "^[A-Za-z.-]+$",
+            "empty_lines": "ignored",
+            "sequence_line_whitespace": "rejected",
+            "physical_lines": (
+                "split_on_lf_and_remove_one_immediately_preceding_cr_only_"
+                "from_lf_terminated_lines"
+            ),
+            "header_start": "raw_column_zero_greater_than",
+            "bare_header_carriage_return": "forbidden",
+            "residue_case": "case_insensitive_ascii_letters_canonicalized_to_uppercase",
+            "accepted_gap_characters": ["-", "."],
+            "gap_semantics": {
+                "-": "canonical_alignment_gap",
+                ".": "hmmer_insert_column_gap",
+            },
+            "canonical_gap_character": "-",
+            "canonicalization_order": (
+                "validate_raw_alignment_characters_then_uppercase_residues_"
+                "then_replace_hmmer_insert_column_dots_with_hyphens"
+            ),
+            "input_digest_semantics": "sha256_of_exact_precanonicalization_bytes",
+            "alignment_digest_semantics": (
+                "sha256_of_canonical_uppercase_hyphen_gap_alignment_records"
+            ),
         },
         "calculation": {
             "numeric_unit": "integer tenths",
@@ -290,8 +329,16 @@ def verify_contract(
     expected_contract_digest: str | None = None,
     expected_implementation_digest: str | None = None,
 ) -> None:
-    expected_contract_digest = expected_contract_digest or CONTRACT_DIGEST
-    expected_implementation_digest = expected_implementation_digest or IMPLEMENTATION_DIGEST
+    expected_contract_digest = (
+        CONTRACT_DIGEST
+        if expected_contract_digest is None
+        else expected_contract_digest
+    )
+    expected_implementation_digest = (
+        IMPLEMENTATION_DIGEST
+        if expected_implementation_digest is None
+        else expected_implementation_digest
+    )
     expected = {
         "contract_id": expected_contract_id,
         "contract_digest": expected_contract_digest,
@@ -329,20 +376,14 @@ def parse_aligned_fasta(data: str | bytes) -> ParsedAlignment:
         nonlocal header, fragments
         if header is None:
             return
-        aligned_sequence = "".join(fragments).upper()
-        if not aligned_sequence:
+        if not fragments:
             raise ScientificPrerequisiteError(
                 "empty_alignment_sequence",
                 "an aligned FASTA record has no sequence",
                 details={"header": header},
             )
-        if not _SEQUENCE_PATTERN.fullmatch(aligned_sequence):
-            invalid = sorted(set(aligned_sequence) - set("ABCDEFGHIJKLMNOPQRSTUVWXYZ-"))
-            raise ScientificPrerequisiteError(
-                "invalid_alignment_residue",
-                "aligned FASTA sequences may contain only ASCII letters and '-' gaps",
-                details={"header": header, "invalid_characters": invalid},
-            )
+        observed_sequence = "".join(fragments).upper()
+        aligned_sequence = observed_sequence.replace(".", "-")
         parts = header.split(maxsplit=1)
         sequence_id = parts[0]
         description = parts[1] if len(parts) == 2 else ""
@@ -356,13 +397,25 @@ def parse_aligned_fasta(data: str | bytes) -> ParsedAlignment:
         header = None
         fragments = []
 
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
+    physical_lines = text.split("\n")
+    for line_number, physical_line in enumerate(physical_lines, start=1):
+        line_has_lf_ending = line_number < len(physical_lines)
+        raw_line = (
+            physical_line[:-1]
+            if line_has_lf_ending and physical_line.endswith("\r")
+            else physical_line
+        )
+        if raw_line == "":
             continue
-        if line.startswith(">"):
+        if raw_line.startswith(">"):
+            if "\r" in raw_line:
+                raise ScientificPrerequisiteError(
+                    "fasta_header_carriage_return",
+                    "aligned FASTA headers may not contain a bare carriage return",
+                    details={"line": line_number},
+                )
             finish_record()
-            header = line[1:].strip()
+            header = raw_line[1:].strip()
             if not header:
                 raise ScientificPrerequisiteError(
                     "empty_fasta_header",
@@ -376,13 +429,23 @@ def parse_aligned_fasta(data: str | bytes) -> ParsedAlignment:
                 "aligned FASTA sequence data appeared before its header",
                 details={"line": line_number},
             )
-        if any(character.isspace() for character in line):
+        if not _RAW_SEQUENCE_PATTERN.fullmatch(raw_line):
+            if any(character.isspace() for character in raw_line):
+                raise ScientificPrerequisiteError(
+                    "whitespace_in_alignment_sequence",
+                    "aligned FASTA sequence lines may not contain whitespace",
+                    details={"line": line_number},
+                )
+            invalid = sorted(set(raw_line) - _ACCEPTED_RAW_ALIGNMENT_CHARACTERS)
             raise ScientificPrerequisiteError(
-                "whitespace_in_alignment_sequence",
-                "aligned FASTA sequence lines may not contain internal whitespace",
-                details={"line": line_number},
+                "invalid_alignment_residue",
+                (
+                    "aligned FASTA sequences may contain only ASCII letters, '-' "
+                    "canonical gaps, and '.' HMMER insert-column gaps"
+                ),
+                details={"header": header, "invalid_characters": invalid},
             )
-        fragments.append(line)
+        fragments.append(raw_line)
     finish_record()
 
     if not parsed:
@@ -530,7 +593,10 @@ def score_alignment(
         expected_contract_digest=expected_contract_digest,
         expected_implementation_digest=expected_implementation_digest,
     )
-    if expected_input_digest is not None and alignment.input_digest != expected_input_digest:
+    if (
+        expected_input_digest is not None
+        and alignment.input_digest != expected_input_digest
+    ):
         raise ScientificPrerequisiteError(
             "alignment_input_digest_mismatch",
             "the aligned FASTA bytes do not match the expected input digest",
@@ -713,7 +779,7 @@ def validate_canonical_rows(rows: Sequence[Mapping[str, object]]) -> None:
             if (
                 not isinstance(residue, str)
                 or len(residue) != 1
-                or not _SEQUENCE_PATTERN.fullmatch(residue)
+                or not _CANONICAL_RESIDUE_PATTERN.fullmatch(residue)
             ):
                 raise ScientificPrerequisiteError(
                     "scoring_output_residue_invalid",
@@ -737,14 +803,20 @@ def validate_canonical_rows(rows: Sequence[Mapping[str, object]]) -> None:
             )
 
         width = row["alignment_width"]
-        if isinstance(width, bool) or not isinstance(width, int) or width < MAX_RULE_COORDINATE:
+        if (
+            isinstance(width, bool)
+            or not isinstance(width, int)
+            or width < MAX_RULE_COORDINATE
+        ):
             raise ScientificPrerequisiteError(
                 "scoring_output_alignment_width_invalid",
                 "the canonical scoring row has an invalid alignment width",
                 details={"row": index},
             )
 
-    if sequence_ids != sorted(sequence_ids) or len(sequence_ids) != len(set(sequence_ids)):
+    if sequence_ids != sorted(sequence_ids) or len(sequence_ids) != len(
+        set(sequence_ids)
+    ):
         raise ScientificPrerequisiteError(
             "scoring_output_order_invalid",
             "canonical scoring rows must have unique sequence ids in lexical order",
@@ -776,6 +848,7 @@ CONTRACT_DIGEST = contract_digest(implementation_digest_value=IMPLEMENTATION_DIG
 
 
 __all__ = [
+    "ALIGNMENT_CANONICALIZATION_ID",
     "CANONICAL_COLUMNS",
     "CANONICAL_FIELD_TYPES",
     "CONTRACT_DIGEST",

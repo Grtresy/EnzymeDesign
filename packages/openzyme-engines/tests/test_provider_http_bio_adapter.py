@@ -247,8 +247,13 @@ def _hmmer_payload(hit: dict[str, Any]) -> str:
     return json.dumps(
         {
             "status": "SUCCESS",
+            "page_count": 1,
             "result": {
-                "stats": {"nhits": 1, "provider_extension": "allowed"},
+                "stats": {
+                    "nhits": 1,
+                    "nreported": 1,
+                    "provider_extension": "allowed",
+                },
                 "hits": [hit],
             },
         }
@@ -265,6 +270,9 @@ def _hmmer_adapter(
             FakeHttpResponse(body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}'),
             FakeHttpResponse(
                 body=result_body, headers={"x-request-id": "ebi-result-1"}
+            ),
+            FakeHttpResponse(
+                body=result_body, headers={"x-request-id": "ebi-result-page-1"}
             ),
         )
     )
@@ -402,6 +410,363 @@ def test_ebi_refprot_rejects_accession_or_numeric_schema_drift(
     assert exc_info.value.details["provider"] == "ebi_hmmer"
 
 
+def _hmmer_hits(start: int, count: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": f"AOX_{index:05d}",
+            "acc": f"P{index:05d}",
+            "evalue": 1e-20,
+            "score": float(10_000 - index),
+        }
+        for index in range(start, start + count)
+    ]
+
+
+def _hmmer_result_body(
+    hits: list[dict[str, Any]],
+    *,
+    page_count: int,
+    nreported: int,
+) -> str:
+    return json.dumps(
+        {
+            "status": "SUCCESS",
+            "page_count": page_count,
+            "result": {
+                "stats": {"nhits": nreported, "nreported": nreported},
+                "hits": hits,
+            },
+        }
+    )
+
+
+def test_ebi_hmmer_terminal_poll_is_status_only_and_explicit_pages_are_complete(
+    tmp_path: Path,
+) -> None:
+    terminal_body = _hmmer_result_body(
+        _hmmer_hits(0, 50),
+        page_count=3,
+        nreported=2050,
+    )
+    page_bodies = [
+        _hmmer_result_body(_hmmer_hits(0, 1000), page_count=3, nreported=2050),
+        _hmmer_result_body(_hmmer_hits(1000, 1000), page_count=3, nreported=2050),
+        _hmmer_result_body(_hmmer_hits(2000, 50), page_count=3, nreported=2050),
+    ]
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-complete"}'),
+            FakeHttpResponse(body=terminal_body),
+            *(FakeHttpResponse(body=body) for body in page_bodies),
+        ]
+    )
+    requested_urls: list[str] = []
+
+    def urlopen(request: Any, timeout: float) -> FakeHttpResponse:
+        del timeout
+        requested_urls.append(request.full_url)
+        return next(responses)
+
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    ).hmmer_search(
+        hmm_artifact=_hmm_artifact(tmp_path),
+        database="refprot",
+        params={},
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    result_urls = requested_urls[1:]
+    assert len(result_urls) == 4
+    assert all("page_size=1000" in url for url in result_urls)
+    assert "page=1" in result_urls[0]
+    assert [urllib_parse.parse_qs(urllib_parse.urlparse(url).query)["page"][0] for url in result_urls[1:]] == [
+        "1",
+        "2",
+        "3",
+    ]
+    assert result.summary["reported_hit_count"] == 2050
+    assert result.summary["retrieved_raw_hit_count"] == 2050
+    assert result.summary["hit_count"] == 2050
+    assert len(set(result.summary["candidate_accessions"])) == 2050
+    assert result.summary["candidate_accessions"][50] == "P00050"
+
+
+def test_ebi_hmmer_rejects_missing_middle_page_by_terminal_count(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-gapped"}'),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=3, nreported=4
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=3, nreported=4
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body([], page_count=3, nreported=4)
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(3, 1), page_count=3, nreported=4
+                )
+            ),
+        ]
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(hmmer_page_size=2),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={},
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_partial_result"
+    assert exc_info.value.details["page"] == 2
+    assert exc_info.value.details["page_count"] == 3
+    assert exc_info.value.details["page_size"] == 2
+    assert exc_info.value.details["hit_count"] == 0
+
+
+def test_ebi_hmmer_rejects_short_nonterminal_page_before_max_hits_truncation(
+    tmp_path: Path,
+) -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-short-before-limit"}'),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=5, nreported=10
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=5, nreported=10
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(2, 1), page_count=5, nreported=10
+                )
+            ),
+        ]
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(hmmer_page_size=2, hmmer_max_hits=3),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={},
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_partial_result"
+    assert exc_info.value.details["page"] == 2
+    assert exc_info.value.details["page_count"] == 5
+    assert exc_info.value.details["page_size"] == 2
+    assert exc_info.value.details["hit_count"] == 1
+
+
+def test_ebi_hmmer_rejects_page_count_drift(tmp_path: Path) -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-page-drift"}'),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=2, nreported=4
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=2, nreported=4
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(2, 2), page_count=3, nreported=4
+                )
+            ),
+        ]
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(hmmer_page_size=2),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={},
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.details["expected_page_count"] == 2
+    assert exc_info.value.details["actual_page_count"] == 3
+
+
+def test_ebi_hmmer_rejects_result_page_nreported_drift(tmp_path: Path) -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-nreported-drift"}'),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=2, nreported=4
+                )
+            ),
+            FakeHttpResponse(
+                body=_hmmer_result_body(
+                    _hmmer_hits(0, 2), page_count=2, nreported=3
+                )
+            ),
+        ]
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(hmmer_page_size=2),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={},
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.details["page"] == 1
+    assert exc_info.value.details["expected_reported_hit_count"] == 4
+    assert exc_info.value.details["actual_reported_hit_count"] == 3
+
+
+def test_ebi_hmmer_accepts_exact_zero_reported_hits(tmp_path: Path) -> None:
+    empty_body = _hmmer_result_body([], page_count=0, nreported=0)
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-empty"}'),
+            FakeHttpResponse(body=empty_body),
+            FakeHttpResponse(body=empty_body),
+        ]
+    )
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    ).hmmer_search(
+        hmm_artifact=_hmm_artifact(tmp_path),
+        database="refprot",
+        params={},
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    assert result.summary["hit_count"] == 0
+    assert result.summary["reported_hit_count"] == 0
+    assert result.summary["pagination"]["declared_page_count"] == 0
+    assert [warning["warning_code"] for warning in result.warnings] == [
+        "empty_results"
+    ]
+
+
+def test_ebi_hmmer_bounded_prefix_marks_truncation_from_terminal_count(
+    tmp_path: Path,
+) -> None:
+    bounded_body = _hmmer_result_body(
+        _hmmer_hits(0, 1),
+        page_count=1,
+        nreported=2,
+    )
+    responses = iter(
+        [
+            FakeHttpResponse(body='{"id":"job-bounded-prefix"}'),
+            FakeHttpResponse(body=bounded_body),
+            FakeHttpResponse(body=bounded_body),
+        ]
+    )
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(hmmer_page_size=1, hmmer_max_hits=1),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    ).hmmer_search(
+        hmm_artifact=_hmm_artifact(tmp_path),
+        database="refprot",
+        params={},
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    assert result.summary["reported_hit_count"] == 2
+    assert result.summary["retrieved_raw_hit_count"] == 1
+    assert result.summary["pagination"]["truncated"] is True
+    assert result.warnings == (
+        {
+            "warning_code": "provider_result_truncated",
+            "stage": "provider_pagination",
+            "hint": "Only the top S13-capped HMMER hits were artifactized.",
+            "limit": 1,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("max_hits", True),
+        ("max_hits", 2.5),
+        ("max_hits", []),
+        ("page_size", False),
+        ("page_size", 1.5),
+        ("page_size", {}),
+    ],
+)
+def test_ebi_hmmer_rejects_numeric_params_that_would_be_silently_coerced(
+    tmp_path: Path,
+    key: str,
+    value: object,
+) -> None:
+    def unexpected_request(_request: Any, timeout: float) -> FakeHttpResponse:
+        del timeout
+        raise AssertionError("invalid HMMER params must fail before provider I/O")
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=unexpected_request,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.hmmer_search(
+            hmm_artifact=_hmm_artifact(tmp_path),
+            database="refprot",
+            params={key: value},
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_invalid_request"
+    assert exc_info.value.stage == "provider_request_validation"
+    assert exc_info.value.details == {"provider": "ebi_hmmer", key: str(value)}
+
+
 def _uniprot_record(
     accession: str,
     sequence: str,
@@ -415,6 +780,52 @@ def _uniprot_record(
         "uniProtkbId": f"{accession}_AOX",
         "entryAudit": {"entryVersion": 12, "sequenceVersion": 3},
         "sequence": {"value": sequence, "length": len(sequence)},
+    }
+
+
+def _uniprot_inactive_deleted_record(
+    accession: str,
+    *,
+    deleted_reason: str = "Not part of a reference proteome",
+    uniparc_id: str = "UPI000453BEA2",
+) -> dict[str, Any]:
+    return {
+        "entryType": "Inactive",
+        "primaryAccession": accession,
+        "uniProtkbId": f"{accession}_AOX",
+        "inactiveReason": {
+            "inactiveReasonType": "DELETED",
+            "deletedReason": deleted_reason,
+            "providerExtension": "allowed",
+        },
+        "extraAttributes": {
+            "uniParcId": uniparc_id,
+            "providerExtension": "allowed",
+        },
+        "providerExtension": "allowed",
+    }
+
+
+def _uniprot_inactive_merged_record(
+    accession: str,
+    *,
+    replacement_targets: list[str] | None = None,
+    uniparc_id: str = "UPI000A0F4040",
+) -> dict[str, Any]:
+    return {
+        "entryType": "Inactive",
+        "primaryAccession": accession,
+        "uniProtkbId": f"{accession}_AOX",
+        "inactiveReason": {
+            "inactiveReasonType": "MERGED",
+            "mergeDemergeTo": replacement_targets or ["P18173"],
+            "providerExtension": "allowed",
+        },
+        "extraAttributes": {
+            "uniParcId": uniparc_id,
+            "providerExtension": "allowed",
+        },
+        "providerExtension": "allowed",
     }
 
 
@@ -482,7 +893,7 @@ def test_uniprot_batches_one_operation_across_bounded_search_queries() -> None:
     )
 
 
-def test_uniprot_real_scale_preflight_is_linear_and_partitions_37722() -> None:
+def test_uniprot_real_scale_preflight_is_linear_and_partitions_37772() -> None:
     config = BioProviderHttpConfig()
     adapter = ProviderHttpBioDatabaseAdapter(
         config,
@@ -491,7 +902,7 @@ def test_uniprot_real_scale_preflight_is_linear_and_partitions_37722() -> None:
         ),
         sleep=lambda _seconds: None,
     )
-    accessions = tuple(f"P{index:05d}" for index in range(37_722))
+    accessions = tuple(f"P{index:05d}" for index in range(37_772))
 
     normalized = adapter._normalize_accessions(
         accessions,
@@ -507,7 +918,7 @@ def test_uniprot_real_scale_preflight_is_linear_and_partitions_37722() -> None:
     assert normalized == accessions
     assert len(query_batches) == 378
     assert all(len(batch) == 100 for batch in query_batches[:-1])
-    assert len(query_batches[-1]) == 22
+    assert len(query_batches[-1]) == 72
 
     with pytest.raises(PipelineSdkFailure) as duplicate_error:
         adapter._normalize_accessions(
@@ -777,6 +1188,578 @@ def test_uniprot_preserves_primary_review_release_versions_and_digests() -> None
     _assert_offline_recomputable_raw_responses(
         result,
         expected_bodies=(body,),
+    )
+
+
+def test_uniprot_rejects_partial_optional_release_date_provenance() -> None:
+    responses = iter(
+        [
+            FakeHttpResponse(
+                body=json.dumps(
+                    {"results": [_uniprot_record("P12345", "MPEPTIDE")]}
+                ),
+                headers={
+                    "x-uniprot-release": "2026_03",
+                    "x-uniprot-release-date": "15-July-2026",
+                },
+            ),
+            FakeHttpResponse(
+                body=json.dumps(
+                    {"results": [_uniprot_record("Q8XYZ1", "MPEPTIDE")]}
+                ),
+                headers={"x-uniprot-release": "2026_03"},
+            ),
+        ]
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(batch_size_cap=1),
+        urlopen=lambda _request, timeout: next(responses),  # noqa: ARG005
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P12345", "Q8XYZ1"),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.details["header"] == "x-uniprot-release-date"
+    assert exc_info.value.details["missing_pages"] == [2]
+
+
+def test_uniprot_partitions_active_deleted_and_merged_inactive_records() -> None:
+    active = _uniprot_record("P12345", "MPEPTIDE")
+    deleted = _uniprot_inactive_deleted_record("Q8XYZ1")
+    merged = _uniprot_inactive_merged_record("A0A2U8U0K3")
+    second_merged = _uniprot_inactive_merged_record(
+        "A0A8N4L368",
+        replacement_targets=["A0A034VJ86"],
+        uniparc_id="UPI001114BBC8",
+    )
+    body = json.dumps({"results": [active, deleted, merged, second_merged]})
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={
+                "x-uniprot-release": "2026_03",
+                "x-uniprot-release-date": "15-July-2026",
+            },
+        ),
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=("P12345", "Q8XYZ1", "A0A2U8U0K3", "A0A8N4L368"),
+        fields=(),
+        batch_size=100,
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    metadata = json.loads(_artifact(result, "provider_parsed/metadata.json").content)
+    assert metadata["identity_contract_id"] == "uniprot_primary_sequence_identity@2"
+    assert metadata["active_record_count"] == 1
+    assert metadata["inactive_record_count"] == 3
+    assert metadata["inactive_deleted_record_count"] == 1
+    assert metadata["inactive_merged_record_count"] == 2
+    assert [record["requested_accession"] for record in metadata["records"]] == [
+        "P12345"
+    ]
+    deleted_record = metadata["inactive_records"][0]
+    assert deleted_record == {
+        "requested_accession": "Q8XYZ1",
+        "primary_accession": "Q8XYZ1",
+        "uniprot_identifier": "Q8XYZ1_AOX",
+        "entry_type": "Inactive",
+        "inactive_reason": {
+            "inactive_reason_type": "DELETED",
+            "deleted_reason": "Not part of a reference proteome",
+        },
+        "uniparc_id": "UPI000453BEA2",
+        "uniprot_release": "2026_03",
+        "uniprot_release_date": "15-July-2026",
+        "retrieved_at": "2026-07-20T00:00:00+00:00",
+        "response_digest": _digest(body),
+        "record_digest": _digest(json.dumps(deleted, sort_keys=True, indent=2) + "\n"),
+        "provider_metadata": deleted,
+    }
+    merged_record = metadata["inactive_records"][1]
+    assert merged_record["requested_accession"] == "A0A2U8U0K3"
+    assert merged_record["primary_accession"] == "A0A2U8U0K3"
+    assert merged_record["uniparc_id"] == "UPI000A0F4040"
+    assert merged_record["inactive_reason"] == {
+        "inactive_reason_type": "MERGED",
+        "replacement_target_annotations": [
+            {
+                "annotation_type": "provider_inactive_replacement",
+                "source_database": "uniprotkb",
+                "source_accession": "A0A2U8U0K3",
+                "target_database": "uniprotkb",
+                "target_accession": "P18173",
+                "relationship": "merged_into",
+                "identity_replaced": False,
+                "target_followed": False,
+            }
+        ],
+    }
+    assert metadata["inactive_records"][2]["inactive_reason"][
+        "replacement_target_annotations"
+    ][0]["target_accession"] == "A0A034VJ86"
+    parsed_fasta = _artifact(result, "provider_parsed/sequences.fasta")
+    assert parsed_fasta.content.startswith(">P12345")
+    assert "Q8XYZ1" not in parsed_fasta.content
+    assert "A0A2U8U0K3" not in parsed_fasta.content
+    assert "P18173" not in parsed_fasta.content
+    assert "A0A8N4L368" not in parsed_fasta.content
+    assert "A0A034VJ86" not in parsed_fasta.content
+    assert result.summary["identity_complete"] is True
+    assert result.summary["active_record_count"] == 1
+    assert result.summary["inactive_record_count"] == 3
+    assert result.summary["inactive_deleted_record_count"] == 1
+    assert result.summary["inactive_merged_record_count"] == 2
+    assert result.provider_observation["inactive_accessions"] == [
+        "Q8XYZ1",
+        "A0A2U8U0K3",
+        "A0A8N4L368",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda record: record.update(
+            {"entryType": "Future active entry", "reviewed": True}
+        ),
+        lambda record: record.update({"reviewed": False}),
+        lambda record: record.update(
+            {
+                "inactiveReason": {
+                    "inactiveReasonType": "FUTURE",
+                    "providerExtension": "must not bypass inactive union",
+                }
+            }
+        ),
+    ],
+)
+def test_uniprot_active_identity_requires_exact_entry_type_and_no_inactive_reason(
+    mutation,
+) -> None:  # type: ignore[no-untyped-def]
+    record = _uniprot_record("P12345", "MPEPTIDE")
+    mutation(record)
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps({"results": [record]}),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P12345",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.stage == "provider_response_validation"
+
+
+def test_uniprot_accepts_exact_unreviewed_active_entry_type() -> None:
+    record = _uniprot_record("Q8XYZ1", "MPEPTIDE")
+    record["entryType"] = "UniProtKB unreviewed (TrEMBL)"
+    record["reviewed"] = False
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps({"results": [record]}),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=("Q8XYZ1",),
+        fields=(),
+        batch_size=None,
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    metadata = json.loads(_artifact(result, "provider_parsed/metadata.json").content)
+    assert metadata["records"][0]["reviewed"] is False
+    assert metadata["records"][0]["entry_type"] == (
+        "UniProtKB unreviewed (TrEMBL)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "duplicate_key", "accession"),
+    [
+        (
+            '{"results":[{"entryType":"Future active entry",'
+            '"entryType":"UniProtKB reviewed (Swiss-Prot)",'
+            '"primaryAccession":"P12345","secondaryAccessions":[],'
+            '"uniProtkbId":"P12345_AOX",'
+            '"entryAudit":{"entryVersion":12,"sequenceVersion":3},'
+            '"sequence":{"value":"MPEPTIDE","length":8}}]}',
+            "entryType",
+            "P12345",
+        ),
+        (
+            '{"results":[{"entryType":"Inactive",'
+            '"primaryAccession":"A0A034VJ94",'
+            '"uniProtkbId":"A0A034VJ94_AOX",'
+            '"inactiveReason":{"inactiveReasonType":"MERGED",'
+            '"inactiveReasonType":"DELETED",'
+            '"deletedReason":"Not part of a reference proteome"},'
+            '"extraAttributes":{"uniParcId":"UPI000453BEA2"}}]}',
+            "inactiveReasonType",
+            "A0A034VJ94",
+        ),
+    ],
+)
+def test_uniprot_rejects_duplicate_json_keys_before_normalization(
+    body: str,
+    duplicate_key: str,
+    accession: str,
+) -> None:
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=(accession,),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.details["duplicate_key_digest"] == _digest(duplicate_key)
+    assert exc_info.value.details["duplicate_key_explanation"] == (
+        "A JSON object repeated one member name."
+    )
+    assert "duplicate_key" not in exc_info.value.details
+    assert duplicate_key not in str(exc_info.value)
+    assert exc_info.value.details["response_digest"] == _digest(body)
+
+
+def test_uniprot_duplicate_json_key_diagnostics_are_bounded() -> None:
+    duplicate_key = "provider-secret-" + ("x" * 4096)
+    body = f'{{"{duplicate_key}":1,"{duplicate_key}":2}}'
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P12345",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    failure = exc_info.value
+    public_diagnostic = json.dumps(
+        {
+            "message": failure.message,
+            "hint": failure.hint,
+            "details": failure.details,
+        },
+        sort_keys=True,
+    )
+    assert failure.details["duplicate_key_digest"] == _digest(duplicate_key)
+    assert duplicate_key not in public_diagnostic
+    assert len(public_diagnostic) < 1024
+
+
+def test_uniprot_all_deleted_records_emit_typed_zero_record_fasta() -> None:
+    body = json.dumps(
+        {"results": [_uniprot_inactive_deleted_record("A0A034VJ94")]}
+    )
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=("A0A034VJ94",),
+        fields=(),
+        batch_size=None,
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    fasta = _artifact(result, "provider_parsed/sequences.fasta")
+    assert fasta.content == ""
+    assert fasta.metadata["validation_profile"] == "fasta_zero_records@1"
+    assert fasta.metadata["empty_result_reason"] == (
+        "uniprot_no_active_sequence_records"
+    )
+    assert fasta.metadata["derivation_contract_id"] == (
+        "uniprot_primary_sequence_identity@2"
+    )
+    assert result.summary["record_count"] == 1
+    assert result.summary["active_record_count"] == 0
+    assert result.summary["inactive_record_count"] == 1
+    assert result.summary["inactive_deleted_record_count"] == 1
+    assert result.summary["inactive_merged_record_count"] == 0
+
+
+def test_uniprot_inactive_identity_rejects_source_sequence_assertion() -> None:
+    body = json.dumps(
+        {"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]}
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("A0A2U8U0K3",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+            source_sequence_identities={
+                "A0A2U8U0K3": {
+                    "source_database": "ebi_hmmer_refprot",
+                    "source_accession": "A0A2U8U0K3",
+                    "sequence_digest": _digest("HMMER-SEQUENCE-MUST-NOT-BE-USED"),
+                }
+            },
+        )
+
+    assert exc_info.value.error_type == "provider_invalid_request"
+    assert "inactive records" in exc_info.value.hint
+    assert "deleted records" not in exc_info.value.hint
+    assert exc_info.value.details["inactive_source_identity_accessions"] == [
+        "A0A2U8U0K3"
+    ]
+
+
+def test_uniprot_merged_target_cannot_satisfy_its_own_requested_identity() -> None:
+    body = json.dumps(
+        {"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]}
+    )
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("A0A2U8U0K3", "P18173"),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_identity_mismatch"
+    assert exc_info.value.details["missing_accessions"] == ["P18173"]
+    assert exc_info.value.details["resolved_accessions"] == ["A0A2U8U0K3"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda record: record["inactiveReason"].update(
+            {"inactiveReasonType": "MERGED"}
+        ),
+        lambda record: record["inactiveReason"].update(
+            {"inactiveReasonType": "DEMERGED"}
+        ),
+        lambda record: record["inactiveReason"].update(
+            {"deletedReason": " Not canonical "}
+        ),
+        lambda record: record["inactiveReason"].update(
+            {"deletedReason": "Not canonical\nreason"}
+        ),
+        lambda record: record.update(
+            {"uniProtkbId": "A0A034VJ94\nBAD"}
+        ),
+        lambda record: record["inactiveReason"].pop("deletedReason"),
+        lambda record: record["extraAttributes"].update({"uniParcId": "bad"}),
+        lambda record: record.update({"sequence": {"value": "AAAA", "length": 4}}),
+        lambda record: record.update(
+            {"entryAudit": {"entryVersion": 1, "sequenceVersion": 1}}
+        ),
+    ],
+)
+def test_uniprot_rejects_malformed_inactive_deleted_record(mutation) -> None:  # type: ignore[no-untyped-def]
+    record = _uniprot_inactive_deleted_record("A0A034VJ94")
+    mutation(record)
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps({"results": [record]}),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("A0A034VJ94",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.stage == "provider_response_validation"
+
+
+@pytest.mark.parametrize(
+    "replacement_targets",
+    [[], ["P18173", "P18173"], ["bad target"], ["A0A2U8U0K3"]],
+)
+def test_uniprot_rejects_malformed_merged_replacement_targets(
+    replacement_targets: list[str],
+) -> None:
+    record = _uniprot_inactive_merged_record("A0A2U8U0K3")
+    record["inactiveReason"]["mergeDemergeTo"] = replacement_targets
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps({"results": [record]}),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("A0A2U8U0K3",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.stage == "provider_response_validation"
+
+
+def test_uniprot_inactive_record_never_follows_secondary_identity() -> None:
+    record = _uniprot_inactive_deleted_record("P12345")
+    record["secondaryAccessions"] = ["Q8XYZ1"]
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps({"results": [record]}),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("Q8XYZ1",),
+            fields=(),
+            batch_size=None,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_identity_mismatch"
+    assert exc_info.value.details["selection_required"] is False
+
+
+def test_uniprot_inactive_record_is_bound_to_its_producing_query_batch() -> None:
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(batch_size_cap=1),
+        urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
+            body=json.dumps(
+                {"results": [_uniprot_inactive_deleted_record("Q8XYZ1")]}
+            ),
+            headers={"x-uniprot-release": "2026_03"},
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P12345", "Q8XYZ1"),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_identity_mismatch"
+    assert exc_info.value.details["primary_accession"] == "Q8XYZ1"
+    assert exc_info.value.details["query_batch_index"] == 1
+    assert exc_info.value.details["query_accession_start"] == 0
+    assert exc_info.value.details["query_accession_count"] == 1
+
+
+def test_uniprot_http_failure_preserves_safe_query_batch_coordinates() -> None:
+    calls = 0
+
+    def urlopen(_request: Any, timeout: float) -> FakeHttpResponse:
+        nonlocal calls
+        del timeout
+        calls += 1
+        if calls == 1:
+            return FakeHttpResponse(
+                body=json.dumps(
+                    {"results": [_uniprot_record("P00000", "MPEPTIDE")]}
+                ),
+                headers={"x-uniprot-release": "2026_03"},
+            )
+        raise OSError("safe network failure")
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(batch_size_cap=1, max_retries=2),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P00000", "P00001"),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-20T00:00:00+00:00",
+        )
+
+    assert calls == 4
+    assert exc_info.value.error_type == "provider_unavailable"
+    assert exc_info.value.details == {
+        "reason_digest": _digest("safe network failure"),
+        "query_batch_index": 2,
+        "query_batch_count": 2,
+        "query_accession_start": 1,
+        "query_accession_count": 1,
+        "query_accessions_digest": _digest(
+            json.dumps(["P00001"], sort_keys=True, indent=2) + "\n"
+        ),
+        "completed_page_count": 1,
+        "completed_pages_in_query": 0,
+        "requested_page_in_query": 1,
+    }
+    assert not any(
+        unsafe in json.dumps(exc_info.value.details)
+        for unsafe in ("rest.uniprot.org", "cursor=", "accession:P00001")
     )
 
 

@@ -100,6 +100,16 @@ def test_rcsb_download_structure_provider_route_policy_is_registered() -> None:
     assert policy["status"] == "ok"
 
 
+def test_bio_provider_route_policy_config_identities_track_corrective_semantics() -> None:
+    uniprot = S12_ROUTE_POLICIES["bio.uniprot_fetch.provider:v1"]
+    hmmer = S12_ROUTE_POLICIES["bio.hmmer_search.provider:v1"]
+
+    assert uniprot["provider_config_digest"] == "provider_config:uniprot:v3"
+    assert hmmer["provider_config_digest"] == "provider_config:ebi_hmmer:v2"
+    assert uniprot["runtime_packaging_id"] == "provider_http:v1"
+    assert hmmer["runtime_packaging_id"] == "provider_http:v1"
+
+
 def test_default_research_tools_expose_web_tools_without_search_collect() -> None:
     adapter = TavilyResearchAdapter(
         search_callable=lambda **_: {

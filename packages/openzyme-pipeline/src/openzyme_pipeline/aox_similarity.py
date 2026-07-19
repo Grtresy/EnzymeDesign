@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib
 import io
 import json
+import math
+import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .aox_motif import ScientificPrerequisiteError
 
@@ -19,6 +24,32 @@ EDGE_SCHEMA_ID = "aox_candidate_graph_edges@1"
 MANIFEST_SCHEMA_ID = "aox_candidate_similarity_graph_manifest@1"
 DEFAULT_THRESHOLD_PPM = 850_000
 PPM_SCALE = 1_000_000
+MAX_ALIGNMENT_WORKERS = 16
+PARALLEL_PAIR_THRESHOLD = 128
+PARALLEL_PAIR_CHUNK_SIZE = 64
+ALIGNMENT_BACKEND_ID = "biopython_trace_guarded_numpy_gotoh@1"
+ALIGNMENT_CORRECTION_ID = "numpy_three_state_gap_switch_correction@1"
+BIOPYTHON_VERSION = "1.87"
+NUMPY_VERSION = "2.4.4"
+ALIGNMENT_BACKEND_ALGORITHM = "Gotoh global alignment algorithm"
+ALIGNMENT_BACKEND_EPSILON = 1e-6
+MAX_EXACT_FLOAT_INTEGER = 1 << 53
+NUMPY_NEGATIVE_INFINITY = -(1 << 60)
+ALIGNMENT_STATE_ENCODING = (
+    "exact_mixed_radix_score_matches_aligned_residues_in_binary64_integer"
+)
+
+_CGROUP_V2_CPU_MAX_PATH = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_V1_CPU_PATHS = (
+    (
+        Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+        Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+    ),
+    (
+        Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us"),
+        Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us"),
+    ),
+)
 
 BLOSUM62_ID = "BLOSUM62"
 BLOSUM62_ALPHABET = tuple("ARNDCQEGHILKMFPSTWYVBZX*")
@@ -85,7 +116,6 @@ _CLUSTER_ID_PATTERN = re.compile(r"^cluster_(0|[1-9][0-9]*)$")
 _IDENTITY_PATTERN = re.compile(r"^(?:0\.[0-9]{6}|1\.000000)$")
 _LEGACY_NODE_FIELDS = frozenset({"label", "score"})
 _LEGACY_EDGE_FIELDS = frozenset({"weight"})
-_NEGATIVE_INFINITY = -(10**15)
 
 # Standard BLOSUM62 values.  Alignment scores are multiplied by two so the
 # reference half-point gap extension is represented with exact integers.
@@ -137,6 +167,32 @@ def _build_blosum62() -> dict[tuple[str, str], int]:
 
 
 _BLOSUM62_HALF_SCORES = _build_blosum62()
+_BLOSUM62_HALF_SCORE_VECTOR = tuple(
+    _BLOSUM62_HALF_SCORES[(source, target)]
+    for source in BLOSUM62_ALPHABET
+    for target in BLOSUM62_ALPHABET
+)
+_BLOSUM62_WIDTH = len(BLOSUM62_ALPHABET)
+_MAX_ABS_ALIGNMENT_TRANSITION = max(
+    abs(GAP_OPEN_HALF_SCORE),
+    abs(GAP_EXTEND_HALF_SCORE),
+    *(abs(score) for score in _BLOSUM62_HALF_SCORE_VECTOR),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _AlignmentBackend:
+    bio_version: str
+    numpy_version: str
+    align_module: Any
+    substitution_matrices_module: Any
+    numpy_module: Any
+
+
+_ALIGNMENT_WORKER_SEQUENCES: tuple[bytes, ...] | None = None
+_ALIGNMENT_WORKER_THRESHOLD_PPM: int | None = None
+_ALIGNMENT_BACKEND: _AlignmentBackend | None = None
+_PACKED_ALIGNER_CACHE: dict[int, Any] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +484,67 @@ def calculation_payload(
             "identity_denominator": IDENTITY_DENOMINATOR,
             "identity_scale": "integer_parts_per_million_floor",
             "tie_break_policy": TIE_BREAK_POLICY,
+            "input_normalization": {
+                "encoding": "ASCII",
+                "case": "uppercase_after_ascii_validation",
+                "whitespace": "forbidden",
+                "gaps_and_stops": "forbidden",
+                "physical_lines": (
+                    "split_on_lf_and_remove_one_immediately_preceding_cr_only_"
+                    "from_lf_terminated_lines"
+                ),
+                "header_start": "raw_column_zero_greater_than",
+                "bare_header_carriage_return": "forbidden",
+            },
+            "backend": {
+                "backend_id": ALIGNMENT_BACKEND_ID,
+                "api": (
+                    "Bio.Align.PairwiseAligner.score+align()[0].coordinates"
+                ),
+                "biopython_version": BIOPYTHON_VERSION,
+                "numpy_version": NUMPY_VERSION,
+                "algorithm": ALIGNMENT_BACKEND_ALGORITHM,
+                "import_policy": "lazy_on_first_alignment",
+                "fallback_policy": "forbidden",
+                "sequence_transport": "ASCII_bytes",
+                "numeric_transport": "IEEE_754_binary64_exact_integer",
+                "max_exact_integer_exclusive": MAX_EXACT_FLOAT_INTEGER,
+                "integrality_epsilon": "0.000001",
+                "trace_validation": (
+                    "first_optimal_coordinates_reject_adjacent_opposite_gap_states"
+                ),
+                "gap_state_switch_correction": {
+                    "correction_id": ALIGNMENT_CORRECTION_ID,
+                    "backend": "NumPy_int64_row_vectorized_exact_three_state",
+                    "activation": "adjacent_horizontal_vertical_gap_switch",
+                    "unreachable_sentinel": NUMPY_NEGATIVE_INFINITY,
+                    "exception_policy": (
+                        "fail_closed_without_correction_or_fallback"
+                    ),
+                    "fallback": "forbidden",
+                },
+            },
+        },
+        "execution": {
+            "state_encoding": ALIGNMENT_STATE_ENCODING,
+            "pair_order": "lexicographic_sequence_id_order",
+            "parallelism": "bounded_process_pool_output_order_preserving",
+            "max_worker_processes": MAX_ALIGNMENT_WORKERS,
+            "parallel_pair_threshold": PARALLEL_PAIR_THRESHOLD,
+            "parallel_pair_chunk_size": PARALLEL_PAIR_CHUNK_SIZE,
+            "worker_limit_rule": (
+                "minimum_of_pair_count_hard_max_affinity_and_available_"
+                "cgroup_v2_or_v1_quota_ceil"
+            ),
+            "worker_limit_sources": [
+                "os.sched_getaffinity",
+                "os.cpu_count_when_affinity_unavailable",
+                "/sys/fs/cgroup/cpu.max",
+                "/sys/fs/cgroup/cpu/cpu.cfs_quota_us",
+                "/sys/fs/cgroup/cpu/cpu.cfs_period_us",
+                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us",
+                "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us",
+            ],
         },
         "default_threshold_ppm": DEFAULT_THRESHOLD_PPM,
         "membership_schema": {
@@ -464,6 +581,26 @@ def calculation_metadata() -> dict[str, object]:
         "gap_extend_half_score": GAP_EXTEND_HALF_SCORE,
         "identity_denominator": IDENTITY_DENOMINATOR,
         "default_threshold_ppm": DEFAULT_THRESHOLD_PPM,
+        "alignment_state_encoding": ALIGNMENT_STATE_ENCODING,
+        "alignment_backend_id": ALIGNMENT_BACKEND_ID,
+        "alignment_backend_api": (
+            "Bio.Align.PairwiseAligner.score+align()[0].coordinates"
+        ),
+        "alignment_backend_algorithm": ALIGNMENT_BACKEND_ALGORITHM,
+        "alignment_backend_biopython_version": BIOPYTHON_VERSION,
+        "alignment_backend_numpy_version": NUMPY_VERSION,
+        "alignment_backend_epsilon": "0.000001",
+        "alignment_backend_max_exact_integer_exclusive": (
+            MAX_EXACT_FLOAT_INTEGER
+        ),
+        "alignment_backend_fallback_policy": "forbidden",
+        "alignment_gap_switch_correction_id": ALIGNMENT_CORRECTION_ID,
+        "alignment_sequence_transport": "ASCII_bytes",
+        "max_alignment_workers": MAX_ALIGNMENT_WORKERS,
+        "alignment_worker_limit_rule": (
+            "minimum_of_pair_count_hard_max_affinity_and_available_"
+            "cgroup_v2_or_v1_quota_ceil"
+        ),
     }
 
 
@@ -475,9 +612,16 @@ def verify_calculation(
 ) -> None:
     expected = {
         "calculation_id": expected_calculation_id,
-        "calculation_digest": expected_calculation_digest or CALCULATION_DIGEST,
-        "implementation_digest": expected_implementation_digest
-        or IMPLEMENTATION_DIGEST,
+        "calculation_digest": (
+            CALCULATION_DIGEST
+            if expected_calculation_digest is None
+            else expected_calculation_digest
+        ),
+        "implementation_digest": (
+            IMPLEMENTATION_DIGEST
+            if expected_implementation_digest is None
+            else expected_implementation_digest
+        ),
     }
     actual = {
         "calculation_id": CALCULATION_ID,
@@ -514,7 +658,7 @@ def parse_candidate_fasta(data: str | bytes) -> ParsedSequenceSet:
         nonlocal header, fragments
         if header is None:
             return
-        sequence = "".join(fragments).upper()
+        sequence = "".join(fragments)
         if not sequence:
             raise ScientificPrerequisiteError(
                 "empty_candidate_sequence",
@@ -541,13 +685,25 @@ def parse_candidate_fasta(data: str | bytes) -> ParsedSequenceSet:
         header = None
         fragments = []
 
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
+    raw_lines = text.split("\n")
+    for line_number, raw_line_with_ending in enumerate(raw_lines, start=1):
+        line_has_lf_ending = line_number < len(raw_lines)
+        raw_line = (
+            raw_line_with_ending[:-1]
+            if line_has_lf_ending and raw_line_with_ending.endswith("\r")
+            else raw_line_with_ending
+        )
+        if raw_line == "":
             continue
-        if line.startswith(">"):
+        if raw_line.startswith(">"):
+            if "\r" in raw_line:
+                raise ScientificPrerequisiteError(
+                    "candidate_fasta_header_carriage_return",
+                    "candidate FASTA headers may not contain a bare carriage return",
+                    details={"line": line_number},
+                )
             finish_record()
-            header = line[1:].strip()
+            header = raw_line[1:].strip()
             if not header:
                 raise ScientificPrerequisiteError(
                     "empty_candidate_fasta_header",
@@ -561,13 +717,27 @@ def parse_candidate_fasta(data: str | bytes) -> ParsedSequenceSet:
                 "candidate FASTA sequence data appeared before its header",
                 details={"line": line_number},
             )
-        if any(character.isspace() for character in line):
+        if any(character.isspace() for character in raw_line):
             raise ScientificPrerequisiteError(
                 "whitespace_in_candidate_sequence",
-                "candidate FASTA sequence lines may not contain internal whitespace",
+                "candidate FASTA sequence lines may not contain leading, trailing, or internal whitespace",
                 details={"line": line_number},
             )
-        fragments.append(line)
+        if not raw_line.isascii():
+            raise ScientificPrerequisiteError(
+                "candidate_residue_unsupported",
+                "candidate sequences must be raw ASCII before case normalization",
+                details={"line": line_number},
+            )
+        normalized_line = raw_line.upper()
+        invalid = sorted(set(normalized_line) - set(BLOSUM62_ALPHABET[:-1]))
+        if invalid:
+            raise ScientificPrerequisiteError(
+                "candidate_residue_unsupported",
+                "candidate sequences must use residues supported by BLOSUM62 and may not contain gaps or stops",
+                details={"line": line_number, "invalid_characters": invalid},
+            )
+        fragments.append(normalized_line)
     finish_record()
 
     sequence_ids = [record.sequence_id for record in records]
@@ -764,34 +934,6 @@ def parse_cdhit_membership_csv(data: str | bytes) -> ParsedCDHitMembership:
     )
 
 
-_AlignmentState = tuple[int, int, int]
-
-
-def _choose_alignment_state(*states: _AlignmentState) -> _AlignmentState:
-    best = states[0]
-    for state in states[1:]:
-        if (state[0], state[1], state[2]) > (best[0], best[1], best[2]):
-            best = state
-    return best
-
-
-def _add_score(state: _AlignmentState, score: int) -> _AlignmentState:
-    if state[0] == _NEGATIVE_INFINITY:
-        return state
-    return state[0] + score, state[1], state[2]
-
-
-def _add_aligned_pair(
-    state: _AlignmentState,
-    *,
-    score: int,
-    matches: bool,
-) -> _AlignmentState:
-    if state[0] == _NEGATIVE_INFINITY:
-        return state
-    return state[0] + score, state[1] + int(matches), state[2] + 1
-
-
 def _normalize_alignment_sequence(sequence: str, *, field: str) -> str:
     if not isinstance(sequence, str):
         raise ScientificPrerequisiteError(
@@ -799,13 +941,19 @@ def _normalize_alignment_sequence(sequence: str, *, field: str) -> str:
             "global sequence identity inputs must be strings",
             details={"field": field},
         )
-    normalized = sequence.upper()
-    if not normalized:
+    if not sequence:
         raise ScientificPrerequisiteError(
             "similarity_sequence_empty",
             "global sequence identity inputs must not be empty",
             details={"field": field},
         )
+    if not sequence.isascii():
+        raise ScientificPrerequisiteError(
+            "similarity_sequence_residue_unsupported",
+            "global sequence identity inputs must be raw ASCII before case normalization",
+            details={"field": field},
+        )
+    normalized = sequence.upper()
     invalid = sorted(set(normalized) - set(BLOSUM62_ALPHABET[:-1]))
     if invalid:
         raise ScientificPrerequisiteError(
@@ -816,82 +964,689 @@ def _normalize_alignment_sequence(sequence: str, *, field: str) -> str:
     return normalized
 
 
+def _encode_alignment_sequence(sequence: str, *, field: str) -> bytes:
+    normalized = _normalize_alignment_sequence(sequence, field=field)
+    return normalized.encode("ascii")
+
+
+def _load_alignment_backend() -> _AlignmentBackend:
+    try:
+        bio_module = importlib.import_module("Bio")
+        numpy_module = importlib.import_module("numpy")
+        align_module = importlib.import_module("Bio.Align")
+        substitution_matrices_module = importlib.import_module(
+            "Bio.Align.substitution_matrices"
+        )
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_unavailable",
+            "the exact AOX similarity backend could not be imported",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+
+    actual_versions = {
+        "biopython": str(getattr(bio_module, "__version__", "")),
+        "numpy": str(getattr(numpy_module, "__version__", "")),
+    }
+    expected_versions = {
+        "biopython": BIOPYTHON_VERSION,
+        "numpy": NUMPY_VERSION,
+    }
+    if actual_versions != expected_versions:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_version_mismatch",
+            "the exact AOX similarity backend versions do not match the calculation contract",
+            details={"expected": expected_versions, "actual": actual_versions},
+        )
+
+    backend = _AlignmentBackend(
+        bio_version=actual_versions["biopython"],
+        numpy_version=actual_versions["numpy"],
+        align_module=align_module,
+        substitution_matrices_module=substitution_matrices_module,
+        numpy_module=numpy_module,
+    )
+    _preflight_alignment_backend(backend)
+    return backend
+
+
+def _ensure_alignment_backend() -> _AlignmentBackend:
+    global _ALIGNMENT_BACKEND
+    if _ALIGNMENT_BACKEND is None:
+        _ALIGNMENT_BACKEND = _load_alignment_backend()
+    return _ALIGNMENT_BACKEND
+
+
+def _packed_substitution_values(radix: int) -> list[int]:
+    score_unit = radix * radix
+    return [
+        score * score_unit
+        + (radix if source_index == target_index else 0)
+        + 1
+        for source_index in range(_BLOSUM62_WIDTH)
+        for target_index, score in enumerate(
+            _BLOSUM62_HALF_SCORE_VECTOR[
+                source_index
+                * _BLOSUM62_WIDTH : (source_index + 1)
+                * _BLOSUM62_WIDTH
+            ]
+        )
+    ]
+
+
+def _new_packed_aligner(radix: int, backend: _AlignmentBackend) -> Any:
+    score_unit = radix * radix
+    matrix_values = _packed_substitution_values(radix)
+    try:
+        matrix_data = backend.numpy_module.asarray(
+            matrix_values,
+            dtype=backend.numpy_module.float64,
+        ).reshape((_BLOSUM62_WIDTH, _BLOSUM62_WIDTH))
+        matrix = backend.substitution_matrices_module.Array(
+            alphabet="".join(BLOSUM62_ALPHABET),
+            dims=2,
+            data=matrix_data,
+        )
+        aligner = backend.align_module.PairwiseAligner()
+        aligner.mode = "global"
+        aligner.substitution_matrix = matrix
+        aligner.open_gap_score = GAP_OPEN_HALF_SCORE * score_unit
+        aligner.extend_gap_score = GAP_EXTEND_HALF_SCORE * score_unit
+        aligner.epsilon = ALIGNMENT_BACKEND_EPSILON
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_configuration_failed",
+            "the exact AOX similarity backend could not be configured",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    if aligner.algorithm != ALIGNMENT_BACKEND_ALGORITHM:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_algorithm_mismatch",
+            "the configured AOX similarity backend selected an unexpected alignment algorithm",
+            details={
+                "expected": ALIGNMENT_BACKEND_ALGORITHM,
+                "actual": str(aligner.algorithm),
+            },
+        )
+    return aligner
+
+
+def _packed_score_bound(source_length: int, target_length: int) -> int:
+    radix = max(source_length, target_length) + 1
+    score_unit = radix * radix
+    transition_bound = (
+        _MAX_ABS_ALIGNMENT_TRANSITION * score_unit + radix + 1
+    )
+    return (source_length + target_length) * transition_bound
+
+
+def _require_exact_float_bound(source_length: int, target_length: int) -> int:
+    bound = _packed_score_bound(source_length, target_length)
+    if bound >= MAX_EXACT_FLOAT_INTEGER:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_numeric_bound_exceeded",
+            "the packed AOX alignment could exceed exact binary64 integer range",
+            details={
+                "source_length": source_length,
+                "target_length": target_length,
+                "packed_absolute_bound": bound,
+                "required_exclusive_upper_bound": MAX_EXACT_FLOAT_INTEGER,
+            },
+        )
+    return bound
+
+
+def _integral_packed_score(score: object, *, bound: int) -> int:
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        raise ScientificPrerequisiteError(
+            "similarity_backend_score_nonintegral",
+            "the exact AOX similarity backend returned a non-numeric score",
+            details={"score_type": type(score).__name__},
+        )
+    numeric_score = float(score)
+    if not math.isfinite(numeric_score):
+        raise ScientificPrerequisiteError(
+            "similarity_backend_score_nonfinite",
+            "the exact AOX similarity backend returned a non-finite score",
+        )
+    packed_score = round(numeric_score)
+    if abs(numeric_score - packed_score) > ALIGNMENT_BACKEND_EPSILON:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_score_nonintegral",
+            "the exact AOX similarity backend returned a non-integral packed score",
+            details={"score": numeric_score},
+        )
+    if abs(packed_score) > bound or abs(packed_score) >= MAX_EXACT_FLOAT_INTEGER:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_score_out_of_bound",
+            "the exact AOX similarity backend returned a score outside its proven numeric bound",
+            details={"score": packed_score, "packed_absolute_bound": bound},
+        )
+    return packed_score
+
+
+def _preflight_alignment_backend(backend: _AlignmentBackend) -> None:
+    try:
+        float_info = backend.numpy_module.finfo(backend.numpy_module.float64)
+        numeric_ok = (
+            int(float_info.nmant) == 52
+            and int(backend.numpy_module.dtype(backend.numpy_module.float64).itemsize)
+            == 8
+        )
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_numeric_incompatible",
+            "the AOX similarity backend numeric representation could not be verified",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    if not numeric_ok:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_numeric_incompatible",
+            "the AOX similarity backend requires IEEE-754 binary64 semantics",
+        )
+
+    aligner = _new_packed_aligner(5, backend)
+    expected_scores = (
+        (b"ARND", b"ARND", 1_074),
+        (b"AAAA", b"AAA", 118),
+    )
+    for source, target, expected in expected_scores:
+        bound = _require_exact_float_bound(len(source), len(target))
+        try:
+            observed = aligner.score(source, target)
+        except Exception as exc:
+            raise ScientificPrerequisiteError(
+                "similarity_backend_preflight_failed",
+                "the exact AOX similarity backend failed its parent-process score preflight",
+                details={"failure_type": type(exc).__name__},
+            ) from exc
+        actual = _integral_packed_score(observed, bound=bound)
+        if actual != expected:
+            raise ScientificPrerequisiteError(
+                "similarity_backend_preflight_failed",
+                "the exact AOX similarity backend failed its parent-process numeric preflight",
+                details={"expected": expected, "actual": actual},
+            )
+        if _alignment_has_opposite_gap_switch(
+            aligner,
+            source,
+            target,
+            packed_score=actual,
+            bound=bound,
+        ):
+            raise ScientificPrerequisiteError(
+                "similarity_backend_preflight_failed",
+                "the exact AOX similarity backend produced an unexpected preflight gap switch",
+            )
+
+
+def _packed_aligner(radix: int) -> Any:
+    aligner = _PACKED_ALIGNER_CACHE.get(radix)
+    if aligner is None:
+        aligner = _new_packed_aligner(radix, _ensure_alignment_backend())
+        _PACKED_ALIGNER_CACHE[radix] = aligner
+    return aligner
+
+
+def _inspect_alignment_for_opposite_gap_switch(
+    aligner: Any,
+    source: bytes,
+    target: bytes,
+    *,
+    packed_score: int,
+    bound: int,
+) -> bool:
+    try:
+        alignment = aligner.align(source, target)[0]
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_trace_failed",
+            "the exact AOX similarity backend failed closed while tracing its optimum",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    traced_score = _integral_packed_score(alignment.score, bound=bound)
+    if traced_score != packed_score:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_trace_score_mismatch",
+            "the AOX similarity score and first optimal traceback disagree",
+            details={"score": packed_score, "trace_score": traced_score},
+        )
+    coordinates = alignment.coordinates
+    if (
+        getattr(coordinates, "ndim", None) != 2
+        or tuple(coordinates.shape)[0] != 2
+        or tuple(coordinates.shape)[1] < 2
+        or (int(coordinates[0, 0]), int(coordinates[1, 0])) != (0, 0)
+        or (int(coordinates[0, -1]), int(coordinates[1, -1]))
+        != (len(source), len(target))
+    ):
+        raise ScientificPrerequisiteError(
+            "similarity_backend_trace_postcondition_failed",
+            "the AOX similarity traceback coordinates are malformed",
+        )
+
+    previous_gap_state: int | None = None
+    for index in range(tuple(coordinates.shape)[1] - 1):
+        source_advance = int(coordinates[0, index + 1] - coordinates[0, index])
+        target_advance = int(coordinates[1, index + 1] - coordinates[1, index])
+        if source_advance < 0 or target_advance < 0 or not (
+            source_advance or target_advance
+        ):
+            raise ScientificPrerequisiteError(
+                "similarity_backend_trace_postcondition_failed",
+                "the AOX similarity traceback contains an invalid transition",
+            )
+        if source_advance and target_advance:
+            if source_advance != target_advance:
+                raise ScientificPrerequisiteError(
+                    "similarity_backend_trace_postcondition_failed",
+                    "the AOX similarity traceback contains a non-unit-ratio diagonal",
+                )
+            previous_gap_state = None
+            continue
+        gap_state = 1 if source_advance else 2
+        if previous_gap_state is not None and previous_gap_state != gap_state:
+            return True
+        previous_gap_state = gap_state
+    return False
+
+
+def _alignment_has_opposite_gap_switch(
+    aligner: Any,
+    source: bytes,
+    target: bytes,
+    *,
+    packed_score: int,
+    bound: int,
+) -> bool:
+    try:
+        return _inspect_alignment_for_opposite_gap_switch(
+            aligner,
+            source,
+            target,
+            packed_score=packed_score,
+            bound=bound,
+        )
+    except ScientificPrerequisiteError:
+        raise
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_trace_failed",
+            "the exact AOX similarity backend traceback could not be inspected",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+
+
+def _run_numpy_three_state_correction(
+    source: bytes,
+    target: bytes,
+    *,
+    bound: int,
+) -> AlignmentIdentity:
+    backend = _ensure_alignment_backend()
+    numpy = backend.numpy_module
+    source_length = len(source)
+    target_length = len(target)
+    radix = max(source_length, target_length) + 1
+    score_unit = radix * radix
+    gap_open_delta = GAP_OPEN_HALF_SCORE * score_unit
+    gap_extend_delta = GAP_EXTEND_HALF_SCORE * score_unit
+    # Every reachable path has absolute packed score < 2**53.  Even after the
+    # largest permitted cumulative transition, -2**60 remains below every
+    # reachable state while staying safely inside signed int64.
+    negative_infinity = NUMPY_NEGATIVE_INFINITY
+    residue_indexes = {
+        residue: index
+        for index, residue in enumerate("".join(BLOSUM62_ALPHABET).encode("ascii"))
+    }
+    source_indexes = numpy.asarray(
+        [residue_indexes[residue] for residue in source], dtype=numpy.intp
+    )
+    target_indexes = numpy.asarray(
+        [residue_indexes[residue] for residue in target], dtype=numpy.intp
+    )
+    substitution = numpy.asarray(
+        _packed_substitution_values(radix), dtype=numpy.int64
+    ).reshape((_BLOSUM62_WIDTH, _BLOSUM62_WIDTH))
+    match_previous = numpy.full(
+        target_length + 1, negative_infinity, dtype=numpy.int64
+    )
+    gap_target_previous = numpy.full_like(match_previous, negative_infinity)
+    gap_source_previous = numpy.full_like(match_previous, negative_infinity)
+    match_current = numpy.full_like(match_previous, negative_infinity)
+    gap_target_current = numpy.full_like(match_previous, negative_infinity)
+    gap_source_current = numpy.full_like(match_previous, negative_infinity)
+    match_previous[0] = 0
+    if target_length:
+        gap_source_previous[1:] = gap_open_delta + numpy.arange(
+            target_length, dtype=numpy.int64
+        ) * gap_extend_delta
+    horizontal_offsets = numpy.arange(target_length, dtype=numpy.int64)
+
+    for row_index, source_index in enumerate(source_indexes, start=1):
+        match_current[0] = negative_infinity
+        gap_target_current[0] = gap_open_delta + (
+            row_index - 1
+        ) * gap_extend_delta
+        gap_source_current[0] = negative_infinity
+        diagonal = numpy.maximum(
+            numpy.maximum(match_previous[:-1], gap_target_previous[:-1]),
+            gap_source_previous[:-1],
+        )
+        match_current[1:] = (
+            diagonal + substitution[source_index, target_indexes]
+        )
+        gap_target_current[1:] = numpy.maximum(
+            gap_target_previous[1:] + gap_extend_delta,
+            match_previous[1:] + gap_open_delta,
+        )
+        horizontal_prefix = numpy.maximum.accumulate(
+            match_current[:-1] - horizontal_offsets * gap_extend_delta
+        )
+        gap_source_current[1:] = (
+            horizontal_prefix
+            + gap_open_delta
+            + horizontal_offsets * gap_extend_delta
+        )
+        match_previous, match_current = match_current, match_previous
+        gap_target_previous, gap_target_current = (
+            gap_target_current,
+            gap_target_previous,
+        )
+        gap_source_previous, gap_source_current = (
+            gap_source_current,
+            gap_source_previous,
+        )
+
+    packed_score = int(
+        max(
+            match_previous[target_length],
+            gap_target_previous[target_length],
+            gap_source_previous[target_length],
+        )
+    )
+    packed_score = _integral_packed_score(packed_score, bound=bound)
+    return _decode_packed_identity(
+        packed_score,
+        source_length=source_length,
+        target_length=target_length,
+    )
+
+
+def _calculate_numpy_three_state_correction(
+    source: bytes,
+    target: bytes,
+    *,
+    bound: int,
+) -> AlignmentIdentity:
+    try:
+        return _run_numpy_three_state_correction(source, target, bound=bound)
+    except ScientificPrerequisiteError:
+        raise
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_gap_switch_correction_failed",
+            "the deterministic AOX three-state gap-switch correction failed closed",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+
+
+def _decode_packed_identity(
+    packed_score: int,
+    *,
+    source_length: int,
+    target_length: int,
+) -> AlignmentIdentity:
+    radix = max(source_length, target_length) + 1
+    score_unit = radix * radix
+    alignment_score_half_units, packed_counts = divmod(packed_score, score_unit)
+    identity_matches, identity_aligned_residues = divmod(packed_counts, radix)
+    if not (
+        1 <= identity_aligned_residues <= min(source_length, target_length)
+        and 0 <= identity_matches <= identity_aligned_residues
+        and packed_score
+        == alignment_score_half_units * score_unit
+        + identity_matches * radix
+        + identity_aligned_residues
+    ):
+        raise ScientificPrerequisiteError(
+            "similarity_backend_decode_postcondition_failed",
+            "the packed AOX alignment score did not decode to a valid identity tuple",
+            details={
+                "packed_score": packed_score,
+                "source_length": source_length,
+                "target_length": target_length,
+                "identity_matches": identity_matches,
+                "identity_aligned_residues": identity_aligned_residues,
+            },
+        )
+    return AlignmentIdentity(
+        alignment_score_half_units=alignment_score_half_units,
+        identity_matches=identity_matches,
+        identity_aligned_residues=identity_aligned_residues,
+    )
+
+
+def _calculate_encoded_global_sequence_identity(
+    source: bytes,
+    target: bytes,
+) -> AlignmentIdentity:
+    """Calculate the exact lexical identity tuple through the pinned C backend."""
+
+    allowed = frozenset("".join(BLOSUM62_ALPHABET[:-1]).encode("ascii"))
+    if (
+        not source
+        or not target
+        or not set(source).issubset(allowed)
+        or not set(target).issubset(allowed)
+    ):
+        raise ScientificPrerequisiteError(
+            "similarity_backend_input_invalid",
+            "the exact AOX similarity backend requires non-empty normalized ASCII residue bytes",
+        )
+    source_length = len(source)
+    target_length = len(target)
+    bound = _require_exact_float_bound(source_length, target_length)
+    aligner = _packed_aligner(max(source_length, target_length) + 1)
+    try:
+        score = aligner.score(source, target)
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_backend_execution_failed",
+            "the exact AOX similarity backend failed closed while scoring a pair",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
+    packed_score = _integral_packed_score(score, bound=bound)
+    if _alignment_has_opposite_gap_switch(
+        aligner,
+        source,
+        target,
+        packed_score=packed_score,
+        bound=bound,
+    ):
+        return _calculate_numpy_three_state_correction(
+            source,
+            target,
+            bound=bound,
+        )
+    return _decode_packed_identity(
+        packed_score,
+        source_length=source_length,
+        target_length=target_length,
+    )
+
+
 def calculate_global_sequence_identity(
     source_sequence: str,
     target_sequence: str,
 ) -> AlignmentIdentity:
-    """Calculate deterministic global affine-gap identity without third parties.
+    """Calculate deterministic global affine-gap identity through the pinned backend."""
 
-    The dynamic program uses three Gotoh states and exact half-score integers.
-    Only residue-residue columns contribute to the identity denominator, matching
-    the user-authorized AOX reference calculation's ``nongap`` convention.
-    """
-
-    source = _normalize_alignment_sequence(source_sequence, field="source_sequence")
-    target = _normalize_alignment_sequence(target_sequence, field="target_sequence")
-    target_width = len(target)
-    unreachable = (_NEGATIVE_INFINITY, 0, 0)
-
-    match_previous: list[_AlignmentState] = [unreachable] * (target_width + 1)
-    gap_target_previous: list[_AlignmentState] = [unreachable] * (target_width + 1)
-    gap_source_previous: list[_AlignmentState] = [unreachable] * (target_width + 1)
-    match_previous[0] = (0, 0, 0)
-    for column in range(1, target_width + 1):
-        gap_source_previous[column] = (
-            GAP_OPEN_HALF_SCORE + (column - 1) * GAP_EXTEND_HALF_SCORE,
-            0,
-            0,
-        )
-
-    for row, source_residue in enumerate(source, start=1):
-        match_current: list[_AlignmentState] = [unreachable] * (target_width + 1)
-        gap_target_current: list[_AlignmentState] = [unreachable] * (target_width + 1)
-        gap_source_current: list[_AlignmentState] = [unreachable] * (target_width + 1)
-        gap_target_current[0] = (
-            GAP_OPEN_HALF_SCORE + (row - 1) * GAP_EXTEND_HALF_SCORE,
-            0,
-            0,
-        )
-
-        for column, target_residue in enumerate(target, start=1):
-            diagonal = _choose_alignment_state(
-                match_previous[column - 1],
-                gap_target_previous[column - 1],
-                gap_source_previous[column - 1],
-            )
-            match_current[column] = _add_aligned_pair(
-                diagonal,
-                score=_BLOSUM62_HALF_SCORES[(source_residue, target_residue)],
-                matches=source_residue == target_residue,
-            )
-            gap_target_current[column] = _choose_alignment_state(
-                _add_score(gap_target_previous[column], GAP_EXTEND_HALF_SCORE),
-                _add_score(match_previous[column], GAP_OPEN_HALF_SCORE),
-            )
-            gap_source_current[column] = _choose_alignment_state(
-                _add_score(gap_source_current[column - 1], GAP_EXTEND_HALF_SCORE),
-                _add_score(match_current[column - 1], GAP_OPEN_HALF_SCORE),
-            )
-
-        match_previous = match_current
-        gap_target_previous = gap_target_current
-        gap_source_previous = gap_source_current
-
-    best = _choose_alignment_state(
-        match_previous[target_width],
-        gap_target_previous[target_width],
-        gap_source_previous[target_width],
+    source = _encode_alignment_sequence(source_sequence, field="source_sequence")
+    target = _encode_alignment_sequence(target_sequence, field="target_sequence")
+    return _calculate_encoded_global_sequence_identity(
+        source,
+        target,
     )
-    if best[0] == _NEGATIVE_INFINITY or best[2] <= 0:
+
+
+def _optional_cgroup_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
         raise ScientificPrerequisiteError(
-            "global_alignment_unresolved",
-            "the global alignment did not contain a residue-residue column",
+            "similarity_cpu_limit_unreadable",
+            "an available cgroup CPU constraint could not be read",
+            details={"path": str(path), "failure_type": type(exc).__name__},
+        ) from exc
+
+
+def _quota_worker_limit(quota: str, period: str, *, source: str) -> int | None:
+    if (
+        not period.isascii()
+        or not period.isdigit()
+        or int(period) <= 0
+    ):
+        raise ScientificPrerequisiteError(
+            "similarity_cpu_limit_invalid",
+            "an available cgroup CPU quota is malformed",
+            details={"source": source, "quota": quota, "period": period},
         )
-    return AlignmentIdentity(
-        alignment_score_half_units=best[0],
-        identity_matches=best[1],
-        identity_aligned_residues=best[2],
+    if quota in {"max", "-1"}:
+        return None
+    if not quota.isascii() or not quota.isdigit() or int(quota) <= 0:
+        raise ScientificPrerequisiteError(
+            "similarity_cpu_limit_invalid",
+            "an available cgroup CPU quota is malformed",
+            details={"source": source, "quota": quota, "period": period},
+        )
+    quota_value = int(quota)
+    period_value = int(period)
+    return max(1, (quota_value + period_value - 1) // period_value)
+
+
+def _cgroup_worker_limits() -> tuple[int, ...]:
+    limits: list[int] = []
+    v2 = _optional_cgroup_text(_CGROUP_V2_CPU_MAX_PATH)
+    if v2 is not None:
+        fields = v2.split()
+        if len(fields) != 2:
+            raise ScientificPrerequisiteError(
+                "similarity_cpu_limit_invalid",
+                "an available cgroup v2 cpu.max value is malformed",
+                details={"source": "cgroup_v2_cpu.max", "value": v2},
+            )
+        limit = _quota_worker_limit(
+            fields[0], fields[1], source="cgroup_v2_cpu.max"
+        )
+        if limit is not None:
+            limits.append(limit)
+
+    for quota_path, period_path in _CGROUP_V1_CPU_PATHS:
+        quota = _optional_cgroup_text(quota_path)
+        period = _optional_cgroup_text(period_path)
+        if quota is None and period is None:
+            continue
+        if quota is None or period is None:
+            raise ScientificPrerequisiteError(
+                "similarity_cpu_limit_invalid",
+                "an available cgroup v1 CPU quota is incomplete",
+                details={"source": str(quota_path.parent)},
+            )
+        limit = _quota_worker_limit(
+            quota, period, source="cgroup_v1_cpu.cfs_quota_us"
+        )
+        if limit is not None:
+            limits.append(limit)
+    return tuple(limits)
+
+
+def _alignment_worker_count(pair_count: int) -> int:
+    if pair_count < PARALLEL_PAIR_THRESHOLD:
+        return 1
+    try:
+        available = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):  # pragma: no cover - portability path
+        available = os.cpu_count() or 1
+    limits = [MAX_ALIGNMENT_WORKERS, max(1, available), pair_count]
+    limits.extend(_cgroup_worker_limits())
+    return max(1, min(limits))
+
+
+def _initialize_alignment_worker(
+    sequences: tuple[bytes, ...],
+    threshold_ppm: int,
+) -> None:
+    global _ALIGNMENT_WORKER_SEQUENCES
+    global _ALIGNMENT_WORKER_THRESHOLD_PPM
+    _ALIGNMENT_WORKER_SEQUENCES = sequences
+    _ALIGNMENT_WORKER_THRESHOLD_PPM = threshold_ppm
+    _PACKED_ALIGNER_CACHE.clear()
+    _ensure_alignment_backend()
+
+
+def _calculate_alignment_pair(
+    pair: tuple[int, int],
+) -> tuple[int, int, AlignmentIdentity] | None:
+    sequences = _ALIGNMENT_WORKER_SEQUENCES
+    threshold_ppm = _ALIGNMENT_WORKER_THRESHOLD_PPM
+    if sequences is None or threshold_ppm is None:
+        raise RuntimeError("AOX alignment worker was not initialized")
+    source_index, target_index = pair
+    identity = _calculate_encoded_global_sequence_identity(
+        sequences[source_index],
+        sequences[target_index],
     )
+    if not identity.passes_threshold(threshold_ppm):
+        return None
+    return source_index, target_index, identity
+
+
+def _pair_indexes(node_count: int) -> Iterator[tuple[int, int]]:
+    for source_index in range(node_count):
+        for target_index in range(source_index + 1, node_count):
+            yield source_index, target_index
+
+
+def _calculate_graph_identities(
+    encoded_sequences: tuple[bytes, ...],
+    *,
+    threshold_ppm: int,
+) -> tuple[tuple[int, int, AlignmentIdentity], ...]:
+    _ensure_alignment_backend()
+    pair_count = len(encoded_sequences) * (len(encoded_sequences) - 1) // 2
+    worker_count = _alignment_worker_count(pair_count)
+    if worker_count == 1:
+        results: list[tuple[int, int, AlignmentIdentity]] = []
+        for source_index, target_index in _pair_indexes(len(encoded_sequences)):
+            identity = _calculate_encoded_global_sequence_identity(
+                encoded_sequences[source_index],
+                encoded_sequences[target_index],
+            )
+            if identity.passes_threshold(threshold_ppm):
+                results.append((source_index, target_index, identity))
+        return tuple(results)
+
+    try:
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_initialize_alignment_worker,
+            initargs=(encoded_sequences, threshold_ppm),
+        ) as executor:
+            mapped = executor.map(
+                _calculate_alignment_pair,
+                _pair_indexes(len(encoded_sequences)),
+                chunksize=PARALLEL_PAIR_CHUNK_SIZE,
+            )
+            return tuple(result for result in mapped if result is not None)
+    except Exception as exc:
+        raise ScientificPrerequisiteError(
+            "similarity_parallel_execution_failed",
+            "bounded exact AOX pairwise alignment execution failed closed",
+            details={"failure_type": type(exc).__name__},
+        ) from exc
 
 
 def _verify_expected_input_digest(
@@ -1009,22 +1764,25 @@ def build_similarity_graph(
             "a non-empty candidate graph may not carry an empty-result reason",
         )
 
-    edges: list[GraphEdge] = []
-    for left_index, source in enumerate(nodes):
-        for target in nodes[left_index + 1 :]:
-            identity = calculate_global_sequence_identity(
-                source.sequence.sequence,
-                target.sequence.sequence,
-            )
-            if identity.passes_threshold(threshold_ppm):
-                edges.append(
-                    GraphEdge(
-                        source=source,
-                        target=target,
-                        identity=identity,
-                        threshold_ppm=threshold_ppm,
-                    )
-                )
+    encoded_sequences = tuple(
+        _encode_alignment_sequence(
+            node.sequence.sequence,
+            field=f"candidate_sequence[{node.sequence.sequence_id}]",
+        )
+        for node in nodes
+    )
+    edges = [
+        GraphEdge(
+            source=nodes[source_index],
+            target=nodes[target_index],
+            identity=identity,
+            threshold_ppm=threshold_ppm,
+        )
+        for source_index, target_index, identity in _calculate_graph_identities(
+            encoded_sequences,
+            threshold_ppm=threshold_ppm,
+        )
+    ]
 
     return SimilarityGraphResult(
         sequences=sequences,

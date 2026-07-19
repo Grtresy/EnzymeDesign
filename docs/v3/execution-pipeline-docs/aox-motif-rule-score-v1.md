@@ -62,6 +62,28 @@ Notebook 的 EBI HMMER 分页在第 58/1395 页附近发生 SSL 错误并被 `Ke
 
 旧实现逐次加 `-0.1`，数学上的 `33.6` 会变成 `33.599999999999994` 并被错误拒绝。以整数十分制重算当前 alignment 后，旧通过数 69 变为 520；和 filtered-hit 相交的旧候选数 68 变为 505，其中 451 条位于精确 336 边界。这是 correctional breaking change，不能通过兼容旧 pass flag 修补。
 
+## HMMER AFA 输入规范化
+
+Aligned FASTA 输入绑定 `hmmer_afa_alignment_canonicalization@1`。`input_digest`
+始终是规范化前完整输入 bytes 的 SHA-256；换行、大小写或 gap 字符不同都会保留为
+不同 raw identity。parser 按 LF 分割物理段，只有确实由 LF 终止的段才可剥掉一个
+紧邻 LF 的 CR。文件末尾 lone CR、重复 CR 或物理段中的其他 CR 都不得被解释为
+换行或静默删除。
+
+header 的 `>` 必须位于 raw column 0；前导空白后的 `>` 不是 header。显式空物理行
+可忽略，但空格或其他 whitespace 组成的非空行不是空行。每条非空 sequence 物理行
+必须在 strip、大小写转换或其他 Unicode 规范化之前完整匹配 ASCII
+`^[A-Za-z.-]+$`。因此前导、尾随或内部空格、Tab、NBSP、Unicode line separator、
+`ß`、`ſ` 和其他非 ASCII 字符全部 fail closed；它们不能借助 `.strip()`、
+`.upper()` 的 Unicode 扩张或 `splitlines()` 变成合法残基。
+
+通过 raw 校验后，仅执行两步 canonicalization：ASCII residue 转大写，然后把 HMMER
+AFA insert-column gap `.` 转为 canonical alignment gap `-`。所以仅在大小写或
+`.`/`-` 上不同的合法输入具有不同 `input_digest`，但产生相同 canonical aligned
+sequence、`aligned_sequence_digest`、`alignment_digest`、位点观察和评分 row。
+`alignment_digest` 是按 `sequence_id` 排序后的 canonical uppercase/hyphen-gap
+records 与 alignment width 的 canonical JSON SHA-256。
+
 ## 最小 golden 语义
 
 Tracked golden 从授权 alignment 中只提取三行，并删除三行均为 gap 的列；它不是 live input：
@@ -76,16 +98,32 @@ Tracked golden 从授权 alignment 中只提取三行，并删除三行均为 ga
 
 当前 tracked 实现身份为：
 
-- implementation digest：`sha256:0eb1c4a28160389b805d3b9a28b9d664cad532082a08df206e12ee5d09c9d0f7`
-- contract digest：`sha256:7f79044132e0f45afa5cb47776ad9c3bc10cea25c7c6de1007e50325ea49a086`
+- implementation digest：`sha256:795535d9d6c232a79bc9791f8c2780c2f4aa64b234b15a83deb8c76d3406871c`
+- contract digest：`sha256:71aff3b872aaef3254550db53c7554011923d19293f9c5837ddc4bb8ca0bec10`
 - golden input bytes：`sha256:f8fd28b9c1e6f7963a9ae4deb488b79ad1bbd00c3d3630e194f058f72be9ae29`
 - golden normalized alignment：`sha256:da5a3f49f3a03b985d143f262eb30b0967a50bbdf12cbe82d0eff0826afd0b9b`
-- golden canonical CSV：`sha256:4904c94f320674e7af61c8b7592ed34d3f6f7d0bfb7d942ae3ceafd867377df2`
+- golden canonical CSV：`sha256:8dde77f5cbf86d861b37da25fabb4cd68d2159e2a9e0304608ac28ee5ecd0cc9`
 
 implementation digest 会随 scorer 源码变化；任何有意修改都必须同时 bump contract 或重新 pin workflow/golden，未同步的 drift 必须在运行前失败。
 
+## 真实 AFA 只读预检（non-cutover）
+
+最终 parser/scorer 对一份真实 HMMER 3.4 AFA 做了普通 `/tmp` 只读预检。输入为
+`12,273,402` bytes、`2,562` records、alignment width `4,700`，raw/input digest
+为 `sha256:d72e36bc5c0431d8f3806eb4d0d0cadb51e7d3825c873610d8e4c0098eccf7a6`；
+规范化后的 alignment digest 为
+`sha256:2df12971eae2d83c390f22e689e04e493539cf6be2d79599f33823f0f52df836`，
+canonical sequence 中 `.` 计数为零。评分产生 `517` 条 total pass，其中包含坐标
+reference `AAB57849.1`；排除 reference 后是 `516` 条 non-reference pass。一次本地
+重放用时约 `0.507s`。
+
+这只证明最终代码能读取真实 HMMER `.` gap 输出并保持 raw/canonical digest 与计数
+口径。该 AFA 及其上游 bytes 位于普通 `/tmp`，没有 clean-root、sealed artifact、
+formal operation、provider、report、offline bundle 或 campaign closure，绝不是 positive
+attempt、cutover artifact 或 GO evidence，也不得被后续 live attempt adoption。
+
 ## Fail-closed 条件
 
-下列情况不得注册 cutover-eligible scored/candidate artifact：contract、implementation 或 golden digest 漂移；reference 缺失/重复/截断；alignment 不等宽或不可解析；规则列不可映射；filtered hit 和 alignment 身份集合不闭合；sequence digest 不一致；legacy-only schema；任何 row 的 residue、score 或 pass 无法重算；candidate/count/FASTA 不一致；CD-HIT 输入不是 candidate artifact；cluster membership 或 graph edge 无法由真实输出重建。
+下列情况不得注册 cutover-eligible scored/candidate artifact：contract、implementation 或 golden digest 漂移；reference 缺失/重复/截断；header 不在 raw column 0；lone/重复/非行终止 CR；sequence line 含 whitespace、非 ASCII、gap/residue 非法；alignment 不等宽或不可解析；规则列不可映射；filtered hit 和 alignment 身份集合不闭合；sequence digest 不一致；legacy-only schema；任何 row 的 residue、score 或 pass 无法重算；candidate/count/FASTA 不一致；CD-HIT 输入不是 candidate artifact；cluster membership 或 graph edge 无法由真实输出重建。
 
 真实 no-hit 或 zero-candidate 可以产生带 header 的规范空 artifact，但必须有完整 provider/tool operation、known-positive probe 和明确 empty-result 报告；它不能被描述为候选发现。

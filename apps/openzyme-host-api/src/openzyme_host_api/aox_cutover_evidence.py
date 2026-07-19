@@ -640,6 +640,24 @@ class VerificationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _SimilarityValidationParameters:
+    threshold_ppm: int
+    empty_result_reason: str | None
+    calculation_id: str
+    calculation_digest: str
+    implementation_digest: str
+    candidate_fasta_digest: str
+    membership_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedSimilarityGraph:
+    artifact_bindings: tuple[tuple[str, str, str], ...]
+    parameters: _SimilarityValidationParameters
+    graph_result: Any
+
+
+@dataclass(frozen=True, slots=True)
 class AttemptRunContext:
     roots: BlankWorldRoots
     identity: dict[str, str]
@@ -1912,7 +1930,7 @@ def verify_attempt_bundle(
                 artifact_map=artifact_map,
                 issues=issues,
             )
-            _verify_similarity(
+            verified_similarity = _verify_similarity(
                 payload,
                 artifact_root=artifact_root,
                 artifact_map=artifact_map,
@@ -1929,6 +1947,7 @@ def verify_attempt_bundle(
                 artifact_root=artifact_root,
                 artifact_map=artifact_map,
                 issues=issues,
+                verified_similarity=verified_similarity,
             )
             _verify_fault_injection(
                 payload,
@@ -7182,7 +7201,13 @@ def _verify_aox_operation_dag(
         "motif_filter_empty",
         "nonempty",
     }:
-        required_artifact_roles.update({"uniprot_sequences", "uniprot_metadata"})
+        required_artifact_roles.update(
+            {
+                "uniprot_sequences",
+                "uniprot_metadata",
+                "uniprot_raw_response",
+            }
+        )
     if (
         scientific_branch is None
         or not isinstance(operation_roles, dict)
@@ -8251,6 +8276,742 @@ def _verify_product_receipts(
         )
 
 
+def _provider_canonical_digest(payload: object) -> str:
+    return _sha256(
+        (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    )
+
+
+def _sequence_join_raw_issue(
+    issues: list[VerificationIssue],
+    *,
+    code: str,
+    identity: str,
+    message: str,
+) -> bool:
+    issues.append(
+        VerificationIssue(
+            code=code,
+            identity=identity,
+            message=message,
+        )
+    )
+    return False
+
+
+def _verify_uniprot_raw_sequence_join_closure(
+    payload: Mapping[str, Any],
+    *,
+    check: Mapping[str, Any],
+    artifact_root: Path,
+    artifact_map: Mapping[str, Mapping[str, Any]],
+    metadata_bytes: bytes,
+    issues: list[VerificationIssue],
+) -> bool:
+    raw_artifact_id = check.get("uniprot_raw_response_artifact_id")
+    if not isinstance(raw_artifact_id, str) or not raw_artifact_id:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_artifact_missing",
+            identity=(
+                "scientific_checks.sequence_join."
+                "uniprot_raw_response_artifact_id"
+            ),
+            message="sequence-join evidence lacks the exact UniProt raw response artifact",
+        )
+    scientific_checks = dict(payload.get("scientific_checks") or {})
+    chain = dict(scientific_checks.get("aox_chain") or {})
+    operation_roles = dict(chain.get("operation_roles") or {})
+    artifact_roles = dict(chain.get("artifact_roles") or {})
+    scientific_artifact_fields = {
+        "uniprot_raw_response_artifact_id": "uniprot_raw_response",
+        "uniprot_metadata_artifact_id": "uniprot_metadata",
+        "uniprot_fasta_artifact_id": "uniprot_sequences",
+    }
+    scientific_artifacts: dict[str, Mapping[str, Any]] = {}
+    scientific_artifact_ids: dict[str, str] = {}
+    for field, role in scientific_artifact_fields.items():
+        artifact_id = check.get(field)
+        artifact = (
+            artifact_map.get(artifact_id) if isinstance(artifact_id, str) else None
+        )
+        if not isinstance(artifact_id, str) or not artifact_id or artifact is None:
+            return _sequence_join_raw_issue(
+                issues,
+                code=(
+                    "sequence_join_raw_artifact_missing"
+                    if field == "uniprot_raw_response_artifact_id"
+                    else "sequence_join_raw_operation_mismatch"
+                ),
+                identity=f"scientific_checks.sequence_join.{field}",
+                message="one required UniProt scientific artifact is absent",
+            )
+        if artifact_roles.get(role) != artifact_id:
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_operation_mismatch",
+                identity=f"scientific_checks.aox_chain.artifact_roles.{role}",
+                message=(
+                    "sequence-join UniProt artifact does not equal its exact AOX "
+                    "scientific artifact role"
+                ),
+            )
+        scientific_artifacts[role] = artifact
+        scientific_artifact_ids[role] = artifact_id
+    if len(set(scientific_artifact_ids.values())) != len(scientific_artifact_ids):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_operation_mismatch",
+            identity="scientific_checks.sequence_join",
+            message="UniProt raw, metadata, and FASTA roles must be distinct artifacts",
+        )
+    raw_artifact = scientific_artifacts["uniprot_raw_response"]
+
+    uniprot_operation_id = operation_roles.get("uniprot_fetch")
+    if not isinstance(uniprot_operation_id, str) or not uniprot_operation_id:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_operation_mismatch",
+            identity="scientific_checks.aox_chain.operation_roles.uniprot_fetch",
+            message="sequence-join raw evidence lacks its formal UniProt operation",
+        )
+    operations = [
+        item
+        for item in payload.get("operations") or []
+        if isinstance(item, dict)
+        and item.get("operation_id") == uniprot_operation_id
+    ]
+    providers = [
+        item
+        for item in payload.get("provider_identities") or []
+        if isinstance(item, dict) and item.get("provider") == "uniprot"
+    ]
+    if len(operations) != 1 or len(providers) != 1:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_operation_mismatch",
+            identity=f"artifact:{raw_artifact_id}",
+            message="UniProt raw evidence does not resolve to one operation/provider closure",
+        )
+    operation = operations[0]
+    provider = providers[0]
+    # The online collector excludes provider_request.json and
+    # provider_observation.json before it projects formal provider outputs.
+    # Consequently every output ref present here is part of the scientific set.
+    raw_output_refs = operation.get("outputs")
+    output_refs_valid = isinstance(raw_output_refs, list) and all(
+        isinstance(ref, dict) for ref in raw_output_refs
+    )
+    output_refs = list(raw_output_refs) if output_refs_valid else []
+    expected_artifact_ids = set(scientific_artifact_ids.values())
+    scientific_output_ids = [
+        str(ref.get("artifact_id") or "") for ref in output_refs
+    ]
+    raw_provider_artifact_ids = provider.get("artifact_ids")
+    provider_artifact_ids_valid = isinstance(
+        raw_provider_artifact_ids, list
+    ) and all(
+        isinstance(artifact_id, str) and artifact_id
+        for artifact_id in raw_provider_artifact_ids
+    )
+    provider_artifact_ids = (
+        list(raw_provider_artifact_ids) if provider_artifact_ids_valid else []
+    )
+    if (
+        operation.get("scope") != "formal"
+        or operation.get("status") != "completed"
+        or provider.get("operation_id") != uniprot_operation_id
+        or provider.get("status") != "completed"
+        or provider.get("canonical_ref_kind") != "controlled_operation"
+        or _DIGEST_PATTERN.fullmatch(str(operation.get("params_digest") or ""))
+        is None
+        or provider.get("request_digest") != operation.get("params_digest")
+        or not output_refs_valid
+        or not provider_artifact_ids_valid
+        or len(provider_artifact_ids) != len(expected_artifact_ids)
+        or set(provider_artifact_ids) != expected_artifact_ids
+        or any(
+            provider_artifact_ids.count(artifact_id) != 1
+            for artifact_id in expected_artifact_ids
+        )
+        or len(scientific_output_ids) != len(expected_artifact_ids)
+        or set(scientific_output_ids) != expected_artifact_ids
+        or any(
+            scientific_output_ids.count(artifact_id) != 1
+            for artifact_id in expected_artifact_ids
+        )
+        or any(
+            artifact.get("scope") != "formal"
+            or artifact.get("origin") != "operation"
+            or dict(artifact.get("provenance") or {}).get("operation_id")
+            != uniprot_operation_id
+            for artifact in scientific_artifacts.values()
+        )
+        or any(
+            next(
+                ref
+                for ref in output_refs
+                if ref.get("artifact_id") == artifact_id
+            ).get("content_digest")
+            != scientific_artifacts[role].get("content_digest")
+            for role, artifact_id in scientific_artifact_ids.items()
+        )
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_operation_mismatch",
+            identity=f"artifact:{raw_artifact_id}",
+            message=(
+                "UniProt raw response artifact is outside its exact formal "
+                "provider-operation output closure"
+            ),
+        )
+
+    try:
+        metadata = _strict_json_loads(metadata_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_metadata_invalid",
+            identity="scientific_checks.sequence_join.uniprot_metadata_artifact_id",
+            message="UniProt metadata is not strict duplicate-free JSON",
+        )
+    if not isinstance(metadata, dict):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_metadata_invalid",
+            identity="scientific_checks.sequence_join.uniprot_metadata_artifact_id",
+            message="UniProt metadata must be a JSON object",
+        )
+    requested_accessions = metadata.get("requested_accessions")
+    active_records = metadata.get("records")
+    inactive_records = metadata.get("inactive_records")
+    if (
+        not isinstance(requested_accessions, list)
+        or not requested_accessions
+        or not all(
+            isinstance(accession, str)
+            and accession
+            and accession == accession.strip().upper()
+            for accession in requested_accessions
+        )
+        or len(requested_accessions) != len(set(requested_accessions))
+        or not isinstance(active_records, list)
+        or not all(isinstance(record, dict) for record in active_records)
+        or not isinstance(inactive_records, list)
+        or not all(isinstance(record, dict) for record in inactive_records)
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_metadata_invalid",
+            identity="scientific_checks.sequence_join.uniprot_metadata_artifact_id",
+            message="UniProt metadata lacks one closed requested active/inactive partition",
+        )
+    requested_set = set(requested_accessions)
+    operation_parameters = operation.get("parameters")
+    operation_accessions = (
+        operation_parameters.get("accessions")
+        if isinstance(operation_parameters, dict)
+        else None
+    )
+    if operation_accessions != requested_accessions:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_operation_mismatch",
+            identity=f"operation:{uniprot_operation_id}",
+            message="UniProt operation accessions differ from the sealed metadata request order",
+        )
+
+    try:
+        raw_content = _resolve_artifact_path(
+            artifact_root,
+            str(raw_artifact.get("relative_path") or ""),
+        ).read_bytes()
+        raw_envelope = _strict_json_loads(raw_content.decode("utf-8"))
+    except (CutoverEvidenceError, OSError, UnicodeDecodeError, ValueError):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_response_invalid",
+            identity=f"artifact:{raw_artifact_id}",
+            message="UniProt raw response envelope is not strict duplicate-free JSON",
+        )
+    if (
+        not isinstance(raw_envelope, dict)
+        or set(raw_envelope)
+        != {"schema_id", "provider", "operation", "responses"}
+        or raw_envelope.get("schema_id") != "provider_raw_http_response_set@1"
+        or raw_envelope.get("provider") != "uniprot"
+        or raw_envelope.get("operation") != "bio.uniprot_fetch"
+        or not isinstance(raw_envelope.get("responses"), list)
+        or not raw_envelope["responses"]
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_response_invalid",
+            identity=f"artifact:{raw_artifact_id}",
+            message="UniProt raw response envelope has the wrong closed schema or identity",
+        )
+
+    response_digests: list[str] = []
+    release_headers: list[object] = []
+    release_date_headers: list[object] = []
+    raw_results: list[dict[str, Any]] = []
+    response_keys = {
+        "ordinal",
+        "phase",
+        "status_code",
+        "headers",
+        "body_encoding",
+        "body_base64",
+        "body_digest",
+        "size_bytes",
+    }
+    for ordinal, response in enumerate(raw_envelope["responses"], start=1):
+        if not isinstance(response, dict) or set(response) != response_keys:
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_response_invalid",
+                identity=f"artifact:{raw_artifact_id}:response:{ordinal}",
+                message="UniProt raw response record has an open or malformed schema",
+            )
+        encoded = response.get("body_base64")
+        try:
+            body = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_response_invalid",
+                identity=f"artifact:{raw_artifact_id}:response:{ordinal}",
+                message="UniProt raw response body is not canonical base64",
+            )
+        body_digest = _sha256(body)
+        status_code = response.get("status_code")
+        if (
+            response.get("ordinal") != ordinal
+            or response.get("phase") != f"page:{ordinal}"
+            or isinstance(status_code, bool)
+            or not isinstance(status_code, int)
+            or not 200 <= status_code < 300
+            or not isinstance(response.get("headers"), dict)
+            or response.get("body_encoding") != "base64"
+            or encoded != base64.b64encode(body).decode("ascii")
+            or response.get("size_bytes") != len(body)
+            or response.get("body_digest") != body_digest
+        ):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_response_invalid",
+                identity=f"artifact:{raw_artifact_id}:response:{ordinal}",
+                message="UniProt raw response size, digest, order, or status is inconsistent",
+            )
+        try:
+            body_payload = _strict_json_loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_response_invalid",
+                identity=f"artifact:{raw_artifact_id}:response:{ordinal}:body",
+                message="UniProt raw response body is not strict duplicate-free JSON",
+            )
+        if (
+            not isinstance(body_payload, dict)
+            or not isinstance(body_payload.get("results"), list)
+            or not all(isinstance(result, dict) for result in body_payload["results"])
+        ):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_response_invalid",
+                identity=f"artifact:{raw_artifact_id}:response:{ordinal}:body",
+                message="UniProt raw response body lacks a results array of objects",
+            )
+        response_digests.append(body_digest)
+        headers = response["headers"]
+        release_headers.append(headers.get("x-uniprot-release"))
+        release_date_headers.append(headers.get("x-uniprot-release-date"))
+        for result in body_payload["results"]:
+            raw_results.append(
+                {
+                    "result": result,
+                    "response_digest": body_digest,
+                }
+            )
+
+    if (
+        not all(
+            isinstance(value, str) and value and value == value.strip()
+            for value in release_headers
+        )
+        or len(set(release_headers)) != 1
+        or metadata.get("uniprot_release") != release_headers[0]
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_release_mismatch",
+            identity="scientific_checks.sequence_join",
+            message=(
+                "UniProt metadata release does not equal one required value on "
+                "every raw response page"
+            ),
+        )
+    present_release_dates = [
+        value
+        for value in release_date_headers
+        if isinstance(value, str) and value
+    ]
+    release_dates_valid = (
+        not present_release_dates
+        and all(value is None for value in release_date_headers)
+        and metadata.get("uniprot_release_date") is None
+    ) or (
+        len(present_release_dates) == len(release_date_headers)
+        and all(value == value.strip() for value in present_release_dates)
+        and len(set(present_release_dates)) == 1
+        and metadata.get("uniprot_release_date") == present_release_dates[0]
+    )
+    if not release_dates_valid:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_release_mismatch",
+            identity="scientific_checks.sequence_join",
+            message=(
+                "optional UniProt release-date header is partial, inconsistent, "
+                "or differs from metadata"
+            ),
+        )
+
+    declared_response_digests = metadata.get("response_digests")
+    if (
+        declared_response_digests != response_digests
+        or metadata.get("aggregate_response_digest")
+        != _provider_canonical_digest(response_digests)
+        or provider.get("response_digest") != response_digests[-1]
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_response_digest_mismatch",
+            identity="scientific_checks.sequence_join",
+            message=(
+                "UniProt metadata/provider receipt does not reproduce the ordered raw "
+                "response digest chain"
+            ),
+        )
+
+    try:
+        from openzyme_engines.execution import _sanitize_provider_value
+    except ImportError:
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_record_mismatch",
+            identity="scientific_checks.sequence_join",
+            message="UniProt provider record sanitizer is unavailable offline",
+        )
+
+    reviewed_by_active_entry_type = {
+        "UniProtKB reviewed (Swiss-Prot)": True,
+        "UniProtKB unreviewed (TrEMBL)": False,
+    }
+    raw_by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_record in raw_results:
+        result = dict(raw_record["result"])
+        primary_accession = result.get("primaryAccession")
+        entry_type = result.get("entryType")
+        if (
+            not isinstance(primary_accession, str)
+            or not primary_accession
+            or primary_accession != primary_accession.strip().upper()
+            or not isinstance(entry_type, str)
+            or not entry_type
+        ):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"artifact:{raw_artifact_id}:raw_result",
+                message="UniProt raw result lacks canonical primary/discriminator identity",
+            )
+        inactive = entry_type == "Inactive"
+        if inactive:
+            if "sequence" in result or "entryAudit" in result:
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                    message="inactive UniProt raw result carries forbidden sequence/audit",
+                )
+            requested_accession = primary_accession
+            if requested_accession not in requested_set:
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                    message="inactive UniProt raw result does not equal one requested primary",
+                )
+        else:
+            expected_reviewed = reviewed_by_active_entry_type.get(entry_type)
+            explicit_reviewed = result.get("reviewed")
+            if (
+                expected_reviewed is None
+                or "inactiveReason" in result
+                or (
+                    explicit_reviewed is not None
+                    and (
+                        not isinstance(explicit_reviewed, bool)
+                        or explicit_reviewed is not expected_reviewed
+                    )
+                )
+            ):
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                    message=(
+                        "active UniProt raw result has an unsupported entry type, "
+                        "inactive reason, or reviewed discriminator"
+                    ),
+                )
+            secondary_accessions = result.get("secondaryAccessions") or []
+            if not isinstance(secondary_accessions, list) or not all(
+                isinstance(accession, str) for accession in secondary_accessions
+            ):
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                    message="active UniProt raw result has malformed secondary identity",
+                )
+            normalized_secondary = [
+                accession.strip().upper() for accession in secondary_accessions
+            ]
+            matches = list(
+                dict.fromkeys(
+                    accession
+                    for accession in [primary_accession, *normalized_secondary]
+                    if accession in requested_set
+                )
+            )
+            if len(matches) != 1:
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                    message="active UniProt raw result does not map to exactly one request",
+                )
+            requested_accession = matches[0]
+        identity = (requested_accession, primary_accession)
+        if identity in raw_by_identity:
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                message="UniProt raw results duplicate one requested/primary identity",
+            )
+        sanitized = _sanitize_provider_value(result)
+        if not isinstance(sanitized, dict):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"artifact:{raw_artifact_id}:{primary_accession}",
+                message="UniProt raw result cannot be canonically sanitized",
+            )
+        provider_metadata = dict(sanitized)
+        provider_metadata.pop("sequence", None)
+        raw_by_identity[identity] = {
+            "active": not inactive,
+            "entry_type": entry_type,
+            "reviewed": (
+                None
+                if inactive
+                else reviewed_by_active_entry_type[entry_type]
+            ),
+            "inactive_reason": result.get("inactiveReason"),
+            "sequence": result.get("sequence"),
+            "provider_metadata": provider_metadata,
+            "record_digest": _provider_canonical_digest(sanitized),
+            "response_digest": raw_record["response_digest"],
+        }
+
+    metadata_by_identity: dict[tuple[str, str], tuple[dict[str, Any], bool]] = {}
+    for active, records in ((True, active_records), (False, inactive_records)):
+        for record in records:
+            requested_accession = record.get("requested_accession")
+            primary_accession = record.get("primary_accession")
+            if (
+                not isinstance(requested_accession, str)
+                or requested_accession not in requested_set
+                or not isinstance(primary_accession, str)
+                or not primary_accession
+            ):
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity="scientific_checks.sequence_join.uniprot_metadata",
+                    message="UniProt metadata record has malformed requested/primary identity",
+                )
+            identity = (requested_accession, primary_accession)
+            if identity in metadata_by_identity:
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"scientific_checks.sequence_join:{primary_accession}",
+                    message="UniProt metadata duplicates one requested/primary identity",
+                )
+            if active:
+                metadata_entry_type = record.get("entry_type")
+                expected_reviewed = (
+                    reviewed_by_active_entry_type.get(metadata_entry_type)
+                    if isinstance(metadata_entry_type, str)
+                    else None
+                )
+                discriminator_valid = (
+                    expected_reviewed is not None
+                    and record.get("reviewed") is expected_reviewed
+                    and "inactive_reason" not in record
+                )
+            else:
+                reason = record.get("inactive_reason")
+                discriminator_valid = (
+                    requested_accession == primary_accession
+                    and record.get("entry_type") == "Inactive"
+                    and isinstance(reason, dict)
+                    and reason.get("inactive_reason_type") in {"DELETED", "MERGED"}
+                )
+            if not discriminator_valid:
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_record_mismatch",
+                    identity=f"scientific_checks.sequence_join:{primary_accession}",
+                    message="UniProt metadata active/inactive discriminator is inconsistent",
+                )
+            metadata_by_identity[identity] = (record, active)
+
+    if (
+        set(metadata_by_identity) != set(raw_by_identity)
+        or {identity[0] for identity in metadata_by_identity} != requested_set
+        or len(metadata_by_identity) != len(requested_accessions)
+        or metadata.get("active_record_count") != len(active_records)
+        or metadata.get("inactive_record_count") != len(inactive_records)
+    ):
+        return _sequence_join_raw_issue(
+            issues,
+            code="sequence_join_raw_record_mismatch",
+            identity="scientific_checks.sequence_join",
+            message="UniProt raw results and metadata do not form one exact identity partition",
+        )
+
+    for identity, (record, active) in metadata_by_identity.items():
+        raw_record = raw_by_identity[identity]
+        if (
+            raw_record["active"] is not active
+            or record.get("entry_type") != raw_record["entry_type"]
+            or (active and record.get("reviewed") is not raw_record["reviewed"])
+            or record.get("record_digest") != raw_record["record_digest"]
+            or record.get("response_digest") != raw_record["response_digest"]
+            or record.get("provider_metadata") != raw_record["provider_metadata"]
+        ):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"scientific_checks.sequence_join:{identity[1]}",
+                message="UniProt metadata record does not reproduce its unique raw result",
+            )
+        if active:
+            sequence_payload = raw_record["sequence"]
+            sequence_value = (
+                sequence_payload.get("value")
+                if isinstance(sequence_payload, dict)
+                else None
+            )
+            declared_length = (
+                sequence_payload.get("length")
+                if isinstance(sequence_payload, dict)
+                else None
+            )
+            sequence = (
+                sequence_value.strip().upper()
+                if isinstance(sequence_value, str)
+                else ""
+            )
+            if (
+                not sequence
+                or re.fullmatch(r"[A-Z*.-]+", sequence) is None
+                or isinstance(declared_length, bool)
+                or not isinstance(declared_length, int)
+                or declared_length != len(sequence)
+                or record.get("sequence_length") != len(sequence)
+                or record.get("sequence_digest")
+                != _sha256(sequence.encode("utf-8"))
+            ):
+                return _sequence_join_raw_issue(
+                    issues,
+                    code="sequence_join_raw_sequence_mismatch",
+                    identity=f"scientific_checks.sequence_join:{identity[1]}",
+                    message=(
+                        "active UniProt raw sequence bytes/length differ from the "
+                        "metadata identity consumed by the FASTA join"
+                    ),
+                )
+            continue
+        raw_reason = raw_record["inactive_reason"]
+        metadata_reason = record.get("inactive_reason")
+        if not isinstance(raw_reason, dict) or not isinstance(metadata_reason, dict):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"scientific_checks.sequence_join:{identity[1]}",
+                message="inactive UniProt reason is missing from raw or metadata evidence",
+            )
+        reason_type = raw_reason.get("inactiveReasonType")
+        if reason_type != metadata_reason.get("inactive_reason_type"):
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"scientific_checks.sequence_join:{identity[1]}",
+                message="inactive UniProt reason discriminator differs from the raw result",
+            )
+        if reason_type == "DELETED":
+            reason_valid = metadata_reason == {
+                "inactive_reason_type": "DELETED",
+                "deleted_reason": raw_reason.get("deletedReason"),
+            }
+        elif reason_type == "MERGED":
+            raw_targets = raw_reason.get("mergeDemergeTo")
+            expected_annotations = (
+                [
+                    {
+                        "annotation_type": "provider_inactive_replacement",
+                        "source_database": "uniprotkb",
+                        "source_accession": identity[0],
+                        "target_database": "uniprotkb",
+                        "target_accession": target,
+                        "relationship": "merged_into",
+                        "identity_replaced": False,
+                        "target_followed": False,
+                    }
+                    for target in sorted(raw_targets)
+                ]
+                if isinstance(raw_targets, list)
+                and raw_targets
+                and all(isinstance(target, str) for target in raw_targets)
+                else None
+            )
+            reason_valid = metadata_reason == {
+                "inactive_reason_type": "MERGED",
+                "replacement_target_annotations": expected_annotations,
+            }
+        else:
+            reason_valid = False
+        if not reason_valid:
+            return _sequence_join_raw_issue(
+                issues,
+                code="sequence_join_raw_record_mismatch",
+                identity=f"scientific_checks.sequence_join:{identity[1]}",
+                message=(
+                    "inactive UniProt reason or MERGED non-follow annotation differs "
+                    "from the raw result"
+                ),
+            )
+    return True
+
+
 def _verify_sequence_join(
     payload: Mapping[str, Any],
     *,
@@ -8323,6 +9084,15 @@ def _verify_sequence_join(
                 )
             )
     if len(resolved) != len(artifact_fields):
+        return
+    if not _verify_uniprot_raw_sequence_join_closure(
+        payload,
+        check=check,
+        artifact_root=artifact_root,
+        artifact_map=artifact_map,
+        metadata_bytes=resolved["uniprot_metadata"],
+        issues=issues,
+    ):
         return
     try:
         from openzyme_pipeline import aox_hmmer, aox_sequence_join
@@ -8462,13 +9232,77 @@ def _verify_scoring(
         )
 
 
+_SIMILARITY_ARTIFACT_FIELDS = (
+    ("candidate_fasta_artifact_id", "candidate_fasta"),
+    ("membership_artifact_id", "membership_csv"),
+    ("nodes_artifact_id", "nodes_csv"),
+    ("edges_artifact_id", "edges_csv"),
+    ("manifest_artifact_id", "manifest_json"),
+)
+
+
+def _similarity_validation_parameters(
+    similarity: Mapping[str, Any],
+) -> _SimilarityValidationParameters:
+    return _SimilarityValidationParameters(
+        threshold_ppm=int(similarity.get("threshold_ppm")),
+        empty_result_reason=(
+            None
+            if similarity.get("empty_result_reason") is None
+            else str(similarity.get("empty_result_reason"))
+        ),
+        calculation_id=str(similarity.get("calculation_id") or ""),
+        calculation_digest=str(similarity.get("calculation_digest") or ""),
+        implementation_digest=str(similarity.get("implementation_digest") or ""),
+        candidate_fasta_digest=str(similarity.get("candidate_fasta_digest") or ""),
+        membership_digest=str(similarity.get("membership_digest") or ""),
+    )
+
+
+def _similarity_artifact_bindings(
+    similarity: Mapping[str, Any],
+    resolved: Mapping[str, bytes],
+) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (
+            field,
+            str(similarity.get(field) or ""),
+            _sha256(resolved[label]),
+        )
+        for field, label in _SIMILARITY_ARTIFACT_FIELDS
+    )
+
+
+def _validate_similarity_graph(
+    resolved: Mapping[str, bytes],
+    *,
+    parameters: _SimilarityValidationParameters,
+) -> Any:
+    from openzyme_pipeline import aox_similarity
+
+    return aox_similarity.validate_graph_artifacts(
+        resolved["candidate_fasta"],
+        resolved["membership_csv"],
+        resolved["nodes_csv"],
+        resolved["edges_csv"],
+        resolved["manifest_json"],
+        threshold_ppm=parameters.threshold_ppm,
+        empty_result_reason=parameters.empty_result_reason,
+        expected_calculation_id=parameters.calculation_id,
+        expected_calculation_digest=parameters.calculation_digest,
+        expected_implementation_digest=parameters.implementation_digest,
+        expected_candidate_fasta_digest=parameters.candidate_fasta_digest,
+        expected_membership_digest=parameters.membership_digest,
+    )
+
+
 def _verify_similarity(
     payload: Mapping[str, Any],
     *,
     artifact_root: Path,
     artifact_map: Mapping[str, Mapping[str, Any]],
     issues: list[VerificationIssue],
-) -> None:
+) -> _VerifiedSimilarityGraph | None:
     scientific_checks = dict(payload.get("scientific_checks") or {})
     similarity = scientific_checks.get("similarity")
     eligible_positive = (
@@ -8495,15 +9329,8 @@ def _verify_similarity(
             )
         )
         return
-    artifact_fields = {
-        "candidate_fasta_artifact_id": "candidate_fasta",
-        "membership_artifact_id": "membership_csv",
-        "nodes_artifact_id": "nodes_csv",
-        "edges_artifact_id": "edges_csv",
-        "manifest_artifact_id": "manifest_json",
-    }
     resolved: dict[str, bytes] = {}
-    for field, label in artifact_fields.items():
+    for field, label in _SIMILARITY_ARTIFACT_FIELDS:
         artifact_id = str(similarity.get(field) or "")
         artifact = artifact_map.get(artifact_id)
         if artifact is None:
@@ -8528,32 +9355,13 @@ def _verify_similarity(
                     message=f"similarity artifact bytes are unavailable: {type(exc).__name__}",
                 )
             )
-    if len(resolved) != len(artifact_fields):
+    if len(resolved) != len(_SIMILARITY_ARTIFACT_FIELDS):
         return
     try:
-        from openzyme_pipeline import aox_similarity
-
-        aox_similarity.validate_graph_artifacts(
-            resolved["candidate_fasta"],
-            resolved["membership_csv"],
-            resolved["nodes_csv"],
-            resolved["edges_csv"],
-            resolved["manifest_json"],
-            threshold_ppm=int(similarity.get("threshold_ppm")),
-            empty_result_reason=(
-                None
-                if similarity.get("empty_result_reason") is None
-                else str(similarity.get("empty_result_reason"))
-            ),
-            expected_calculation_id=str(similarity.get("calculation_id") or ""),
-            expected_calculation_digest=str(similarity.get("calculation_digest") or ""),
-            expected_implementation_digest=str(
-                similarity.get("implementation_digest") or ""
-            ),
-            expected_candidate_fasta_digest=str(
-                similarity.get("candidate_fasta_digest") or ""
-            ),
-            expected_membership_digest=str(similarity.get("membership_digest") or ""),
+        parameters = _similarity_validation_parameters(similarity)
+        graph_result = _validate_similarity_graph(
+            resolved,
+            parameters=parameters,
         )
     except Exception as exc:
         details = getattr(exc, "details", {})
@@ -8571,6 +9379,12 @@ def _verify_similarity(
                 ),
             )
         )
+        return None
+    return _VerifiedSimilarityGraph(
+        artifact_bindings=_similarity_artifact_bindings(similarity, resolved),
+        parameters=parameters,
+        graph_result=graph_result,
+    )
 
 
 def _verify_scientific_outcome(
@@ -8579,6 +9393,7 @@ def _verify_scientific_outcome(
     artifact_root: Path,
     artifact_map: Mapping[str, Mapping[str, Any]],
     issues: list[VerificationIssue],
+    verified_similarity: _VerifiedSimilarityGraph | None,
 ) -> None:
     outcome = dict(payload.get("scientific_outcome") or {})
     eligible_positive = (
@@ -8651,7 +9466,7 @@ def _verify_scientific_outcome(
         )
         return
     try:
-        from openzyme_pipeline import aox_motif, aox_similarity
+        from openzyme_pipeline import aox_motif
 
         scoring_result = aox_motif.score_aligned_fasta(
             resolved["alignment"],
@@ -8662,28 +9477,29 @@ def _verify_scientific_outcome(
             ),
             expected_input_digest=str(scoring.get("input_digest") or ""),
         )
-        graph_result = aox_similarity.validate_graph_artifacts(
-            resolved["candidates"],
-            resolved["membership"],
-            resolved["nodes"],
-            resolved["edges"],
-            resolved["manifest"],
-            threshold_ppm=int(similarity.get("threshold_ppm")),
-            empty_result_reason=(
-                None
-                if similarity.get("empty_result_reason") is None
-                else str(similarity.get("empty_result_reason"))
-            ),
-            expected_calculation_id=str(similarity.get("calculation_id") or ""),
-            expected_calculation_digest=str(similarity.get("calculation_digest") or ""),
-            expected_implementation_digest=str(
-                similarity.get("implementation_digest") or ""
-            ),
-            expected_candidate_fasta_digest=str(
-                similarity.get("candidate_fasta_digest") or ""
-            ),
-            expected_membership_digest=str(similarity.get("membership_digest") or ""),
+        similarity_resolved = {
+            "candidate_fasta": resolved["candidates"],
+            "membership_csv": resolved["membership"],
+            "nodes_csv": resolved["nodes"],
+            "edges_csv": resolved["edges"],
+            "manifest_json": resolved["manifest"],
+        }
+        parameters = _similarity_validation_parameters(similarity)
+        artifact_bindings = _similarity_artifact_bindings(
+            similarity,
+            similarity_resolved,
         )
+        if (
+            verified_similarity is not None
+            and verified_similarity.parameters == parameters
+            and verified_similarity.artifact_bindings == artifact_bindings
+        ):
+            graph_result = verified_similarity.graph_result
+        else:
+            graph_result = _validate_similarity_graph(
+                similarity_resolved,
+                parameters=parameters,
+            )
     except Exception as exc:
         issues.append(
             VerificationIssue(

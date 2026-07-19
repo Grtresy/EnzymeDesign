@@ -331,12 +331,14 @@ that is itself invalid/oversized, or cannot be safely extracted, yields
 
 The follow-up UniProt correction is also bounded and keeps the public SDK call,
 approval, and durable controlled-operation identity singular. Under
-`provider_config:uniprot:v2`, one operation accepts at most `100000` accessions
+`provider_config:uniprot:v3` / `uniprot_primary_sequence_identity@2`, one
+operation accepts at most `100000` accessions
 and partitions them into fixed provider queries of at most `100`; SDK
 `batch_size` still means response-page size (maximum `100`), while each query
 has its own `100`-page `Link: rel=next` cap. Approval resource facts include
-accession count and estimated query count before I/O, so the r15 set projects
-`37722` accessions and `378` internal queries—not 378 operations or approvals.
+accession count and estimated query count before I/O. The historical gapped r15
+set projected `37722` accessions; the corrected complete current set projects
+`37772`. Both require `378` internal queries—not 378 operations or approvals.
 The transcript binds each query/page index, accession range/count/digest and
 response digest. Duplicate detection uses a frequency-map scan rather than a
 quadratic repeated scan. Because the input is already primary UniProt
@@ -358,6 +360,74 @@ Each `Link: rel=next` must also remain on exact HTTPS
 `rest.uniprot.org[:443]/uniprotkb/search`, without userinfo or fragment. A
 malformed or off-origin link stops as `provider_schema_drift`; safe diagnostics
 seal only the link digest and fixed expected endpoint, never the candidate URL.
+
+The current identity result must partition every requested accession exactly
+into strict active sequence records and exact-requested typed inactive records.
+An active provider result must use only the exact provider `entryType` values
+`UniProtKB reviewed (Swiss-Prot)` or `UniProtKB unreviewed (TrEMBL)`; these map
+to `reviewed=true` and `reviewed=false`, respectively. If a separate `reviewed`
+field is present it must be a boolean equal to that derivation. An active result
+with `inactiveReason`, an inactive entry type, or any other entry-type/reviewed
+combination fails closed.
+The supported inactive discriminated union is `DELETED|MERGED`: deleted records
+retain a non-empty canonical deletion reason, while merged records retain
+non-empty unique replacement-target annotations. Both variants retain UniParc
+id, release/retrieval, response digest, and record digest, contain no sequence
+or entry audit, and are never followed, fetched, or replaced. The downstream
+join mapping fixes `identity_replaced=false` for either variant and every
+MERGED target annotation additionally fixes `target_followed=false`. Unknown,
+`DEMERGED`, or malformed inactive
+status, active-without-sequence, a missing identity, or partition drift remains
+fail closed. UniProt HTTP failures attach only safe query-batch
+index/count/start/count/digest and bounded completed/requested page progress;
+raw URLs, accession values/lists, and cursors do not enter the error.
+
+For every cutover-eligible positive with a non-empty HMMER-derived accession
+set, `scientific_checks.sequence_join.uniprot_raw_response_artifact_id` is
+required. It must identify one artifact in the exact formal `uniprot_fetch`
+operation outputs and in that operation's UniProt provider receipt, with
+matching artifact provenance and digest. The provider receipt's
+`request_digest` must equal that same operation's `params_digest`, where the
+digest is recomputed from its sealed canonical parameters. Exactly three
+distinct same-operation artifacts must close both the completed operation
+outputs and completed provider receipt `artifact_ids`, once each, with no
+additional or missing member: roles `uniprot_raw_response`,
+`uniprot_metadata`, and `uniprot_sequences`. Their formal scope, origin
+operation, content digest, and role mapping must agree; request, observation,
+or error diagnostic artifacts cannot be substituted or mixed into this set.
+The offline verifier accepts only the
+closed four-key `provider_raw_http_response_set@1` envelope and closed eight-key
+response records, then replays response order, canonical base64, byte size,
+status and body digest from the sanitized header/body bytes. Every page must
+carry one identical non-empty `x-uniprot-release` equal to provider metadata;
+`x-uniprot-release-date` must either be absent on every page with null metadata,
+or present identically on every page and equal metadata.
+
+The verifier rebuilds the requested/primary raw-result-to-metadata bijection
+with the engine sanitizer. Unrelated future raw result fields are allowed only
+because the complete sanitized non-sequence object is retained in
+`provider_metadata`, while `record_digest` binds the complete sanitized result;
+the diagnostic exact-five inactive shape is not a future field allowlist.
+Active `sequence.value` is normalized with `strip().upper()`,
+must contain only accepted protein symbols, and must agree with raw length plus
+metadata sequence length/digest before the existing FASTA join is recomputed.
+Inactive raw results must contain neither `sequence` nor `entryAudit`; their
+exact DELETED reason or MERGED non-follow annotations must reproduce metadata.
+
+The EBI HMMER route keeps `bio.hmmer_search.provider:v1` while
+`provider_config:ebi_hmmer:v2` defaults and caps result `page_size` at `1000`.
+Polling explicitly binds `page=1&page_size=<configured>` but consumes terminal
+payload only as status and `stats.nreported`. Result bytes always begin at a
+separate explicit page 1 with the same width; every page repeats one stable
+non-negative `page_count`. A non-truncated raw result must equal terminal
+`nreported`, while SUCCESS empty is exactly
+`nreported=0/page_count=0/hits=[]`. Terminal-poll hits never count as result
+page 1, and `max_hits`, ordering, and parsing remain unchanged.
+
+After a sandbox provider request draft exists, a `PipelineSdkFailure` seals the
+request/observation/error diagnostic trio through the same artifact boundary,
+then retains its canonical code/stage/retryability with safe refs. This does not
+retry or replay the operation and does not change the fixed 17 deliverables.
 
 Public-safety validation now distinguishes the four exact AOX logical manifest
 suffixes (`/provider_parsed/metadata.json`,
@@ -559,6 +629,178 @@ This does not split the 37,722-accession request into multiple controlled
 operations and does not implement durable asynchronous controlled-operation
 continuation; that larger design remains outside this Goal.
 
+r25 pinned commit `6b9ac473fe01376d144ae800352a06e5d016223c` and remains
+permanently **NO-GO** for two independent scientific/attempt-closure reasons.
+Its EBI HMMER job became terminal in about `24s`, but the old adapter treated
+the provider-default 50-hit terminal poll body as page 1 and then requested
+`page=2..686&page_size=100`. That skipped result indexes 50 through 99: r25
+sealed only 68,542 hits while terminal `stats.nreported` was 68,592. All 50
+missing hits were above the AOX score threshold. A read-only recovery diagnostic
+for the same job used one width, explicit `page=1..69&page_size=1000`, recovered
+all 68,592 hits (592 on the last page), and derived 37,772 score-`>200`
+accessions. Those recovered bytes/counts are diagnostic only; they do not amend
+r25 artifacts or satisfy cutover.
+
+The old gapped 37,722-accession request also supplied the first confirmed typed
+inactive identity in this campaign: `A0A034VJ94` returned
+`entryType=Inactive`, `inactiveReasonType=DELETED`, deletion reason
+`Not part of a reference proteome`, and `uniParcId=UPI000453BEA2`, with no
+sequence or entry audit. The old identity contract incorrectly rejected this
+valid provider outcome as schema drift. A corrected-set read-only census then
+enumerated all `378/378` query batches for the `37,772` accession set:
+`5,596` identities were inactive, comprising `5,594 DELETED` and exactly
+`2 MERGED` with no other reason type; all inactive records had a valid UniParc
+identity and the same exact-five-key top-level provider shape:
+`entryType`, `primaryAccession`, `uniProtkbId`, `inactiveReason`, and
+`extraAttributes`. The two MERGED
+identities were `A0A2U8U0K3 → P18173`
+(`uniParcId=UPI000A0F4040`) and
+`A0A8N4L368 → A0A034VJ86`
+(`uniParcId=UPI001114BBC8`), each with one replacement-target annotation and
+without sequence/audit. The diagnostic scan-manifest digest is
+`sha256:4d734dd881829450178ed260ef331f7c3a21cdf0006f14ad3daa886c36125458`.
+This census is diagnostic, not a cutover artifact, a stable future cardinality,
+or a GO attempt. The corrective contracts therefore accept an exact
+requested-primary `DELETED|MERGED` discriminated union, retain the
+reason-specific annotation, UniParc, release/retrieval and response/record
+digests, and exclude both variants before active sequence length filtering.
+They do not follow or fetch the MERGED target and never source sequence from a
+replacement, UniParc, or HMMER. `DEMERGED` and any
+unknown/malformed/missing member still fail closed.
+
+A later final-code, read-only full-set diagnostic completed in `679.154s` and
+confirmed `37,772 = 32,176 active + 5,596 inactive`, with
+`5,594 DELETED + 2 MERGED`, `378` ordered response digests, UniProt release
+`2026_02`, and `2,561` length-filtered hits. Its full diagnostic digests are
+score-filter input CSV
+`sha256:c4f1e134c4e38fcda5424706544cccf0bf65b4187be2ce6d2f30114aeaf69b8f`,
+provider metadata
+`sha256:9deaebcf2c674cc8a7af52c1c00384fe2798b6d364f7d09e50c002abdcc89109`,
+filtered hits CSV
+`sha256:6a2aa371c2c366c9f539e23e4df9c6e1528c735be8515be5bff7bf2031237d67`,
+and join manifest
+`sha256:d768beb08f1bf5e5905e63249db352e1bcfe3e9eaea2d5be871e3adba39d8bca`.
+Those ordinary `/tmp` outputs are neither sealed artifacts nor cutover
+evidence, do not prove the formal raw-artifact closure above, and cannot satisfy
+or be adopted into a GO attempt.
+
+The post-correction identities are frozen as motif implementation
+`sha256:795535d9d6c232a79bc9791f8c2780c2f4aa64b234b15a83deb8c76d3406871c`,
+motif contract
+`sha256:71aff3b872aaef3254550db53c7554011923d19293f9c5837ddc4bb8ca0bec10`,
+similarity implementation
+`sha256:300ea35bff801782b6bde96d12f206881a6a5aac26a96708ae6756c800aab9b5`,
+and similarity calculation
+`sha256:12f98c34460aa3bc59b84c5553771b0bbfb25354febd6558ec381535a0e8286d`.
+The scorer was also exercised read-only against a real HMMER
+3.4 AFA: `12,273,402` raw bytes, `2,562` records, and alignment width `4,700`.
+The raw input digest was
+`sha256:d72e36bc5c0431d8f3806eb4d0d0cadb51e7d3825c873610d8e4c0098eccf7a6`,
+and `hmmer_afa_alignment_canonicalization@1` produced canonical alignment
+digest
+`sha256:2df12971eae2d83c390f22e689e04e493539cf6be2d79599f33823f0f52df836`
+with no canonical `.` gap. The scorer returned `517` passing rows including
+`AAB57849.1`, hence `516` non-reference candidates, in approximately `0.507s`.
+These ordinary `/tmp` bytes are a parser/scorer preflight only: they are not a
+sealed artifact, formal operation, provider receipt, clean-root attempt,
+published report, offline-verified bundle, or reusable GO evidence.
+
+The aligned-FASTA boundary now has one shared raw/canonical contract. It splits
+only on LF, removes exactly one CR only from an LF-terminated segment, requires
+`>` at raw column zero, ignores only truly empty physical lines, and validates
+each non-empty raw sequence line against ASCII `^[A-Za-z.-]+$` before any
+normalization. It then uppercases ASCII residues and maps `.` to `-`.
+Whitespace, lone/repeated/other CR, Unicode expansion such as `ß`/`ſ`, and any
+other non-ASCII input fail closed. Exact raw bytes retain their own input
+digest, while legal case and `.`/`-` variants converge only at the canonical
+alignment digest.
+
+The post-correction similarity calculation retains the original tuple order
+exactly by encoding `(score_half_units, exact_matches,
+aligned_residue_pairs)` as `score_half_units * R^2 + exact_matches * R +
+aligned_residue_pairs`, with `R=max(m,n)+1`. The frozen
+`biopython_trace_guarded_numpy_gotoh@1` backend requires Biopython `1.87` and
+NumPy `2.4.4`, transports only proven `<2^53` integral packed values through
+binary64, and inspects the first optimal trace. An adjacent opposite gap-state
+switch activates the exact NumPy `int64`
+`numpy_three_state_gap_switch_correction@1`; this declared correction is not a
+fallback. Backend import/version/algorithm/numeric/trace/correction drift fails
+closed, with no pure-Python, other-version, or alternate-library path.
+The reference recurrence state order is tie provenance only; graph artifacts
+do not publish or promise alignment coordinates/path. Any future path output
+requires a new calculation id and explicit trace contract rather than
+reinterpreting this identity.
+
+Lexical pairs below `128` remain serial; at or above `128` they are
+parallel-eligible. Worker count is the minimum of pair count, `16`, affinity
+(or `cpu_count` only when affinity is unavailable), and each available cgroup
+v2/v1 CPU quota divided by period and rounded up. Present but unreadable,
+incomplete, or malformed cgroup limits fail closed. Worker count `1` selects
+serial before execution; only a larger count uses an ordered process map with
+`chunksize=64`. Any pool or worker failure after that parallel branch begins is
+`scientific_prerequisite_missing:similarity_parallel_execution_failed`; it is
+never retried serially.
+
+The historical pure-v3 `/tmp` receipt
+`sha256:caf483bedbe2865cdf3be0677dbcb3a27d6ccfb9fd1a57bbc0093a35ef90bcf5`
+used superseded similarity identities
+`sha256:9df7a2afb72ae46473fc20c0a8ceb7b5d3f83ad5e2144bfebeb9bbd88800548d`
+and
+`sha256:31df5ca6eaf079073bd290550f70646f2ab845faf2dcdae43ffb3fff0c3a7499`;
+it is explicitly non-cutover and cannot be a current pin. The temporary real
+Podman 2-CPU calibration receipt
+`sha256:b9749e6c3f23dd553a1e33b55f7cb9a67a1aee6dfbfae8fb4235ce0aa52f563c`
+used Biopython `1.87`/NumPy `2.4.4` and showed 2 cgroup-equivalent workers
+completed 132,870 pairs in `84.087s`, versus affinity-only 16 workers in
+`168.766s`, with identical 13,778-edge output. It too is ordinary, unsealed,
+and non-cutover.
+
+Reference validation used NumPy `2.4.6`, while the cutover pin is NumPy
+`2.4.4`; this patch difference is explicit and never enables runtime fallback.
+The final independent current-backend comparison receipt is
+`sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e`.
+Two authoritative-source, no-monkeypatch runs in immutable image
+`sha256:a581e59d462556186f4cb7cd98587d17307159af58135155596ca54e6c6a7eb2`
+used exact cutover NumPy `2.4.4`, cgroup `cpu.max="200000 100000"`, and two
+workers. They independently processed 516 nodes/132,870 pairs/13,778 edges in
+`393.206478s` and `397.540161s` graph time and emitted identical current nodes
+`sha256:61d35a8ef6181c48308a26ecc0a5ba920e38f882e82fdfec06c685e27a5ebc0b`,
+edges
+`sha256:f6be204c3df5684b7369d8fde0daa9ed911778f38d6753ec5b3cd0beedd407ee`,
+and manifest
+`sha256:9f5f162714bb8aa094b589d90516ba55d63577146073c89eacb020378c351225`.
+After rewriting only required pin fields and pin-induced manifest closure, both
+are byte-identical to the old pure-v3 outputs with all non-pin fields equal.
+The receipt honestly records correction activation as unavailable because the
+production callable exposes no counter and wrapping was forbidden.
+
+This final diagnostic is not a direct full-set NumPy `2.4.6` versus `2.4.4`
+patch A/B; it keeps the former as reference-validation context and the latter
+as the only cutover runtime. Its ordinary `/tmp`, `non_cutover=true` status
+closes the r26 benchmark/reviewer and workflow-knowledge pin gate, but it is
+not sealed live evidence and cannot satisfy a positive attempt or campaign GO.
+
+After the final document bytes were frozen, the dependency-order knowledge
+repin produced current selection ref
+`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`.
+Its exact knowledge digests are `aox-hmm-live`
+`sha256:4dcd18bc0a65161770fdddcb7f53ac3be245ddaf60cb04c06dd0f496dbbca7c0`,
+`aox-motif-rule-score-v1`
+`sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376`,
+and `aox-sequence-similarity-v1`
+`sha256:b003cd392e851b6ecfaf9a5c46d52a58b84f962dfca7476b878c08aaaa712a0f`.
+The knowledge document itself retains a `<manifest-digest>` placeholder so it
+does not create a digest self-reference; the exact ref lives in the manifest,
+registry projection, tests, and this non-pinned cutover status document.
+
+The read-only HMMER recovery and inactive-record diagnosis cannot be adopted
+because r25's sealed HMMER artifact is incomplete and its operation-bearing run
+failed. No r25 root, checkpoint, operation, provider response, artifact ref, or
+recovery bytes may enter a fresh attempt. The next positive must independently
+produce gap-free HMMER closure, the exact UniProt active/inactive partition,
+`aox_sequence_length_join@2` evidence, all fixed 17 deliverables, a published
+report, and passed offline verification.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger
@@ -582,8 +824,11 @@ aggregate is split by versioned calculations, not by copying historical files:
 
 The discovery path is EBI HMMER `refprot` raw/parsed response →
 `hmmer_score_filtered_accessions@1` with score strictly greater than `200` →
-an exact conditional UniProt request → `aox_sequence_length_join@1` with
-UniProt-derived sequence and inclusive length `650..700` → scoring input →
+an exact conditional UniProt request under `uniprot_primary_sequence_identity@2`
+→ `aox_sequence_length_join@2`, which first excludes exact typed inactive
+`DELETED|MERGED` identities without following merged targets and then applies
+inclusive length `650..700` only
+to active UniProt sequence bytes → scoring input →
 HMMalign/motif → conditional CD-HIT/similarity. HMMER length/sequence fields,
 the probe, and the 13 model references cannot be substituted for UniProt target
 truth.
@@ -917,8 +1162,18 @@ The verifier makes no network request. It rejects non-canonical/duplicate-key/no
 - controlled one-bit fault proof, exact NCBI source, versioned reference-set
   derivation, failed MAFFT consumer, runner-contract expectation, and sealed
   negative-state closure;
+- the formal UniProt raw-response artifact's same-operation/output/provider
+  closure, ordered page/body/header release chain, sanitized raw-record to
+  metadata bijection, active sequence length/digest and inactive reason
+  semantics before recomputing the metadata-to-FASTA join;
 - every `openzyme_sealed_source_tree@1` entry and tree digest, plus every
   role-scoped workflow-manifest snapshot and delegation-request digest.
+
+Within one verifier invocation, the similarity graph is recomputed once from
+the sealed candidate FASTA and CD-HIT membership, then that same invocation-
+local result is used to compare node bytes, edge bytes, and manifest closure.
+It is not a cross-attempt or cross-invocation cache and cannot become evidence
+authority; any recomputation failure remains fail closed.
 
 ```bash
 uv --project apps/openzyme-host-api run openzyme-aox-cutover verify \

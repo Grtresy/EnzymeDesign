@@ -3254,6 +3254,158 @@ def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(
     )
 
 
+def test_sandbox_bio_provider_failure_persists_diagnostic_transcript(
+    tmp_path: Path,
+) -> None:
+    class FailingBioAdapter:
+        def ncbi_fetch_proteins(self, **_kwargs: object) -> BioSdkResult:
+            raise PipelineSdkFailure(
+                error_type="bio_provider_timeout",
+                message="provider timed out",
+                hint="retry after recovery",
+                stage="bio_provider_request",
+                retryable=True,
+                sdk_method="bio.ncbi_fetch_proteins",
+                details={"provider": "ncbi", "safe_batch_index": 2},
+            )
+
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    repositories.agents.save(
+        AgentMember(
+            agent_id="agent:executor",
+            session_id=session.session_id,
+            lane_id="lane_001",
+            task_id="task_001",
+            name="executor",
+            role="executor",
+            status=AgentMemberStatus.IDLE,
+            parent_agent_id=None,
+            created_at="2026-05-31T00:00:00+00:00",
+            updated_at="2026-05-31T00:00:00+00:00",
+            member_id="member_executor",
+        )
+    )
+    workspace_root = tmp_path / "workspaces"
+    workspace = SandboxWorkspaceService(
+        repositories,
+        workspace_root=workspace_root,
+    ).create_or_get(
+        session_id=session.session_id,
+        agent_member_id="member_executor",
+        focus_task_id="task_001",
+        focus_lane_id="lane_001",
+    )
+    source_path = (
+        workspace_root / workspace.sandbox_workspace_id / "src" / "pipeline.py"
+    )
+    source_path.write_text("from openzyme_pipeline import bio\n", encoding="utf-8")
+    snapshot = ArtifactBoundaryService(
+        repositories,
+        workspace_root=workspace_root,
+    ).snapshot_code(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        paths=["pipeline.py"],
+        entrypoint="pipeline.py",
+        metadata={"producer": "test"},
+    )
+    params = {
+        "accessions": ["AAB57849.1"],
+        "fields": ["definition"],
+        "output_dir": "/workspace/output/bio/ncbi-failure",
+    }
+    operation = ControlledOperation(
+        operation_id="op_sandbox_provider_failure",
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id="srun_sandbox_provider_failure",
+        logical_operation_key="bio.ncbi_fetch_proteins",
+        operation_digest="sha256:operation-failure",
+        params_digest=_payload_digest(params),
+        backend_category="provider_http",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-05-31T00:00:01+00:00",
+        updated_at="2026-05-31T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_id="appr_sandbox_provider_failure",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        source_snapshot_artifact_id=snapshot.artifact.artifact_id,
+        source_snapshot_digest=snapshot.source_tree_digest,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio",
+        function_name="ncbi_fetch_proteins",
+        route_policy_id="bio.ncbi_fetch_proteins.provider:v1",
+        placement="provider",
+        selected_backend="provider_http",
+        resource_class="network_io",
+        runtime_packaging_id="provider_http:v1",
+        provider_config_digest="provider_config:ncbi:v1",
+        expected_outputs_summary={
+            "output_dir": "/workspace/output/bio/ncbi-failure"
+        },
+        resource_estimate={"network_io": True},
+        idempotency_key="bio.ncbi_fetch_proteins:" + _payload_digest(params),
+    )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
+    )
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        bio_adapter=FailingBioAdapter(),  # type: ignore[arg-type]
+        sandbox_workspace_root=workspace_root,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine.execute_sandbox_adapter_operation(
+            operation,
+            {"adapter_params": params},
+        )
+
+    failure = exc_info.value
+    assert failure.error_type == "provider_timeout"
+    assert failure.stage == "provider_request"
+    assert failure.retryable is True
+    assert failure.details["provider"] == "ncbi"
+    assert failure.details["safe_batch_index"] == 2
+    assert len(failure.details["diagnostic_artifact_ids"]) == 3
+    assert failure.details["details_ref"].endswith("/provider_error.json")
+    diagnostic_artifacts = [
+        repositories.artifacts.get(artifact_id)
+        for artifact_id in failure.details["diagnostic_artifact_ids"]
+    ]
+    assert all(artifact is not None for artifact in diagnostic_artifacts)
+    assert {
+        artifact.relative_path
+        for artifact in diagnostic_artifacts
+        if artifact is not None
+    } == {
+        "bio/ncbi-failure/provider_request.json",
+        "bio/ncbi-failure/provider_observation.json",
+        "bio/ncbi-failure/provider_error.json",
+    }
+    error_artifact = next(
+        artifact
+        for artifact in diagnostic_artifacts
+        if artifact is not None
+        and artifact.relative_path.endswith("provider_error.json")
+    )
+    error_payload = json.loads(
+        Path(error_artifact.storage_uri).read_text(encoding="utf-8")
+    )
+    assert error_payload["code"] == "provider_timeout"
+    assert error_payload["stage"] == "provider_request"
+    assert error_payload["details"] == {
+        "provider": "ncbi",
+        "safe_batch_index": 2,
+    }
+
+
 def test_sandbox_adapter_executor_downloads_rcsb_structure_as_sealed_manifest(
     tmp_path: Path,
 ) -> None:
@@ -4141,7 +4293,9 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
             return FakeHttpResponse(
                 body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}'
             )
-        assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
+        assert "/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2?" in url
+        assert "page=1" in url
+        assert "page_size=1000" in url
         result_polls += 1
         if result_polls == 1:
             return FakeHttpResponse(
@@ -4155,6 +4309,7 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
                     "number_of_hits": 1,
                     "page_count": 1,
                     "result": {
+                        "stats": {"nreported": 2},
                         "hits": [
                             {
                                 "name": "hit1",
@@ -4199,7 +4354,7 @@ def test_provider_http_bio_adapter_hmmer_submit_poll_and_parse_hits() -> None:
         "/search/hmmsearch?" in url or url.endswith("/search/hmmsearch")
         for url in calls
     )
-    assert result_polls == 2
+    assert result_polls == 3
     assert form_bodies
     submit_payload = json.loads(form_bodies[0].decode("utf-8"))
     assert submit_payload["database"] == "refprot"
@@ -4233,7 +4388,9 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
             return FakeHttpResponse(
                 body='{"id":"fdaf751e-bf95-4e6a-a70a-6eadf2078ae2"}'
             )
-        assert url.endswith("/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2")
+        assert "/result/fdaf751e-bf95-4e6a-a70a-6eadf2078ae2?" in url
+        assert "page=1" in url
+        assert "page_size=2" in url
         return FakeHttpResponse(
             body=json.dumps(
                 {
@@ -4241,6 +4398,7 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
                     "database": "refprot",
                     "page_count": 4,
                     "result": {
+                        "stats": {"nreported": 8},
                         "hits": [
                             {
                                 "name": "hit1",
@@ -4255,13 +4413,6 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
                                 "evalue": 1e-30,
                                 "score": 1200.0,
                                 "metadata": {"uniprot_accession": "Q8XYZ1"},
-                            },
-                            {
-                                "name": "hit3",
-                                "acc": None,
-                                "evalue": 1e-10,
-                                "score": 300.0,
-                                "metadata": {"uniprot_accession": "A0A0A0"},
                             },
                         ]
                     },
@@ -4282,7 +4433,7 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
         retrieved_at="2026-05-30T00:00:00+00:00",
     )
 
-    assert not any("?format=json" in url for url in calls)
+    assert all("?format=json" in url for url in calls[1:])
     assert result.summary["hit_count"] == 2
     assert result.summary["pagination"]["truncated"] is True
     assert result.summary["pagination"]["max_hits"] == 2
@@ -4290,6 +4441,12 @@ def test_provider_http_bio_adapter_hmmer_honors_bounded_max_hits() -> None:
     assert any(
         item["warning_code"] == "provider_result_truncated" for item in result.warnings
     )
+    truncated_warning = next(
+        item
+        for item in result.warnings
+        if item["warning_code"] == "provider_result_truncated"
+    )
+    assert truncated_warning["limit"] == 2
     parsed = next(
         artifact
         for artifact in result.artifacts
