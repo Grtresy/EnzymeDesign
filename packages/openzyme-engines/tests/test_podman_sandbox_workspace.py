@@ -148,6 +148,70 @@ def test_control_socket_materialize_copies_input_to_requested_workspace_target(
         )
 
 
+@pytest.mark.parametrize(
+    ("method", "params"),
+    (
+        (
+            "artifacts.register",
+            {
+                "path": "/workspace/output/AOX_ref.hmm",
+                "kind": "model",
+                "format": "hmm",
+            },
+        ),
+        (
+            "artifacts.register_many",
+            {
+                "items": [
+                    {
+                        "path": "/workspace/output/AOX_ref.hmm",
+                        "kind": False,
+                        "format": "hmm",
+                    }
+                ]
+            },
+        ),
+    ),
+)
+def test_control_socket_rejects_raw_invalid_artifact_kind_nonretryably(
+    tmp_path: Path,
+    method: str,
+    params: dict[str, object],
+) -> None:
+    server = _ControlSocketServer(
+        socket_path=tmp_path / "control.sock",
+        input_dir=tmp_path / "input",
+        output_dir=tmp_path / "output",
+        artifacts={},
+    )
+
+    response = server._handle(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    )
+
+    error = response["error"]
+    assert error["error_code"] == "artifact_kind_invalid"
+    assert error["retryable"] is False
+    assert error["details"] == {
+        "allowed_values": [
+            "code",
+            "log",
+            "sequence",
+            "structure",
+            "report",
+            "research_dossier",
+            "result",
+            "cache",
+            "other",
+        ]
+    }
+    assert error["hint"] == (
+        "Use exactly one of: code, log, sequence, structure, report, "
+        "research_dossier, result, cache, other."
+    )
+    assert server.registered == []
+
+
 def test_control_socket_stop_waits_for_blocking_handler_after_grace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

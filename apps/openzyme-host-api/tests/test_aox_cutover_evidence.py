@@ -14,6 +14,12 @@ from openzyme_core.workflow_knowledge import default_workflow_registry
 from openzyme_host_api.aox_cutover_cli import main as cutover_cli_main
 from openzyme_host_api.aox_cutover_launch import AoxCutoverLaunchError
 from openzyme_host_api.aox_cutover_evidence import AoxCutoverCampaign
+from openzyme_host_api.aox_cutover_evidence import (
+    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID,
+)
+from openzyme_host_api.aox_cutover_evidence import (
+    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS,
+)
 from openzyme_host_api.aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from openzyme_host_api.aox_cutover_evidence import AttemptRunRecord
 from openzyme_host_api.aox_cutover_evidence import assert_public_safe_payload
@@ -90,6 +96,7 @@ AOX_EMPTY_MEMBERSHIP_CONTRACT_DIGEST = canonical_digest(
         "output": "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
     }
 )
+AOX_DELIVERABLE_NORMALIZATION_ID = "aox_hmm_deliverable_normalization@1"
 
 
 def _digest(value: str) -> str:
@@ -872,6 +879,26 @@ def _attach_typed_empty_validation(
     )
 
 
+def _restore_fixed_deliverable_provenance(evidence: dict[str, object]) -> None:
+    for artifact in evidence.get("artifacts") or []:
+        if not isinstance(artifact, dict):
+            continue
+        deliverable_path = str(artifact.get("deliverable_path") or "")
+        if deliverable_path not in AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS:
+            continue
+        provenance = dict(artifact.get("provenance") or {})
+        provenance.update(
+            {
+                "catalog_relative_path": deliverable_path,
+                "deliverable_path": deliverable_path,
+                "deliverable_artifact_contract_id": (
+                    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                ),
+            }
+        )
+        artifact["provenance"] = provenance
+
+
 def _reference_only_alignment() -> bytes:
     alignment = aox_motif.score_aligned_fasta(GOLDEN_ALIGNMENT.read_bytes()).alignment
     reference = next(
@@ -1548,6 +1575,12 @@ def _apply_hmmer_upstream_empty_fixture(
         artifact_id="art_candidates",
         content=candidate_bytes,
     )
+    clustered_candidate_digest = _replace_artifact_bytes(
+        artifact_root,
+        evidence,
+        artifact_id="art_clustered_candidates",
+        content=candidate_bytes,
+    )
     _attach_typed_empty_validation(
         evidence,
         artifact_id="art_target_sequences",
@@ -1559,6 +1592,12 @@ def _apply_hmmer_upstream_empty_fixture(
         artifact_id="art_candidates",
         reason=reason,
         derivation_contract_id="aox_motif_candidate_filter@1",
+    )
+    _attach_typed_empty_validation(
+        evidence,
+        artifact_id="art_clustered_candidates",
+        reason=reason,
+        derivation_contract_id=AOX_EMPTY_MEMBERSHIP_ID,
     )
     membership_digest = _replace_artifact_bytes(
         artifact_root,
@@ -1627,7 +1666,10 @@ def _apply_hmmer_upstream_empty_fixture(
     empty_membership = _operation(
         "op_empty_membership",
         inputs=[("art_candidates", candidate_digest)],
-        outputs=[("art_membership", membership_digest)],
+        outputs=[
+            ("art_clustered_candidates", clustered_candidate_digest),
+            ("art_membership", membership_digest),
+        ],
     )
     empty_membership["kind"] = AOX_EMPTY_MEMBERSHIP_ID
     empty_membership["parameters"] = {"identity_threshold_ppm": 750_000}
@@ -1690,6 +1732,10 @@ def _apply_hmmer_upstream_empty_fixture(
     artifact_by_id["art_membership"]["provenance"] = {
         "operation_id": "op_empty_membership",
         "schema_id": aox_similarity.MEMBERSHIP_SCHEMA_ID,
+    }
+    artifact_by_id["art_clustered_candidates"]["provenance"] = {
+        "operation_id": "op_empty_membership",
+        "calculation_id": AOX_EMPTY_MEMBERSHIP_ID,
     }
 
     provider_by_name = {
@@ -2283,6 +2329,25 @@ def _valid_evidence(
         "formal/graph-manifest.json",
         graph.manifest_json().encode("utf-8"),
     )
+    clustered_candidate_digest = _write_artifact(
+        artifact_root,
+        "formal/candidates-cdhit85.fasta",
+        candidate_bytes,
+    )
+    execution_summary_bytes = (
+        canonical_json_bytes(
+            {
+                "schema_id": "aox_hmm_execution_summary@1",
+                "status": "completed",
+            }
+        )
+        + b"\n"
+    )
+    execution_summary_digest = _write_artifact(
+        artifact_root,
+        "formal/execution-summary.json",
+        execution_summary_bytes,
+    )
     artifacts = [
         {
             "artifact_id": "art_pubmed_response",
@@ -2484,6 +2549,14 @@ def _valid_evidence(
             "provenance": {"operation_id": "op_candidate_filter"},
         },
         {
+            "artifact_id": "art_clustered_candidates",
+            "relative_path": "formal/candidates-cdhit85.fasta",
+            "scope": "formal",
+            "origin": "operation",
+            "kind": "sequence",
+            "provenance": {"operation_id": "op_cdhit"},
+        },
+        {
             "artifact_id": "art_membership",
             "relative_path": "formal/cdhit-membership.csv",
             "scope": "formal",
@@ -2521,8 +2594,70 @@ def _valid_evidence(
                 "calculation_id": aox_similarity.CALCULATION_ID,
             },
         },
+        {
+            "artifact_id": "art_execution_summary",
+            "relative_path": "formal/execution-summary.json",
+            "scope": "formal",
+            "origin": "operation",
+            "kind": "result",
+            "provenance": {
+                "operation_id": "op_deliverable_normalization",
+                "calculation_id": AOX_DELIVERABLE_NORMALIZATION_ID,
+            },
+        },
         *probe_fixture["artifacts"],
     ]
+    deliverable_artifact_ids = {
+        "aox_hmm/AOX_ref21.fasta": "art_hmm_reference_set",
+        "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta": (
+            "art_scoring_reference"
+        ),
+        "aox_hmm/AOX_scoring_input.fasta": "art_scoring_input",
+        "aox_hmm/target.fasta": "art_target_sequences",
+        "aox_hmm/AOX_ref.hmm": "art_hmm_model",
+        "aox_hmm/hits_raw.csv": "art_hmmer_parsed_hits",
+        "aox_hmm/hmmer_score_filtered_accessions.csv": (
+            "art_hmmer_score_filtered_accessions"
+        ),
+        "aox_hmm/hits_len650_700_200.csv": "art_post_uniprot_filtered_hits",
+        "aox_hmm/AOX_scoring_alignment.fasta": "art_alignment",
+        "aox_hmm/scored_ref_plus_hits.csv": "art_scores",
+        "aox_hmm/AOX_candidates.fasta": "art_candidates",
+        "aox_hmm/AOX_candidates_cdhit85.fasta": "art_clustered_candidates",
+        "aox_hmm/AOX_candidates_cdhit85.clusters.csv": "art_membership",
+        "aox_hmm/nodes.csv": "art_nodes",
+        "aox_hmm/edges_similarity.csv": "art_edges",
+        "aox_hmm/similarity_graph_manifest.json": "art_graph_manifest",
+        "aox_hmm/execution_summary.json": "art_execution_summary",
+    }
+    assert set(deliverable_artifact_ids) == set(
+        AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
+    )
+    artifact_by_id = {str(item["artifact_id"]): item for item in artifacts}
+    for deliverable_path, artifact_id in deliverable_artifact_ids.items():
+        artifact = artifact_by_id[artifact_id]
+        kind, format_value = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[
+            deliverable_path
+        ]
+        artifact.update(
+            {
+                "kind": kind,
+                "format": format_value,
+                "deliverable_path": deliverable_path,
+                "deliverable_artifact_contract_id": (
+                    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                ),
+            }
+        )
+        artifact["provenance"].update(
+            {
+                "catalog_relative_path": deliverable_path,
+                "deliverable_path": deliverable_path,
+                "deliverable_artifact_contract_id": (
+                    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                ),
+            }
+        )
     operations = [
         *probe_fixture["operations"],
         _operation(
@@ -2630,7 +2765,10 @@ def _valid_evidence(
         _operation(
             "op_cdhit",
             inputs=[("art_candidates", candidate_digest)],
-            outputs=[("art_membership", membership_digest)],
+            outputs=[
+                ("art_clustered_candidates", clustered_candidate_digest),
+                ("art_membership", membership_digest),
+            ],
         ),
         _operation(
             "op_similarity",
@@ -2644,7 +2782,17 @@ def _valid_evidence(
                 ("art_graph_manifest", manifest_digest),
             ],
         ),
+        _operation(
+            "op_deliverable_normalization",
+            outputs=[("art_execution_summary", execution_summary_digest)],
+        ),
     ]
+    operation_by_id_for_contract = {
+        item["operation_id"]: item for item in operations
+    }
+    operation_by_id_for_contract["op_deliverable_normalization"]["kind"] = (
+        AOX_DELIVERABLE_NORMALIZATION_ID
+    )
     operation_runtime_receipts = {
         "op_ncbi": (
             "bio.ncbi_fetch_proteins.provider:v1",
@@ -2721,6 +2869,7 @@ def _valid_evidence(
             "op_score",
             "op_candidate_filter",
             "op_similarity",
+            "op_deliverable_normalization",
         }:
             _refresh_sandbox_calculation_identity(operation)
             continue
@@ -2876,10 +3025,12 @@ def _valid_evidence(
             "art_target_sequences",
             "art_scores",
             "art_candidates",
+            "art_clustered_candidates",
             "art_membership",
             "art_nodes",
             "art_edges",
             "art_graph_manifest",
+            "art_execution_summary",
             "art_report",
         ],
         "source_ref_ids": ["source_pubmed_aox"],
@@ -3317,6 +3468,7 @@ def _valid_evidence(
             namespaced,
             run_suffix=run_suffix,
         )
+    _restore_fixed_deliverable_provenance(namespaced)
     _attach_public_final_snapshot_fixture(artifact_root, namespaced)
     return namespaced
 
@@ -4589,6 +4741,91 @@ def test_untampered_positive_and_fault_bundles_verify_offline(tmp_path: Path) ->
 
         assert result.passed, result.to_dict()
         assert result.attempt_kind == attempt_kind
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "kind",
+        "format",
+        "deliverable_path",
+        "contract_id",
+        "provenance_catalog_path",
+        "provenance_contract_id",
+    ),
+)
+def test_fixed_deliverable_wire_contract_tamper_fails_offline_verification(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+
+    def mutate_contract(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        artifact = next(
+            item
+            for item in payload["artifacts"]
+            if item.get("deliverable_path") == "aox_hmm/AOX_ref.hmm"
+        )
+        if tamper == "kind":
+            artifact["kind"] = "other"
+        elif tamper == "format":
+            artifact["format"] = "json"
+        elif tamper == "deliverable_path":
+            artifact["deliverable_path"] = "aox_hmm/renamed.hmm"
+        elif tamper == "contract_id":
+            artifact["deliverable_artifact_contract_id"] = (
+                "aox_fixed_deliverable_artifact_contract@2"
+            )
+        elif tamper == "provenance_catalog_path":
+            artifact["provenance"]["catalog_relative_path"] = (
+                "aox_hmm/renamed.hmm"
+            )
+        else:
+            artifact["provenance"]["deliverable_artifact_contract_id"] = (
+                "aox_fixed_deliverable_artifact_contract@2"
+            )
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, mutate_contract)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "final_deliverable_artifact_contract_mismatch"
+        for issue in result.issues
+    )
+
+
+def test_fault_target_cannot_fallback_from_missing_catalog_contract_path(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(
+        tmp_path,
+        attempt_kind="fault",
+    )
+
+    def remove_catalog_binding(envelope: dict[str, object]) -> None:
+        payload = envelope["payload"]
+        target_id = payload["fault_injection"]["target_artifact_id"]
+        artifact = next(
+            item
+            for item in payload["artifacts"]
+            if item["artifact_id"] == target_id
+        )
+        artifact["provenance"].pop("catalog_relative_path")
+        envelope["bundle_digest"] = canonical_digest(payload)
+
+    _rewrite_envelope(bundle_path, remove_catalog_binding)
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert result.passed is False
+    assert any(
+        issue.code == "fault_target_artifact_contract_mismatch"
+        for issue in result.issues
+    )
 
 
 @pytest.mark.parametrize(

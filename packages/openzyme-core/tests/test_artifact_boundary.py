@@ -283,6 +283,82 @@ def test_register_requires_source_snapshot(tmp_path: Path) -> None:
     assert repositories.artifacts.list_by_session(session.session_id) == []
 
 
+@pytest.mark.parametrize("invalid_kind", ("model", "", None, False))
+def test_register_rejects_invalid_artifact_kind_with_typed_error(
+    tmp_path: Path,
+    invalid_kind: object,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.register(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            path="/workspace/output/AOX_ref.hmm",
+            kind=invalid_kind,  # type: ignore[arg-type]
+            format="hmm",
+        )
+
+    assert exc_info.value.error_code == "artifact_kind_invalid"
+    assert exc_info.value.details == {
+        "allowed_values": [
+            "code",
+            "log",
+            "sequence",
+            "structure",
+            "report",
+            "research_dossier",
+            "result",
+            "cache",
+            "other",
+        ]
+    }
+    assert exc_info.value.hint == (
+        "Use exactly one of: code, log, sequence, structure, report, "
+        "research_dossier, result, cache, other."
+    )
+    assert exc_info.value.retryable is False
+    assert repositories.artifacts.list_by_session(session.session_id) == []
+
+
+def test_external_provider_seal_rejects_invalid_artifact_kind_before_writing(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, _, _ = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories,
+        workspace_root=tmp_path / "workspaces",
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.seal_external_bytes(
+            session_id=session.session_id,
+            content=b"{\"ok\": true}\n",
+            filename="provider.json",
+            kind="model",
+            format="json",
+            title="Provider response",
+            provider="test-provider",
+            provenance={
+                "request_digest": _digest("request"),
+                "retrieved_at": "2026-07-19T00:00:00+00:00",
+            },
+        )
+
+    assert exc_info.value.error_code == "artifact_kind_invalid"
+    assert exc_info.value.retryable is False
+    assert repositories.artifacts.list_by_session(session.session_id) == []
+    assert not (tmp_path / "blobs").exists()
+
+
 def test_register_rejects_explicit_non_source_snapshot_artifact(
     tmp_path: Path,
 ) -> None:

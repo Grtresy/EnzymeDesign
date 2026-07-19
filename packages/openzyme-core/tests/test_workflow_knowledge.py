@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:b4585974e9e7aa04151974abb53fe085af0c98e701a687bead38c058d9ed0481"
+        "sha256:1afbeb39a02202c3a583c30dc189f611b5dda6150d192a738719956ea766ac8c"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:ac208b3ebc8f20a0ff180847cb57ebdab1b91c57a92d0bf8ff9586fea71c2c4a"
+            "sha256:7a64557355a4e65f42757b36a9e32ca7a8d365657c049a094b577c5a5c0604dd"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:48518a90ae2f6b3f0604118b643d595bacda0799a8ee510a6c679c93946783cf"
@@ -164,6 +164,11 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "bio_tools/cdhit/clustered.fasta",
         "bio_tools/cdhit/clusters.csv",
         "bio_tools/hmmalign/aligned.fasta",
+        "`artifact_kind_invalid`",
+        "`sequence/fasta`",
+        "`result/hmm`",
+        "`result/csv`",
+        "| `result` | `json` |",
         "artifacts.provider_file_ref",
         "artifacts.registered_artifact_ref",
         "artifacts.fetched_output_ref",

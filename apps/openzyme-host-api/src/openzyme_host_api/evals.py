@@ -57,6 +57,7 @@ from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .app import HostApiDependencies
 from .app import create_app
+from .aox_cutover_evidence import AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
 from .foundation import build_configured_foundation
 from .foundation import build_local_eval_foundation
 from .security import HostSecurityPolicy
@@ -733,25 +734,9 @@ S15_AOX_HMM_WORKFLOW_REF = next(
     for manifest in default_workflow_registry().list_manifests()
     if manifest.workflow_id == "aox-hmm-live"
 )
-S15_AOX_HMM_FIXED_DELIVERABLES = {
-    "aox_hmm/AOX_ref21.fasta",
-    "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
-    "aox_hmm/AOX_scoring_input.fasta",
-    "aox_hmm/target.fasta",
-    "aox_hmm/AOX_ref.hmm",
-    "aox_hmm/hits_raw.csv",
-    "aox_hmm/hmmer_score_filtered_accessions.csv",
-    "aox_hmm/hits_len650_700_200.csv",
-    "aox_hmm/AOX_scoring_alignment.fasta",
-    "aox_hmm/scored_ref_plus_hits.csv",
-    "aox_hmm/AOX_candidates.fasta",
-    "aox_hmm/AOX_candidates_cdhit85.fasta",
-    "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
-    "aox_hmm/nodes.csv",
-    "aox_hmm/edges_similarity.csv",
-    "aox_hmm/similarity_graph_manifest.json",
-    "aox_hmm/execution_summary.json",
-}
+S15_AOX_HMM_FIXED_DELIVERABLES = set(
+    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
+)
 S15_AOX_HMM_OLD_DELIVERABLES = {
     "aox_hmm/filtered.fasta",
     "aox_hmm/filtered.csv",

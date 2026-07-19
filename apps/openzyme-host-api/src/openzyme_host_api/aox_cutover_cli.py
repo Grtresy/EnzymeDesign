@@ -10,6 +10,11 @@ import tempfile
 
 from openzyme_runtime import REPO_ROOT
 
+from .aox_browser_observation import BrowserObservationReceiptError
+from .aox_browser_observation import build_browser_observation_receipt
+from .aox_browser_observation import load_json_object
+from .aox_browser_observation import load_screenshot_png
+from .aox_browser_observation import publish_browser_observation_receipt
 from .aox_cutover_evidence import AttemptRunRecord
 from .aox_cutover_evidence import AoxCutoverCampaign
 from .aox_cutover_evidence import create_blank_world_roots
@@ -92,6 +97,32 @@ def _driver_from_args(args: argparse.Namespace) -> AoxCutoverDriverConfig:
             args.browser_observation_submission_timeout_seconds
         ),
     )
+
+
+def _browser_receipt(args: argparse.Namespace) -> int:
+    handoff = load_json_object(args.handoff, label="browser handoff")
+    capture = load_json_object(args.capture, label="Chrome capture")
+    receipt = build_browser_observation_receipt(
+        handoff=handoff,
+        capture=capture,
+        screenshot_png=load_screenshot_png(args.screenshot),
+    )
+    target = publish_browser_observation_receipt(
+        handoff=handoff,
+        receipt=receipt,
+        output=args.output,
+        poll_interval_seconds=args.poll_interval_seconds,
+    )
+    _print(
+        {
+            "schema_id": "aox_browser_observation_publish_receipt@1",
+            "status": "published",
+            "output_file": target.name,
+            "raw_receipt_digest": _canonical_digest(receipt),
+            "raw_receipt_field_count": len(receipt),
+        }
+    )
+    return 0
 
 
 def _pin_output_target(path: Path) -> Path:
@@ -658,6 +689,44 @@ def build_parser() -> argparse.ArgumentParser:
     ledger.add_argument("--path", required=True, type=Path)
     ledger.set_defaults(handler=_ledger)
 
+    browser_receipt = subparsers.add_parser(
+        "browser-receipt",
+        help=(
+            "build and durably publish the exact challenged Chrome observation "
+            "receipt after its Host-held not-before time"
+        ),
+    )
+    browser_receipt.add_argument(
+        "--handoff",
+        required=True,
+        type=Path,
+        help="ready_for_completion_observation operator-record JSON",
+    )
+    browser_receipt.add_argument(
+        "--capture",
+        required=True,
+        type=Path,
+        help="trusted Chrome MCP capture JSON",
+    )
+    browser_receipt.add_argument(
+        "--screenshot",
+        required=True,
+        type=Path,
+        help="PNG written by the challenged Chrome page target",
+    )
+    browser_receipt.add_argument(
+        "--output",
+        type=Path,
+        help="must equal the exact receipt target carried by the handoff",
+    )
+    browser_receipt.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=0.05,
+        help="bounded target-absence poll interval while waiting for not-before",
+    )
+    browser_receipt.set_defaults(handler=_browser_receipt)
+
     run_live = subparsers.add_parser(
         "run-live",
         help=(
@@ -704,6 +773,20 @@ def main(argv: list[str] | None = None) -> int:
     handler = args.handler
     try:
         return int(handler(args))
+    except BrowserObservationReceiptError as exc:
+        print(
+            json.dumps(
+                {
+                    "schema_id": "aox_browser_observation_builder_failure@1",
+                    "status": "failed",
+                    "failure_code": exc.code,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
     except AoxCutoverLaunchError as exc:
         # Launch failures can wrap SSH/provider/config exceptions whose repr may
         # contain private locators or credentials.  The operator boundary gets

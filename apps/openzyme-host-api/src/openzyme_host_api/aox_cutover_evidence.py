@@ -44,27 +44,29 @@ _FAULT_ALLOWED_PREFAULT_DELIVERABLES = frozenset(
         "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
     }
 )
-_AOX_FIXED_DELIVERABLES = frozenset(
-    {
-        "aox_hmm/AOX_ref21.fasta",
-        "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta",
-        "aox_hmm/AOX_scoring_input.fasta",
-        "aox_hmm/target.fasta",
-        "aox_hmm/AOX_ref.hmm",
-        "aox_hmm/hits_raw.csv",
-        "aox_hmm/hmmer_score_filtered_accessions.csv",
-        "aox_hmm/hits_len650_700_200.csv",
-        "aox_hmm/AOX_scoring_alignment.fasta",
-        "aox_hmm/scored_ref_plus_hits.csv",
-        "aox_hmm/AOX_candidates.fasta",
-        "aox_hmm/AOX_candidates_cdhit85.fasta",
-        "aox_hmm/AOX_candidates_cdhit85.clusters.csv",
-        "aox_hmm/nodes.csv",
-        "aox_hmm/edges_similarity.csv",
-        "aox_hmm/similarity_graph_manifest.json",
-        "aox_hmm/execution_summary.json",
-    }
+AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID = (
+    "aox_fixed_deliverable_artifact_contract@1"
 )
+AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS = {
+    "aox_hmm/AOX_ref21.fasta": ("sequence", "fasta"),
+    "aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta": ("sequence", "fasta"),
+    "aox_hmm/AOX_scoring_input.fasta": ("sequence", "fasta"),
+    "aox_hmm/target.fasta": ("sequence", "fasta"),
+    "aox_hmm/AOX_ref.hmm": ("result", "hmm"),
+    "aox_hmm/hits_raw.csv": ("result", "csv"),
+    "aox_hmm/hmmer_score_filtered_accessions.csv": ("result", "csv"),
+    "aox_hmm/hits_len650_700_200.csv": ("result", "csv"),
+    "aox_hmm/AOX_scoring_alignment.fasta": ("sequence", "fasta"),
+    "aox_hmm/scored_ref_plus_hits.csv": ("result", "csv"),
+    "aox_hmm/AOX_candidates.fasta": ("sequence", "fasta"),
+    "aox_hmm/AOX_candidates_cdhit85.fasta": ("sequence", "fasta"),
+    "aox_hmm/AOX_candidates_cdhit85.clusters.csv": ("result", "csv"),
+    "aox_hmm/nodes.csv": ("result", "csv"),
+    "aox_hmm/edges_similarity.csv": ("result", "csv"),
+    "aox_hmm/similarity_graph_manifest.json": ("result", "json"),
+    "aox_hmm/execution_summary.json": ("result", "json"),
+}
+_AOX_FIXED_DELIVERABLES = frozenset(AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS)
 
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ATTEMPT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}$")
@@ -1879,6 +1881,11 @@ def verify_attempt_bundle(
         try:
             artifact_map = _verify_artifacts(
                 payload, artifact_root=artifact_root, issues=issues
+            )
+            _verify_fixed_deliverable_artifact_contracts(
+                payload,
+                artifact_map=artifact_map,
+                issues=issues,
             )
             _verify_record_digests(payload, issues=issues)
             _verify_lineage(
@@ -6652,6 +6659,105 @@ def _verify_artifacts(
     return artifact_map
 
 
+def _verify_fixed_deliverable_artifact_contracts(
+    payload: Mapping[str, Any],
+    *,
+    artifact_map: Mapping[str, Mapping[str, Any]],
+    issues: list[VerificationIssue],
+) -> None:
+    by_path: dict[str, list[tuple[str, Mapping[str, Any]]]] = {
+        path: [] for path in AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
+    }
+    for artifact_id, record in artifact_map.items():
+        provenance = dict(record.get("provenance") or {})
+        deliverable_path = str(record.get("deliverable_path") or "")
+        catalog_path = str(provenance.get("catalog_relative_path") or "")
+        recognized_paths = {
+            path
+            for path in (deliverable_path, catalog_path)
+            if path in AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
+        }
+        if not recognized_paths:
+            continue
+        if len(recognized_paths) != 1:
+            issues.append(
+                VerificationIssue(
+                    code="final_deliverable_artifact_contract_mismatch",
+                    identity=f"artifact:{artifact_id}:deliverable_path",
+                    message="deliverable and catalog paths disagree",
+                )
+            )
+            continue
+        path = next(iter(recognized_paths))
+        by_path[path].append((artifact_id, record))
+        expected_kind, expected_format = (
+            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
+        )
+        if (
+            deliverable_path != path
+            or catalog_path != path
+            or record.get("deliverable_artifact_contract_id")
+            != AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+            or provenance.get("deliverable_artifact_contract_id")
+            != AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+            or record.get("kind") != expected_kind
+            or record.get("format") != expected_format
+        ):
+            issues.append(
+                VerificationIssue(
+                    code="final_deliverable_artifact_contract_mismatch",
+                    identity=f"artifact:{artifact_id}:wire_contract",
+                    message=(
+                        "normalized AOX deliverable does not retain its exact "
+                        "path, kind, format, and versioned artifact contract"
+                    ),
+                    expected={
+                        "deliverable_path": path,
+                        "kind": expected_kind,
+                        "format": expected_format,
+                        "contract_id": (
+                            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                        ),
+                    },
+                    actual={
+                        "deliverable_path": deliverable_path,
+                        "catalog_relative_path": catalog_path,
+                        "kind": record.get("kind"),
+                        "format": record.get("format"),
+                        "contract_id": record.get(
+                            "deliverable_artifact_contract_id"
+                        ),
+                        "provenance_contract_id": provenance.get(
+                            "deliverable_artifact_contract_id"
+                        ),
+                    },
+                )
+            )
+    if (
+        payload.get("attempt_kind") == "positive"
+        and dict(payload.get("scientific_outcome") or {}).get("cutover_eligible")
+        is True
+    ):
+        invalid_counts = {
+            path: len(records)
+            for path, records in by_path.items()
+            if len(records) != 1
+        }
+        if invalid_counts:
+            issues.append(
+                VerificationIssue(
+                    code="final_deliverable_artifact_contract_incomplete",
+                    identity="artifacts.final_deliverables",
+                    message=(
+                        "positive evidence must contain exactly one typed artifact "
+                        "for every fixed AOX deliverable path"
+                    ),
+                    expected={path: 1 for path in sorted(invalid_counts)},
+                    actual={path: invalid_counts[path] for path in sorted(invalid_counts)},
+                )
+            )
+
+
 def _verify_record_digests(
     payload: Mapping[str, Any], *, issues: list[VerificationIssue]
 ) -> None:
@@ -8664,6 +8770,31 @@ def _verify_fault_injection(
             )
         )
         return
+    target_contract_path = "aox_hmm/AOX_ref21.fasta"
+    target_provenance = dict(target_artifact.get("provenance") or {})
+    expected_target_kind, expected_target_format = (
+        AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[target_contract_path]
+    )
+    if (
+        target_artifact.get("deliverable_path") != target_contract_path
+        or target_provenance.get("catalog_relative_path") != target_contract_path
+        or target_artifact.get("deliverable_artifact_contract_id")
+        != AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+        or target_provenance.get("deliverable_artifact_contract_id")
+        != AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+        or target_artifact.get("kind") != expected_target_kind
+        or target_artifact.get("format") != expected_target_format
+    ):
+        issues.append(
+            VerificationIssue(
+                code="fault_target_artifact_contract_mismatch",
+                identity=f"artifact:{target_artifact_id}:wire_contract",
+                message=(
+                    "controlled AOX reference fault target must retain its exact "
+                    "sequence/fasta deliverable contract"
+                ),
+            )
+        )
     relative_path = str(fault.get("relative_path") or "")
     if relative_path != target_artifact.get("relative_path"):
         issues.append(
@@ -9135,15 +9266,20 @@ def _verify_fault_negative_state_closure(
         if path.is_file() or path.is_symlink()
     }
     sealed_final_paths: set[str] = set()
+    unbound_fixed_evidence_path = False
     for artifact in artifact_map.values():
         if artifact.get("scope") != "formal":
             continue
         provenance = dict(artifact.get("provenance") or {})
         catalog_relative_path = str(provenance.get("catalog_relative_path") or "")
         evidence_relative_path = str(artifact.get("relative_path") or "")
-        for candidate in (catalog_relative_path, evidence_relative_path):
-            if candidate in _AOX_FIXED_DELIVERABLES:
-                sealed_final_paths.add(candidate)
+        if catalog_relative_path in _AOX_FIXED_DELIVERABLES:
+            sealed_final_paths.add(catalog_relative_path)
+        if (
+            evidence_relative_path in _AOX_FIXED_DELIVERABLES
+            and catalog_relative_path != evidence_relative_path
+        ):
+            unbound_fixed_evidence_path = True
     expected_observed_prefault_paths = sorted(
         sealed_final_paths & _FAULT_ALLOWED_PREFAULT_DELIVERABLES
     )
@@ -9151,7 +9287,8 @@ def _verify_fault_negative_state_closure(
         sealed_final_paths - _FAULT_ALLOWED_PREFAULT_DELIVERABLES
     )
     file_closure_matches = (
-        actual_paths == declared_paths
+        not unbound_fixed_evidence_path
+        and actual_paths == declared_paths
         and closure.get("observed_prefault_deliverable_paths")
         == expected_observed_prefault_paths
         and closure.get("post_fault_final_deliverable_paths")
@@ -9822,6 +9959,8 @@ def _write_append_only_bytes(
 
 __all__ = [
     "AoxCutoverCampaign",
+    "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID",
+    "AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS",
     "ATTEMPT_BUNDLE_SCHEMA_ID",
     "AttemptRunContext",
     "AttemptRunRecord",

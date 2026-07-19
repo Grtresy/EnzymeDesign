@@ -773,6 +773,64 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
 
 
+def test_sandbox_raw_artifact_registration_rejects_invalid_kind_nonretryably(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "attempt-blobs",
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/register_invalid_raw.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "try:\n"
+            "    call('artifacts.register', {\n"
+            "        'path': '/workspace/output/AOX_ref.hmm',\n"
+            "        'kind': 'model',\n"
+            "        'format': 'hmm',\n"
+            "    })\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({\n"
+            "        'error_code': exc.error_code,\n"
+            "        'retryable': exc.retryable,\n"
+            "    }, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected invalid kind failure')\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/register_invalid_raw.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED, run.stderr_summary
+    assert json.loads(str(run.stdout_summary)) == {
+        "error_code": "artifact_kind_invalid",
+        "retryable": False,
+    }
+    assert all(
+        artifact.relative_path != "AOX_ref.hmm"
+        for artifact in repositories.artifacts.list_by_session(session.session_id)
+    )
+
+
 def test_second_sandbox_exec_registration_binds_current_source_snapshot(
     tmp_path: Path,
 ) -> None:

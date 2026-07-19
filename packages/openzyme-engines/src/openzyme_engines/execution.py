@@ -125,6 +125,8 @@ def _artifact_kind_from_path(path: str) -> ArtifactKind:
     lowered = path.lower()
     if lowered.endswith(".log") or "/logs/" in lowered:
         return ArtifactKind.LOG
+    if lowered.endswith((".fa", ".faa", ".fasta")):
+        return ArtifactKind.SEQUENCE
     if lowered.endswith((".pdb", ".cif", ".mol2", ".sdf", ".pdbqt")):
         return ArtifactKind.STRUCTURE
     if lowered.endswith((".md", ".pdf", ".html")):
@@ -7154,7 +7156,9 @@ class ExecutionEngine:
                     "relative_path": relative_path,
                     "declared_output": declared,
                     "artifact_kind": self._artifact_kind_from_declared(
-                        declared, relative_path
+                        declared,
+                        relative_path,
+                        sdk_method=sdk_method,
                     ).value,
                     "format": declared.get("format"),
                     "title": PurePosixPath(relative_path).name,
@@ -7417,7 +7421,13 @@ class ExecutionEngine:
                 session_id=session_id,
                 sandbox_workspace_id=sandbox_workspace_id,
                 path=f"/workspace/output/{relative_path}",
-                kind=self._artifact_kind_from_declared(declared, relative_path),
+                kind=self._artifact_kind_from_declared(
+                    declared,
+                    relative_path,
+                    sdk_method=str(
+                        operation_payload.get("sdk_method") or "hpc.fetch_outputs"
+                    ),
+                ),
                 format=None if format_value in {None, ""} else str(format_value),
                 metadata=metadata,
                 invocation_id=invocation.invocation_id,
@@ -7859,14 +7869,36 @@ class ExecutionEngine:
         return f"S11 controlled fetch placeholder for {path}\n"
 
     def _artifact_kind_from_declared(
-        self, declared: dict[str, Any], relative_path: str
+        self,
+        declared: dict[str, Any],
+        relative_path: str,
+        *,
+        sdk_method: str,
     ) -> ArtifactKind:
         value = declared.get("kind")
         if value is not None:
+            if str(value).lower() == "directory":
+                # ``directory`` is the established expected-output shape
+                # sentinel. Catalog registration still uses a real
+                # ArtifactKind inferred from the fixed relative path.
+                return _artifact_kind_from_path(relative_path)
             try:
                 return ArtifactKind(str(value))
-            except ValueError:
-                pass
+            except ValueError as exc:
+                allowed_values = [item.value for item in ArtifactKind]
+                raise PipelineSdkFailure(
+                    error_type="artifact_kind_invalid",
+                    message=f"artifact kind {value!r} is invalid",
+                    hint=f"Use exactly one of: {', '.join(allowed_values)}.",
+                    stage="hpc_output_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={
+                        "allowed_values": allowed_values,
+                        "declared_kind": str(value),
+                        "path": relative_path,
+                    },
+                ) from exc
         return _artifact_kind_from_path(relative_path)
 
     def _digest_hpc_output_source(self, path: Path) -> str:
@@ -7989,7 +8021,7 @@ class ExecutionEngine:
         self,
         method: str,
         declared_outputs: list[dict[str, Any]],
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         expected_paths = sorted(
             str(item["path"])
             for item in self._planned_bio_tool_expected_outputs(method)
@@ -7997,25 +8029,84 @@ class ExecutionEngine:
         declared_paths = sorted(
             str(item.get("path") or "") for item in declared_outputs
         )
-        if declared_paths == expected_paths:
-            return
-        raise PipelineSdkFailure(
-            error_type="bio_tool_output_contract_mismatch",
-            message=(
-                f"{method} expected_outputs do not match its fixed runner template."
-            ),
-            hint=(
-                "Declare exactly these workspace-relative output paths: "
-                + ", ".join(expected_paths)
-            ),
-            stage="hpc_output_validation",
-            retryable=False,
-            sdk_method=method,
-            details={
-                "declared_paths": declared_paths,
-                "expected_paths": expected_paths,
-            },
-        )
+        if declared_paths != expected_paths:
+            raise PipelineSdkFailure(
+                error_type="bio_tool_output_contract_mismatch",
+                message=(
+                    f"{method} expected_outputs do not match its fixed runner template."
+                ),
+                hint=(
+                    "Declare exactly these workspace-relative output paths: "
+                    + ", ".join(expected_paths)
+                ),
+                stage="hpc_output_validation",
+                retryable=False,
+                sdk_method=method,
+                details={
+                    "declared_paths": declared_paths,
+                    "expected_paths": expected_paths,
+                },
+            )
+        expected_by_path = {
+            str(item["path"]): dict(item)
+            for item in self._planned_bio_tool_expected_outputs(method)
+        }
+        mismatches: list[dict[str, str]] = []
+        for declared in declared_outputs:
+            path = str(declared.get("path") or "")
+            expected = expected_by_path[path]
+            if declared.get("kind") is not None:
+                raw_kind = str(declared.get("kind"))
+                declared_kind = (
+                    raw_kind
+                    if raw_kind.lower() == "directory"
+                    else self._artifact_kind_from_declared(
+                        declared,
+                        path,
+                        sdk_method=method,
+                    ).value
+                )
+                if declared_kind != str(expected["kind"]):
+                    mismatches.append(
+                        {
+                            "field": "kind",
+                            "path": path,
+                            "declared": declared_kind,
+                            "expected": str(expected["kind"]),
+                        }
+                    )
+            if declared.get("format") is not None:
+                declared_format = str(declared.get("format") or "")
+                expected_format = str(expected["format"])
+                if declared_format != expected_format:
+                    mismatches.append(
+                        {
+                            "field": "format",
+                            "path": path,
+                            "declared": declared_format,
+                            "expected": expected_format,
+                        }
+                    )
+        if mismatches:
+            raise PipelineSdkFailure(
+                error_type="bio_tool_output_contract_mismatch",
+                message=(
+                    f"{method} expected_outputs kind/format do not match its fixed runner template."
+                ),
+                hint="Omit inferred fields or declare the exact canonical kind/format pair.",
+                stage="hpc_output_validation",
+                retryable=False,
+                sdk_method=method,
+                details={"mismatches": mismatches},
+            )
+        return [
+            {
+                **dict(declared),
+                "kind": str(expected_by_path[str(declared["path"])]["kind"]),
+                "format": str(expected_by_path[str(declared["path"])]["format"]),
+            }
+            for declared in declared_outputs
+        ]
 
     def _require_bio_route_policy(self, method: str) -> dict[str, Any]:
         route_policy_id = BIO_PROVIDER_ROUTE_POLICY_IDS.get(method)
@@ -9573,7 +9664,9 @@ class ExecutionEngine:
             params.get("placement"), sdk_method=method
         )
         declared_outputs = self._require_declared_outputs(params, sdk_method=method)
-        self._require_canonical_bio_tool_outputs(method, declared_outputs)
+        declared_outputs = self._require_canonical_bio_tool_outputs(
+            method, declared_outputs
+        )
         runner_params = self._bio_tool_runner_params(method=method, params=params)
         stage_refs: list[dict[str, Any]] = []
         artifacts_by_slot: dict[str, SessionArtifactRecord] = {}
@@ -10374,6 +10467,9 @@ class ExecutionEngine:
                 )
                 declared_outputs = self._require_declared_outputs(
                     params, sdk_method=method
+                )
+                declared_outputs = self._require_canonical_bio_tool_outputs(
+                    method, declared_outputs
                 )
                 stage_refs = self._bio_tool_stage_refs(method=method, params=params)
                 pending_operation["adapter_approval_envelope"] = (
@@ -12504,17 +12600,37 @@ class ExecutionEngine:
     def _planned_bio_tool_expected_outputs(self, method: str) -> list[dict[str, Any]]:
         return {
             "bio_tools.cdhit": [
-                {"path": "bio_tools/cdhit/clustered.fasta", "kind": "sequence"},
-                {"path": "bio_tools/cdhit/clusters.csv", "kind": "result"},
+                {
+                    "path": "bio_tools/cdhit/clustered.fasta",
+                    "kind": "sequence",
+                    "format": "fasta",
+                },
+                {
+                    "path": "bio_tools/cdhit/clusters.csv",
+                    "kind": "result",
+                    "format": "csv",
+                },
             ],
             "bio_tools.mafft": [
-                {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}
+                {
+                    "path": "bio_tools/mafft/alignment.fasta",
+                    "kind": "sequence",
+                    "format": "fasta",
+                }
             ],
             "bio_tools.hmmbuild": [
-                {"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}
+                {
+                    "path": "bio_tools/hmmbuild/model.hmm",
+                    "kind": "result",
+                    "format": "hmm",
+                }
             ],
             "bio_tools.hmmalign": [
-                {"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}
+                {
+                    "path": "bio_tools/hmmalign/aligned.fasta",
+                    "kind": "sequence",
+                    "format": "fasta",
+                }
             ],
             "bio_tools.hmmer_search_cli": [],
         }.get(method, [])

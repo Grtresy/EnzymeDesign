@@ -4,9 +4,9 @@ Status: proposed, not implemented in the current AOX/HMM blank-world Goal.
 
 ## Decision boundary for the current Goal
 
-当前 AOX/HMM Goal 使用 `aox_browser_observation_receipt@2`，由可信 operator 在同进程 loopback Web UI 上完成一次 canonical approval，并在 Host 保留的完成后观察窗口内使用 Chrome DevTools MCP 收集 console、terminal page state 与 PNG。Host 发出随机 challenge、sealed session/approval/operation identity、hold/not-before timing 与 expected terminal state，operator 必须对实际观测生成摘要并按 sibling-temp、`fsync`、atomic rename 协议提交；Host 校验闭集 schema、challenge、页面/Host/UI identity、zero application error、PNG bytes、摘要和时序，并要求 final 是 post-hold、non-symlink、两次 stat/read 稳定的 regular file。
+当前 AOX/HMM Goal 使用 `aox_browser_observation_receipt@2`，由可信 operator 在同进程 loopback Web UI 上完成一次 canonical approval，并在 Host 保留的完成后观察窗口内使用 Chrome DevTools MCP 收集 console、terminal page state 与 PNG。Host 发出随机 challenge、sealed session/approval/operation identity、hold/not-before timing 与 expected terminal state；稳定 helper 从实际观测生成摘要，并仅在 not-before 后按 mode-`0600` sibling-temp、file `fsync`、atomic no-replace install、parent-directory `fsync` 协议提交；Host 校验闭集 schema、challenge、页面/Host/UI identity、zero application error、PNG bytes、摘要和时序，并要求 final 是 post-hold、non-symlink、两次 stat/read 稳定的 regular file。
 
-这能在当前 trusted-operator threat model 下形成一个 bounded、receipt-internal tamper-evident 的 Chrome observation receipt，也能拒绝 Host bounded poll 观察到的提前 final、final mtime 过早、不稳定文件、错误 challenge、错误 operation、错误 terminal state、console error、畸形 PNG 或摘要漂移。Host 不能由 final file 证明轮询之间的连续缺失，也不能证明该文件确实来自 atomic rename/fsync；这两项是当前 trusted operator 的操作合同，不是 Host-observed provenance。它同样不等于“offline verifier 能从封存的原始 Chrome MCP response 独立重放并重算每次调用”。当前 receipt 只保存 per-call request/response digest，没有保存规范化 preimage、MCP server authority signature 或 append-only call record；console message projection/error 分类也没有版本化；`page_state` 还包含只由 Host driver public-receipt ledger 产生的 response bindings，不能仅从浏览器 DOM 或 public fetch response 推导。
+这能在当前 trusted-operator threat model 下形成一个 bounded、receipt-internal tamper-evident 的 Chrome observation receipt，也能拒绝 Host bounded poll 观察到的提前 final、final mtime 过早、不稳定文件、错误 challenge、错误 operation、错误 terminal state、console error、畸形 PNG 或摘要漂移。Host 不能由 final file 证明轮询之间的连续缺失，也不能证明该文件确实来自 atomic install/fsync；这两项是当前 trusted operator 的操作合同，不是 Host-observed provenance。它同样不等于“offline verifier 能从封存的原始 Chrome MCP response 独立重放并重算每次调用”。当前 receipt 只保存 per-call request/response digest，没有保存规范化 preimage、MCP server authority signature 或 append-only call record；console message projection/error 分类也没有版本化；`page_state` 还包含只由 Host driver public-receipt ledger 产生的 response bindings，不能仅从浏览器 DOM 或 public fetch response 推导。
 
 因此本轮 Goal 可以继续按已声明的 trusted operator 合同验收 `@2`，但不得把结果扩张表述为 cryptographically signed、sidecar-attested、independently replayable 或 browser-origin-complete transcript。把 Chrome MCP invocation、response 与 Host-only binding 收敛成可独立复核的 observation protocol，会改变 MCP authority、Host/operator handoff、evidence schema、private/public artifact boundary、offline verifier 与兼容策略，属于独立大架构调整。本 Goal 只记录，不实现；当前 live run 不应临时发明未版本化签名或把任意 digest 当成更强证明。
 
@@ -276,7 +276,7 @@ CompositeBrowserObservationReceipt@1
 
 - real Chrome viewport PNG positive；CRC、IHDR/IDAT/IEND、trailing bytes、zlib bomb、dimension、interlace和digest负例。
 - capture receipt必须绑定同一target/challenge和window；另一tab、旧screenshot或operator-suppliedunbound PNG失败。
-- final target提前出现、symlink、partial/unstable write、mtime before not-before、post-rename modification和submission timeout全部失败。
+- final target提前出现、symlink、partial/unstable write、mtime before not-before、post-install modification和submission timeout全部失败。
 - configurable submission grace进入effective config/challenge/receipt；边界前后用monotonic fake clock deterministic测试，不依赖慢sleep。
 
 ### Integration and live tests

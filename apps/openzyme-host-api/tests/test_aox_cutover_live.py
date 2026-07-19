@@ -1380,6 +1380,8 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "bio_tools/cdhit/clustered.fasta" in prompt
     assert "bio_tools/cdhit/clusters.csv" in prompt
     assert "bio_tools/hmmalign/aligned.fasta" in prompt
+    assert "hmmbuild bio_tools/hmmbuild/model.hmm as kind='result', format='hmm'" in prompt
+    assert "Never declare kind='model'" in prompt
     assert "all four run handles, including the terminal HMMalign" in prompt
     assert "unique fetch_refs entry whose declared_output_path" in prompt
     assert "never by registered_artifact_ids or artifacts list order" in prompt
@@ -1437,6 +1439,9 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "bio_tools/cdhit/clustered.fasta" in prompt
     assert "bio_tools/cdhit/clusters.csv" in prompt
     assert "bio_tools/hmmalign/aligned.fasta" in prompt
+    assert "bio_tools/hmmbuild/model.hmm as result/hmm" in prompt
+    assert "mismatched kind/format values fail before runner dispatch" in prompt
+    assert "never declare kind='model'" in prompt
     assert "pass the exact dict returned by ws.stage_artifact(...) unchanged" in prompt
     assert "never reconstruct it, rename its keys" in prompt
     assert "unique fetch_refs entry" in prompt
@@ -1445,6 +1450,13 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "artifacts.fetched_output_ref" in prompt
     assert "only the direct response returned by artifacts.register" in prompt
     assert "never chain selectors, synthesize a registration envelope" in prompt
+    assert "every normalized final FASTA with kind='sequence', format='fasta'" in prompt
+    assert "AOX_ref.hmm with kind='result', format='hmm'" in prompt
+    assert "every normalized final CSV with kind='result', format='csv'" in prompt
+    assert "both normalized final JSON files with kind='result', format='json'" in prompt
+    assert "Artifact kind 'model' is invalid" in prompt
+    assert "model, alignment, table, or graph belong in format or metadata" in prompt
+    assert "zero-record FASTA keeps kind='sequence', format='fasta'" in prompt
     assert "Current bundle @1 cannot adopt effects across a failed sandbox run" in prompt
     assert "Persist each completed controlled-operation response" in prompt
     assert "start no more controlled operations in that attempt" in prompt
@@ -1746,13 +1758,14 @@ def test_catalog_copy_seals_typed_zero_fasta_registration_receipt(
         attempt_number=1,
     )
 
+    cache: dict[str, live.CatalogArtifactCopy] = {}
     copy = live._copy_catalog_artifact(
         context,
         artifact,
         scope="formal",
         origin="operation",
         provenance={"operation_id": "op_empty"},
-        cache={},
+        cache=cache,
     )
 
     assert copy.content == b""
@@ -1766,6 +1779,201 @@ def test_catalog_copy_seals_typed_zero_fasta_registration_receipt(
         "derivation_contract_id": derivation,
         "catalog_validation_digest": live.canonical_digest(validation),
     }
+    assert copy.record["deliverable_path"] == "aox_hmm/target.fasta"
+    assert copy.record["deliverable_artifact_contract_id"] == (
+        cutover_evidence.AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+    )
+    assert copy.record["kind"] == "sequence"
+    assert copy.record["format"] == "fasta"
+
+    cache_hit = live._copy_catalog_artifact(
+        context,
+        artifact,
+        scope="formal",
+        origin="operation",
+        provenance={
+            "operation_id": "op_empty",
+            "deliverable_path": "aox_hmm/target.fasta",
+        },
+        cache=cache,
+    )
+
+    assert cache_hit is copy
+    assert cache_hit.record["provenance"]["deliverable_path"] == (
+        "aox_hmm/target.fasta"
+    )
+    assert cache_hit.record["provenance"][
+        "deliverable_artifact_contract_id"
+    ] == cutover_evidence.AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+
+
+@pytest.mark.parametrize("mismatch", ("kind", "format"))
+def test_catalog_copy_rejects_fixed_deliverable_kind_or_format_drift(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source = roots.blob_root / "sealed" / "AOX_ref.hmm"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    content = b"HMMER3/f\nNAME  AOX\n//\n"
+    source.write_bytes(content)
+    artifact = SessionArtifactRecord(
+        artifact_id="art_hmm",
+        session_id="session_test",
+        task_id="task_test",
+        lane_id="lane_test",
+        invocation_id=None,
+        run_id="run_test",
+        kind=ArtifactKind.OTHER if mismatch == "kind" else ArtifactKind.RESULT,
+        storage_uri=str(source),
+        relative_path="aox_hmm/AOX_ref.hmm",
+        created_at="2026-07-18T00:00:00+00:00",
+        metadata={
+            "content_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "format": "json" if mismatch == "format" else "hmm",
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._copy_catalog_artifact(
+            context,
+            artifact,
+            scope="formal",
+            origin="operation",
+            provenance={
+                "operation_id": "op_hmmbuild",
+                "deliverable_path": "aox_hmm/AOX_ref.hmm",
+            },
+            cache={},
+        )
+
+    assert error.value.code == "final_deliverable_artifact_contract_mismatch"
+
+
+def test_catalog_copy_rejects_declared_deliverable_contract_drift(
+    tmp_path: Path,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="positive",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    source = roots.blob_root / "sealed" / "target.fasta"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    content = b">candidate\nMSEQ\n"
+    source.write_bytes(content)
+    artifact = SessionArtifactRecord(
+        artifact_id="art_target",
+        session_id="session_test",
+        task_id="task_test",
+        lane_id="lane_test",
+        invocation_id=None,
+        run_id="run_test",
+        kind=ArtifactKind.SEQUENCE,
+        storage_uri=str(source),
+        relative_path="aox_hmm/target.fasta",
+        created_at="2026-07-18T00:00:00+00:00",
+        metadata={
+            "content_digest": "sha256:" + hashlib.sha256(content).hexdigest(),
+            "format": "fasta",
+        },
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+
+    with pytest.raises(live.LiveProductPathError) as error:
+        live._copy_catalog_artifact(
+            context,
+            artifact,
+            scope="formal",
+            origin="operation",
+            provenance={
+                "operation_id": "op_target",
+                "deliverable_path": "aox_hmm/target.fasta",
+                "deliverable_artifact_contract_id": (
+                    "aox_fixed_deliverable_artifact_contract@2"
+                ),
+            },
+            cache={},
+        )
+
+    assert error.value.code == "final_deliverable_artifact_contract_mismatch"
+
+
+def test_fault_target_copy_seals_fixed_deliverable_contract(
+    tmp_path: Path,
+) -> None:
+    roots = create_blank_world_roots(
+        tmp_path / "campaign",
+        attempt_kind="fault",
+        allowed_prerequisites=_allowed_prerequisites(),
+    )
+    original = b">AAB57849.1\nMSEQ\n"
+    offset = 15
+    corrupted = bytearray(original)
+    corrupted[offset] ^= 1
+    source = roots.blob_root / "sealed" / "AOX_ref21.fasta"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(bytes(corrupted))
+    before_digest = "sha256:" + hashlib.sha256(original).hexdigest()
+    after_digest = "sha256:" + hashlib.sha256(bytes(corrupted)).hexdigest()
+    artifact = SessionArtifactRecord(
+        artifact_id="art_fault_target",
+        session_id="session_test",
+        task_id="task_test",
+        lane_id="lane_test",
+        invocation_id=None,
+        run_id="run_test",
+        kind=ArtifactKind.SEQUENCE,
+        storage_uri=str(source),
+        relative_path="aox_hmm/AOX_ref21.fasta",
+        created_at="2026-07-18T00:00:00+00:00",
+        metadata={"content_digest": before_digest, "format": "fasta"},
+    )
+    fault = replace(
+        _minimal_fault_injection_receipt(),
+        target_artifact_id=artifact.artifact_id,
+        byte_offset=offset,
+        before_digest=before_digest,
+        after_digest=after_digest,
+    )
+    context = AttemptRunContext(
+        roots=roots,
+        identity=_identity(),
+        ledger_before=safe_micu_ledger_snapshot(tmp_path / "ledger.sqlite3"),
+        attempt_number=1,
+    )
+
+    copied = live._copy_fault_target(
+        context,
+        artifact=artifact,
+        fault=fault,
+        derivation_operation_id="op_reference_selection",
+    )
+
+    assert copied.record["deliverable_path"] == "aox_hmm/AOX_ref21.fasta"
+    assert copied.record["kind"] == "sequence"
+    assert copied.record["format"] == "fasta"
+    assert copied.record["deliverable_artifact_contract_id"] == (
+        cutover_evidence.AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+    )
+    assert copied.record["provenance"]["catalog_relative_path"] == (
+        "aox_hmm/AOX_ref21.fasta"
+    )
 
 
 def test_public_driver_route_surface_rejects_debug_shortcut() -> None:

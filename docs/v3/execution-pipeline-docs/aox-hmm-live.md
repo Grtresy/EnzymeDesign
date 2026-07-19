@@ -159,7 +159,11 @@ ncbi_file = artifacts.provider_file_ref(
     relative_path_suffix="/provider_parsed/proteins.fasta",
 )
 registered_reference = artifacts.registered_artifact_ref(
-    artifacts.register("/workspace/output/aox_hmm/AOX_ref21.fasta", format="fasta")
+    artifacts.register(
+        "/workspace/output/aox_hmm/AOX_ref21.fasta",
+        kind="sequence",
+        format="fasta",
+    )
 )
 reference_stage = workspace.stage_artifact(
     registered_reference["artifact_id"],
@@ -168,13 +172,27 @@ reference_stage = workspace.stage_artifact(
 mafft_operation = bio_tools.mafft(
     input_fasta=reference_stage,
     placement=workspace,
-    expected_outputs=[{"path": "bio_tools/mafft/alignment.fasta"}],
+    expected_outputs=[
+        {
+            "path": "bio_tools/mafft/alignment.fasta",
+            "kind": "sequence",
+            "format": "fasta",
+        }
+    ],
 )
 mafft_output = artifacts.fetched_output_ref(
     workspace.fetch_outputs(mafft_operation),
     declared_output_path="bio_tools/mafft/alignment.fasta",
 )
 ```
+
+The fixed AOX runner declarations use the same closed pairs: MAFFT and
+HMMalign FASTA are `sequence/fasta`; hmmbuild HMM is `result/hmm`; CD-HIT
+clustered FASTA is `sequence/fasta` and its membership is `result/csv`. The
+Host may infer an omitted pair from its fixed template, but any explicit value
+must match exactly. An explicit unknown kind such as `model` fails as
+`artifact_kind_invalid`, and a valid-but-wrong kind/format pair fails as
+`bio_tool_output_contract_mismatch`, both before runner dispatch.
 
 The three selectors above are mutually exclusive by response origin:
 `provider_file_ref` consumes a provider operation response,
@@ -620,6 +638,40 @@ derived from the current controlled-operation evidence:
 - `aox_hmm/edges_similarity.csv`
 - `aox_hmm/similarity_graph_manifest.json`
 - `aox_hmm/execution_summary.json`
+
+Each path has one canonical artifact wire pair. `kind` remains the closed
+catalog class while `format` carries the concrete encoding; semantic labels
+must go in metadata. Online evidence copies, cache hits, controlled fault
+targets and the offline verifier bind the exact path and pair under
+`aox_fixed_deliverable_artifact_contract@1`; a renamed path, missing contract
+binding or kind/format drift makes the attempt ineligible.
+
+| Normalized path | `kind` | `format` |
+| --- | --- | --- |
+| `aox_hmm/AOX_ref21.fasta` | `sequence` | `fasta` |
+| `aox_hmm/AOX_coordinate_reference_AAB57849.1.fasta` | `sequence` | `fasta` |
+| `aox_hmm/AOX_scoring_input.fasta` | `sequence` | `fasta` |
+| `aox_hmm/target.fasta` | `sequence` | `fasta` |
+| `aox_hmm/AOX_ref.hmm` | `result` | `hmm` |
+| `aox_hmm/hits_raw.csv` | `result` | `csv` |
+| `aox_hmm/hmmer_score_filtered_accessions.csv` | `result` | `csv` |
+| `aox_hmm/hits_len650_700_200.csv` | `result` | `csv` |
+| `aox_hmm/AOX_scoring_alignment.fasta` | `sequence` | `fasta` |
+| `aox_hmm/scored_ref_plus_hits.csv` | `result` | `csv` |
+| `aox_hmm/AOX_candidates.fasta` | `sequence` | `fasta` |
+| `aox_hmm/AOX_candidates_cdhit85.fasta` | `sequence` | `fasta` |
+| `aox_hmm/AOX_candidates_cdhit85.clusters.csv` | `result` | `csv` |
+| `aox_hmm/nodes.csv` | `result` | `csv` |
+| `aox_hmm/edges_similarity.csv` | `result` | `csv` |
+| `aox_hmm/similarity_graph_manifest.json` | `result` | `json` |
+| `aox_hmm/execution_summary.json` | `result` | `json` |
+
+`model`, `alignment`, `table`, and `graph` are never valid `kind` values.
+Only the scientifically derived empty variants of `target.fasta`,
+`AOX_candidates.fasta`, and `AOX_candidates_cdhit85.fasta` may be exact
+zero-byte files; they retain `sequence/fasta` and additionally require
+`validation_profile=fasta_zero_records@1`, a stable reason, and the applicable
+versioned derivation contract. Other final FASTA files remain non-empty.
 
 The normalized CSV schemas are:
 

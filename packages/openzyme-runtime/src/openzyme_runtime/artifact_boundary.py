@@ -44,11 +44,13 @@ class ArtifactBoundaryError(RuntimeError):
         *,
         hint: str | None = None,
         details: dict[str, Any] | None = None,
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.hint = hint
         self.details = {} if details is None else dict(details)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,21 @@ class SourceSnapshotResult:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _artifact_kind(value: str | ArtifactKind) -> ArtifactKind:
+    if isinstance(value, ArtifactKind):
+        return value
+    try:
+        return ArtifactKind(str(value))
+    except ValueError as exc:
+        allowed_values = [item.value for item in ArtifactKind]
+        raise ArtifactBoundaryError(
+            "artifact_kind_invalid",
+            f"artifact kind {value!r} is invalid",
+            hint=f"Use exactly one of: {', '.join(allowed_values)}.",
+            details={"allowed_values": allowed_values},
+        ) from exc
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -663,6 +680,7 @@ class ArtifactBoundaryService:
         source_snapshot_artifact_id: str | None = None,
     ) -> RegisterResult:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        kind_value = _artifact_kind(kind)
         explicit_source_snapshot = source_snapshot_artifact_id is not None
         if source_snapshot_artifact_id is None:
             source_snapshot_id = self._latest_source_snapshot_id(workspace)
@@ -690,7 +708,6 @@ class ArtifactBoundaryService:
                 "source snapshot artifact is not bound to this sandbox workspace",
             )
         metadata_payload = dict(metadata or {})
-        kind_value = kind if isinstance(kind, ArtifactKind) else ArtifactKind(str(kind))
         if format is not None:
             metadata_payload["format"] = str(format)
         metadata_validation_profile = metadata_payload.get("validation_profile")
@@ -875,6 +892,7 @@ class ArtifactBoundaryService:
         Host file is already sealed.
         """
 
+        kind_value = _artifact_kind(kind)
         if not isinstance(content, bytes) or not content:
             raise ArtifactBoundaryError(
                 "artifact_validation_failed",
@@ -969,7 +987,7 @@ class ArtifactBoundaryService:
             lane_id=lane_id,
             invocation_id=invocation_id,
             run_id=None,
-            kind=kind if isinstance(kind, ArtifactKind) else ArtifactKind(str(kind)),
+            kind=kind_value,
             storage_uri=str(sealed_path),
             relative_path=f"provider_evidence/{safe_filename}",
             title=title,

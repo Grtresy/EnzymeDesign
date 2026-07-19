@@ -12,6 +12,21 @@ WORKSPACE_OUTPUT_ROOT = Path("/workspace/output")
 COMPAT_INPUT_ROOT = Path("/openzyme/input")
 COMPAT_OUTPUT_ROOT = Path("/openzyme/output")
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Keep these wire values identical to ``openzyme_domain.models.ArtifactKind``.
+# The sandbox SDK deliberately remains dependency-free, so importing the domain
+# package here would violate its execution boundary.
+_ARTIFACT_KIND_VALUES = (
+    "code",
+    "log",
+    "sequence",
+    "structure",
+    "report",
+    "research_dossier",
+    "result",
+    "cache",
+    "other",
+)
+_ARTIFACT_KIND_ALLOWLIST = frozenset(_ARTIFACT_KIND_VALUES)
 
 
 def get(artifact_id: str) -> dict[str, Any]:
@@ -221,6 +236,7 @@ def register(
     validation_profile: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _validate_artifact_kind(kind)
     resolved = _resolve_output_path(path)
     return dict(
         call(
@@ -244,6 +260,7 @@ def register_many(
     validation_profile: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    _validate_artifact_kind(kind)
     items: list[dict[str, Any]] = []
     for path in paths:
         resolved = _resolve_output_path(path)
@@ -274,6 +291,20 @@ def snapshot_code(
                 "metadata": dict(metadata or {}),
             },
         )
+    )
+
+
+def _validate_artifact_kind(kind: object) -> None:
+    if isinstance(kind, str) and kind in _ARTIFACT_KIND_ALLOWLIST:
+        return
+    allowed_values = ", ".join(_ARTIFACT_KIND_VALUES)
+    raise PipelineSdkError(
+        f"artifact kind {kind!r} is invalid",
+        error_code="artifact_kind_invalid",
+        stage="artifacts.request_validation",
+        retryable=False,
+        hint=f"Use exactly one of: {allowed_values}.",
+        details={"allowed_values": list(_ARTIFACT_KIND_VALUES)},
     )
 
 

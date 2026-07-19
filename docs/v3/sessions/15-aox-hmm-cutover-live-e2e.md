@@ -300,6 +300,54 @@ source snapshot，不能从 stale `last_command_summary` 猜测，也不能信�
 [canonical scientific chain adoption and attempt closure](../architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md)
 中的 durable adoption/closure 与 bundle/verifier 升级；该大改不在本 Goal 实现。
 
+r20-r22 在 commit `8791dac334a2418d9ef5ad15b89ff32b19429f32` 上继续使用全新且
+不可复用的 roots。r20 pin 因 bounded remote preflight timeout 停止；r21 的 MAFFT、
+CD-HIT、hmmbuild 已通过，但 HMMalign pin command timeout，随后独立只读 replay 在约
+`1.12s` 完成五项检查也不能复活 r21。r22 clean pin 则完整通过，config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`，
+identity digest
+`sha256:6a4ff9508d322c6c56e39c88a8a3fc9e2f3e45c940bde7316c0d6a7121ec7da6`，
+prerequisite digest
+`sha256:efd49d9f9c05c8766a8c50237329147f5414e37bb368552a99734affb47f5f9e`，
+workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:b4585974e9e7aa04151974abb53fe085af0c98e701a687bead38c058d9ed0481`，
+SDK digest
+`sha256:8512749df96ba1efa61ccd19a010e8051b57b67b2f0b9a6947f147c2c8695409`。
+
+r22 attempt `positive-8f9cc348326244939469da424daf046b` 的 known-positive probe 在唯一
+成功 run `srun_cf22230c4b99` / source snapshot 内精确完成六项：NCBI
+`op_9a42e4bd8a1d`、UniProt `op_534d9a14e6f0`、MAFFT `op_58935fca200d`、
+hmmbuild `op_a70cf75b40f9`、CD-HIT `op_5da62f58a783`、HMMalign
+`op_207a26459721`。独立 formal session 中，Chrome context `aox-r22-cutover` 对 approval
+`appr_a09dd0d824b5` 批准 exact NCBI operation `op_ca8f635e43b9`，operation identity
+`sha256:f5d99a6bf789ffdcc155c550a8edb20254e7866a8493eda2dadba0637ab7b0a6`，
+并恢复同一 `srun_86107f5b8e3f` / `sw_a2320c75a37b5f96751de797`。这证明 canonical
+approval-resume，但没有 terminal Chrome observation receipt，不能作为 GO 的浏览器验收。
+
+formal run 随后完成真实 NCBI、MAFFT `op_f71b4d392554` 与 hmmbuild
+`op_81853557a565`，但把规范化 `AOX_ref.hmm` 登记为自由文本 `kind="model"`。
+`model` 不属于九值 `ArtifactKind`，因此本地 artifact registration fail closed；failed-run
+pre-dispatch guard 阻止 EBI HMMER、formal UniProt、CD-HIT、HMMalign 及其他后续
+operation，execution task 被显式置为 failed。r22 永久 **NO-GO**：offline verifier
+无问题通过的 non-eligible bundle 为
+`sha256:2825e71fdde04d705591a97cc5184371c1735c9e24cbf64fd1fcac67818c05fe`，
+sealed decision 为
+`sha256:2338261b56076744bfdab7b12d78b0f0ebf5436a8e64bd814b8c145101ee0345`，
+blocker `task_failed`；MICU 累计 `43,593,190 / 500,000,000`，remaining
+`456,406,810`，零 breach/overage。r20-r22 任何 state、operation、artifact 或 response
+bytes 均不得进入新 attempt。
+
+对应局部修复不扩充 artifact kind：SDK 在 control call 前用闭集校验，Host boundary 为旧
+SDK/绕过路径重复校验，非法值统一返回 non-retryable `artifact_kind_invalid`；bio-tool
+runner declaration 的显式 invalid kind 不再按扩展名静默回退，显式 valid-but-wrong
+kind/format 也在 runner dispatch 前 fail closed。AOX final
+contract 固定 FASTA=`sequence/fasta`、HMM=`result/hmm`、CSV=`result/csv`、
+JSON=`result/json`；只有三个声明的 derived-empty FASTA 额外允许
+`fasta_zero_records@1`。online copy/cache-hit、fault target 与 offline verifier 都必须以
+`aox_fixed_deliverable_artifact_contract@1` 同时绑定 exact path/kind/format；任一字段漂移或
+缺失均不能形成 cutover-eligible evidence。该 correction 不新增顶层状态、重放或跨 run
+adoption 语义。
+
 collector 当前仍是逐文件写最终 evidence root，单文件 no-replace 不等于 attempt 事务，
 也不能统一证明 actual artifact root 与 declared root exact equality。两阶段 prepare/commit、
 artifact-root 全闭包、失败原子性与迁移计划已单独记录在
@@ -314,7 +362,7 @@ GO 只由顺序固定的三次 campaign 聚合得出：
 2. positive 2：不同 roots 且 task/operation/invocation/job 证据独立，但 commit/config/workflow/scoring/image/SDK identity 与 positive 1 完全相同；
 3. fault：`derived_required_artifact_blob_byte_flip@2` 精确到达 real NCBI exact-14 `proteins.fasta` → `aox_hmm_reference_set_selection@1` → derived `AOX_ref21.fasta` → pending MAFFT seam，产生 `artifact_blob_digest_mismatch`。封存的 `aox_fault_negative_state_closure@1` 必须证明 execution task failed/blocked/cancelled、reporting 未完成/发布、无 ready/published report 或 draft、无 successful alternate consumer、无 downstream fixed deliverable、durable events 与 conversation/final failure receipt 一致；fault attempt 的 MICU 增量同样必须全部归因到本 campaign。
 
-正式 campaign 使用 `--approval-mode chrome-once` 时，只把 positive 1 的首个 formal approval 暴露给同进程 loopback Host 提供的 Web UI。driver 不调用 resolve route；它在触发该 drain 前先记录 durable event cursor，再从该 cursor 重建 resolution/continuation，避免即时浏览器批准与事后 snapshot 竞争。浏览器审批 timeout 从 handoff 发出时独立计时，同时受 attempt 总 deadline 上界约束。用户在 approval card 上批准后，driver 必须从有序 durable events 证明同一 approval、operation digest、sandbox run/workspace 和 continuation 恢复到同一 operation 的 terminal state，并在完成后保留 bounded UI observation window。handoff 对动态身份是完整的：发出 sealed page、Host/UI identity 和 receipt schema id，而 exact 23-field builder 合同由稳定 guide/code 定义。trusted operator 必须使 final target 在 hold 内不存在，hold 后使用另一个写入 config digest 的正有限 submission timeout 完成 sibling-temp/fsync/atomic-rename。当前 Host 证据只覆盖 hold polls 未观察到提前 target、post-hold mtime 与两次 stat/read 稳定，不声称证明轮询间连续缺失或 atomic/fsync provenance。该 receipt 加上 browser console 无 application error 才构成当前 trusted-operator Chrome proof；`auto` 模式不能满足这一 GO 条件。任一必需 quorum、digest、分支 closure、published report、offline verification、Chrome proof 或 MICU ledger 条件失败，campaign 只能产生最小 evidence-backed **NO-GO** blocker。
+正式 campaign 使用 `--approval-mode chrome-once` 时，只把 positive 1 的首个 formal approval 暴露给同进程 loopback Host 提供的 Web UI。driver 不调用 resolve route；它在触发该 drain 前先记录 durable event cursor，再从该 cursor 重建 resolution/continuation，避免即时浏览器批准与事后 snapshot 竞争。浏览器审批 timeout 从 handoff 发出时独立计时，同时受 attempt 总 deadline 上界约束。用户在 approval card 上批准后，driver 必须从有序 durable events 证明同一 approval、operation digest、sandbox run/workspace 和 continuation 恢复到同一 operation 的 terminal state，并在完成后保留 bounded UI observation window。handoff 对动态身份是完整的：发出 sealed page、Host/UI identity、receipt schema、not-before、target 与 exact expected page state。trusted operator 以 `aox_browser_observation_capture@1` 封装其 Chrome console、page target、exact ordered `list_console_messages` → `evaluate_script` → `take_screenshot` request/response 和 PNG 投影；`openzyme-aox-cutover browser-receipt` 校验闭集并自动计算 raw 23-field receipt，但不证明投影与 MCP 原始 response 的对应关系。final target 必须在 hold 内不存在，且只在 not-before 后执行 mode-0600 sibling-temp、file fsync、atomic no-replace install 与 parent fsync。当前 Host 证据只覆盖 hold polls 未观察到提前 target、post-hold mtime 与两次 stat/read 稳定，不声称证明轮询间连续缺失、operator 原子/fsync provenance 或 browser-origin-complete transcript。该 receipt 加上 browser console 无 application error 才构成当前 trusted-operator Chrome proof；`auto` 模式不能满足这一 GO 条件。任一必需 quorum、digest、分支 closure、published report、offline verification、Chrome proof 或 MICU ledger 条件失败，campaign 只能产生最小 evidence-backed **NO-GO** blocker。
 
 Chrome resolution consumer 只把带闭合 `decision=approved|rejected` 的 canonical
 `approval.resolved` command event 当作 operator decision。当前 activity backfill

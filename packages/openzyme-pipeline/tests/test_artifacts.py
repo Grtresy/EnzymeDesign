@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import pytest
 
+from openzyme_domain import ArtifactKind
 from openzyme_pipeline import artifacts
 from openzyme_pipeline.client import PipelineSdkError
 
@@ -46,6 +47,72 @@ def test_register_forwards_typed_validation_profile(
             },
         )
     ]
+
+
+def test_register_rejects_invalid_artifact_kind_before_control_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _call(method: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append((method, params))
+        return {"artifact": {"artifact_id": "artifact_unexpected"}}
+
+    monkeypatch.setattr(artifacts, "call", _call)
+
+    with pytest.raises(PipelineSdkError) as error:
+        artifacts.register(
+            "/workspace/output/aox_hmm/AOX_ref.hmm",
+            kind="model",
+        )
+
+    assert error.value.error_code == "artifact_kind_invalid"
+    assert error.value.stage == "artifacts.request_validation"
+    assert error.value.retryable is False
+    assert error.value.details == {
+        "allowed_values": [
+            "code",
+            "log",
+            "sequence",
+            "structure",
+            "report",
+            "research_dossier",
+            "result",
+            "cache",
+            "other",
+        ]
+    }
+    assert error.value.hint == (
+        "Use exactly one of: code, log, sequence, structure, report, "
+        "research_dossier, result, cache, other."
+    )
+    assert calls == []
+
+
+def test_register_many_rejects_invalid_artifact_kind_before_control_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _call(method: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append((method, params))
+        return {"artifacts": []}
+
+    monkeypatch.setattr(artifacts, "call", _call)
+
+    with pytest.raises(PipelineSdkError) as error:
+        artifacts.register_many(
+            ["/workspace/output/aox_hmm/AOX_ref.hmm"],
+            kind="model",
+        )
+
+    assert error.value.error_code == "artifact_kind_invalid"
+    assert error.value.retryable is False
+    assert calls == []
+
+
+def test_dependency_free_artifact_kind_allowlist_matches_domain_wire_values() -> None:
+    assert artifacts._ARTIFACT_KIND_VALUES == tuple(item.value for item in ArtifactKind)
 
 
 def test_registered_artifact_ref_uses_closed_registration_projection() -> None:

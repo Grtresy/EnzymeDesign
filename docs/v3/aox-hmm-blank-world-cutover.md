@@ -432,6 +432,68 @@ corrections do not adopt r19. Supporting same-attempt cross-run corrective
 adoption remains the unimplemented major design in
 [canonical scientific chain adoption and attempt closure](architecture-proposals/canonical-scientific-chain-adoption-and-attempt-closure.md).
 
+r20-r22 remained fresh, non-reusable diagnostics on commit
+`8791dac334a2418d9ef5ad15b89ff32b19429f32`. r20's pin stopped on a bounded
+remote preflight timeout. r21 passed MAFFT, CD-HIT, and hmmbuild but its
+HMMalign pin command timed out; an independent read-only replay then completed
+all five tool checks in about `1.12s`, which did not revive that pin root. r22
+was the next clean pin and passed all four declared toolchains with config
+digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`,
+identity digest
+`sha256:6a4ff9508d322c6c56e39c88a8a3fc9e2f3e45c940bde7316c0d6a7121ec7da6`,
+prerequisite digest
+`sha256:efd49d9f9c05c8766a8c50237329147f5414e37bb368552a99734affb47f5f9e`,
+workflow
+`workflow:aox-hmm-live@2.0.0#sha256:b4585974e9e7aa04151974abb53fe085af0c98e701a687bead38c058d9ed0481`,
+and SDK digest
+`sha256:8512749df96ba1efa61ccd19a010e8051b57b67b2f0b9a6947f147c2c8695409`.
+
+r22 attempt `positive-8f9cc348326244939469da424daf046b`
+proved the exact six-operation probe in one successful sandbox run
+`srun_cf22230c4b99` and one source snapshot: NCBI `op_9a42e4bd8a1d`, UniProt
+`op_534d9a14e6f0`, MAFFT `op_58935fca200d`, hmmbuild
+`op_a70cf75b40f9`, CD-HIT `op_5da62f58a783`, and HMMalign
+`op_207a26459721`. In the separate formal session, Chrome context
+`aox-r22-cutover` approved `appr_a09dd0d824b5` for the exact NCBI operation
+`op_ca8f635e43b9`, operation identity
+`sha256:f5d99a6bf789ffdcc155c550a8edb20254e7866a8493eda2dadba0637ab7b0a6`,
+and resumed the same sandbox run `srun_86107f5b8e3f` / workspace
+`sw_a2320c75a37b5f96751de797`. This is canonical approval-resume evidence,
+not the required terminal Chrome observation receipt and not GO evidence.
+
+The formal run then completed real NCBI, MAFFT `op_f71b4d392554`, and hmmbuild
+`op_81853557a565`, but registered the normalized `AOX_ref.hmm` as free-form
+`kind="model"`. `model` is not one of the nine `ArtifactKind` wire values, so
+the Host returned a local registration failure and the operation-bearing run
+stopped. The pre-dispatch failed-run guard prevented EBI HMMER, formal UniProt,
+CD-HIT, HMMalign, or any later operation from starting, and the agent explicitly
+finished the execution task failed. The attempt therefore remains permanently
+**NO-GO**. Its offline-verified non-eligible bundle is
+`sha256:2825e71fdde04d705591a97cc5184371c1735c9e24cbf64fd1fcac67818c05fe`;
+the sealed decision is
+`sha256:2338261b56076744bfdab7b12d78b0f0ebf5436a8e64bd814b8c145101ee0345`
+with blocker `task_failed`. The cumulative MICU ledger is
+`43,593,190 / 500,000,000`, remaining `456,406,810`, with zero breach or
+reservation overage. r20-r22 roots, state, operations, and response bytes must
+not enter any later positive.
+
+The bounded r22 correction keeps the artifact catalog type closed rather than
+adding a semantic kind. The dependency-free SDK rejects invalid kinds before
+the control call, and the Host artifact boundary repeats the same validation
+for older/bypassing callers; both expose non-retryable
+`artifact_kind_invalid`. Bio-tool declarations no longer turn an explicit
+unknown kind into an extension-derived value: invalid kind and explicit
+valid-but-wrong kind/format fail before runner dispatch. The AOX contract fixes every FASTA to
+`sequence/fasta`, the HMM to `result/hmm`, every CSV to `result/csv`, and both
+JSON deliverables to `result/json`. Only the three declared derived-empty
+FASTA roles may additionally use `fasta_zero_records@1`. Online copies,
+cache hits, controlled fault targets and offline verification bind all 17 exact
+paths and pairs under `aox_fixed_deliverable_artifact_contract@1`; a missing
+binding, renamed path or kind/format drift fails closed. This is a local
+contract/error-taxonomy correction, not a new control-plane state or replay
+authority.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger
@@ -966,14 +1028,14 @@ starts when the handoff is emitted and is capped by the attempt-wide deadline;
 after formal completion the driver keeps a bounded UI observation window.
 Under the trusted-operator contract, the final observation target must remain
 absent during that entire window; the operator writes a sibling temporary file,
-fsyncs it, and atomically renames it only after the handoff's
+fsyncs it, and atomically installs it without replacement only after the handoff's
 `receipt_not_before_unix_ns`, within the separately sealed positive finite
 observation-submission timeout (default 180 seconds). The current Host rejects a
 target seen by any bounded hold poll or whose final mtime predates the hold end,
 then requires a non-symlink regular file to remain identical across two
 stat/read passes. That proves a fresh stable post-hold final file within the
 trusted boundary; it does not prove continuous absence between polls or the
-atomic-rename/fsync provenance of that file.
+atomic-install/fsync provenance of that file.
 The sealed
 `aox_browser_observation_receipt@2` binds the challenge, same page/Host/UI dist,
 terminal page state, DevTools transcript, zero application console errors, a
@@ -995,14 +1057,35 @@ The `approval_required` and `ready_for_completion_observation` handoffs are
 dynamic-identity-complete for the trusted Chrome operator. In addition to the
 actual loopback HTTP `ui_url`, they expose the sealed logical `page_url`, Host
 process id, served UI-dist digest, challenge and raw receipt schema identifier.
-They do not carry a standalone receipt builder: the versioned exact field and
-digest rules are the static contract below and in `aox_cutover_live.py`. The operator opens
+They carry the dynamic inputs consumed by the stable operator helper. After
+capturing the challenged page with Chrome DevTools MCP, write one private
+`aox_browser_observation_capture@1` JSON object and run:
+
+```bash
+uv --project apps/openzyme-host-api run openzyme-aox-cutover browser-receipt \
+  --handoff /tmp/aox-ready-handoff.json \
+  --capture /tmp/aox-chrome-capture.json \
+  --screenshot /tmp/aox-page.png \
+  --output /tmp/aox-browser-observation.json
+```
+
+The helper derives every aggregate digest and PNG dimension, rejects error
+console levels, requires the exact ordered `list_console_messages` →
+`evaluate_script` → `take_screenshot` projection and exact terminal page-state
+field set, waits without creating a temp until the handoff not-before,
+then uses a mode-`0600` sibling temp, file fsync, atomic no-replace install and
+parent-directory fsync. Under the trusted-operator boundary, the capture
+contains the operator-projected `page_target_id`, `command_id`, non-error
+console messages, and ordered DevTools `method/request/response` values; the
+helper validates their closed shape and locally canonicalizes each call into
+transcript digests, but does not prove that those projections came from the
+corresponding MCP response. It never adds Host acceptance timing. The operator opens
 the actual HTTP URL, but writes the sealed logical value
 `loopback://same-process/ui/?project_id=aox-blank-world-cutover` into the
 receipt. The raw JSON has exactly 23 fields:
 
 - schema/mode/challenge plus session, approval and operation ids;
-- sealed page URL, Host process, UI-dist digest and actual Chrome page target;
+- sealed page URL, Host process, UI-dist digest and operator-projected Chrome page target;
 - hold duration, normalized non-error console entries and their digest, with
   `application_error_count=0`;
 - the exact `expected_page_state` supplied after the operator independently
@@ -1022,7 +1105,7 @@ timestamp. The offline verifier binds both time bounds back to effective
 config and rejects acceptance before hold end or after the submission
 deadline.
 
-The sibling-temp/fsync/atomic-rename sequence is a mandatory trusted-operator
+The sibling-temp/fsync/atomic-no-replace-install sequence is a mandatory trusted-operator
 write protocol, not a Host-observed filesystem provenance claim. The accepted
 receipt proves only the polling, mtime, regular-file and double-read stability
 checks described above.

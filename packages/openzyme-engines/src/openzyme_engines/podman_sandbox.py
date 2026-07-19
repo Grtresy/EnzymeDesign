@@ -20,6 +20,7 @@ from openzyme_domain import ArtifactKind
 from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_runtime import immutable_source_tree_digest
+from openzyme_runtime import ArtifactBoundaryError
 from openzyme_runtime import PodmanContainerLease
 from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
@@ -422,7 +423,8 @@ class _ControlSocketServer:
                 "error": {
                     "message": str(exc),
                     "type": exc.__class__.__name__,
-                    "error_code": getattr(exc, "error_type", None),
+                    "error_code": getattr(exc, "error_type", None)
+                    or getattr(exc, "error_code", None),
                     "stage": getattr(exc, "stage", None),
                     "retryable": getattr(exc, "retryable", None),
                     "hint": getattr(exc, "hint", None),
@@ -468,6 +470,17 @@ class _ControlSocketServer:
         }
 
     def _register(self, params: dict[str, Any]) -> dict[str, Any]:
+        raw_kind = str(params["kind"]) if "kind" in params else "result"
+        try:
+            kind = ArtifactKind(raw_kind)
+        except ValueError as exc:
+            allowed_values = [item.value for item in ArtifactKind]
+            raise ArtifactBoundaryError(
+                "artifact_kind_invalid",
+                f"artifact kind {raw_kind!r} is invalid",
+                hint=f"Use exactly one of: {', '.join(allowed_values)}.",
+                details={"allowed_values": allowed_values},
+            ) from exc
         sandbox_path = Path(str(params["path"]))
         parts = sandbox_path.parts
         if (
@@ -488,7 +501,6 @@ class _ControlSocketServer:
             raise ValueError("registered artifact path escapes output directory")
         if not host_path.is_file():
             raise ValueError(f"registered artifact does not exist: {sandbox_path}")
-        kind = ArtifactKind(str(params.get("kind") or "result"))
         metadata = dict(params.get("metadata") or {})
         output_format = params.get("format")
         validation_profile = params.get("validation_profile")

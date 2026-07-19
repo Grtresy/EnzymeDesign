@@ -291,13 +291,25 @@ def _bio_tool_outputs(method: str) -> list[dict[str, str]]:
             {"path": "bio_tools/cdhit/clusters.csv", "kind": "result", "format": "csv"},
         ],
         "bio_tools.mafft": [
-            {"path": "bio_tools/mafft/alignment.fasta", "kind": "sequence"}
+            {
+                "path": "bio_tools/mafft/alignment.fasta",
+                "kind": "sequence",
+                "format": "fasta",
+            }
         ],
         "bio_tools.hmmbuild": [
-            {"path": "bio_tools/hmmbuild/model.hmm", "kind": "result"}
+            {
+                "path": "bio_tools/hmmbuild/model.hmm",
+                "kind": "result",
+                "format": "hmm",
+            }
         ],
         "bio_tools.hmmalign": [
-            {"path": "bio_tools/hmmalign/aligned.fasta", "kind": "sequence"}
+            {
+                "path": "bio_tools/hmmalign/aligned.fasta",
+                "kind": "sequence",
+                "format": "fasta",
+            }
         ],
         "bio_tools.hmmer_search_cli": [
             {
@@ -2762,6 +2774,130 @@ def test_bio_tool_fixed_output_contract_rejects_noncanonical_path_sets(
     assert failure.details == {
         "declared_paths": sorted(declared_paths),
         "expected_paths": sorted(expected_paths),
+    }
+
+
+def test_bio_tool_fixed_output_contract_rejects_explicit_invalid_kind_before_dispatch() -> (
+    None
+):
+    engine = ExecutionEngine(_build_repositories(), CapturingSuccessRunner())
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._require_canonical_bio_tool_outputs(
+            "bio_tools.hmmbuild",
+            [
+                {
+                    "path": "bio_tools/hmmbuild/model.hmm",
+                    "kind": "model",
+                    "format": "hmm",
+                }
+            ],
+        )
+
+    failure = exc_info.value
+    assert failure.error_type == "artifact_kind_invalid"
+    assert failure.stage == "hpc_output_validation"
+    assert failure.retryable is False
+    assert failure.sdk_method == "bio_tools.hmmbuild"
+    assert failure.details == {
+        "allowed_values": [
+            "code",
+            "log",
+            "sequence",
+            "structure",
+            "report",
+            "research_dossier",
+            "result",
+            "cache",
+            "other",
+        ],
+        "declared_kind": "model",
+        "path": "bio_tools/hmmbuild/model.hmm",
+    }
+
+
+def test_bio_tool_fixed_output_contract_rejects_directory_shape_sentinel() -> None:
+    engine = ExecutionEngine(_build_repositories(), CapturingSuccessRunner())
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._require_canonical_bio_tool_outputs(
+            "bio_tools.hmmbuild",
+            [
+                {
+                    "path": "bio_tools/hmmbuild/model.hmm",
+                    "kind": "directory",
+                    "format": "hmm",
+                }
+            ],
+        )
+
+    failure = exc_info.value
+    assert failure.error_type == "bio_tool_output_contract_mismatch"
+    assert failure.stage == "hpc_output_validation"
+    assert failure.details == {
+        "mismatches": [
+            {
+                "field": "kind",
+                "path": "bio_tools/hmmbuild/model.hmm",
+                "declared": "directory",
+                "expected": "result",
+            }
+        ]
+    }
+
+
+def test_bio_tool_fixed_output_contract_materializes_inferred_kind_and_format() -> None:
+    engine = ExecutionEngine(_build_repositories(), CapturingSuccessRunner())
+
+    normalized = engine._require_canonical_bio_tool_outputs(
+        "bio_tools.hmmbuild",
+        [{"path": "bio_tools/hmmbuild/model.hmm"}],
+    )
+
+    assert normalized == [
+        {
+            "path": "bio_tools/hmmbuild/model.hmm",
+            "kind": "result",
+            "format": "hmm",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    (("kind", "sequence", "result"), ("format", "json", "hmm")),
+)
+def test_bio_tool_fixed_output_contract_rejects_explicit_kind_format_drift(
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    engine = ExecutionEngine(_build_repositories(), CapturingSuccessRunner())
+    declared = {
+        "path": "bio_tools/hmmbuild/model.hmm",
+        "kind": "result",
+        "format": "hmm",
+    }
+    declared[field] = value
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._require_canonical_bio_tool_outputs(
+            "bio_tools.hmmbuild",
+            [declared],
+        )
+
+    failure = exc_info.value
+    assert failure.error_type == "bio_tool_output_contract_mismatch"
+    assert failure.stage == "hpc_output_validation"
+    assert failure.details == {
+        "mismatches": [
+            {
+                "field": field,
+                "path": "bio_tools/hmmbuild/model.hmm",
+                "declared": value,
+                "expected": expected,
+            }
+        ]
     }
 
 

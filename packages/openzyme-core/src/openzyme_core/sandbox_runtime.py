@@ -116,11 +116,13 @@ class SandboxRuntimeError(RuntimeError):
         *,
         hint: str | None = None,
         details: dict[str, Any] | None = None,
+        retryable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.hint = hint
         self.details = {} if details is None else dict(details)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -755,6 +757,7 @@ class _ControlSocketServer:
                 "details": sanitize_public_diagnostic_payload(
                     getattr(exc, "details", None)
                 ),
+                "retryable": getattr(exc, "retryable", None),
             },
         }
 
@@ -823,7 +826,11 @@ class _ControlSocketServer:
                     session_id=self.session_id,
                     sandbox_workspace_id=self.sandbox_workspace_id,
                     path=str(params.get("path") or ""),
-                    kind=str(params.get("kind") or "result"),
+                    kind=(
+                        str(params["kind"])
+                        if "kind" in params
+                        else "result"
+                    ),
                     format=None if params.get("format") in {None, ""} else str(params.get("format")),
                     validation_profile=(
                         None
@@ -843,7 +850,11 @@ class _ControlSocketServer:
                         session_id=self.session_id,
                         sandbox_workspace_id=self.sandbox_workspace_id,
                         path=str(item.get("path") or ""),
-                        kind=str(item.get("kind") or "result"),
+                        kind=(
+                            str(item["kind"])
+                            if "kind" in item
+                            else "result"
+                        ),
                         format=None if item.get("format") in {None, ""} else str(item.get("format")),
                         validation_profile=(
                             None
@@ -866,7 +877,13 @@ class _ControlSocketServer:
             else:
                 raise SandboxRuntimeError("sandbox_transport_method_forbidden", "artifact method is not supported by the sandbox control socket")
         except ArtifactBoundaryError as exc:
-            raise SandboxRuntimeError(exc.error_code, str(exc), hint=exc.hint, details=exc.details) from exc
+            raise SandboxRuntimeError(
+                exc.error_code,
+                str(exc),
+                hint=exc.hint,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
     def _normalize_hpc_workspace_label(self, label: str) -> str:
@@ -3359,7 +3376,13 @@ class SandboxRuntimeService:
             )
             return result.to_payload()
         except ArtifactBoundaryError as exc:
-            raise SandboxRuntimeError(exc.error_code, str(exc), hint=exc.hint, details=exc.details) from exc
+            raise SandboxRuntimeError(
+                exc.error_code,
+                str(exc),
+                hint=exc.hint,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
 
     def _entrypoint_for(self, argv: tuple[str, ...]) -> str:
         if len(argv) >= 2 and Path(argv[0]).name.startswith("python"):

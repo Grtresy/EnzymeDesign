@@ -109,6 +109,19 @@ Fetched outputs must be declared, actually returned as readable content by the r
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
 
+`kind` is a closed wire enum, not a free-form scientific label. The exact
+values are `code`, `log`, `sequence`, `structure`, `report`,
+`research_dossier`, `result`, `cache`, and `other`. Put the concrete encoding
+or scientific file family in `format` or metadata: for example an HMM is
+`kind="result", format="hmm"`, not `kind="model"`. Likewise `alignment`,
+`table`, and `graph` are not artifact kinds. `kind="directory"` is retained
+only as the established `expected_outputs` shape sentinel; it is never stored
+as an artifact kind, and directory content is registered under a real enum
+value. The sandbox SDK validates this
+enum before opening the control socket, and the Host artifact boundary repeats
+the validation for older or bypassing callers. An invalid value fails
+non-retryably as `artifact_kind_invalid` before file sealing or external work.
+
 The source snapshot is Host authority, not a caller-supplied claim. Control-socket
 registration binds the snapshot sealed for the current `sandbox.exec`; provider
 artifactization and adapter-backed HPC output fetch bind their controlled

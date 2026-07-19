@@ -42,6 +42,8 @@ from openzyme_runtime import sanitize_public_diagnostic_payload
 import uvicorn
 
 from .aox_cutover_evidence import AttemptRunContext
+from .aox_cutover_evidence import AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+from .aox_cutover_evidence import AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
 from .aox_cutover_evidence import AOX_TOOLCHAIN_RUNTIME_CONTRACTS
 from .aox_cutover_evidence import AOX_HPC_WORKSPACE_BINDING_CONTRACT_ID
 from .aox_cutover_evidence import FAULT_ARTIFACT_BYTE_FLIP_ID
@@ -1578,8 +1580,9 @@ class LiveAoxAttemptRunner:
                         "observation_ready_at_unix_ns": observation_ready_wall_ns,
                         "receipt_not_before_unix_ns": observation_not_before_wall_ns,
                         "receipt_write_protocol": (
-                            "write sibling temp, fsync, then atomic rename after "
-                            "receipt_not_before_unix_ns"
+                            "after receipt_not_before_unix_ns write a mode-0600 "
+                            "sibling temp, fsync, atomically install no-replace, "
+                            "then fsync the parent directory"
                         ),
                         "workspace_digest": canonical_digest(formal.workspace),
                         "event_receipt": formal.event_receipt,
@@ -3144,9 +3147,12 @@ class LiveAoxAttemptRunner:
             "another controlled operation in this attempt, explicitly fail the task, and let a "
             "fresh attempt retry. Cross-run effect adoption is not available. "
             "The fixed runner templates require exactly these "
-            "declared outputs: MAFFT bio_tools/mafft/alignment.fasta; hmmbuild "
-            "bio_tools/hmmbuild/model.hmm; CD-HIT bio_tools/cdhit/clustered.fasta and "
-            "bio_tools/cdhit/clusters.csv; HMMalign bio_tools/hmmalign/aligned.fasta. "
+            "declared outputs and wire pairs: MAFFT bio_tools/mafft/alignment.fasta as "
+            "kind='sequence', format='fasta'; hmmbuild bio_tools/hmmbuild/model.hmm as "
+            "kind='result', format='hmm'; CD-HIT bio_tools/cdhit/clustered.fasta as "
+            "kind='sequence', format='fasta' plus bio_tools/cdhit/clusters.csv as "
+            "kind='result', format='csv'; and HMMalign bio_tools/hmmalign/aligned.fasta as "
+            "kind='sequence', format='fasta'. Never declare kind='model'. "
             "Call ws.fetch_outputs for all four run handles, including the terminal HMMalign "
             "run; these fetches do not add controlled operations. Select every fetched artifact "
             "through the unique fetch_refs entry whose declared_output_path exactly matches the "
@@ -3204,7 +3210,14 @@ class LiveAoxAttemptRunner:
             + "selectors already return terminal canonical artifact_id/content_digest refs; "
             + "never chain selectors, synthesize a registration envelope, or recursively search "
             + "rich provenance. Before the first operation-bearing run, read docs.read('artifacts') "
-            + "and validate any uncertain installed signatures. Persist each completed "
+            + "and validate any uncertain installed signatures. Register every normalized final "
+            + "FASTA with kind='sequence', format='fasta'; AOX_ref.hmm with kind='result', "
+            + "format='hmm'; every normalized final CSV with kind='result', format='csv'; and "
+            + "both normalized final JSON files with kind='result', format='json'. Artifact kind "
+            + "'model' is invalid: semantic labels such as model, alignment, table, or graph belong "
+            + "in format or metadata and must never be invented as kind values. A permitted "
+            + "zero-record FASTA keeps kind='sequence', format='fasta' and additionally uses its "
+            + "required typed validation profile. Persist each completed "
             + "controlled-operation response under /workspace/work before downstream parsing. "
             + "Current bundle @1 cannot adopt effects across a failed sandbox run: after any "
             + "local nonzero run, preserve checkpoints only as failure evidence, start no more "
@@ -3218,9 +3231,13 @@ class LiveAoxAttemptRunner:
             + "shorter bounds. Do not shorten the HMM-capable containment timeout or use a "
             + "later command to justify a duplicate operation. "
             + "Runner templates accept only the "
-            + "fixed declared paths bio_tools/mafft/alignment.fasta, "
-            + "bio_tools/hmmbuild/model.hmm, bio_tools/cdhit/clustered.fasta plus "
-            + "bio_tools/cdhit/clusters.csv, and bio_tools/hmmalign/aligned.fasta. "
+            + "fixed declarations bio_tools/mafft/alignment.fasta as sequence/fasta, "
+            + "bio_tools/hmmbuild/model.hmm as result/hmm, "
+            + "bio_tools/cdhit/clustered.fasta as sequence/fasta plus "
+            + "bio_tools/cdhit/clusters.csv as result/csv, and "
+            + "bio_tools/hmmalign/aligned.fasta as sequence/fasta. Explicitly invalid or "
+            + "mismatched kind/format values fail before runner dispatch; never declare "
+            + "kind='model'. "
             + "For every bio_tools HPC input, pass the exact dict returned by "
             + "ws.stage_artifact(...) unchanged; never reconstruct it, rename its keys, or "
             + "substitute an artifact-id/digest/workspace-path dict. Select fetched "
@@ -4067,6 +4084,49 @@ def _copy_catalog_artifact(
     provenance: Mapping[str, object],
     cache: dict[str, CatalogArtifactCopy],
 ) -> CatalogArtifactCopy:
+    metadata = dict(artifact.metadata or {})
+    format_value = metadata.get("format")
+    artifact_format = format_value if isinstance(format_value, str) else ""
+    deliverable_path = (
+        artifact.relative_path
+        if artifact.relative_path in AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS
+        else ""
+    )
+    declared_deliverable_path = str(dict(provenance).get("deliverable_path") or "")
+    declared_contract_id = str(
+        dict(provenance).get("deliverable_artifact_contract_id") or ""
+    )
+    if declared_deliverable_path and declared_deliverable_path != deliverable_path:
+        raise LiveProductPathError(
+            "final_deliverable_artifact_contract_mismatch",
+            "AOX deliverable provenance does not match the catalog relative path",
+            details={"artifact_id": artifact.artifact_id},
+        )
+    if declared_contract_id and (
+        not deliverable_path
+        or declared_contract_id != AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+    ):
+        raise LiveProductPathError(
+            "final_deliverable_artifact_contract_mismatch",
+            "AOX deliverable provenance declares an unknown artifact contract",
+            details={"artifact_id": artifact.artifact_id},
+        )
+    if deliverable_path:
+        expected_kind, expected_format = (
+            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[deliverable_path]
+        )
+        if artifact.kind.value != expected_kind or artifact_format != expected_format:
+            raise LiveProductPathError(
+                "final_deliverable_artifact_contract_mismatch",
+                "normalized AOX deliverable has the wrong catalog kind or format",
+                details={
+                    "path": deliverable_path,
+                    "expected_kind": expected_kind,
+                    "actual_kind": artifact.kind.value,
+                    "expected_format": expected_format,
+                    "actual_format": artifact_format,
+                },
+            )
     existing = cache.get(artifact.artifact_id)
     if existing is not None:
         if (
@@ -4078,6 +4138,32 @@ def _copy_catalog_artifact(
                 "one catalog artifact cannot be assigned two canonical evidence owners",
                 details={"artifact_id": artifact.artifact_id},
             )
+        if deliverable_path:
+            existing_path = str(existing.record.get("deliverable_path") or "")
+            if existing_path not in {"", deliverable_path}:
+                raise LiveProductPathError(
+                    "catalog_artifact_owner_ambiguous",
+                    "one catalog artifact cannot satisfy two AOX deliverable paths",
+                    details={"artifact_id": artifact.artifact_id},
+                )
+            existing.record.update(
+                {
+                    "deliverable_path": deliverable_path,
+                    "deliverable_artifact_contract_id": (
+                        AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                    ),
+                }
+            )
+            existing_provenance = dict(existing.record.get("provenance") or {})
+            existing_provenance.update(
+                {
+                    "deliverable_path": deliverable_path,
+                    "deliverable_artifact_contract_id": (
+                        AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                    ),
+                }
+            )
+            existing.record["provenance"] = existing_provenance
         return existing
     content = _artifact_bytes(context, artifact)
     registration_validation: dict[str, object] | None = None
@@ -4109,6 +4195,17 @@ def _copy_catalog_artifact(
             "scope": scope,
             "origin": origin,
             "kind": artifact.kind.value,
+            **({} if not artifact_format else {"format": artifact_format}),
+            **(
+                {}
+                if not deliverable_path
+                else {
+                    "deliverable_path": deliverable_path,
+                    "deliverable_artifact_contract_id": (
+                        AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                    ),
+                }
+            ),
             **(
                 {}
                 if registration_validation is None
@@ -4118,6 +4215,16 @@ def _copy_catalog_artifact(
                 **dict(provenance),
                 "catalog_artifact_id": artifact.artifact_id,
                 "catalog_relative_path": artifact.relative_path,
+                **(
+                    {}
+                    if not deliverable_path
+                    else {
+                        "deliverable_path": deliverable_path,
+                        "deliverable_artifact_contract_id": (
+                            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                        ),
+                    }
+                ),
             },
         },
         content=content,
@@ -4717,6 +4824,23 @@ def _final_deliverable_copies(
     metadata_by_path: dict[str, dict[str, object]] = {}
     copy_by_path: dict[str, CatalogArtifactCopy] = {}
     for path, artifact in artifact_by_path.items():
+        expected_kind, expected_format = (
+            AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[path]
+        )
+        raw_format = dict(artifact.metadata or {}).get("format")
+        actual_format = raw_format if isinstance(raw_format, str) else ""
+        if artifact.kind.value != expected_kind or actual_format != expected_format:
+            raise LiveProductPathError(
+                "final_deliverable_artifact_contract_mismatch",
+                "normalized AOX deliverable has the wrong catalog kind or format",
+                details={
+                    "path": path,
+                    "expected_kind": expected_kind,
+                    "actual_kind": artifact.kind.value,
+                    "expected_format": expected_format,
+                    "actual_format": actual_format,
+                },
+            )
         copied = _copy_catalog_artifact(
             context,
             artifact,
@@ -4725,6 +4849,9 @@ def _final_deliverable_copies(
             provenance={
                 "calculation_id": AOX_DELIVERABLE_NORMALIZATION_ID,
                 "deliverable_path": path,
+                "deliverable_artifact_contract_id": (
+                    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                ),
             },
             cache=copies,
         )
@@ -7478,6 +7605,29 @@ def _copy_fault_target(
             "fault_target_catalog_path_mismatch",
             "controlled fault receipt does not match the catalog target path",
         )
+    target_contract_path = "aox_hmm/AOX_ref21.fasta"
+    if artifact.relative_path != target_contract_path:
+        raise LiveProductPathError(
+            "fault_target_catalog_path_mismatch",
+            "controlled fault target is not the exact AOX reference-set deliverable",
+        )
+    expected_kind, expected_format = AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACTS[
+        target_contract_path
+    ]
+    raw_format = dict(artifact.metadata or {}).get("format")
+    artifact_format = raw_format if isinstance(raw_format, str) else ""
+    if artifact.kind.value != expected_kind or artifact_format != expected_format:
+        raise LiveProductPathError(
+            "final_deliverable_artifact_contract_mismatch",
+            "controlled fault target has the wrong catalog kind or format",
+            details={
+                "path": artifact.relative_path,
+                "expected_kind": expected_kind,
+                "actual_kind": artifact.kind.value,
+                "expected_format": expected_format,
+                "actual_format": artifact_format,
+            },
+        )
     content = source.read_bytes()
     if (
         not content
@@ -7514,12 +7664,21 @@ def _copy_fault_target(
             "scope": "formal",
             "origin": "operation",
             "kind": artifact.kind.value,
+            "format": artifact_format,
+            "deliverable_path": artifact.relative_path,
+            "deliverable_artifact_contract_id": (
+                AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+            ),
             "provenance": {
                 "operation_id": derivation_operation_id,
                 "catalog_artifact_id": artifact.artifact_id,
                 "catalog_relative_path": artifact.relative_path,
                 "controlled_fault_id": FAULT_ARTIFACT_BYTE_FLIP_ID,
                 "derivation_id": fault.derivation_id,
+                "deliverable_path": artifact.relative_path,
+                "deliverable_artifact_contract_id": (
+                    AOX_FIXED_DELIVERABLE_ARTIFACT_CONTRACT_ID
+                ),
             },
         },
         content=content,
