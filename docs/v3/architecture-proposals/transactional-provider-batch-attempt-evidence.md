@@ -18,13 +18,48 @@ validator 或 artifact registration 失败，先前已发生的 provider request
 继续。
 
 r15 并未实际进入这个 late-UniProt-failure 分支；它在 UniProt controlled operation 创建前因
-control-socket framing 失败。因此本提案中的 failure anatomy 来自当前代码审计和确定性故障模型，
-不是把 r15 追溯描述成已经观察到的 UniProt batch 故障。
+control-socket framing 失败。因此此前本提案中的 failure anatomy 来自代码审计和确定性故障模型，
+不是把 r15 追溯描述成已经观察到的 UniProt batch 故障。r25 则首次提供了真实的大集合调用证据：
+导致 validator 失败的 identity 属于第二个 batch，但当前 adapter 在全部 query/page 累积后才运行
+record validation，不能把 identity 的 batch 坐标误写成网络调用停止位置。
 
 当前 Goal 继续使用现有 one-operation/in-memory execution，并以 fresh live E2E 验证它是否足以完成
 本轮 cutover。本文只记录未来跨 provider adapter、controlled-operation repository、artifact
 boundary、recovery scheduler 与 evidence verifier 的大架构调整；不修改当前 schema，也不允许把
 proposal 当作当前 bundle 已拥有的证明。
+
+## Real r25 evidence: 378-batch plan and a valid inactive identity
+
+r25 的 HMMER 输出给 UniProt 传入 `37,722` 个 accession，按 cap `100` 形成 `378` 个 query batch。
+完整列表第 `102` 项、位于第二个 batch 的 accession `A0A034VJ94` 返回了本次诊断首个可识别的
+UniProtKB inactive record：
+`entryType=Inactive`、`inactiveReasonType=DELETED`、删除原因是“不属于 reference proteome”，并带有
+`uniParcId=UPI000453BEA2`；该记录按 provider 语义没有 `sequence`。旧 adapter 把缺少 sequence
+一律分类为 non-retryable `provider_schema_drift`。该记录虽属于第二个 batch，失败却发生在 adapter 已
+累积全部 query/page 之后的统一 normalization；因此未来 evidence 必须分别记录 planned、dispatched、
+response-complete、durably committed 与 validated batch count，不能从 error record 的 batch 坐标推断
+实际网络 high-watermark。
+
+当前 Goal 内允许的契约小修是把 provider identity contract 与下游 join 一起版本化：typed active
+sequence records 和 exact-requested typed inactive `DELETED|MERGED` records 对完整 requested set
+做互斥分区；`DELETED` 保留 canonical reason，`MERGED` 保留非空、去重的
+replacement-target annotations，两类均保留 exact requested accession、UniParc reference、
+provider release 和 response/record digest。`aox_sequence_length_join@2` 在 length filter 前明确
+排除两类 inactive，且不跟随、抓取或使用 MERGED replacement target 的 sequence。实现不得
+自动跟随 UniParc、替换 accession、缩小 requested set 或把 `DEMERGED`/unknown/malformed response
+当作 inactive；这些情况仍严格 fail closed。safe
+batch coordinates 与 terminal failure transcript 可以补齐本次失败事实，但不构成 page-level durable
+checkpoint、resume high-watermark 或跨进程 recovery。
+
+r25 也说明 transactional proposal 不能只围绕“第 378 个 request 失败”设计。未来 reducer 必须区分：
+
+- 合法的 inactive member，属于 exact identity closure 的显式分区；
+- batch/page transport 或 schema failure，属于不可消费的 failed attempt；
+- 已持久化 active/inactive fragment，但全局 set closure 尚未完成；
+- caller 计划 `378` 个 batch 与实际已 dispatch/committed 数量。
+
+只有最后一个 batch/page 完成且 requested-set 分区、release 与 response completeness 全部闭合后，才可
+发布 UniProt result。r25 本身永久 NO-GO，未来实现不得把其 partial response 追认为可 resume checkpoint。
 
 ## Current code facts and failure mode
 

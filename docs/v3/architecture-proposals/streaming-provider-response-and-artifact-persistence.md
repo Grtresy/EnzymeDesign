@@ -23,6 +23,25 @@ artifact Blob或validator的size/backpressure证明。当前代码审计确认�
 Blob commit、validator、reader、GC与public projection，属于大架构调整。当前AOX/HMM Goal不实施本文，
 不修改历史artifact语义，也不能把新proposal当作当前live bundle已满足的保证。
 
+## Real r25 evidence: large result sets amplify both latency and resident data
+
+r25 的 HMMER job 约 `24s` 已 terminal，但旧 adapter 随后用约 `52m` 处理 `686` 个 result payload。
+terminal poll 使用 provider 默认 `page_size=50`，后续请求却使用 `page_size=100` 并从 `page=2`
+开始，导致 `68,592` 条 provider 命中只物化 `68,542` 条。只读恢复用统一
+`page_size=1000` 得到 `69` 页（最后一页 `592` 条）和完整 `68,592` 条。对应 UniProt 输入在
+旧科学结果下仍有 `37,722` 个 accession、`378` 个计划 query batch；现有 adapter 会把多个 response、
+decoded body、parsed record 与 raw-response metadata 同时累积在内存。
+
+这次没有观察到 OOM，因此不能把 r25 记作 streaming failure；它提供的是此前代码审计缺少的真实规模
+证据。当前 Goal 的同宽 `page=1..N`、`page_size=1000` 与 `nreported` closure 修复减少 result GET
+次数并纠正完整性，但单页更大，既不是通用 resident-byte cap，也不是 bounded streaming。未来实现仍需
+证明 wire/decoded/parsed/spool 各层上限与 backpressure，不能用“请求数从 686 降到 69”推导内存安全。
+
+同样，`nreported` 是完整 response 集的 closure fact，不是预先分配内存的许可。streaming reducer 必须
+在增量 ingest 中检查 page identity、ordered coverage、duplicate/gap 和最终 record count；partial spool
+即使已有正确 digest prefix 或大量有效 records，也不能 publish。r25 的旧 `68,542` 条结果永久不可因
+后续恢复诊断而升级为 eligible artifact。
+
 ## Current code facts and failure modes
 
 ### Multiple complete in-memory representations

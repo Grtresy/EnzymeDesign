@@ -122,6 +122,33 @@ r19 使本提案的分界更具体：**阻止 failed run 后继续 dispatch 是�
 handoff、approval/public projection、attempt closure 与 bundle/verifier `@2`；仅凭 checkpoint、
 相同 workspace、exact-six operation ids 或 agent prose 均不成立。
 
+## Real r25 evidence: completed upstream work is neither correct nor adoptable
+
+r25 pinned commit `6b9ac473fe01376d144ae800352a06e5d016223c`，formal operation-bearing run
+`srun_6526213157db`。HMMER remote job 约 `24s` 已 terminal，但旧 adapter 将 terminal poll 的默认
+`page_size=50` payload 与后续 `page_size=100`、`page=2..686` 结果拼接，漏掉索引 `50..99`：
+provider 完整结果为 `68,592` 条，r25 只封存 `68,542` 条，而且缺失的 `50` 条均高于 AOX 分数
+阈值。随后 UniProt 对 `37,722` 个 accession 形成 `378` 个 query batch；第 `102` 项（属于第二个
+batch）是本次首个确认的 inactive/deleted identity。当前 adapter 在全部 query/page 累积后才统一
+验证 record contract，并因旧 contract 强制要求每条 identity 都有 sequence 而失败。
+
+r25 因此同时给出两条不可 adoption 的理由：
+
+1. HMMER artifact 本身不满足 provider `nreported` 和科学 coverage closure，不能作为 realized effect；
+2. 即使某个上游 effect 科学上完整，只要所在 operation-bearing run 已 failed，当前 `@1` contract 也
+   没有 selection、disposition、materialization 或 attempt closure authority把它带入 fresh run。
+
+当前 verifier 要求 AOX 的 `17` 个最终 deliverable 来自同一个 completed run/source，MAFFT 等下游输入
+绑定该 run 内 exact final artifact identity。当前 Goal 会修复同宽 HMMER pagination、`nreported`
+closure 与 UniProt inactive identity 后，从 fresh blank world 重跑；不会从 r25 复制 HMMER bytes、
+checkpoint、operation 或 artifact ref，也不会为了节省真实 provider 调用而临时实现 cross-run adoption。
+r25 永久 NO-GO，后续只读恢复诊断不能追溯升级其 bundle。
+
+若未来希望在长链后段本地 contract failure 后复用一个**已经完整且可授权**的 provider effect，仍须按
+本文分别实现 selection/disposition、Host-supervised materialization、approval、public projection、
+attempt closure 与 verifier `@2`。这不能塞进 timeout、checkpoint 或 selector 的局部 fallback，也不在
+本 Goal 实施。
+
 ## Current exact-operation-set semantics
 
 当前 `aox_blank_world_attempt_bundle@1` 把 operation occurrence 与 accepted scientific chain 基本

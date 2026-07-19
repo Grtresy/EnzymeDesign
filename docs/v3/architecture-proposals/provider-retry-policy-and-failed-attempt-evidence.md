@@ -18,6 +18,27 @@ retry governance。本提案只定义未来统一policy/evidence architecture；
 operation内部batch checkpoint、control response交付歧义分别属于相邻proposal，不能用本文一个retry loop
 代替。
 
+## Real r25 evidence: inactive is not retryable schema drift
+
+r25 的 UniProt 大集合按默认 cap 形成 `378` 个 batch；完整列表第 `102` 项、位于第二个 batch 的
+accession `A0A034VJ94` 返回本次诊断首个 typed inactive/deleted identity，没有 sequence，并提供
+inactive reason 与 UniParc reference。旧 adapter 将其终止为 non-retryable
+`provider_schema_drift`。这个 outcome 不应通过增加 attempt、扩大 timeout 或退避后重发来解决：
+response 已完整到达，问题是本地 response contract 没有表达 provider 的合法 inactive 状态。这里的
+“第二个 batch”只定位 record；当前实现先累积全部 query/page 再统一 validation，不能据此声称网络
+请求在第二 batch 已停止。
+
+本 Goal 的小修边界是版本化 UniProt identity contract，把已验证的 inactive/deleted record 正规化并在
+下游 length join 前显式排除；它不改变通用 retry coordinator。以下仍为 terminal failure：缺失 exact
+requested identity、inactive reason 不在闭集、active record 缺 sequence、response truncation、unknown
+entry type 或 requested-set closure 失败。不得把任一 malformed response 通过“可能已删除”重分类为
+成功，也不得自动切换 UniParc 或另一个 provider。
+
+未来 retry evidence 应把本例记录为“一次 completed transport attempt + validated inactive member”，
+而不是 failed transport attempt；若 contract validator 自身版本不支持该状态，则 operation failure
+必须绑定 validator/policy digest，不能让 automatic retry 重复同一确定性结果。r25 不会被历史重分类，
+仍是永久 NO-GO，也不会为当时未持久化的中间 attempts 补造 receipts。
+
 ## Current code facts and failure modes
 
 当前`_http_request()`的事实：

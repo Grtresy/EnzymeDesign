@@ -6,7 +6,7 @@ Status: proposed, not implemented generically in the current AOX/HMM blank-world
 
 科学 workflow 的真实执行图经常由中间结果决定：HMMER 无高分 accession 时不应调用 UniProt；UniProt 序列经长度过滤后为空时不应运行 HMMalign；motif 过滤后无候选时不应运行 CD-HIT。若 workflow manifest 静态声明所有 operation 都是 required，agent 即使正确识别终止条件，也会被 harness 迫使执行无意义调用；若 collector 为了通过静态清单伪造 operation、request/response digest 或空输出，又会破坏 fail-closed 和可复核性。
 
-AOX 专用实现可以由 `hmmer_score_filtered_accessions@1`、`aox_sequence_length_join@1` 和 motif/candidate artifacts 离线反推实际分支，并用严格 skip receipt 记录未调用原因。但把 AOX 的 stage 名称、artifact role 和 omission 列表直接做成通用 Host schema，会把一个 workflow 的策略固化到顶层 harness。通用 closure 需要 workflow manifest、operation attestation、capability health、report projection 和 offline verifier 的共同设计，属于大架构调整，因此本 Goal 只实现 AOX 专用 verifier，并在此记录长期方案。
+AOX 专用实现可以由 `hmmer_score_filtered_accessions@1`、`aox_sequence_length_join@2` 和 motif/candidate artifacts 离线反推实际分支，并用严格 skip receipt 记录未调用原因。但把 AOX 的 stage 名称、artifact role 和 omission 列表直接做成通用 Host schema，会把一个 workflow 的策略固化到顶层 harness。通用 closure 需要 workflow manifest、operation attestation、capability health、report projection 和 offline verifier 的共同设计，属于大架构调整，因此本 Goal 只实现 AOX 专用 verifier，并在此记录长期方案。
 
 ## Agent impact
 

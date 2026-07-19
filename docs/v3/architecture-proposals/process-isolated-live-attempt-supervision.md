@@ -21,6 +21,19 @@ handoff、receipt channel、HPC orphan reconciliation 与 campaign artifact 语�
 harness 架构调整。本 Goal 只记录方案，不实施；当前同进程路径继续严格 fail-closed，
 无法退休时不产生 eligible evidence。
 
+r25 进一步限定了本提案不能解决的范围：真实 HMMER job 约 `24s` 已 terminal，旧同步 adapter 的
+`686` 个 result payload 物化约耗时 `52m`，并因 terminal payload 的默认 `page_size=50` 与后续
+`page_size=100` 混用而漏掉索引 `50..99`。进程隔离可以在永久阻塞时退休本地 writer，却不能让
+错误分页变完整，也不能让已封存的 `68,542` 条结果等价于 provider 的 `68,592` 条。同理，首个
+UniProt inactive/deleted record 缺 sequence 是 typed provider contract 问题，不是 child liveness
+问题。
+
+因此当前 Goal 先做同宽 `page=1`、`page_size=1000`、`nreported` closure 与 inactive identity 的
+局部 fail-closed 修复，并保持现有分层 timeout，等待 corrected live timing。不得为了容纳旧 `52m`
+物化而预先放宽全局 timeout，也不得把杀掉 child 当成成功 cancellation/reconciliation。process-isolated
+supervision、OS-level bounded fail-stop 与 parent-owned fatal evidence 仍是本文单独的大架构改动，
+本 Goal 不实施。
+
 ## Relationship to other proposals
 
 [non-blocking supervised continuation](nonblocking-supervised-continuation.md)
@@ -49,6 +62,9 @@ mutation 永久阻塞时有界终止并安全证明“该 attempt 已无本地 w
 6. 若 handler 返回后创建未登记线程、async task、subprocess 或 callback writer，ASGI
    tracker 即使归零也是假静默。因此“mutation 不得留下 detached writer”必须成为
    Host contract，而不是只靠 attempt driver 猜测。
+7. r25 的已知 operation 最终返回并可完成既有 mutation/lease closure，没有复现 detached
+   writer 或封存后 mutation；它不能作为 process isolation 已实现的证据，也不能推翻永久阻塞
+   情况下同进程 harness 无法有界取证的结论。
 
 ## Agent-harness principles
 

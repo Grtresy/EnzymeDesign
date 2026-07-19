@@ -22,11 +22,21 @@ world 尚未 quiescent 时封存，随后出现 SQLite mutation。该 bundle 因
 
 这个故障横跨 Pipeline SDK、sandbox supervisor、controlled-operation repository、provider
 adapter、runtime scheduler、Host shutdown、live harness、artifact/ledger 与 evidence
-verifier。当前 Goal 只允许一项不新增真状态的可用性 containment：保持 HMMER poll
-`1800s`，把 HMM-capable `sandbox.exec` 固定为 `3600s`，formal session/public request 固定
-为至少 `7200s`，并在 launch 与 HMMER approval 前校验；该局部层级不被称为异步架构修复。
-当前 Goal 不实施本文迁移，也不通过缩短 HMMER 轮询、吞掉 late result、忽略 SQLite diff
-或在封存后重算 digest 来掩盖问题。本文件只记录完整目标架构、迁移与验收。
+verifier。r25 的真实计时进一步否定了“先把全局 timeout 放宽”的 containment：EBI HMMER
+job 约 `24s` 已 terminal，旧 adapter 随后却用约 `52m` 物化 `686` 个 result payload。该路径
+还把 terminal poll 的默认 `page_size=50` payload 当作第一页，然后从 `page=2` 开始按
+`page_size=100` 拉取，确定性漏掉索引 `50..99`。provider 的完整结果是 `68,592` 条，旧路径
+只封存 `68,542` 条；单纯允许 request 再等待更久只会更稳定地封存错误结果。
+
+当前 Goal 允许的局部修复是不新增 durable operation 真状态的 correctness/performance 修复：terminal
+poll payload 只证明 job terminal；结果物化必须从 `page=1` 开始使用同一 page width，当前 route 固定
+`page_size=1000`，完整结果应为 `69` 页；publish 前同时校验 page coverage、重复/缺口、page metadata
+与 provider `nreported`。任一不一致严格 fail closed。现有分层预算先保持不变：HMM-capable
+`sandbox.exec=3600s`，formal session/public request 至少 `7200s`；只有 corrected live recovery 证明
+某一语义层级仍不足时才依据分层计时重新决策，不能继续把全局 timeout 调大。
+这项小修不提供 durable async、checkpoint、restart recovery 或 cancellation receipt，也不被称为本文
+架构已实现。当前 Goal 不实施本文迁移，不吞掉 late result、不忽略 SQLite diff，也不在封存后重算
+digest 来掩盖问题。本文件只记录完整目标架构、迁移与验收。
 
 近期约束保持不变：
 
@@ -59,6 +69,25 @@ record 是既有 `ControlledOperation` / `EngineInvocation` / `SandboxRun` 的�
 第二套 task board 或 workflow engine。
 
 ## Observed failure anatomy
+
+### r25: remote terminal 与 result materialization 必须分开计时
+
+r25 对同一个已经 terminal 的 HMMER job 做了只读恢复诊断：用统一 `page_size=1000` 从
+`page=1` 到 `page=69` 可恢复 `68,592` 条命中，最后一页 `592` 条；旧 adapter 的组合结果是
+`68,542` 条，差集恰好为索引 `50..99` 的 `50` 条。该缺口不是低分尾部：这 `50` 条分数均高于
+AOX `200` 分阈值，因此会改变下游科学集合，r25 永久 non-eligible。
+
+这份证据把一个 wall-clock 现象拆成两类问题：
+
+1. remote lifecycle 约 `24s` 到达 terminal，未触及长时 remote deadline；
+2. 同步 result materialization 额外发起约 `685` 次 result GET，连同 terminal payload 共形成
+   `686` 个 payload，并占用约 `52m`；
+3. mixed-width pagination 又产生科学完整性缺口，耗时再长也不能补救。
+
+因此大规模结果分页的 durable checkpoint、park/resume、crash recovery 和 quiescent sealing 仍属于
+本文未来架构；本 Goal 的同宽分页、`page_size=1000` 与 `nreported` closure 只是先修复一个有明确
+局部边界的 adapter bug。后续架构不得把 terminal poll payload 隐式复用为任意 page width 的数据页，
+也不得把“job terminal”投影成“result 已完整物化”。
 
 ### Current synchronous stack
 

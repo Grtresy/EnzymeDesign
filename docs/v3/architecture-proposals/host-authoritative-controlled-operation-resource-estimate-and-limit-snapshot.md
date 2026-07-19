@@ -6,9 +6,9 @@ Status: proposed; not implemented in the current AOX/HMM blank-world Goal.
 
 当前 sandbox SDK 在 `controlled_operation(...)` wire envelope 中提交
 `resource_estimate`。Core 校验该值是 JSON object，随后把它复制进 operation digest、
-`ControlledOperation`、approval summary 和 public projection。对于 UniProt v2，SDK 使用本地
+`ControlledOperation`、approval summary 和 public projection。对于当前 UniProt v3，SDK 使用本地
 常量 `query_batch_size_cap=100` 预测 `accession_count` 与
-`estimated_query_batch_count`，因此 37,722 个 accession 在默认配置下显示 378 个 query。
+`estimated_query_batch_count`，因此纠正后的 37,772 个 accession 在默认配置下显示 378 个 query。
 
 这项透明预测有助于 agent/operator 理解当前默认请求规模，但它不是授权真值：实际 provider
 adapter 使用 Host 注入的 `BioProviderHttpConfig`，operator 可以收紧 query、page 或 operation
@@ -34,8 +34,8 @@ authoritative resource grant。
 4. UniProt SDK 当前用 `_UNIPROT_QUERY_BATCH_SIZE_CAP=100` 计算 query数；Host adapter用注入的
    `BioProviderHttpConfig.batch_size_cap` 实际分 query。测试或部署可以把Host cap收紧为2、50等，
    但SDK仍可显示100。
-5. 例如同一37,722 accession请求在SDK默认预测下是378 queries；若Host cap收紧为50，实际是
-   755 queries。Host仍可在I/O前拒绝operation cap或执行收紧后的有界请求，但operator批准时
+5. 例如同一37,772 accession请求在SDK默认预测下是378 queries；若Host cap收紧为50，实际是
+   756 queries。Host仍可在I/O前拒绝operation cap或执行收紧后的有界请求，但operator批准时
    看到的规模不再等于实际拓扑。
 6. `provider_config_digest`/route policy id进入operation identity，但当前Core没有用它解析exact
    runtime config snapshot并重建estimate，也没有验证composition注入的adapter config就是该
@@ -47,6 +47,33 @@ authoritative resource grant。
    approval、reuse、audit和UI语义不再是Host-authoritative。
 9. 仅把SDK常量改成与当前Host默认相同不能消除漂移；未来config收紧、route切换或另一个SDK
    module仍会重复问题。
+
+## Real r25 evidence: planned demand and observed result topology diverge
+
+r25 把 resource snapshot 中必须分开的几类事实具体化：
+
+- sandbox 根据 `37,722` 个 UniProt accession 和 cap `100` 声明 `378` 个 query batch；第 `102` 项
+  `A0A034VJ94` 属于第二个 batch，但当前 adapter 先完成并内存累积全部 query/page，随后才统一验证
+  record contract。因此该失败不能被描述成“在第二 batch 停止网络请求”；它反而证明 planned、
+  dispatched、buffered 与 validation-terminal 是四个必须分开的 observed 维度；
+- EBI HMMER terminal poll 约 `24s` 完成，并以默认 `page_size=50` 返回首个 result payload；旧 adapter
+  随后按 `page_size=100` 请求 `page=2..686`，约 `52m` 后得到 `68,542` 条，而 provider 完整
+  `nreported` 为 `68,592`；
+- 统一 `page_size=1000` 的只读恢复拓扑是 `69` 页、最后一页 `592` 条。page size 是 Host route/config
+  事实，page count 和 `nreported` 是运行时 observed closure facts，均不能由 sandbox 自报。
+
+本 Goal 的小修会把 HMMER materialization 固定为同宽 `page=1..N`、默认 `page_size=1000`，在 publish
+前校验 `nreported` 与完整 coverage，并因 route/default 改变而版本化 provider policy/config digest。
+这只修正一个 bounded adapter contract；它没有新增 canonical resource grant/usage schema。现有
+HMM-capable `sandbox.exec=3600s` 与 formal/public 至少 `7200s` 的分层预算先不继续放宽，因为旧
+`52m` 主要来自错误且低效的分页拓扑，corrected live timing 才能决定是否需要调整某一语义层级的
+deadline。
+
+未来 authoritative snapshot 至少要分别绑定 requested page width、preflight max page/request/byte
+bound、terminal-poll usage、materialization GET count、observed pages/records/bytes 与 completeness receipt。
+approval 看到的 estimate 不能在执行时静默换 width；若 provider 的 page metadata、`nreported` 或
+actual usage 超出 approved bound，必须 fail closed 或回到 operator 重新批准，不能靠扩大 timeout 或
+截断尾页继续。
 
 ## Agent-harness principles
 
@@ -152,7 +179,7 @@ compiler output必须deterministic、canonical且无I/O副作用。缺compiler�
 - per-query page cap与worst-case page bound；
 - max HTTP requests bound、network/provider类别与output upper-bound policy；
 - operation cap、query cap、page cap、timeout/retry policy identity；
-- `provider_config:uniprot:v2`的safe canonical config digest。
+- `provider_config:uniprot:v3`的safe canonical config digest。
 
 动态 `Link` 数量仍未知，因此snapshot应表达`estimated_queries`和`max_pages_per_query`/worst-case
 bound，不能伪造exact total pages。actual receipt再记录真实page/query/request counts。
@@ -253,7 +280,7 @@ params、private config或credential。哪一类允许agent修改请求后fresh 
 - operation total cap 100,000；
 - actual Host config决定query cap并在HTTP前验证；
 - page cap按query独立，response page绑定producing query slice；
-- default SDK prediction以100为cap，37,722显示378；
+- default SDK prediction以100为cap，纠正后的37,772显示378；
 - duplicate、cross-query identity、pagination link和provider schema全部fail closed。
 
 本提案不撤销这些边界，也不授权本Goal修改Core schema。稳定文档必须将378写成默认配置下的
@@ -340,8 +367,8 @@ constant不是authority或snapshot。可作为generated client hints，不替代
 ## Acceptance criteria before implementation becomes authoritative
 
 1. malicious/incorrect sandbox estimate不能改变Host snapshot、hard limit、approval grant或usage。
-2. UniProt Host query cap分别为100、50、2时，same params得到可重算的378、755、18861 query
-   estimates（37,722 accessions），snapshot绑定各自不同config digest；SDK hint漂移被明确标记。
+2. UniProt Host query cap分别为100、50、2时，same params得到可重算的378、756、18886 query
+   estimates（37,772 accessions），snapshot绑定各自不同config digest；SDK hint漂移被明确标记。
 3. operation/query/page/output/timeout/retry cap在provider I/O前验证；超限不创建HTTP/runner副作用。
 4. params/input/route/backend/config/compiler/limit任一approval后漂移都拒绝dispatch或要求new approval；
    old approval不能reuse。
