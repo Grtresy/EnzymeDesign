@@ -273,6 +273,7 @@ def _save_file_artifact(
     relative_path: str,
     kind: ArtifactKind = ArtifactKind.RESULT,
     metadata: dict[str, object] | None = None,
+    description: str | None = None,
 ) -> None:
     repositories.artifacts.save(
         SessionArtifactRecord(
@@ -286,7 +287,7 @@ def _save_file_artifact(
             storage_uri=str(path),
             relative_path=relative_path,
             title=relative_path,
-            description=None,
+            description=description,
             metadata=metadata or {},
             created_at="2026-04-20T12:03:00+00:00",
         )
@@ -357,6 +358,359 @@ def test_artifact_list_paginates_and_filters_by_kind(tmp_path: Path) -> None:
     assert [item["kind"] for item in first["artifacts"]] == ["result", "result"]
     assert second["next_offset"] is None
     assert [item["artifact_id"] for item in second["artifacts"]] == ["art_result_2"]
+
+
+def test_artifact_list_bounds_large_metadata_and_points_to_paged_get(
+    tmp_path: Path,
+) -> None:
+    repositories, context = _build_context()
+    result_path = tmp_path / "provider_result.json"
+    result_path.write_text("{}", encoding="utf-8")
+    accessions = [f"P{index:06d}" for index in range(37_722)]
+    raw_page_digests = {
+        str(index): f"sha256:{index:064x}" for index in range(686)
+    }
+    _save_file_artifact(
+        repositories,
+        path=result_path,
+        artifact_id="art_provider_result",
+        relative_path="results/provider_result.json",
+        kind=ArtifactKind.RESULT,
+        metadata={
+            "schema_id": "provider_raw_http_response_set@1",
+            "accession_count": len(accessions),
+            "accessions": accessions,
+            "raw_page_count": len(raw_page_digests),
+            "raw_page_digests": raw_page_digests,
+            "provider_contract": {
+                "contract_id": "uniprot_fetch@1",
+                "contract_digest": "sha256:" + "a" * 64,
+            },
+        },
+    )
+
+    listed = _dispatch(
+        context,
+        {"kind": "result", "limit": 10},
+        tool_name="artifact.list",
+    )
+    listed_again = _dispatch(
+        context,
+        {"kind": "result", "limit": 10},
+        tool_name="artifact.list",
+    )
+
+    assert listed == listed_again
+    item = next(
+        artifact
+        for artifact in listed["artifacts"]
+        if artifact["artifact_id"] == "art_provider_result"
+    )
+    assert item["metadata"] == {
+        "accession_count": 37_722,
+        "provider_contract": {
+            "contract_id": "uniprot_fetch@1",
+            "contract_digest": "sha256:" + "a" * 64,
+        },
+        "raw_page_count": 686,
+        "schema_id": "provider_raw_http_response_set@1",
+    }
+    summary = item["metadata_summary"]
+    omitted = {entry["path"]: entry for entry in summary["omitted_fields"]}
+    assert omitted["artifact.metadata.accessions"]["item_count"] == 37_722
+    assert omitted["artifact.metadata.raw_page_digests"]["item_count"] == 686
+    assert (
+        omitted["artifact.metadata.accessions"]["read_hint"]
+        == 'artifact.get with artifact_id="art_provider_result", '
+        'path="artifact.metadata.accessions", offset=0, limit=30'
+    )
+    assert len(json.dumps(listed, sort_keys=True)) < 12_000
+    assert "P037721" not in json.dumps(listed)
+
+    accession_page = _dispatch(
+        context,
+        {
+            "artifact_id": "art_provider_result",
+            "path": "artifact.metadata.accessions",
+            "offset": 0,
+            "limit": 30,
+        },
+    )
+    assert accession_page["item_count"] == 37_722
+    assert accession_page["items"] == accessions[:30]
+    assert accession_page["next_offset"] == 30
+
+    raw_digest_page = _dispatch(
+        context,
+        {
+            "artifact_id": "art_provider_result",
+            "path": "artifact.metadata.raw_page_digests",
+            "offset": 0,
+            "limit": 30,
+        },
+    )
+    assert raw_digest_page["type"] == "dict"
+    assert raw_digest_page["item_count"] == 686
+    first_digest_key = raw_digest_page["keys"][0]
+    assert first_digest_key["read_scope"] == "exact_pageable"
+    assert first_digest_key["exact_path_available"] is True
+    raw_digest = _dispatch(
+        context,
+        {
+            "artifact_id": "art_provider_result",
+            "path": first_digest_key["path"],
+        },
+    )
+    assert raw_digest["value"] == raw_page_digests[first_digest_key["key"]]
+    assert raw_digest_page["read_hint"] == (
+        'artifact.get with artifact_id="art_provider_result", '
+        'path="artifact.metadata.raw_page_digests", offset=30, limit=30'
+    )
+    next_raw_digest_page = _dispatch(
+        context,
+        {
+            "artifact_id": "art_provider_result",
+            "path": "artifact.metadata.raw_page_digests",
+            "offset": raw_digest_page["next_offset"],
+            "limit": raw_digest_page["limit"],
+        },
+    )
+    assert next_raw_digest_page["offset"] == 30
+    assert len(next_raw_digest_page["keys"]) == 30
+
+
+def test_artifact_list_hard_budget_stops_page_without_skipping_records(
+    tmp_path: Path,
+) -> None:
+    repositories, context = _build_context()
+    result_path = tmp_path / "budget.json"
+    result_path.write_text("{}", encoding="utf-8")
+    metadata = {
+        f"large_field_{index}": list(range(13))
+        for index in range(8)
+    }
+    for index in range(50):
+        _save_file_artifact(
+            repositories,
+            path=result_path,
+            artifact_id=f"art_budget_{index:02d}",
+            relative_path=f"results/budget_{index:02d}.json",
+            metadata=metadata,
+            description="x" * 500_000 if index == 0 else None,
+        )
+
+    result, first = _dispatch_result(
+        context,
+        {"kind": "result", "offset": 0, "limit": 50},
+        tool_name="artifact.list",
+    )
+
+    assert result.ok is True
+    assert len(result.content) <= 100_000
+    assert first["truncated_by_budget"] is True
+    assert first["returned_count"] == len(first["artifacts"])
+    assert 0 < first["returned_count"] < 50
+    assert first["next_offset"] == first["returned_count"]
+    assert "x" * 1_000 not in result.content
+    first_item = first["artifacts"][0]
+    assert "description" not in first_item
+    assert first_item["record_summary"]["omitted_fields"][0]["path"] == (
+        "artifact.description"
+    )
+
+    second = _dispatch(
+        context,
+        {
+            "kind": "result",
+            "offset": first["next_offset"],
+            "limit": 1,
+        },
+        tool_name="artifact.list",
+    )
+    assert second["artifacts"][0]["artifact_id"] == (
+        f"art_budget_{first['returned_count']:02d}"
+    )
+
+
+def test_artifact_list_serializes_unicode_and_lone_surrogate_with_real_handler(
+    tmp_path: Path,
+) -> None:
+    repositories, context = _build_context()
+    result_path = tmp_path / "unicode.json"
+    result_path.write_text("{}", encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=result_path,
+        artifact_id="art_unicode",
+        relative_path="results/unicode.json",
+        metadata={
+            "emoji": "😀" * 500,
+            "non_finite": float("nan"),
+            "surrogate": "\ud800",
+        },
+    )
+
+    result, payload = _dispatch_result(
+        context,
+        {"kind": "result", "limit": 10},
+        tool_name="artifact.list",
+    )
+
+    assert result.ok is True
+    assert len(result.content) <= 100_000
+    result.content.encode("utf-8")
+    item = next(
+        artifact
+        for artifact in payload["artifacts"]
+        if artifact["artifact_id"] == "art_unicode"
+    )
+    assert "emoji" not in item["metadata"]
+    assert "non_finite" not in item["metadata"]
+    assert item["metadata"]["surrogate"] == "\ud800"
+    assert item["metadata_summary"]["metadata_digest"] is None
+    assert "NaN" not in result.content
+
+
+def test_artifact_get_pages_large_strings_by_character_offset(
+    tmp_path: Path,
+) -> None:
+    repositories, context = _build_context()
+    result_path = tmp_path / "large_string.json"
+    result_path.write_text("{}", encoding="utf-8")
+    large_text = "0123456789" * 15_000
+    _save_file_artifact(
+        repositories,
+        path=result_path,
+        artifact_id="art_large_string",
+        relative_path="results/large_string.json",
+        metadata={"long_text": large_text},
+        description=large_text,
+    )
+
+    first = _dispatch(
+        context,
+        {
+            "artifact_id": "art_large_string",
+            "path": "artifact.metadata.long_text",
+            "offset": 0,
+            "limit": 12_000,
+        },
+    )
+    second = _dispatch(
+        context,
+        {
+            "artifact_id": "art_large_string",
+            "path": "artifact.description",
+            "offset": 12_000,
+            "limit": 12_000,
+        },
+    )
+
+    assert first["type"] == "string"
+    assert first["content"] == large_text[:12_000]
+    assert first["returned_chars"] == 12_000
+    assert first["next_offset"] == 12_000
+    assert second["content"] == large_text[12_000:24_000]
+    assert second["next_offset"] == 24_000
+
+
+def test_artifact_get_dict_hints_distinguish_exact_and_root_only_paths(
+    tmp_path: Path,
+) -> None:
+    repositories, context = _build_context()
+    result_path = tmp_path / "lookup.json"
+    result_path.write_text("{}", encoding="utf-8")
+    _save_file_artifact(
+        repositories,
+        path=result_path,
+        artifact_id="art_lookup",
+        relative_path="results/lookup.json",
+        metadata={
+            "lookup": {
+                "safe_key": "s" * 30_000,
+                "key.with.dot": "d" * 30_000,
+                "key with space": "w" * 30_000,
+            }
+        },
+    )
+
+    lookup = _dispatch(
+        context,
+        {
+            "artifact_id": "art_lookup",
+            "path": "artifact.metadata.lookup",
+            "limit": 30,
+        },
+    )
+    records = {record["key"]: record for record in lookup["keys"]}
+
+    safe = records["safe_key"]
+    assert safe["read_scope"] == "exact_pageable"
+    assert safe["exact_path_available"] is True
+    assert safe["path"] == "artifact.metadata.lookup.safe_key"
+    safe_value = _dispatch(
+        context,
+        {
+            "artifact_id": "art_lookup",
+            "path": safe["path"],
+            "limit": 12_000,
+        },
+    )
+    assert safe_value["content"] == "s" * 12_000
+
+    for unsafe_key in ("key.with.dot", "key with space"):
+        unsafe = records[unsafe_key]
+        assert unsafe["read_scope"] == "root_only"
+        assert unsafe["exact_path_available"] is False
+        assert unsafe["path"] is None
+        assert "key.with.dot" not in unsafe["read_hint"]
+        assert "key with space" not in unsafe["read_hint"]
+        assert 'path="artifact.metadata.lookup"' in unsafe["read_hint"]
+        assert "limit=30" in unsafe["read_hint"]
+
+    assert lookup["read_hint"] is None
+    first_two = _dispatch(
+        context,
+        {
+            "artifact_id": "art_lookup",
+            "path": "artifact.metadata.lookup",
+            "offset": 0,
+            "limit": 2,
+        },
+    )
+    assert first_two["read_hint"] == (
+        'artifact.get with artifact_id="art_lookup", '
+        'path="artifact.metadata.lookup", offset=2, limit=2'
+    )
+    next_dict_page = _dispatch(
+        context,
+        {
+            "artifact_id": "art_lookup",
+            "path": "artifact.metadata.lookup",
+            "offset": first_two["next_offset"],
+            "limit": first_two["limit"],
+        },
+    )
+    assert next_dict_page["offset"] == 2
+    assert next_dict_page["keys"][0]["key"] == "safe_key"
+
+    listed = _dispatch(
+        context,
+        {"kind": "result", "limit": 10},
+        tool_name="artifact.list",
+    )
+    listed_item = next(
+        item
+        for item in listed["artifacts"]
+        if item["artifact_id"] == "art_lookup"
+    )
+    root_only_omissions = [
+        item
+        for item in listed_item["metadata_summary"]["omitted_fields"]
+        if item["read_scope"] == "root_only"
+    ]
+    assert len(root_only_omissions) == 2
+    assert all("limit=30" in item["read_hint"] for item in root_only_omissions)
 
 
 def test_artifact_get_summarizes_tool_result_full_artifact_by_default() -> None:

@@ -723,7 +723,7 @@ def test_register_accepts_only_typed_exact_zero_byte_empty_fasta(
         validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
         metadata={
             "empty_result_reason": "no_candidates_after_length_filter",
-            "derivation_contract_id": "aox_sequence_length_join@1",
+            "derivation_contract_id": "aox_sequence_length_join@2",
         },
     )
 
@@ -735,7 +735,7 @@ def test_register_accepts_only_typed_exact_zero_byte_empty_fasta(
         "required_columns": [],
         "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
         "empty_result_reason": "no_candidates_after_length_filter",
-        "derivation_contract_id": "aox_sequence_length_join@1",
+        "derivation_contract_id": "aox_sequence_length_join@2",
     }
 
     sentinel = workspace_path / "output" / "sentinel.fasta"
@@ -750,7 +750,7 @@ def test_register_accepts_only_typed_exact_zero_byte_empty_fasta(
             metadata={
                 "validation_profile": FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
                 "empty_result_reason": "no_candidates_after_length_filter",
-                "derivation_contract_id": "aox_sequence_length_join@1",
+                "derivation_contract_id": "aox_sequence_length_join@2",
             },
         )
     assert metadata_spoof.value.error_code == "artifact_validation_failed"
@@ -765,7 +765,7 @@ def test_register_accepts_only_typed_exact_zero_byte_empty_fasta(
             validation_profile=FASTA_ZERO_RECORDS_VALIDATION_PROFILE,
             metadata={
                 "empty_result_reason": "no_candidates_after_length_filter",
-                "derivation_contract_id": "aox_sequence_length_join@1",
+                "derivation_contract_id": "aox_sequence_length_join@2",
             },
         )
     assert nonempty_claim.value.error_code == "artifact_validation_failed"

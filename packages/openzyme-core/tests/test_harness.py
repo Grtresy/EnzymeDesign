@@ -2860,10 +2860,11 @@ def test_reporter_artifact_get_descriptor_exposes_large_field_pagination() -> No
 
     properties = descriptor.input_schema["properties"]
     assert {"artifact_id", "path", "offset", "limit", "include_full"} <= set(properties)
-    assert properties["limit"]["maximum"] == 50
+    assert properties["limit"]["maximum"] == 12_000
     assert "read_hint" in descriptor.description
     assert "large dict" in descriptor.description
     assert "pageable keys" in descriptor.description
+    assert "Large strings" in descriptor.description
 
 
 def test_master_and_teammate_catalogs_expose_artifact_read_tools() -> None:

@@ -13,8 +13,9 @@ from openzyme_domain import SessionArtifactRecord
 from openzyme_domain.control_plane import utc_now_iso
 
 from .artifact_projection import project_artifact_for_agent
-from .artifact_projection import project_artifacts_for_agent
+from .artifact_projection import project_artifact_list_item_for_agent
 from .artifact_projection import sanitize_private_artifact_fields
+from .artifact_projection import serialize_artifact_projection
 from .harness import SessionRuntimeContext
 from .harness import ToolInvocation
 from .harness import ToolRegistry
@@ -22,6 +23,8 @@ from .harness import ToolResult
 
 DEFAULT_PAGE_LIMIT = 30
 MAX_PAGE_LIMIT = 50
+MAX_ARTIFACT_GET_STRING_PAGE_LIMIT = 12_000
+ARTIFACT_LIST_MAX_JSON_CHARS = 100_000
 LARGE_JSON_CHARS = 20_000
 FULL_JSON_CHARS = 100_000
 PREVIEW_JSON_CHARS = 1_200
@@ -83,6 +86,7 @@ TEXT_FORMATS = {
 }
 
 SAFE_TEXT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+ARTIFACT_PATH_SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _new_artifact_id() -> str:
@@ -100,7 +104,10 @@ def _sha256_digest(content: str) -> str:
 
 
 def _json_chars(value: Any) -> int:
-    return len(json.dumps(value, sort_keys=True, ensure_ascii=False))
+    try:
+        return len(serialize_artifact_projection(value))
+    except ValueError:
+        return LARGE_JSON_CHARS + 1
 
 
 def _preview(value: Any) -> Any:
@@ -132,6 +139,21 @@ def _type_name(value: Any) -> str:
 
 def _read_hint(path: str) -> str:
     return f'artifact.get with path="{path}", offset=0, limit={DEFAULT_PAGE_LIMIT}'
+
+
+def _artifact_get_path_hint(
+    *,
+    artifact_id: str,
+    path: str,
+    offset: int = 0,
+    limit: int = DEFAULT_PAGE_LIMIT,
+) -> str:
+    return (
+        "artifact.get with "
+        f"artifact_id={json.dumps(artifact_id, ensure_ascii=True)}, "
+        f"path={json.dumps(path, ensure_ascii=True)}, "
+        f"offset={offset}, limit={limit}"
+    )
 
 
 def _omitted_field(path: str, value: Any) -> dict[str, Any]:
@@ -178,6 +200,11 @@ def _resolve_path(root: dict[str, Any], path: str) -> tuple[bool, Any]:
 def _clamped_limit(arguments: dict[str, Any]) -> int:
     limit = int(arguments.get("limit", DEFAULT_PAGE_LIMIT))
     return max(0, min(MAX_PAGE_LIMIT, limit))
+
+
+def _clamped_artifact_get_limit(arguments: dict[str, Any]) -> int:
+    limit = int(arguments.get("limit", DEFAULT_PAGE_LIMIT))
+    return max(0, min(MAX_ARTIFACT_GET_STRING_PAGE_LIMIT, limit))
 
 
 def _clamped_offset(arguments: dict[str, Any]) -> int:
@@ -510,7 +537,15 @@ def _default_payload(root: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _path_payload(*, root: dict[str, Any], path: str, offset: int, limit: int, include_full: bool) -> tuple[bool, dict[str, Any]]:
+def _path_payload(
+    *,
+    root: dict[str, Any],
+    artifact_id: str,
+    path: str,
+    offset: int,
+    limit: int,
+    include_full: bool,
+) -> tuple[bool, dict[str, Any]]:
     exists, value = _resolve_path(root, path)
     if not exists:
         return False, {
@@ -518,13 +553,14 @@ def _path_payload(*, root: dict[str, Any], path: str, offset: int, limit: int, i
             "available_top_level_paths": sorted(root.keys()),
         }
     if isinstance(value, list):
-        page = value[offset : offset + limit]
+        effective_limit = min(limit, MAX_PAGE_LIMIT)
+        page = value[offset : offset + effective_limit]
         next_offset = offset + len(page) if offset + len(page) < len(value) else None
         return True, {
             "path": path,
             "type": "list",
             "offset": offset,
-            "limit": limit,
+            "limit": effective_limit,
             "item_count": len(value),
             "items": page,
             "next_offset": next_offset,
@@ -533,47 +569,85 @@ def _path_payload(*, root: dict[str, Any], path: str, offset: int, limit: int, i
     if isinstance(value, dict) and json_chars > LARGE_JSON_CHARS and (
         not include_full or json_chars > FULL_JSON_CHARS
     ):
+        effective_limit = min(limit, MAX_PAGE_LIMIT)
         keys = list(value.keys())
-        page_keys = keys[offset : offset + limit]
+        page_keys = keys[offset : offset + effective_limit]
         next_offset = offset + len(page_keys) if offset + len(page_keys) < len(keys) else None
+        key_records: list[dict[str, Any]] = []
+        for key in page_keys:
+            key_text = str(key)
+            exact_path_available = bool(
+                ARTIFACT_PATH_SEGMENT_PATTERN.fullmatch(key_text)
+            )
+            child_path = f"{path}.{key_text}" if exact_path_available else None
+            read_path = child_path if child_path is not None else path
+            record = {
+                "key": key_text,
+                "path": child_path,
+                "root_path": path,
+                "type": _type_name(value[key]),
+                "json_chars": _json_chars(value[key]),
+                "preview": _preview(value[key]),
+                "read_scope": (
+                    "exact_pageable" if exact_path_available else "root_only"
+                ),
+                "exact_path_available": exact_path_available,
+                "read_hint": _artifact_get_path_hint(
+                    artifact_id=artifact_id,
+                    path=read_path,
+                    limit=DEFAULT_PAGE_LIMIT,
+                ),
+            }
+            key_records.append(record)
         return True, {
             "path": path,
             "type": "dict",
             "offset": offset,
-            "limit": limit,
+            "limit": effective_limit,
             "item_count": len(keys),
             "json_chars": json_chars,
-            "keys": [
-                {
-                    "key": key,
-                    "path": f"{path}.{key}",
-                    "type": _type_name(value[key]),
-                    "json_chars": _json_chars(value[key]),
-                    "preview": _preview(value[key]),
-                }
-                for key in page_keys
-            ],
+            "keys": key_records,
             "next_offset": next_offset,
             "preview": _preview(value),
             "read_hint": (
-                f'artifact.get with path="{path}.<key>"'
-                if json_chars > FULL_JSON_CHARS
-                else f'artifact.get with path="{path}", include_full=true'
+                None
+                if next_offset is None
+                else _artifact_get_path_hint(
+                    artifact_id=artifact_id,
+                    path=path,
+                    offset=next_offset,
+                    limit=effective_limit,
+                )
             ),
         }
     if isinstance(value, str) and json_chars > LARGE_JSON_CHARS and (
         not include_full or json_chars > FULL_JSON_CHARS
     ):
+        effective_limit = min(limit, MAX_ARTIFACT_GET_STRING_PAGE_LIMIT)
+        page = value[offset : offset + effective_limit]
+        next_offset = (
+            offset + len(page) if offset + len(page) < len(value) else None
+        )
         return True, {
             "path": path,
             "type": "string",
+            "offset": offset,
+            "limit": effective_limit,
             "json_chars": json_chars,
             "item_count": len(value),
-            "preview": _preview(value),
+            "content": page,
+            "returned_chars": len(page),
+            "next_offset": next_offset,
+            "truncated": next_offset is not None,
             "read_hint": (
-                f'artifact.get with path="{path}", include_full=true'
-                if json_chars <= FULL_JSON_CHARS
-                else "field exceeds the full-read safety limit; request a narrower path"
+                None
+                if next_offset is None
+                else _artifact_get_path_hint(
+                    artifact_id=artifact_id,
+                    path=path,
+                    offset=next_offset,
+                    limit=MAX_ARTIFACT_GET_STRING_PAGE_LIMIT,
+                )
             ),
         }
     return True, {
@@ -978,20 +1052,52 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             artifacts = [artifact for artifact in artifacts if artifact.kind is kind]
         offset = _clamped_offset(invocation.arguments)
         limit = _clamped_limit(invocation.arguments)
-        page = artifacts[offset : offset + limit]
-        next_offset = offset + len(page) if offset + len(page) < len(artifacts) else None
+        projected_page: list[dict[str, Any]] = []
+        truncated_by_budget = False
+        for artifact in artifacts[offset : offset + limit]:
+            projected = project_artifact_list_item_for_agent(artifact)
+            returned_after_add = len(projected_page) + 1
+            consumed_after_add = offset + returned_after_add
+            provisional = {
+                "artifacts": [*projected_page, projected],
+                "total_count": len(artifacts),
+                "offset": offset,
+                "limit": limit,
+                "returned_count": returned_after_add,
+                "next_offset": (
+                    consumed_after_add
+                    if consumed_after_add < len(artifacts)
+                    else None
+                ),
+                "truncated_by_budget": False,
+            }
+            if (
+                len(serialize_artifact_projection(provisional))
+                > ARTIFACT_LIST_MAX_JSON_CHARS
+            ):
+                truncated_by_budget = True
+                break
+            projected_page.append(projected)
+        returned_count = len(projected_page)
+        consumed = offset + returned_count
+        next_offset = consumed if consumed < len(artifacts) and returned_count else None
         payload = {
-            "artifacts": project_artifacts_for_agent(page),
+            "artifacts": projected_page,
             "total_count": len(artifacts),
             "offset": offset,
             "limit": limit,
+            "returned_count": returned_count,
             "next_offset": next_offset,
+            "truncated_by_budget": truncated_by_budget,
         }
+        content = serialize_artifact_projection(payload)
+        if len(content) > ARTIFACT_LIST_MAX_JSON_CHARS:
+            raise ValueError("artifact.list exceeded its hard JSON response budget")
         return ToolResult(
             call_id=invocation.call_id,
             tool_name=invocation.tool_name,
             ok=True,
-            content=json.dumps(payload, sort_keys=True),
+            content=content,
             task_id=invocation.task_id,
             lane_id=invocation.lane_id,
         )
@@ -1008,10 +1114,11 @@ def register_artifact_tools(registry: ToolRegistry) -> None:
             ok = True
         else:
             offset = _clamped_offset(invocation.arguments)
-            limit = _clamped_limit(invocation.arguments)
+            limit = _clamped_artifact_get_limit(invocation.arguments)
             include_full = bool(invocation.arguments.get("include_full", False))
             ok, payload = _path_payload(
                 root=root,
+                artifact_id=artifact.artifact_id,
                 path=str(path),
                 offset=offset,
                 limit=limit,

@@ -11,6 +11,26 @@ There are two artifact read surfaces:
 
 Neither surface returns the Host-private `storage_uri`, BlobStore path, sandbox host path, or runner path.
 
+`artifact.list` has a hard 100,000-character budget measured against the same
+ASCII-safe canonical JSON representation returned to the model. The response
+reports `returned_count` and `truncated_by_budget`; when budget truncation
+occurs, `next_offset` identifies the first artifact not returned, so continuing
+the page cannot skip a record. Metadata, omission summaries, and free-text
+catalog fields are independently bounded inside each row.
+
+Short scalar and schema/contract/count/digest identity fields remain visible,
+while large lists such as accessions, raw-page digests, or file manifests are
+replaced by a deterministic `artifact_list_metadata_summary@1`
+`metadata_summary`. Oversized title/description/path fields use
+`artifact_list_record_summary@1`. Hints marked `exact_pageable` contain a real
+`artifact.get` path; hints marked `root_only` can page only the parent dict.
+Keys containing dots, spaces, or other characters outside `[A-Za-z0-9_-]`
+must never be advertised as exact dot paths. Large strings are read by
+character `offset`/`limit`, up to 12,000 characters per page. A large dict
+page's own `read_hint` is either the executable request for that same dict's
+next page or `null`; executable exact-child hints belong only to individual key
+records. A missing summary field never means the underlying metadata is empty.
+
 The storage model has two layers:
 
 - Blob layer: Host-private sealed file/tree content addressed by `content_digest` or `tree_digest`.

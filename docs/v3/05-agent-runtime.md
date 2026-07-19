@@ -285,7 +285,7 @@ digest 只基于公开 control-plane 元数据和模型可见 tool spec 计算�
 
 `supports_parallel` 目前只作为治理 metadata 暴露和记录；runtime 仍按现有 bounded loop 串行 dispatch，不启用真实并行 tool execution。
 
-master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。`artifact.list` 必须分页返回 catalog；`artifact.get` 必须支持对 large output 和 `tool_result_full` 的 `path` / `offset` / `limit` 分页读取。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
+master 与 teammate 都可以通过 `artifact.list` / `artifact.get` / `artifact.preview` / `artifact.read_text` / `artifact.range` 读取当前 session 的共享 artifact catalog 与文本类 artifact 内容。`artifact.list` 必须以最终 canonical JSON observation 为计量对象执行普通数量分页与 `100000` 字符硬预算分页；预算提前结束时暴露 `returned_count`、`truncated_by_budget=true`，并令 `next_offset` 精确指向第一项尚未返回的 artifact。每个列表项的 metadata、omitted-field summary 与自由文本都必须有本地硬界；大 accession/page digest/file manifest 等集合只返回 count/digest/summary，不得把全量集合回灌模型。`artifact.get` 必须支持对 metadata、large output、`tool_result_full` 和大字符串的 `path` / `offset` / `limit` 分页读取。当前 dot path 只对安全 dict key 给 `exact_pageable` child hint；不可寻址 key 只能给 root-only 父容器 hint，不能误导 agent 重试不存在的 child path。大 dict 页自身只在存在下一页时给出同一父 dict 的可执行 continuation hint，不得生成 placeholder child path。executor 额外通过 `artifacts.materialize` 把授权 artifact 显式搬入 sandbox，再通过 sandbox file/command tools 操作 working copy。读取入口必须使用 `artifact_id` 和安全投影，不得要求用户、teammate 或 pipeline 暴露 Host local path、`storage_uri`、runner path 或 sandbox host path。
 
 ## 7. Failure And Recovery Defaults
 

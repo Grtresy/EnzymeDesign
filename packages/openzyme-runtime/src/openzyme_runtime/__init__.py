@@ -49,8 +49,11 @@ from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_boundary import summarize_workspace_directory
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
 from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import project_artifact_list_for_agent
+from .artifact_projection import project_artifact_list_item_for_agent
 from .artifact_projection import project_artifacts_for_agent
 from .artifact_projection import sanitize_private_artifact_fields
+from .artifact_projection import serialize_artifact_projection
 from .contracts import CanonicalResearchSnapshot
 from .contracts import ConstraintItem
 from .contracts import ConstraintSet
@@ -317,9 +320,12 @@ __all__ = [
     "live_tavily_skip_reason",
     "quality_eval_skip_reason",
     "project_artifact_for_agent",
+    "project_artifact_list_for_agent",
+    "project_artifact_list_item_for_agent",
     "project_artifacts_for_agent",
     "PodmanContainerLease",
     "sanitize_private_artifact_fields",
+    "serialize_artifact_projection",
     "serialize_llm_payload",
     "validate_runtime_foundation_support",
 ]

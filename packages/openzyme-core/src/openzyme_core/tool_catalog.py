@@ -37,7 +37,11 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="artifact.list",
             description=(
                 "List safe session artifact records or artifacts scoped to a task/invocation. "
-                "Results are paginated and never include Host storage_uri or local paths."
+                "The serialized response has a hard 100k-character budget and reports "
+                "returned_count/truncated_by_budget; continue from next_offset without skipped "
+                "records. Per-artifact metadata and free text are bounded, with omitted-field "
+                "digests and exact or root-only artifact.get read scope. Results never include "
+                "Host storage_uri or local paths."
             ),
             input_schema={
                 "type": "object",
@@ -139,7 +143,8 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                 "Read one safe artifact catalog record and linked engine metadata by artifact_id. "
                 "Large linked output fields are summarized by default; use path/offset/limit from read_hint "
                 "to page fields such as output_payload.evidence_items. When path targets a large dict, "
-                "the result returns pageable keys with child paths to inspect. Results never include Host paths."
+                "the result returns pageable keys; only safe path segments have exact child paths. Large "
+                "strings are pageable by character offset. Results never include Host paths."
             ),
             input_schema={
                 "type": "object",
@@ -147,7 +152,7 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
                     "artifact_id": {"type": "string"},
                     "path": {"type": "string"},
                     "offset": {"type": "integer", "minimum": 0},
-                    "limit": {"type": "integer", "minimum": 0, "maximum": 50},
+                    "limit": {"type": "integer", "minimum": 0, "maximum": 12000},
                     "include_full": {"type": "boolean"},
                 },
                 "required": ["artifact_id"],
