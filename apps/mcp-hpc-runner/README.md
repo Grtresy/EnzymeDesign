@@ -191,8 +191,12 @@ with key-based auth.
 
 To use a different config path:
 
+The integration fixtures use the same precedence as the OpenZyme runtime:
+`OPENZYME_HPC_RUNNER_CONFIG`, then the legacy `HPC_RUNNER_CONFIG` alias, then
+the workspace-local default.
+
 ```bash
-HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
+OPENZYME_HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
   uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest -m integration
 ```
 
@@ -204,7 +208,7 @@ redacted records under `.mcp_hpc_runner/contract_runs/<timestamp>/`.
 
 ```bash
 OPENZYME_TEST_ENABLE_LIVE_HPC=true \
-HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
+OPENZYME_HPC_RUNNER_CONFIG=/path/to/hpc_runner.toml \
   uv --project apps/mcp-hpc-runner --directory apps/mcp-hpc-runner run pytest \
   -m "integration and live_hpc" tests/integration/test_hpc_contract_smoke.py
 ```

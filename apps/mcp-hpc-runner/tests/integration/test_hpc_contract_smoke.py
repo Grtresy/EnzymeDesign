@@ -61,9 +61,12 @@ def contract_record_root() -> Path:
 
 @pytest.fixture(scope="session")
 def runner_config(contract_record_root: Path) -> RunnerConfig:
-    config_path = Path(
-        os.getenv("HPC_RUNNER_CONFIG", str(_default_config_path()))
-    ).expanduser()
+    configured_path = (
+        os.getenv("OPENZYME_HPC_RUNNER_CONFIG")
+        or os.getenv("HPC_RUNNER_CONFIG")
+        or str(_default_config_path())
+    )
+    config_path = Path(configured_path).expanduser()
     if not config_path.exists():
         pytest.skip(f"Integration config not found: {config_path}")
 
