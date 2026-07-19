@@ -176,6 +176,90 @@ formal session/public request `>=7200s`，并在 launch 与 HMMER approval 前 f
 通用 async continuation/cancellation/quiescent sealing 只记录在
 [durable async controlled operation and quiescent sealing](../architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)，本 Goal 不实现。
 
+r15 在 commit `8a5a98fc483784c222e7a5c2e35f50114e559822`、config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`
+上验证了 r14 timeout 小修：probe exact-six 全部各执行一次；formal NCBI
+`op_d49fa261d272`、MAFFT `op_5b585f37d2a9`、hmmbuild
+`op_82884ee33093`、EBI HMMER `op_d07bbe65636e` 也各只有一个并全部完成，
+其中 HMMER 约 24.5 分钟后仍在 `1800s < 3600s < 7200s` 层级内成功。首个 formal
+NCBI approval `appr_06a653364c9b` 由同进程 Chrome UI 真实批准，driver 没有代行该
+resolve route。
+
+但 HMMER 后的 score-filter 产生 37,722 个 accession；metadata object 精确为
+`513,565 B`，artifact register request frame 精确为 `513,803 B`。旧 control server
+把一次 `recv(65536)` 当成完整 JSON-RPC frame，截断 NDJSON 并让 socket worker 因
+unterminated JSON 退出。checkpoint recovery 未重放任何已完成外部 operation，但后续
+约 `514,234 B` 的 UniProt request frame 再次触发 transport failure，且在
+`bio.uniprot_fetch` controlled operation/provider I/O 建立前停止。execution 明确 failed，
+research completed，reporting 保持 `todo` 且无 published report；browser terminal target
+不存在。收口后 nonterminal controlled operation、nonterminal sandbox run 和 pending
+approval 均为零，因此可以封存失败证据，但不能解释成正向完成。
+
+r15 attempt `positive-fb3cd26654cc4c3eb955a1f7c2384c90` 的 non-eligible bundle
+digest 是
+`sha256:011fc6163c83fde37f7da7cd8045b2213fd42277f6deecc36f7d297f190817ba`；
+离线 verifier 通过只证明 failure bundle 内部完整。campaign decision 仍是 **NO-GO**，
+digest
+`sha256:76897f22f344440465572fe31a3781443ff46a2c3c994506838a6f2529ce7e41`，
+blocker 为 `task_failed` / `attempt[1].scientific_outcome`。MICU 从
+`35,727,334` 增至 `40,115,002 / 500,000,000`，r15 delta `4,387,668`，零
+breach/overage；两个历史 unsettled reservation 合计 `2,187,716` 已同时包含在前后
+snapshot，不是 r15 新消费，也不得静默释放。r15 永久 NO-GO，其 roots、operations、
+artifacts、browser state 与 scientific responses 均不得复用。
+
+该缺陷按小型 harness 修复处理：sandbox control channel 每个 Unix socket connection
+只接受一个 JSON-RPC 2.0 NDJSON frame，请求和响应 payload 均以 `4 MiB` 为硬上限
+（不含终止 newline）；receiver 必须跨任意 `recv` chunk 聚合到 newline，不能把
+`64 KiB` chunk size 当 frame 上限。畸形 UTF-8/JSON、残帧、response identity 漂移和超限
+均结构化 fail closed；首 newline 后已观察到的非空 trailing bytes 在 dispatch 前拒绝。
+硬保证是每 connection 最多执行一个 request；首帧接受后才晚到的第二帧可以只遇到连接关闭、
+不保证第二个 error，但绝不执行第二个 method/operation。单连接失败不能杀死 accept worker，
+SDK 对请求 preflight 和响应聚合实施对称边界。此 correction 不新增 canonical state，
+不升级 sandbox protocol/image version；后续正向证明仍须 fresh commit/config pin 与 roots。
+
+非 null JSON-RPC request id 只允许 UTF-8 bytes `<=256` 的 string 或 signed int64，bool
+不合法。request 其他 semantic validation 失败时 error 保留已安全提取的 id；id 自身超限、
+非法或无法提取时 error 使用 `id=null`，SDK 仍要求 response id 精确相等。
+
+后续 UniProt 小修固定为 `provider_config:uniprot:v2`，但 route policy id 仍是
+`bio.uniprot_fetch.provider:v1`。exact HMMER accession set 通过一次 SDK call、一次
+approval 和一个 controlled operation 提交；operation 总 cap 是 `100000`，Host 固定按
+每 query 最多 `100` accession 拆分。SDK `batch_size` 仍是每 response page 的 `size`
+（上限 `100`），每个 query 独立跟随 `Link: rel=next` 且各自最多 `100` 页。approval
+前 resource estimate 显式记录 accession/query batch 数，因此 37,722 accession 等于
+378 个内部 query，而不是 378 个 operation/approval。transcript 记录 query/page index、
+accession range/count/digest 与 response digest；duplicate 检测使用 frequency-map 单次扫描，
+只对重复 key 稳定排序。当前输入已是 primary UniProt accession，切换 async ID Mapping
+会引入 durable job handle、submit/poll/result resume、幂等、approval 以及 evidence/verifier
+schema 迁移，属于本 Goal 不实施的大架构调整。
+
+每个 UniProt response page 还必须绑定 producing query 的 exact accession slice/digest；即使
+record identity 在 operation-wide set 内，只要属于另一个 query，也以
+`provider_identity_mismatch` 拒绝 cross-query swap。`378` 只是默认 query cap `100` 下 SDK
+向 approval 展示的透明预测，不是 limit authority；Host 注入 config 可收紧 actual cap，并在
+provider I/O 前最终校验。Host-authoritative canonical estimate/limit snapshot 与 approval/config
+binding 的大改单独记录在
+[Host-authoritative controlled-operation resource estimate and limit snapshot](../architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md)，
+本 Goal 不实现。
+
+UniProt `Link: rel=next` 还必须停留在 exact
+`https://rest.uniprot.org[:443]/uniprotkb/search`，不得携带 userinfo/fragment。malformed 或
+off-origin link 以 `provider_schema_drift` fail closed；diagnostic 只记录 link digest 和固定
+expected endpoint，不回显潜在私有/恶意 URL。
+
+public evidence scanner 的修复同样保持窄边界：只新增四个 AOX logical manifest suffix
+`/provider_parsed/metadata.json`、`/provider_parsed/parsed_hits.csv`、
+`/provider_parsed/proteins.fasta`、`/provider_parsed/sequences.fasta`，并仅在 sealed Python
+source 中识别 `Path("aox_hmm")/p.name` 这类真实 `/` path-join syntax，避免把 `/p.name`
+误判为 Host absolute path。它不开放整个 `/provider_parsed/`；unknown suffix、traversal、
+任意 `prefix)/p.name`、`/home/...`、`/tmp/...` 与其他未知 absolute path 仍 fail closed。
+
+collector 当前仍是逐文件写最终 evidence root，单文件 no-replace 不等于 attempt 事务，
+也不能统一证明 actual artifact root 与 declared root exact equality。两阶段 prepare/commit、
+artifact-root 全闭包、失败原子性与迁移计划已单独记录在
+[transactional attempt evidence collection and root closure](../architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md)，
+本 Goal 不实现，也不能用该 proposal 补足任何 live GO evidence。
+
 每个 MAFFT/hmmbuild/hmmalign/CD-HIT cutover receipt 还必须来自 runner-issued `mcp_hpc_toolchain_runtime_identity@1`：runner-owned manifest 决定私有 SIF locator；当前 SSH 窄保证在同一 login shell 中直接用该 resolved pathname 执行，并在 payload 前后哈希同一路径，两个 digest 必须相同。Host 只逐层传递闭集 public projection，collector/verifier 将观察到的 digest 与 sealed prerequisite 精确比较；caller override、missing/mismatch 均 fail closed。该机制证明“同一路径前后未变并被直接执行”，尚不证明 immutable inode/content-addressed snapshot；后者单独记录在 [immutable HPC SIF execution snapshot](../architecture-proposals/immutable-hpc-sif-execution-snapshot.md)，不在本 Goal 实现。Slurm 本身仍可用于一般 runner 任务，但当前没有 job-internal same-execution SIF attestation，因此 Slurm execution 不能构成此 cutover identity。跨层 toolchain 定义收敛属于大改，只记录在 [single-source HPC toolchain contract registry](../architecture-proposals/single-source-hpc-toolchain-contract-registry.md)，不在本 Goal 实现。
 
 GO 只由顺序固定的三次 campaign 聚合得出：

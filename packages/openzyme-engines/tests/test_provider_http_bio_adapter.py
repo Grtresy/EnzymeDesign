@@ -4,7 +4,9 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
+from urllib import parse as urllib_parse
 
 import pytest
 
@@ -414,6 +416,308 @@ def _uniprot_record(
         "entryAudit": {"entryVersion": 12, "sequenceVersion": 3},
         "sequence": {"value": sequence, "length": len(sequence)},
     }
+
+
+def test_uniprot_batches_one_operation_across_bounded_search_queries() -> None:
+    accessions = tuple(f"P{index:05d}" for index in range(205))
+    observed_batches: list[tuple[str, ...]] = []
+    response_bodies: list[str] = []
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        parsed = urllib_parse.urlparse(request.full_url)
+        query = urllib_parse.parse_qs(parsed.query)["query"][0]
+        query_accessions = tuple(re.findall(r"accession:([A-Z0-9]+)", query))
+        observed_batches.append(query_accessions)
+        assert len(request.full_url.encode("utf-8")) < 4096
+        body = json.dumps(
+            {
+                "results": [
+                    _uniprot_record(accession, "MPEPTIDE")
+                    for accession in query_accessions
+                ]
+            }
+        )
+        response_bodies.append(body)
+        return FakeHttpResponse(
+            body=body,
+            headers={"x-uniprot-release": "2026_03"},
+        )
+
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=accessions,
+        fields=(),
+        batch_size=100,
+        retrieved_at="2026-07-19T00:00:00+00:00",
+    )
+
+    metadata = json.loads(_artifact(result, "provider_parsed/metadata.json").content)
+    assert [len(batch) for batch in observed_batches] == [100, 100, 5]
+    assert tuple(accession for batch in observed_batches for accession in batch) == accessions
+    assert metadata["requested_accessions"] == list(accessions)
+    assert [record["requested_accession"] for record in metadata["records"]] == list(
+        accessions
+    )
+    assert result.summary["accession_count"] == 205
+    assert result.summary["identity_complete"] is True
+    assert result.summary["pagination"] == {
+        "page_count": 3,
+        "page_size": 100,
+        "page_cap_per_query": 100,
+        "query_batch_count": 3,
+        "query_batch_size_cap": 100,
+    }
+    requests = result.provider_observation["requests"]
+    assert [request["query_batch_index"] for request in requests] == [1, 2, 3]
+    assert [request["query_accession_start"] for request in requests] == [0, 100, 200]
+    assert [request["query_accession_count"] for request in requests] == [100, 100, 5]
+    assert all(str(request["query_accessions_digest"]).startswith("sha256:") for request in requests)
+    _assert_offline_recomputable_raw_responses(
+        result,
+        expected_bodies=tuple(response_bodies),
+    )
+
+
+def test_uniprot_real_scale_preflight_is_linear_and_partitions_37722() -> None:
+    config = BioProviderHttpConfig()
+    adapter = ProviderHttpBioDatabaseAdapter(
+        config,
+        urlopen=lambda _request, timeout: pytest.fail(  # noqa: ARG005
+            "real-scale preflight must not contact UniProt"
+        ),
+        sleep=lambda _seconds: None,
+    )
+    accessions = tuple(f"P{index:05d}" for index in range(37_722))
+
+    normalized = adapter._normalize_accessions(
+        accessions,
+        provider="uniprot",
+        sdk_method="bio.uniprot_fetch",
+        accession_cap=config.uniprot_operation_accession_cap,
+    )
+    query_batches = tuple(
+        normalized[offset : offset + config.batch_size_cap]
+        for offset in range(0, len(normalized), config.batch_size_cap)
+    )
+
+    assert normalized == accessions
+    assert len(query_batches) == 378
+    assert all(len(batch) == 100 for batch in query_batches[:-1])
+    assert len(query_batches[-1]) == 22
+
+    with pytest.raises(PipelineSdkFailure) as duplicate_error:
+        adapter._normalize_accessions(
+            (*accessions[:-1], accessions[0]),
+            provider="uniprot",
+            sdk_method="bio.uniprot_fetch",
+            accession_cap=config.uniprot_operation_accession_cap,
+        )
+
+    assert duplicate_error.value.error_type == "provider_duplicate_identity"
+    assert duplicate_error.value.details["duplicate_accessions"] == ["P00000"]
+
+
+def test_uniprot_page_cap_is_per_query_not_global() -> None:
+    accessions = tuple(f"P{index:05d}" for index in range(4))
+    responses = iter(
+        [
+            (_uniprot_record("P00000", "MPEPTIDE"), "batch-1-page-2"),
+            (_uniprot_record("P00001", "MPEPTIDE"), None),
+            (_uniprot_record("P00002", "MPEPTIDE"), "batch-2-page-2"),
+            (_uniprot_record("P00003", "MPEPTIDE"), None),
+        ]
+    )
+
+    def urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        record, next_ref = next(responses)
+        headers = {"x-uniprot-release": "2026_03"}
+        if next_ref is not None:
+            headers["link"] = (
+                f"<https://rest.uniprot.org/uniprotkb/search?cursor={next_ref}>; rel=\"next\""
+            )
+        return FakeHttpResponse(
+            body=json.dumps({"results": [record]}),
+            headers=headers,
+        )
+
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(
+            batch_size_cap=2,
+            uniprot_operation_accession_cap=10,
+            uniprot_page_cap_per_query=2,
+        ),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=accessions,
+        fields=(),
+        batch_size=1,
+        retrieved_at="2026-07-19T00:00:00+00:00",
+    )
+
+    assert result.summary["pagination"] == {
+        "page_count": 4,
+        "page_size": 1,
+        "page_cap_per_query": 2,
+        "query_batch_count": 2,
+        "query_batch_size_cap": 2,
+    }
+    assert [
+        (request["query_batch_index"], request["page_in_query"])
+        for request in result.provider_observation["requests"]
+    ] == [(1, 1), (1, 2), (2, 1), (2, 2)]
+
+
+def test_uniprot_rejects_cross_query_batch_identity_swap() -> None:
+    responses = iter(
+        [
+            _uniprot_record("P00001", "MPEPTIDE"),
+            _uniprot_record("P00000", "MPEPTIDE"),
+        ]
+    )
+
+    def urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        return FakeHttpResponse(
+            body=json.dumps({"results": [next(responses)]}),
+            headers={"x-uniprot-release": "2026_03"},
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(
+            batch_size_cap=1,
+            uniprot_operation_accession_cap=10,
+        ),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P00000", "P00001"),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-19T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_identity_mismatch"
+    assert exc_info.value.details["matched_requested_accessions"] == ["P00001"]
+    assert exc_info.value.details["query_batch_index"] == 1
+    assert exc_info.value.details["query_accession_start"] == 0
+    assert exc_info.value.details["query_accession_count"] == 1
+
+
+def test_uniprot_rejects_query_that_still_has_next_page_at_cap() -> None:
+    call_count = 0
+
+    def urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        del timeout
+        call_count += 1
+        return FakeHttpResponse(
+            body=json.dumps(
+                {"results": [_uniprot_record(f"P{call_count - 1:05d}", "MPEPTIDE")]}
+            ),
+            headers={
+                "x-uniprot-release": "2026_03",
+                "link": (
+                    "<https://rest.uniprot.org/uniprotkb/search?cursor=still-more>; "
+                    'rel="next"'
+                ),
+            },
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(
+            batch_size_cap=2,
+            uniprot_operation_accession_cap=10,
+            uniprot_page_cap_per_query=2,
+        ),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P00000", "P00001"),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-19T00:00:00+00:00",
+        )
+
+    assert call_count == 2
+    assert exc_info.value.error_type == "provider_partial_result"
+    assert exc_info.value.details == {
+        "provider": "uniprot",
+        "page_cap": 2,
+        "query_batch_index": 1,
+        "query_accession_count": 2,
+    }
+
+
+def test_uniprot_rejects_pagination_outside_pinned_https_endpoint() -> None:
+    call_count = 0
+
+    def urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        del timeout
+        call_count += 1
+        return FakeHttpResponse(
+            body=json.dumps({"results": [_uniprot_record("P00000", "MPEPTIDE")]}),
+            headers={
+                "x-uniprot-release": "2026_03",
+                "link": (
+                    "<http://127.0.0.1/uniprotkb/search?cursor=unsafe>; "
+                    'rel="next"'
+                ),
+            },
+        )
+
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.uniprot_fetch(
+            accessions=("P00000",),
+            fields=(),
+            batch_size=1,
+            retrieved_at="2026-07-19T00:00:00+00:00",
+        )
+
+    assert call_count == 1
+    assert exc_info.value.error_type == "provider_schema_drift"
+    assert exc_info.value.details["expected_endpoint"] == (
+        "https://rest.uniprot.org/uniprotkb/search"
+    )
+    assert str(exc_info.value.details["next_link_digest"]).startswith("sha256:")
+
+
+def test_ncbi_total_accession_cap_remains_100_before_http() -> None:
+    adapter = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(ncbi_email="operator@example.test"),
+        urlopen=lambda _request, timeout: pytest.fail(  # noqa: ARG005
+            "oversized NCBI request must fail before HTTP"
+        ),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        adapter.ncbi_fetch_proteins(
+            accessions=tuple(f"NCBI{index}" for index in range(101)),
+            fields=(),
+            retrieved_at="2026-07-19T00:00:00+00:00",
+        )
+
+    assert exc_info.value.error_type == "provider_invalid_request"
+    assert exc_info.value.details == {"accession_count": 101, "limit": 100}
 
 
 def test_uniprot_preserves_primary_review_release_versions_and_digests() -> None:

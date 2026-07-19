@@ -14,8 +14,8 @@ This document describes the operator/evidence boundary implemented by `openzyme_
 
 ## Current pre-live harness closure
 
-The latest non-eligible live attempt remains **NO-GO**. It exposed five narrow
-cutover-driver/harness gaps that are now explicit gates for the next campaign:
+An earlier non-eligible live attempt remained **NO-GO** and exposed five narrow
+cutover-driver/harness gaps that became explicit gates for later campaigns:
 
 - `world.inspect(sections=["capabilities"], task_id=..., limit=...)` binds a
   teammate to its current task (a mismatch is a typed error), while preserving
@@ -264,6 +264,117 @@ Durable asynchronous continuation, cancellation fencing and quiescent sealing
 are larger work recorded in
 [durable async controlled operation and quiescent sealing](architecture-proposals/durable-async-controlled-operation-and-quiescent-sealing.md)
 and are not implemented in this goal.
+
+r15 pinned commit `8a5a98fc483784c222e7a5c2e35f50114e559822`, config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`,
+and attempt `positive-fb3cd26654cc4c3eb955a1f7c2384c90`. The independent
+probe again completed its exact six operations once each. The formal durable
+operation records contain exactly one completed NCBI
+`op_d49fa261d272`, MAFFT `op_5b585f37d2a9`, hmmbuild
+`op_82884ee33093`, and EBI HMMER `op_d07bbe65636e`; no formal UniProt
+operation was created. The first formal NCBI operation was approved through the
+same-process Chrome UI as approval `appr_06a653364c9b`. Most importantly, the
+real HMMER request completed after about 24.5 minutes inside the corrected
+`1800s < 3600s < 7200s` hierarchy, so r14's timeout blocker did not recur.
+
+r15 nevertheless remains permanently **NO-GO**. HMMER produced 37,722
+score-filtered accessions and a legitimate metadata object of exactly
+`513,565 B`; its artifact-registration JSON-RPC request frame was exactly
+`513,803 B`. The control server still treated one `recv(65536)` chunk as a
+complete JSON-RPC request, truncated the newline-delimited frame, raised an
+unterminated JSON error and retired the socket worker. The first registration
+attempt ended in `BrokenPipeError`; same-attempt checkpoint recovery registered
+the derived artifact without replaying any completed external operation, but
+the subsequent UniProt request frame of approximately `514,234 B` hit the same
+transport defect before a UniProt controlled operation or provider call was
+created. The execution task then failed closed,
+research remained completed, reporting remained `todo`, no report was
+published, and the browser terminal-observation target remained absent. The
+quiescent root has zero nonterminal controlled operations, zero nonterminal
+sandbox runs and zero pending approvals; this is failure-state closure, not a
+positive business outcome.
+
+The non-eligible attempt bundle is
+`sha256:011fc6163c83fde37f7da7cd8045b2213fd42277f6deecc36f7d297f190817ba`.
+Network-free verification accepts its internal failure-evidence integrity only;
+it does not make the attempt cutover eligible. The sealed campaign decision is
+**NO-GO** at
+`sha256:76897f22f344440465572fe31a3781443ff46a2c3c994506838a6f2529ce7e41`,
+with blocker `task_failed` at `attempt[1].scientific_outcome`. The persistent
+MICU ledger moved from `35,727,334` to `40,115,002 / 500,000,000`, an r15
+delta of `4,387,668`, with zero hard-limit breach or overage. Two historical
+unsettled reservations totaling `2,187,716` remain included in both snapshots;
+they are neither new r15 consumption nor silently released. No r15 root,
+artifact, operation, browser state, or scientific response is reusable by a
+fresh positive attempt.
+
+The framing defect is a small transport correction, not a new product state or
+protocol generation. The Host and `openzyme_pipeline` client use one JSON-RPC
+2.0 NDJSON frame per connection, aggregate across `recv` chunks until the
+newline, and enforce a symmetric `4 MiB` payload cap excluding that newline.
+Malformed UTF-8/JSON, EOF before the delimiter, identity drift, or an oversized
+request/response fails closed with a bounded structured error. Non-whitespace
+bytes already observed after the first newline reject the request before
+dispatch. The hard guarantee is at most one executed request per connection: a
+second frame arriving only after the first was accepted may see connection close
+without a second error, but can never execute. A bad connection cannot terminate
+the accept worker, and the SDK preflights request size and bounds response assembly. The
+existing sandbox protocol and image version do not change; the commit/config
+and SDK digests still change normally, and a fresh pin plus fresh roots are
+required before another live attempt.
+
+A non-null JSON-RPC request id is restricted to a UTF-8 string of at most
+`256` bytes or signed int64; boolean is invalid. If another decoded request
+semantic is invalid, a safely extracted id remains in the error response. An id
+that is itself invalid/oversized, or cannot be safely extracted, yields
+`id=null`; the SDK still rejects response-id drift.
+
+The follow-up UniProt correction is also bounded and keeps the public SDK call,
+approval, and durable controlled-operation identity singular. Under
+`provider_config:uniprot:v2`, one operation accepts at most `100000` accessions
+and partitions them into fixed provider queries of at most `100`; SDK
+`batch_size` still means response-page size (maximum `100`), while each query
+has its own `100`-page `Link: rel=next` cap. Approval resource facts include
+accession count and estimated query count before I/O, so the r15 set projects
+`37722` accessions and `378` internal queries—not 378 operations or approvals.
+The transcript binds each query/page index, accession range/count/digest and
+response digest. Duplicate detection uses a frequency-map scan rather than a
+quadratic repeated scan. Because the input is already primary UniProt
+accessions, asynchronous ID Mapping would add a new durable job/handle,
+submit/poll/result recovery and approval/evidence/verifier lifecycle without a
+scientific mapping need; that architecture change is deliberately outside this
+Goal.
+
+Every UniProt response page is bound to the exact accession slice/digest of its
+producing query; returning an operation-wide requested identity under another
+query is a cross-query swap and fails `provider_identity_mismatch`. The SDK's
+`378` resource count is only the default-`100` transparent prediction, not
+authorization or an authoritative actual-limit snapshot. Host provider config
+can tighten actual caps and owns final pre-I/O validation. Canonical Host-side
+estimate/limit derivation and approval binding remain proposal-only in
+[Host-authoritative controlled-operation resource estimate and limit snapshot](architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md).
+
+Each `Link: rel=next` must also remain on exact HTTPS
+`rest.uniprot.org[:443]/uniprotkb/search`, without userinfo or fragment. A
+malformed or off-origin link stops as `provider_schema_drift`; safe diagnostics
+seal only the link digest and fixed expected endpoint, never the candidate URL.
+
+Public-safety validation now distinguishes the four exact AOX logical manifest
+suffixes (`/provider_parsed/metadata.json`,
+`/provider_parsed/parsed_hits.csv`, `/provider_parsed/proteins.fasta`, and
+`/provider_parsed/sequences.fasta`) from Host paths, and recognizes a sealed
+Python source expression such as `Path("aox_hmm")/p.name` as a lexical path
+join. There is no general provider-path or slash exception: an unknown suffix,
+traversal, arbitrary `prefix)/p.name`, `/home/...`, `/tmp/...`, or any other
+unrecognized absolute path remains rejected.
+
+Attempt evidence collection is still file-by-file and therefore does not yet
+provide transaction-wide atomicity or prove exact equality between every file
+under a final artifact root and the declared bundle inventory. The larger
+two-phase collector, root-closure, crash recovery, and migration design is
+recorded only in
+[transactional attempt evidence collection and root closure](architecture-proposals/transactional-attempt-evidence-collection-and-root-closure.md);
+it is not implemented or treated as a GO criterion satisfied by this Goal.
 
 ## Formal AOX scientific closure
 

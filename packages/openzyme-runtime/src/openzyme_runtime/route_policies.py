@@ -26,7 +26,7 @@ S12_ROUTE_POLICIES: dict[str, dict[str, Any]] = {
         "route_reason": "static_policy:v1",
         "resource_class": "network_io",
         "runtime_packaging_id": "provider_http:v1",
-        "provider_config_digest": "provider_config:uniprot:v1",
+        "provider_config_digest": "provider_config:uniprot:v2",
         "evidence_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-uniprot",
         "parameter_inventory_ref": "docs/v3/sessions/06-adapter-foundation-evidence.md#provider-evidence-uniprot",
         "approval_requirement": {"required": True},

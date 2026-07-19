@@ -158,6 +158,36 @@ def test_uniprot_fetch_binds_source_hit_artifact_without_rewriting_it(
     assert envelope["input_artifact_ids"] == ["art_ebi_hits_001"]
     assert envelope["input_artifact_digests"] == [HIT_DIGEST]
     assert envelope["stage_refs"] == [source_hit_artifact]
+    assert envelope["resource_estimate"] == {
+        "network_io": True,
+        "accession_count": 2,
+        "estimated_query_batch_count": 1,
+        "query_batch_size_cap": 100,
+    }
+
+
+def test_uniprot_real_scale_list_remains_one_controlled_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_controlled_operation(monkeypatch)
+    accessions = [f"P{index:05d}" for index in range(37_722)]
+
+    result = bio.uniprot_fetch(
+        accessions=accessions,
+        output_dir="/workspace/output/bio/uniprot",
+        batch_size=100,
+    )
+
+    assert result == {"operation_id": "op_test"}
+    assert len(captured) == 1
+    envelope = captured[0]
+    assert envelope["params"]["accessions"] == accessions
+    assert envelope["resource_estimate"] == {
+        "network_io": True,
+        "accession_count": 37_722,
+        "estimated_query_batch_count": 378,
+        "query_batch_size_cap": 100,
+    }
 
 
 @pytest.mark.parametrize(

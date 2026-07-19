@@ -367,8 +367,20 @@ _PRIVATE_LOCATOR_PATTERN = re.compile(
     r"(?i)(?:storage|s3|gs|gcs|azure|ssh|scp|file|postgres|postgresql|redis|"
     r"mongodb(?:\+srv)?|mysql|mariadb|amqp|amqps)://[^\s\"'<>]*"
 )
-_ABSOLUTE_UNIX_LOCATION_PATTERN = re.compile(
-    r"(?<![:/\]A-Za-z0-9._-])/(?!/)[^\s\"'<>;,()]+"
+_ABSOLUTE_UNIX_LOCATION_PATTERN = re.compile(r"/(?!/)[^\s\"'<>;,()]+")
+_ABSOLUTE_UNIX_NON_BOUNDARY_CHARS = frozenset(
+    ":/]ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+_PYTHON_PATH_DIVISION_ATTRIBUTE_PATTERN = re.compile(
+    r"/[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*"
+)
+_AOX_LOGICAL_MANIFEST_SUFFIXES = frozenset(
+    {
+        "/provider_parsed/metadata.json",
+        "/provider_parsed/parsed_hits.csv",
+        "/provider_parsed/proteins.fasta",
+        "/provider_parsed/sequences.fasta",
+    }
 )
 _ENCODED_PRIVATE_LOCATION_PATTERN = re.compile(
     r"(?i)(?:\\/|%2f)(?:app|cluster|code|data|etc|gpfs|home|lustre|mnt|opt|"
@@ -9655,11 +9667,26 @@ def _assert_public_safe(payload: object, *, identity: str) -> None:
             )
     for path_match in _ABSOLUTE_UNIX_LOCATION_PATTERN.finditer(payload):
         candidate = path_match.group(0)
+        if (
+            path_match.start() > 0
+            and payload[path_match.start() - 1]
+            in _ABSOLUTE_UNIX_NON_BOUNDARY_CHARS
+        ):
+            continue
+        if (
+            identity.startswith("sealed_source_tree:")
+            and path_match.start() > 0
+            and payload[path_match.start() - 1] == ")"
+            and _PYTHON_PATH_DIVISION_ATTRIBUTE_PATTERN.fullmatch(candidate)
+        ):
+            continue
         if candidate == "/workspace" or candidate.startswith("/workspace/"):
             continue
         if candidate == "/openzyme/control.sock":
             continue
         if _PUBLIC_API_ROUTE_PATTERN.fullmatch(candidate):
+            continue
+        if candidate in _AOX_LOGICAL_MANIFEST_SUFFIXES:
             continue
         raise CutoverEvidenceError(
             "public_projection_host_path",

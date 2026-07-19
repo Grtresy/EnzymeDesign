@@ -27,6 +27,7 @@
 - 实施本 session 前必须由 operator 明确 sandbox lightweight dependency allowlist。Session 06 的 sandbox image recommendations 只是候选输入，不自动成为默认依赖。该 allowlist 只覆盖 sandbox 内 Python/bash 派生处理、解析、过滤、评分、CSV/FASTA/HMM/JSON 轻量读写所需依赖；不能包含 MAFFT、CD-HIT、HMMER、Apptainer、SSH/Slurm client、runner config、provider credential、database mount 或任何领域 backend packaging。若 operator 未确认，默认只验收标准库、`bash`、`python` 和 `openzyme_pipeline`，不自动安装额外 Python 包。
 - 已确认 allowlist 必须写入 S07 sandbox image manifest，至少记录依赖名、版本或 lock digest、用途边界和 import smoke；manifest 缺失、版本不匹配或依赖能力不兼容时按 S07 image compatibility fail-closed，不能 runtime auto install、自动换镜像或 fallback 到旧 pipeline runner。
 - S09 的 SDK supervisor RPC smoke 只证明 transport、身份绑定、path/secret 隔离和结构化错误返回；generic operation digest、approval request、`waiting_approval`、pause/resume、route freezing 和 recovery 由 S10 实现。
+- S09 control socket 使用一连接一帧的 JSON-RPC 2.0 NDJSON：request/response payload 最大 `4 MiB`（不含终止 newline），receiver 跨 `64 KiB` `recv` chunk 聚合直到 newline，不能把 chunk size 解释为 frame cap。非 null request id 只允许 UTF-8 编码 `<=256` bytes 的 string 或 signed int64（bool 非法）；request 其他 semantic validation 失败时 error 回显已提取的 safe id，id 自身超限/非法或无法提取时返回 `id=null`。EOF 前没有 newline、畸形 UTF-8/JSON、非 object request/response、response id/schema 漂移和任一方向超限均返回或抛出 bounded structured transport error，不 dispatch 畸形 request，也不 fallback/replay。硬保证是每个 connection 最多执行一个 request：若receiver在首个newline后已经观察到非whitespace trailing bytes，则在dispatch前结构化拒绝；若第二帧只在首帧已接受后才晚到，它只能遇到connection关闭，协议不保证为第二帧再返回一个error，但绝不能执行第二个method。单连接 read/decode/send/client-disconnect 失败必须与 accept worker 隔离；Host response 超限时返回小型结构化错误，SDK 在发送前检查 request size 并以同一上限读取 response。该小修沿用既有 protocol/image version，不新增 durable state。
 - Host 必须在每次 `sandbox.exec` 启动命令前调用 S08 source snapshot service，自动创建或绑定覆盖整个 `/workspace/src` 的 CODE artifact；snapshot 失败时命令不启动，不能映射成普通非零退出。
 - 在 source snapshot、`SandboxRun` 创建和 container process invocation 之前，Host 必须验证 configured workspace root 下 `src/input/work/output/logs/manifest` 六个 bind source 都是已存在的真实非 symlink 目录；任一缺失或类型异常返回 `sandbox_volume_corrupt`，不得在 exec 路径补空目录、创建 snapshot/run 或把底层 Host `statfs` 路径交给 agent。
 - executor 不创建 approval、不调用 resume、不判断敏感性；在 S09 中它只处理命令成功、结构化 transport error 或非零退出后的普通编程结果。
@@ -109,6 +110,11 @@ S09 的 tool API 仍固定为 v1 机械默认值，不能留给实现者临场�
 - `sandbox_listing_truncated`
 - `sandbox_env_forbidden`
 - `sandbox_transport_unavailable`
+- `sandbox_transport_request_timeout`
+- `sandbox_transport_request_invalid`
+- `sandbox_transport_request_too_large`
+- `sandbox_transport_response_invalid`
+- `sandbox_transport_response_too_large`
 - `sandbox_transport_method_forbidden`
 - `sandbox_workspace_not_found`
 - `sandbox_workspace_forbidden`
@@ -134,7 +140,7 @@ S09 的 tool API 仍固定为 v1 机械默认值，不能留给实现者临场�
    - 将 `sandbox.file.*` 与 `sandbox.exec` 注册为 executor-facing tools；handler 只做参数转发和结构化错误包装，不能在 handler 内重复 path/security/run-state 逻辑。
    - workspace projection 只消费 canonical run/audit/log records，返回 bounded summaries 和 artifact refs。
 5. Smoke and docs follow-up
-   - 增加 S09 fake supervised transport smoke，验证 control socket/RPC、identity binding、source snapshot binding、artifact read summary 和 structured error，不提前创建 S10 `ControlledOperation` 或 approval。
+   - 增加 S09 fake supervised transport smoke，验证 control socket/RPC、identity binding、source snapshot binding、artifact read summary 和 structured error；同时用跨多个 `recv` chunk、但小于 `4 MiB` 的真实 Unix-socket request/response 验证完整 frame，并证明 malformed/incomplete/oversized connection 不杀死下一连接，不提前创建 S10 `ControlledOperation` 或 approval。
    - 本次计划不直接修改 `docs/v3/execution-pipeline-docs/`。后续实现若改变 user-facing SDK docs、sandbox rules 或 examples，应在实现 PR 中同步对应 execution-pipeline docs。
 
 ## 测试/验收
@@ -146,6 +152,7 @@ S09 的 tool API 仍固定为 v1 机械默认值，不能留给实现者临场�
 - executor sandbox base image 中的 `bash`、`python` 和 `openzyme_pipeline` import 与 Host supervisor RPC transport smoke 通过；失败返回结构化 command/runtime 错误，不能回退到 `execution.pipeline.start`。
 - 若 operator 在实施前确认了 sandbox lightweight dependency allowlist，base image manifest 必须记录依赖名、版本/lock digest 和用途边界，并补充 import smoke；未确认 allowlist 时，不得把未声明依赖作为验收前提。
 - 执行代码触发 fake supervised SDK transport smoke 时，Host 能识别 `sandbox_workspace_id`、`sandbox_run_id`、source snapshot artifact id / digest、artifact read summary 和 call identity，并返回 bounded structured response；真实 approval card、operation digest、`waiting_approval`、approve/reject continuation 和 route freezing 由 S10 测试。
+- 大于 `64 KiB` 但不超过 `4 MiB` 的合法 request/response 必须跨 chunk 完整往返；恰好超出 `4 MiB`、缺 newline、畸形 JSON、已观察到的newline后非空trailing bytes或 response identity 不匹配必须以对应稳定 transport error fail closed，且随后新连接仍可成功。late second-frame test只要求同一connection绝不执行第二个request，允许client只观察到connection close而没有第二个error。focused tests 还必须覆盖 256-byte string/id64 边界、safe id 在其他 invalid semantics 下回显、oversized/invalid id 返回 null。SDK oversized request 必须在 connect/send 前拒绝，Host oversized response 必须缩减为结构化 error。
 - source snapshot 为空、不可读、digest 失败或 commit 失败时，`sandbox.exec` 不启动进程，返回 `source_snapshot_empty`、`source_snapshot_required`、`source_snapshot_failed` 或 `source_snapshot_unavailable`。
 - `sandbox.exec` 超时、非零退出、stdout/stderr 超限、资源超限都返回结构化错误并保留日志 ref。
 - Host 重启、stale active run lock、worker lease conflict 或 process state 丢失时，普通 `sandbox.exec` fail-closed 为 `sandbox_run_recovery_failed`，释放 active lock，保留诊断，并允许 executor 显式重新运行。

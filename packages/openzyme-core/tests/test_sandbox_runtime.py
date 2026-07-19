@@ -24,6 +24,7 @@ from openzyme_core import apply_sqlite_migrations
 from openzyme_core import connect_sqlite
 from openzyme_core import sandbox_image_record
 from openzyme_core.sandbox_runtime import S12_ROUTE_POLICIES
+from openzyme_core.sandbox_runtime import CONTROL_SOCKET_FRAME_MAX_BYTES
 from openzyme_core.sandbox_runtime import EXEC_MAX_TIMEOUT_SECONDS
 from openzyme_core.sandbox_runtime import EXEC_POLICY_VERSION
 from openzyme_core.sandbox_runtime import _sanitize_toolchain_runtime_identity
@@ -58,6 +59,50 @@ def _digest_text(content: str) -> str:
     return "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _control_socket_server(tmp_path: Path, *, name: str) -> _ControlSocketServer:
+    return _ControlSocketServer(
+        socket_path=tmp_path / f"{name}.sock",
+        repositories=_build_repositories(),
+        session_id=f"sess_{name}",
+        sandbox_workspace_id=f"sw_{name}",
+        sandbox_run_id=f"srun_{name}",
+        agent_id="agent:executor",
+        source_snapshot_artifact_id="art_source",
+        source_tree_digest=_digest_text("source"),
+    )
+
+
+def _send_control_socket_bytes(
+    server: _ControlSocketServer,
+    payload: bytes,
+    *,
+    chunk_bytes: int | None = None,
+    shutdown_write: bool = False,
+) -> dict[str, object]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5.0)
+        client.connect(str(server.socket_path))
+        if chunk_bytes is None:
+            client.sendall(payload)
+        else:
+            for offset in range(0, len(payload), chunk_bytes):
+                client.sendall(payload[offset : offset + chunk_bytes])
+        if shutdown_write:
+            client.shutdown(socket.SHUT_WR)
+        response = bytearray()
+        while b"\n" not in response:
+            chunk = client.recv(64 * 1024)
+            if not chunk:
+                break
+            response.extend(chunk)
+    frame, delimiter, trailing = bytes(response).partition(b"\n")
+    assert delimiter == b"\n"
+    assert not trailing.strip()
+    decoded = json.loads(frame.decode("utf-8"))
+    assert isinstance(decoded, dict)
+    return decoded
+
+
 def test_sandbox_exec_v2_timeout_bound_is_finite_and_authoritative(
     tmp_path: Path,
 ) -> None:
@@ -70,6 +115,7 @@ def test_sandbox_exec_v2_timeout_bound_is_finite_and_authoritative(
 
     assert EXEC_MAX_TIMEOUT_SECONDS == 3_600
     assert EXEC_POLICY_VERSION == "s09.exec_policy.v2"
+    assert CONTROL_SOCKET_FRAME_MAX_BYTES == 4 * 1024 * 1024
     assert service._bounded_timeout(EXEC_MAX_TIMEOUT_SECONDS) == 3_600
     with pytest.raises(SandboxRuntimeError) as error:
         service._bounded_timeout(EXEC_MAX_TIMEOUT_SECONDS + 1)
@@ -142,6 +188,266 @@ def test_control_socket_error_envelope_rejects_private_machine_code(
     assert "/tmp/private-hint" not in serialized
     assert "sk-abcdefghijklmnop" not in serialized
     assert "host_path" not in serialized
+
+
+def test_control_socket_round_trips_frames_larger_than_one_recv(
+    tmp_path: Path,
+) -> None:
+    server = _control_socket_server(tmp_path, name="large_frame")
+    padding = "AOX-" * 30_000
+    request = {
+        "jsonrpc": "2.0",
+        "id": "large_call",
+        "method": "s09.transport_smoke",
+        "params": {"artifact_read_summary": {"padding": padding}},
+    }
+    encoded = json.dumps(request, sort_keys=True).encode("utf-8") + b"\n"
+
+    assert len(encoded) > 64 * 1024
+    assert len(encoded) < CONTROL_SOCKET_FRAME_MAX_BYTES
+
+    server.start()
+    try:
+        response = _send_control_socket_bytes(
+            server,
+            encoded,
+            chunk_bytes=4093,
+        )
+        follow_up = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "follow_up",
+                    "method": "s09.transport_smoke",
+                    "params": {"call_identity": "still_alive"},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+    finally:
+        server.stop()
+
+    assert response["id"] == "large_call"
+    assert response["result"]["artifact_read_summary"]["padding"] == padding
+    assert len(json.dumps(response, sort_keys=True).encode("utf-8")) > 64 * 1024
+    assert follow_up["result"]["call_identity"] == "still_alive"
+
+
+@pytest.mark.parametrize(
+    ("payload", "shutdown_write", "expected_response_id"),
+    [
+        (b'{"jsonrpc":"2.0","method":\xff}\n', False, None),
+        (b'{"jsonrpc":"2.0",\n', False, None),
+        (b'{"jsonrpc":"2.0","id":' + b"9" * 5_000 + b'}\n', False, None),
+        (
+            b'{"jsonrpc":"2.0","id":'
+            + b"[" * 20_000
+            + b"]" * 20_000
+            + b'}\n',
+            False,
+            None,
+        ),
+        (b"[]\n", False, None),
+        (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "bad_params",
+                    "method": "s09.transport_smoke",
+                    "params": [],
+                }
+            ).encode("utf-8")
+            + b"\n",
+            False,
+            "bad_params",
+        ),
+        (b'{"jsonrpc":"2.0"}', True, None),
+    ],
+)
+def test_control_socket_rejects_invalid_frame_and_remains_available(
+    tmp_path: Path,
+    payload: bytes,
+    shutdown_write: bool,
+    expected_response_id: str | None,
+) -> None:
+    server = _control_socket_server(tmp_path, name=f"invalid_{hashlib.sha256(payload).hexdigest()[:8]}")
+    server.start()
+    try:
+        response = _send_control_socket_bytes(
+            server,
+            payload,
+            shutdown_write=shutdown_write,
+        )
+        follow_up = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "valid_after_invalid",
+                    "method": "s09.transport_smoke",
+                    "params": {},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+    finally:
+        server.stop()
+
+    assert response["error"]["error_code"] == "sandbox_transport_request_invalid"
+    assert response["id"] == expected_response_id
+    assert follow_up["id"] == "valid_after_invalid"
+    assert follow_up["result"]["status"] == "ok"
+
+
+def test_control_socket_bounds_request_id_and_error_envelope(
+    tmp_path: Path,
+) -> None:
+    server = _control_socket_server(tmp_path, name="bounded_request_id")
+    oversized_id = "x" * (CONTROL_SOCKET_FRAME_MAX_BYTES - 128)
+    encoded = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": oversized_id,
+            "method": "s09.transport_smoke",
+            "params": {},
+        },
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    assert len(encoded) <= CONTROL_SOCKET_FRAME_MAX_BYTES
+
+    server.start()
+    try:
+        response = _send_control_socket_bytes(server, encoded)
+        follow_up = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "valid_after_oversized_id",
+                    "method": "s09.transport_smoke",
+                    "params": {},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+    finally:
+        server.stop()
+
+    assert response["id"] is None
+    assert response["error"]["error_code"] == "sandbox_transport_request_invalid"
+    assert len(json.dumps(response, sort_keys=True).encode("utf-8")) <= (
+        CONTROL_SOCKET_FRAME_MAX_BYTES
+    )
+    assert follow_up["result"]["status"] == "ok"
+
+
+def test_control_socket_bounds_request_and_response_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handled: list[str] = []
+
+    def bounded_transport(
+        _server: _ControlSocketServer,
+        request: dict[str, object],
+        params: dict[str, object],
+    ) -> dict[str, object]:
+        handled.append(str(request.get("id")))
+        response_bytes = int(params.get("response_bytes") or 0)
+        return {
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "result": {"padding": "x" * response_bytes},
+        }
+
+    monkeypatch.setattr(
+        "openzyme_core.sandbox_runtime.CONTROL_SOCKET_FRAME_MAX_BYTES",
+        1024,
+    )
+    monkeypatch.setattr(
+        _ControlSocketServer,
+        "_handle_transport_smoke",
+        bounded_transport,
+    )
+    server = _control_socket_server(tmp_path, name="bounded_frames")
+    server.start()
+    try:
+        oversized_request = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "oversized_request",
+                    "method": "s09.transport_smoke",
+                    "params": {"padding": "x" * 2048},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+        oversized_response = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "oversized_response",
+                    "method": "s09.transport_smoke",
+                    "params": {"response_bytes": 2048},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+        valid_response = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "bounded_valid",
+                    "method": "s09.transport_smoke",
+                    "params": {"response_bytes": 16},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+    finally:
+        server.stop()
+
+    assert oversized_request["error"]["error_code"] == "sandbox_transport_request_too_large"
+    assert "oversized_request" not in handled
+    assert oversized_response["error"]["error_code"] == "sandbox_transport_response_too_large"
+    assert handled == ["oversized_response", "bounded_valid"]
+    assert valid_response["result"]["padding"] == "x" * 16
+
+
+def test_control_socket_times_out_partial_frame_without_stopping_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openzyme_core.sandbox_runtime._CONTROL_SOCKET_IO_TIMEOUT_SECONDS",
+        0.02,
+    )
+    server = _control_socket_server(tmp_path, name="partial_timeout")
+    server.start()
+    try:
+        response = _send_control_socket_bytes(server, b'{"jsonrpc":')
+        follow_up = _send_control_socket_bytes(
+            server,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "valid_after_timeout",
+                    "method": "s09.transport_smoke",
+                    "params": {},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        )
+    finally:
+        server.stop()
+
+    assert response["error"]["error_code"] == "sandbox_transport_request_timeout"
+    assert follow_up["result"]["status"] == "ok"
 
 
 def test_control_socket_stop_waits_past_grace_for_blocking_handler(

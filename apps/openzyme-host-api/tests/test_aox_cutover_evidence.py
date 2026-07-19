@@ -586,6 +586,36 @@ def test_sealed_source_tree_rejects_private_decoded_source(
     assert content.decode("utf-8").strip() not in str(error.value)
 
 
+def test_sealed_source_tree_allows_closed_aox_suffixes_and_python_path_join(
+    tmp_path: Path,
+) -> None:
+    content = (
+        "from pathlib import Path\n"
+        "outputs = [\n"
+        "    '/provider_parsed/proteins.fasta',\n"
+        "    '/provider_parsed/parsed_hits.csv',\n"
+        "    '/provider_parsed/sequences.fasta',\n"
+        "    '/provider_parsed/metadata.json',\n"
+        "]\n"
+        "copied = [Path('aox_hmm')/p.name for p in []]\n"
+    ).encode("utf-8")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    (source_root / "main.py").write_bytes(content)
+    expected_digest = _source_tree_digest({"main.py": content})
+
+    sealed = seal_source_tree_envelope(
+        source_root,
+        expected_source_tree_digest=expected_digest,
+    )
+    decoded = verify_sealed_source_tree_envelope(
+        sealed,
+        expected_source_tree_digest=expected_digest,
+    )
+
+    assert decoded["source_tree_digest"] == expected_digest
+
+
 def _refresh_operation_identity(
     operation: dict[str, object],
     *,
@@ -6402,6 +6432,12 @@ def test_public_safety_verifier_preserves_logical_paths_routes_and_query_free_ur
         "workspace": "/workspace/src/probe.py",
         "control_socket": "/openzyme/control.sock",
         "route": "/v3/sessions/sess_001/events?replay=1&after_cursor=0",
+        "provider_suffixes": [
+            "/provider_parsed/proteins.fasta",
+            "/provider_parsed/parsed_hits.csv",
+            "/provider_parsed/sequences.fasta",
+            "/provider_parsed/metadata.json",
+        ],
         "source_locator": "https://rest.uniprot.org/uniprotkb/P12345",
         "public_ipv6_locator": "http://[2001:4860:4860::8888]/status",
         "token_count": 42,
@@ -6409,6 +6445,26 @@ def test_public_safety_verifier_preserves_logical_paths_routes_and_query_free_ur
     }
 
     assert_public_safe_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "unknown_path",
+    (
+        "/provider_parsed/private.txt",
+        "/provider_parsed/../metadata.json",
+        "/home/operator/private.py",
+        "/tmp/private.json",
+        "prefix)/home/operator/private.py",
+        "prefix)/p.name",
+    ),
+)
+def test_public_safety_verifier_rejects_unknown_absolute_path(
+    unknown_path: str,
+) -> None:
+    with pytest.raises(CutoverEvidenceError) as error:
+        assert_public_safe_payload({"diagnostic": unknown_path})
+
+    assert error.value.code == "public_projection_host_path"
 
 
 @pytest.mark.parametrize(

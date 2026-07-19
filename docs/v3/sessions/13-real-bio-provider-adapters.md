@@ -15,7 +15,7 @@
 ## 实施范围
 
 - `bio.ncbi_fetch_proteins` 使用 Host 托管 NCBI provider client，支持 accession 批量 fetch、identity policy、rate limit、retry、sanitized provider transcript 和 parsed sequence outputs。
-- `bio.uniprot_fetch` 使用 Host 托管 UniProt REST client，支持 accession list、字段选择、batch size、cursor pagination、schema validation、sanitized provider transcript 和 parsed sequence outputs。
+- `bio.uniprot_fetch` 使用 Host 托管 UniProt REST client；一次 SDK 调用和一次 approval/controlled operation 最多接收 `100000` 个 accession，Host 再按固定最多 `100` 个 accession 拆成 provider query。SDK `batch_size` 仍只表示每个 UniProt response page 的 `size`（上限 `100`），不是 operation/query accession 数；每个 query 独立跟随 `Link: rel=next`，并各自受 `100` 页上限约束。每个 response page 只能接受该 query exact accession slice 的 identity；跨 query swap 结构化失败。字段选择、schema validation、sanitized provider transcript 和 parsed sequence outputs 保持不变。
 - `bio.hmmer_search` 使用 Host 托管 EBI HMMER REST client，支持 submit、poll、result pagination、sanitized provider transcript、raw hits artifact 和 parsed hits CSV artifact。
 - S13 负责 provider route policy linkage：`bio.*` provider route policy 必须回链 Session 06 evidence 或当前 live prerequisite probe，携带 selected backend `provider_http`、runtime packaging `provider_http:v1`、resource class、expected outputs、approval requirement、prerequisite/failure mapping 和 `provider_config_digest`。缺 route policy、缺 provider config、evidence 不兼容或 fixture backend 均 fail-closed。
 - S13 的第一项实现前置任务是重新 probe EBI HMMER REST：使用 S15 固定 AOX/HMM 合同中的 HMM、database `refprot` 和 known-good bounded sample，更新 `06-adapter-foundation-evidence.md` 中 `bio.hmmer_search` evidence。若该 probe 仍不是 `ok`，NCBI/UniProt 子能力可以作为单独 provider adapter 完成，但整个 S13 不能标记 passed；`bio.hmmer_search` 产品路径只能返回结构化 provider failure，S15 也不能标记 passed。
@@ -30,12 +30,12 @@ S13 v1 使用当前 S12 route policy identity，不重新发明命名：
 | operation | route_policy_id | selected_backend | runtime_packaging_id | provider_config_digest | approval_requirement |
 | --- | --- | --- | --- | --- | --- |
 | `bio.ncbi_fetch_proteins` | `bio.ncbi_fetch_proteins.provider:v1` | `provider_http` | `provider_http:v1` | `provider_config:ncbi:v1` | `{"required": true}` |
-| `bio.uniprot_fetch` | `bio.uniprot_fetch.provider:v1` | `provider_http` | `provider_http:v1` | `provider_config:uniprot:v1` | `{"required": true}` |
+| `bio.uniprot_fetch` | `bio.uniprot_fetch.provider:v1` | `provider_http` | `provider_http:v1` | `provider_config:uniprot:v2` | `{"required": true}` |
 | `bio.hmmer_search` | `bio.hmmer_search.provider:v1` | `provider_http` | `provider_http:v1` | `provider_config:ebi_hmmer:v1` | `{"required": true}` |
 
 每一行还必须保留对应 Session 06 `evidence_ref` / `parameter_inventory_ref`，并在 S13 re-probe 更新后指向当前可用证据。policy status 不是 `ok`、evidence 状态不是可用状态或 `provider_config_digest` 与 ProviderRegistry 不匹配时，不能执行 provider request。
 
-每个真实 provider operation 都必须走 S10/S12 SDK controlled-operation approval。同一 session 内同一 `operation_digest` 可以复用 approved approval；provider retry、UniProt cursor pagination、EBI HMMER polling 和 EBI HMMER result pagination 属于同一个 approved provider request，不创建新的 approval。
+每个真实 provider operation 都必须走 S10/S12 SDK controlled-operation approval。同一 session 内同一 `operation_digest` 可以复用 approved approval；provider retry、UniProt 的全部 accession-query batches 与各自 `Link` pagination、EBI HMMER polling 和 EBI HMMER result pagination 都属于同一个 approved provider request，不创建新的 operation 或 approval。`provider_config:uniprot:v2` 只修改该 provider 的有界请求拓扑和资源投影；route policy id 与 runtime packaging id 仍是 `v1`。
 
 ## 接口变化
 
@@ -70,7 +70,9 @@ NCBI/UniProt/HMMER convenience outputs such as `proteins.fasta`, `sequences.fast
 
 - HTTP request timeout default is 30 seconds per provider HTTP request.
 - Retry default is 2 retries with bounded exponential backoff of 1s then 2s; only network/timeout/quota stages marked retryable by the provider adapter may retry.
-- NCBI and UniProt v1 batch/page size cap is 100 records per provider request/page. Host settings may only tighten this cap unless route policy is explicitly revised.
+- NCBI v1 的单 operation accession 总上限是 `100`。
+- UniProt `provider_config:uniprot:v2` 的单 operation accession 总上限是 `100000`；Host 固定按最多 `100` 个 accession 形成一个 query。`batch_size` 只控制每个 response page 的 `size` 且上限为 `100`，每个 query 最多跟随 `100` 个 `Link: rel=next` page。Host settings 可以收紧这些上限；提高任一上限必须显式更新 provider policy/config identity，使 approval resource estimate 与 provenance 同步变化。
+- UniProt `Link: rel=next` 不是任意 URL authority。只接受 `https://rest.uniprot.org[:443]/uniprotkb/search`，禁止 userinfo、非默认 port、其他 path/host/scheme 和 fragment。malformed 或越界 link 以 `provider_schema_drift` fail closed，公开/结构化诊断只保留不可逆 `next_link_digest` 与固定 expected endpoint，不回显 candidate URL。
 - EBI HMMER v1 polling interval is 5 seconds, total polling timeout is 30 minutes, result `page_size` is 100 and max artifactized hits is 100000.
 - Host settings may tighten timeout, retry, batch and hit caps. Raising caps requires an explicit provider policy or route policy update so approval summary and provenance show the changed resource estimate.
 
@@ -106,6 +108,8 @@ Empty provider results are completed-with-warning, not provider failure, when th
   - lifecycle：`created -> running -> completed|completed_with_warnings|failed|failed_partial`；empty result 是 completed 状态的一种，不等同 provider failure。
   - retry：只有 provider adapter 标记为 retryable 的 network/timeout/rate-limit stage 可重试；重试次数、backoff policy and observed retry outcomes 进入 `provider_observation.json`。
   - artifactization：success、completed_with_warnings、failed 和 failed_partial 的 provider transcript/outputs 必须先写入 requested `/workspace/output/...`，再通过 Host-owned artifact boundary 登记；artifact commit 失败时 request 不能伪装成 completed。
+  - UniProt v2 topology：SDK 在 approval 前投影 `accession_count`、默认 `query_batch_size_cap=100` 和 `estimated_query_batch_count`；例如默认配置下 `37722` 个 accession 显示 `378` 个预计 query，但仍是一个 `ProviderRequest`、一个 controlled operation 和一次 approval。Host 对每个 query transcript 记录全局 `page`、`query_batch_index/query_batch_count`、`query_accession_start/query_accession_count/query_accessions_digest` 与 `page_in_query`；summary/observation 记录总 `page_count`、page size、per-query page cap、query batch count 与 query cap。每个 page 的 record 必须只映射到其 query slice；映射到另一个 query 的 requested identity 返回 `provider_identity_mismatch`。next-link 只能留在 pinned UniProt HTTPS search endpoint，越界/畸形只记录 link digest并返回`provider_schema_drift`。重复 accession 通过一次 frequency-map 扫描检测，检测阶段为 `O(n)`，再对重复 key 做稳定排序以产生确定诊断；不得退回逐 accession 全表重复扫描。
+  - estimate authority boundary：上述 SDK estimate 只是默认 config 下向 agent/operator 透明呈现的预测，不授予额度，也不是 actual limit snapshot。Host 注入的 `BioProviderHttpConfig` 可以收紧 query/page/operation cap，并在 provider I/O 前作最终校验。由 Host 根据 route policy 与 injected provider config 重建 canonical estimate/limits、绑定 approval/config identity 并对 actual usage 对账的设计记录在 [Host-authoritative controlled-operation resource estimate and limit snapshot](../architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md)，本 Goal 不实现。
 - `ProviderObservation`
   - identity：`provider_observation_id = provider_request_id + observation_sequence_or_digest`。
   - owner：Host provider adapter 创建；所有进入 sandbox/output/artifact/projection 的 observation fields 必须先完成 sanitization。
@@ -147,6 +151,7 @@ Empty provider results are completed-with-warning, not provider failure, when th
 - provider warning/error 进入 execution status、events 和 workspace 安全投影，并使用 S12 canonical `code`、`stage`、`retryable`、`summary`、`details_ref`、`safe_diagnostics` 字段。
 - live/provider prerequisite 证据可回链 Session 06 evidence，但 passed 只能来自当前真实检查。
 - EBI HMMER REST 主路必须用 `database="refprot"` 覆盖 submit、poll、result pagination、empty/failed result mapping、sanitized transcript artifact 和 parsed hits output；若 AOX/HMM 固定 HMM re-probe failed 未修复，整个 S13 不能标记 passed，只能产生 provider failure evidence。
+- UniProt focused tests 必须证明：operation cap `100000` 在 HTTP 前 fail closed；`205` 个 accession 被拆为 `100/100/5` 三个 query 但只有一个 operation；默认配置下 `37722` 个 accession 的 SDK resource prediction 为 `378` 个 query；`batch_size` 只改变 page size；`Link` page cap 按 query 独立计算且 link 只能指向 pinned HTTPS search endpoint；malformed/off-origin/userinfo/fragment 只泄露 digest 并 schema-drift；每页只接受 producing query slice、cross-query identity swap fail closed；transcript query/page 坐标完整；duplicate detection 不做二次型 repeated scan。
 - public SDK result、event、workspace projection 和 registered transcript artifacts 不暴露 credential、private endpoint、provider raw secret、Host cache path、Host temp path、sandbox host path、storage URI 或未脱敏 provider response。
 - sanitizer tests 覆盖 allowlisted headers，以及 credential、token、API key、secret、private endpoint、Host path、Host cache path、Host temp path、sandbox host path 和等价敏感值的 JSON/text denylisted keys/patterns。
 - executor usability tests 证明：失败 provider calls 只要已有 observation，就在 `provider_observation.json` / `provider_error.json` 中暴露足够的脱敏 provider 原生 message/status/body context，让 executor 判断是否可以通过改参数修复。
@@ -164,7 +169,7 @@ Empty provider results are completed-with-warning, not provider failure, when th
 7. Output path binding and S08 artifact boundary：Host 在 caller requested `/workspace/output/...` 写 transcript/parsed files，再通过 S08 `ArtifactBoundaryService` validation/copy/seal/register；不得继续使用 Host tempdir、provider cache 或 direct artifact save 作为 canonical provider output。
 8. Provider observation and sanitizer：实现统一 `provider_request.json`、`provider_observation.json`、`provider_raw/*`、`provider_parsed/*` 和 `provider_error.json` 写入逻辑；先完成 header allowlist、body/key/path scrubber、artifact manifest 和 sanitizer regression tests。
 9. NCBI provider adapter：实现 email/tool identity policy、batch cap、脱敏 transcript、FASTA/metadata convenience outputs、rate-limit header allowlist、invalid accession 粗粒度 mapping 和 diagnostic artifacts。
-10. UniProt provider adapter：实现 fields allowlist、batch/cursor handling、脱敏 raw pages、optional FASTA/JSON parsed outputs、no-hit warning、HTTP 400/429/schema drift 粗粒度 mapping。
+10. UniProt provider adapter：固定 `provider_config:uniprot:v2`，实现 operation accession cap `100000`、每 query 最多 `100` accession、`batch_size` page-size 语义、per-query `Link` page cap、approval 前 query-count resource estimate、query/page transcript 坐标、线性 frequency duplicate detection，以及 fields allowlist、脱敏 raw pages、optional FASTA/JSON parsed outputs、no-hit warning、HTTP 400/429/schema drift 粗粒度 mapping。
 11. EBI HMMER provider adapter：实现 JSON submit、poll、result pagination、top 100000 hit cap、脱敏 job/page transcript、parsed hits output、job failure 粗粒度 mapping 和 polling/pagination observation；adapter 行为必须复用第 1 步的 current probe 结论。
 12. Focused verification and readiness review：覆盖 route policy、approval reuse、`output_dir` guard、fixture forbidden、coarse error mapping、sanitized transcript exposure、artifactization、scrubber、cache-not-proof、SDK docs/examples、HMMER re-probe gate 和 “S13 passed 不等于 S15 live E2E passed” 的文档边界。
 
@@ -175,3 +180,4 @@ Empty provider results are completed-with-warning, not provider failure, when th
 - 不把未脱敏的完整 provider response 写入 SDK result、workspace projection、artifact 或 sandbox output；非敏感完整 transcript 只能在 sanitization 后暴露。
 - 不实现 S14 的真实 local/HPC runner stage/run/fetch、toolchain registry 或 `bio_tools.*` backend。
 - 不把 provider cache hit、Session 06 historical evidence、fixture success 或 synthetic artifact 当成 S13 passed / S15 live cutover proof。
+- 本轮不切换到 UniProt asynchronous ID Mapping API。当前 AOX 输入已经是 primary UniProt accessions，不需要跨 namespace mapping；改用 async submit/poll/result 会引入 durable provider job/handle、幂等提交、重启恢复、approval/operation continuation、transcript/schema 与 verifier 迁移，属于独立大架构调整。当前 v2 以一个受控 operation 内的有界 search queries 保留相同身份语义，不得把它解释为 async fallback 或无限分页。

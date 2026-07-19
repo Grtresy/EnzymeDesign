@@ -30,6 +30,49 @@ The sandbox file/command tools may run ordinary bash and Python within the isola
 
 External SDK calls are supervised operations. The Host supervisor applies SDK operation policy, quota, and approval gates. The stable executor-facing path is sandbox-first: edit files in the persistent sandbox workspace, snapshot source when needed, and run code through `sandbox.exec`; the Host builds an `ExecutionPlan`, asks the Web UI for approval when needed, then continues the supervised operation. Current migration code may still mention `execution.pipeline.start`, but that is a compatibility bridge rather than the executor authoring contract. AOX/HMM evals use a single-plan approval policy to require one plan approval across bio, bio_tools, external tool, and output-registration steps. Plans carry a static per-operation `max_calls`; repeated calls and literal bounded loops count toward it, while dynamically unbounded external calls fail before execution. The Host atomically consumes this budget before each provider/tool/HPC action. Runtime SDK calls can still trigger a secondary approval gate if the sandbox requests an unapproved or changed operation, but an exhausted approved call budget fails with `execution_plan_quota_exceeded` rather than reopening approval. Pipeline code should not implement its own approval or resume protocol.
 
+The sandbox control transport is bounded newline-delimited JSON-RPC 2.0. One
+Unix-socket connection carries exactly one request frame and one response frame;
+each payload is limited to `4 MiB`, excluding its terminating newline. A
+`64 KiB` socket read is only a chunk, not the message limit: both Host and SDK
+assemble chunks through the newline. Invalid UTF-8/JSON, EOF before the
+delimiter, response identity drift, and oversized frames fail closed with a
+structured SDK/transport error. If non-whitespace bytes after the first newline
+are already observed by the receiver, the request is rejected before dispatch.
+The hard invariant is at most one executed request per connection: a second
+frame arriving only after the first was accepted may observe connection close
+instead of a second error response, but can never execute another method.
+The SDK rejects an oversized request before sending it and bounds response
+assembly symmetrically; the Host isolates malformed/disconnected clients so one
+connection cannot terminate the control worker, and replaces an oversized
+response with a small structured error. These failures never authorize an
+operation replay or backend fallback. This correction retains the existing
+sandbox protocol and image version; normal SDK source/commit digests still
+change with the implementation.
+
+A non-null JSON-RPC request `id` is either a string whose UTF-8 encoding is at
+most `256` bytes or a signed 64-bit integer; booleans are not integer ids. If a
+safe id was decoded but another request semantic is invalid, the structured
+error preserves that id. If the id itself is oversized/invalid or cannot be
+safely decoded, the error uses `id: null`. The client still requires exact
+response identity and rejects drift.
+
+For UniProt, `provider_config:uniprot:v2` keeps the whole accession set inside
+one SDK call, one controlled operation, and one approval. The operation cap is
+`100000` accessions; the Host creates fixed queries of at most `100` accessions
+and applies the `Link` page cap independently to each query. `batch_size`
+remains response page size, not query width. Approval resource projection must
+show the estimated query count before provider I/O (`37722` accessions means
+`378` queries under the default cap), and the transcript must preserve
+query/page coordinates. Each response page is validated against the exact
+accession slice that produced its query; a requested identity returned under a
+different query is a cross-query swap and fails closed. The SDK estimate is a
+transparent default-config prediction, not authorization or an authoritative
+actual-limit snapshot: injected Host provider config may tighten the query cap
+and performs final pre-I/O validation. The Host-authoritative estimate/limit
+snapshot is a deferred architecture proposal. This bounded synchronous topology
+does not introduce UniProt async ID-mapping jobs or authorize per-query
+operation replay.
+
 The S12 sandbox request envelope is plan-only. `adapter_result` and
 `result_summary` are not SDK inputs and are rejected if sandbox code puts them
 on the wire. Result envelopes, including toolchain runtime identity, may be

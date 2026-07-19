@@ -16,6 +16,7 @@ _ROUTE_POLICY_IDS = {
 }
 
 _SHA256_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_UNIPROT_QUERY_BATCH_SIZE_CAP = 100
 
 
 def _validated_provider_output_dir(output_dir: str) -> str:
@@ -91,6 +92,19 @@ def _provider_operation(
     input_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     refs, artifact_ids, artifact_digests = _validated_provider_input_refs(input_refs)
+    resource_estimate: dict[str, Any] = {"network_io": True}
+    if function_name == "uniprot_fetch":
+        accession_count = len(list(params.get("accessions") or []))
+        resource_estimate.update(
+            {
+                "accession_count": accession_count,
+                "estimated_query_batch_count": (
+                    accession_count + _UNIPROT_QUERY_BATCH_SIZE_CAP - 1
+                )
+                // _UNIPROT_QUERY_BATCH_SIZE_CAP,
+                "query_batch_size_cap": _UNIPROT_QUERY_BATCH_SIZE_CAP,
+            }
+        )
     return dict(
         controlled_operation(
             sdk_module="bio",
@@ -98,7 +112,7 @@ def _provider_operation(
             route_policy_id=_ROUTE_POLICY_IDS[function_name],
             params=params,
             expected_outputs={"output_dir": output_dir},
-            resource_estimate={"network_io": True},
+            resource_estimate=resource_estimate,
             input_artifact_ids=artifact_ids,
             input_artifact_digests=artifact_digests,
             stage_refs=refs,

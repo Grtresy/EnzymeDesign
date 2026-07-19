@@ -9,6 +9,13 @@ from typing import Any
 from uuid import uuid4
 
 
+# Keep this wire-contract value identical to the Host-side control server.  The
+# container SDK deliberately has no package dependencies, so the scalar is
+# duplicated instead of importing the Host runtime.
+CONTROL_SOCKET_FRAME_MAX_BYTES = 4 * 1024 * 1024
+_CONTROL_SOCKET_CHUNK_BYTES = 64 * 1024
+
+
 class PipelineSdkError(RuntimeError):
     def __init__(
         self,
@@ -48,18 +55,42 @@ class ControlClient:
             "method": method,
             "params": params,
         }
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.connect(self.socket_path)
-            client.sendall(json.dumps(request, sort_keys=True).encode("utf-8") + b"\n")
-            chunks: list[bytes] = []
-            while True:
-                chunk = client.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                if b"\n" in chunk:
-                    break
-        response = json.loads(b"".join(chunks).decode("utf-8").strip())
+        try:
+            request_payload = json.dumps(request, sort_keys=True).encode("utf-8")
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise PipelineSdkError(
+                "control socket request is not valid JSON",
+                error_code="sandbox_transport_request_invalid",
+                stage="control_socket_request",
+                retryable=False,
+            ) from exc
+        if len(request_payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+            raise PipelineSdkError(
+                "control socket request exceeds the bounded transport limit",
+                error_code="sandbox_transport_request_too_large",
+                stage="control_socket_request",
+                retryable=False,
+                details={
+                    "max_bytes": CONTROL_SOCKET_FRAME_MAX_BYTES,
+                    "size_bytes": len(request_payload),
+                },
+            )
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(self.socket_path)
+                client.sendall(request_payload + b"\n")
+                response_payload = self._read_response_frame(client)
+        except OSError as exc:
+            raise PipelineSdkError(
+                "control socket is unavailable",
+                error_code="sandbox_transport_unavailable",
+                stage="control_socket_transport",
+                retryable=False,
+            ) from exc
+        response = self._decode_response_frame(
+            response_payload,
+            request_id=request["id"],
+        )
         if "error" in response:
             error = response["error"]
             if isinstance(error, dict):
@@ -76,6 +107,82 @@ class ControlClient:
                 )
             raise PipelineSdkError(str(error))
         return response.get("result")
+
+    @staticmethod
+    def _read_response_frame(client: socket.socket) -> bytes:
+        payload = bytearray()
+        while True:
+            remaining = CONTROL_SOCKET_FRAME_MAX_BYTES - len(payload) + 1
+            chunk = client.recv(min(_CONTROL_SOCKET_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise PipelineSdkError(
+                    "control socket response ended before its newline delimiter",
+                    error_code="sandbox_transport_response_invalid",
+                    stage="control_socket_response",
+                    retryable=False,
+                )
+            newline_index = chunk.find(b"\n")
+            if newline_index >= 0:
+                payload.extend(chunk[:newline_index])
+                if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+                    raise PipelineSdkError(
+                        "control socket response exceeds the bounded transport limit",
+                        error_code="sandbox_transport_response_too_large",
+                        stage="control_socket_response",
+                        retryable=False,
+                    )
+                if chunk[newline_index + 1 :].strip():
+                    raise PipelineSdkError(
+                        "control socket returned more than one response frame",
+                        error_code="sandbox_transport_response_invalid",
+                        stage="control_socket_response",
+                        retryable=False,
+                    )
+                return bytes(payload)
+            payload.extend(chunk)
+            if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+                raise PipelineSdkError(
+                    "control socket response exceeds the bounded transport limit",
+                    error_code="sandbox_transport_response_too_large",
+                    stage="control_socket_response",
+                    retryable=False,
+                )
+
+    @staticmethod
+    def _decode_response_frame(payload: bytes, *, request_id: str) -> dict[str, Any]:
+        try:
+            response = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+            raise PipelineSdkError(
+                "control socket response is not valid UTF-8 JSON",
+                error_code="sandbox_transport_response_invalid",
+                stage="control_socket_response",
+                retryable=False,
+            ) from exc
+        if not isinstance(response, dict):
+            raise PipelineSdkError(
+                "control socket response must contain a JSON object",
+                error_code="sandbox_transport_response_invalid",
+                stage="control_socket_response",
+                retryable=False,
+            )
+        if response.get("jsonrpc") != "2.0" or response.get("id") != request_id:
+            raise PipelineSdkError(
+                "control socket response identity is invalid",
+                error_code="sandbox_transport_response_invalid",
+                stage="control_socket_response",
+                retryable=False,
+            )
+        has_result = "result" in response
+        has_error = "error" in response
+        if has_result == has_error:
+            raise PipelineSdkError(
+                "control socket response must contain exactly one result or error",
+                error_code="sandbox_transport_response_invalid",
+                stage="control_socket_response",
+                retryable=False,
+            )
+        return response
 
 
 def call(method: str, params: dict[str, Any]) -> Any:
@@ -129,6 +236,7 @@ def controlled_operation(
 
 
 __all__ = [
+    "CONTROL_SOCKET_FRAME_MAX_BYTES",
     "ControlClient",
     "PipelineSdkError",
     "call",

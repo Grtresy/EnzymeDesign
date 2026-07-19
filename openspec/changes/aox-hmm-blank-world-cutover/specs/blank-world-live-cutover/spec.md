@@ -103,6 +103,33 @@ The sandbox SDK SHALL expose strict direct-field selectors for provider files, a
 - **WHEN** a local parser/source failure is followed by a second approval request for an SDK method already reached in that cutover session, or any prior controlled operation is terminal failed
 - **THEN** the campaign rejects the new approval before provider/runner dispatch, preserves the exact operation history, and requires a fresh attempt rather than selecting a successful subset
 
+### Requirement: Bounded sandbox control framing
+The Host control socket and `openzyme_pipeline` client SHALL exchange exactly one JSON-RPC 2.0 request and one response as newline-delimited frames per Unix-socket connection. Request and response payloads SHALL each have a hard maximum of `4 * 1024 * 1024` bytes excluding the terminating newline. Receivers MUST aggregate across arbitrary `recv` chunks until the newline; a `64 KiB` chunk MUST NOT be interpreted as the frame limit. The SDK SHALL reject an oversized request before sending it and SHALL bound response assembly by the same limit. The Host SHALL replace an oversized response with a smaller structured error.
+
+A non-null request `id` MUST be either a string whose UTF-8 encoding is no more than `256` bytes or an integer in the signed 64-bit range; boolean MUST NOT count as an integer id. If the frame is decoded and the id is safe but another JSON-RPC/request semantic is invalid, the error response MUST preserve that safe id. If the id itself is oversized/invalid or cannot be safely extracted, the error response MUST use `id=null`. A successful or method-level response MUST still match the request identity exactly.
+
+EOF before the newline, invalid UTF-8/JSON, a non-object envelope, invalid JSON-RPC or response identity, and either direction exceeding the limit MUST fail closed with a bounded safe transport error. If the receiver has already observed non-whitespace bytes after the first newline, it MUST reject before dispatch. The hard invariant is at most one executed request per connection: a second frame arriving only after the first was accepted MAY encounter connection close without receiving a second structured error, but MUST NOT dispatch another method or create another controlled operation. An invalid or disconnected connection MUST NOT terminate the accept worker, dispatch a partial method, authorize replay/fallback, or affect the next connection. This local correction SHALL NOT create canonical product state or require a sandbox protocol/image version bump.
+
+#### Scenario: Carry a legitimate multi-chunk scientific envelope
+- **WHEN** an artifact-registration or controlled-operation request and its response each exceed one `64 KiB` read chunk but remain within `4 MiB`
+- **THEN** Host and SDK assemble the complete newline-delimited frames, validate request/response identity, and execute or return exactly one canonical call without truncation or duplication
+
+#### Scenario: Isolate a malformed or oversized connection
+- **WHEN** a client sends an incomplete, malformed, over-`4 MiB` request, or trailing non-whitespace bytes that the receiver observes with the first frame, or the Host would return an over-`4 MiB` response
+- **THEN** that call fails with the corresponding structured transport error before partial dispatch or result acceptance, the Host emits only a bounded error response when possible, and a subsequent valid connection remains serviceable
+
+#### Scenario: Never execute a late second frame
+- **WHEN** a client sends a valid first frame and only later sends a second frame on the same connection after the first was accepted
+- **THEN** the first request may complete and the second may observe only connection close without another error response, but the Host executes at most one request and creates at most one controlled operation on that connection
+
+#### Scenario: Enforce the SDK boundary symmetrically
+- **WHEN** the SDK serializes an over-`4 MiB` request or receives an incomplete, malformed, identity-drifted, observed-trailing-data, or oversized response
+- **THEN** it raises a non-retryable structured `PipelineSdkError` without hidden batching, operation replay, or backend fallback
+
+#### Scenario: Bound error response identity
+- **WHEN** a decoded request has a safe string/int64 id but invalid params or other request semantics, or instead carries an oversized/invalid id
+- **THEN** the first error preserves the safe id, the second uses `id=null`, neither request dispatches a partial operation, and the next connection remains serviceable
+
 ### Requirement: Runner-issued toolchain execution identity
 Every cutover-eligible MAFFT, hmmbuild, hmmalign, and CD-HIT operation SHALL carry a closed `mcp_hpc_toolchain_runtime_identity@1` issued by the runner execution boundary. The runner-owned manifest SHALL bind the tool, adapter, command template, contract digest, and private SIF locator; callers MUST NOT submit or override the locator, runtime request/identity, or equivalent deployment metadata. The observed image digest MUST equal the exact prerequisite digest for the operation's versioned toolchain id.
 
@@ -173,6 +200,8 @@ A zero-record FASTA MAY pass artifact registration only when its bytes are exact
 
 A typed pipeline source snapshot directory SHALL retain `kind=code` and be sealed in evidence as canonical `openzyme_sealed_source_tree@1`. Entries MUST use unique sorted safe relative paths and bind file size, content digest, canonical base64 bytes, and a recomputable tree digest. The builder and offline verifier MUST public-safety scan every UTF-8 file after decoding its base64 bytes and MUST reject symlinks, non-regular files, empty trees, kind drift, private decoded source, non-canonical JSON/base64, per-file drift, tree drift, or a directory artifact without the exact source-snapshot semantic type/format.
 
+The public scanner MAY classify only the four exact AOX logical manifest suffixes `/provider_parsed/metadata.json`, `/provider_parsed/parsed_hits.csv`, `/provider_parsed/proteins.fasta`, and `/provider_parsed/sequences.fasta` as non-Host paths. For a sealed Python source identity only, it MAY recognize a lexical Python path-division attribute expression such as `Path("aox_hmm")/p.name` so `/p.name` is not treated as an absolute Unix locator. This MUST NOT create a directory-wide provider allowlist or a generic exception after `)`. Unknown suffixes, traversal, arbitrary text such as `prefix)/p.name`, `/home/...`, `/tmp/...`, and every other unrecognized absolute path MUST still fail closed. Existing logical `/workspace`, `/openzyme/control.sock`, and closed public `/v3/...` route handling remains unchanged.
+
 #### Scenario: Register a derived zero-record FASTA
 - **WHEN** a reached scientific branch legitimately derives no sequence records and registers exact-zero FASTA with the complete typed profile metadata
 - **THEN** the artifact boundary accepts it and preserves the profile/reason/derivation identity for offline closure
@@ -184,6 +213,14 @@ A typed pipeline source snapshot directory SHALL retain `kind=code` and be seale
 #### Scenario: Verify a pipeline source snapshot offline
 - **WHEN** a bundle contains the executor or probe pipeline source snapshot
 - **THEN** the verifier decodes every canonical envelope entry and reproduces all per-file and source-tree digests before accepting source provenance
+
+#### Scenario: Preserve exact AOX logical selectors and Python path joins
+- **WHEN** a sealed Python source contains any of the four exact AOX provider-manifest suffixes and a real expression such as `Path("aox_hmm")/p.name`
+- **THEN** the scanner accepts those logical values without weakening digest, source-tree, or private-path verification
+
+#### Scenario: Reject a lookalike absolute path
+- **WHEN** public evidence contains `/provider_parsed/private.txt`, traversal, `/home/...`, `/tmp/...`, `prefix)/p.name`, or an arbitrary `/p.name` outside the recognized sealed-source syntax
+- **THEN** public-safety verification fails as an unrecognized absolute path and the attempt is not cutover eligible
 
 ### Requirement: Sealed and offline-verifiable evidence bundle
 Each attempt SHALL generate a canonical evidence payload and digest covering the exact-seven launch identity, effective-config preimage, exact-nine prerequisites, provider and runner-attested toolchain identities, clean-root proof, public driver receipts, approvals, operations, input/output artifact digests, task/report identities, final answer, warnings, degradation, and scientific outcome. An offline verifier SHALL recompute the bundle and all reachable sealed artifact digests without contacting external providers.

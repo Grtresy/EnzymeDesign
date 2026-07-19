@@ -75,6 +75,11 @@ S12_HOST_RESULT_ORIGIN = "host_adapter_executor"
 _CONTROL_SOCKET_START_ATTEMPTS = 100
 _CONTROL_SOCKET_START_POLL_SECONDS = 0.01
 _CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
+# Keep this wire-contract value identical to the dependency-free pipeline SDK.
+CONTROL_SOCKET_FRAME_MAX_BYTES = 4 * 1024 * 1024
+_CONTROL_SOCKET_CHUNK_BYTES = 64 * 1024
+_CONTROL_SOCKET_IO_TIMEOUT_SECONDS = 5.0
+_CONTROL_SOCKET_REQUEST_ID_MAX_BYTES = 256
 SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
 SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
@@ -565,11 +570,193 @@ class _ControlSocketServer:
                 except socket.timeout:
                     continue
                 with conn:
-                    payload = conn.recv(65536).decode("utf-8").strip()
-                    if not payload:
+                    response: dict[str, Any] | None = None
+                    request_id: Any = None
+                    try:
+                        conn.settimeout(_CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
+                        frame = self._read_request_frame(conn)
+                        if frame is None or not frame.strip():
+                            continue
+                        request = self._decode_request_frame(frame)
+                        request_id = self._response_request_id(request.get("id"))
+                        self._validate_request_frame(request)
+                        conn.settimeout(None)
+                        response = self._handle(request)
+                    except SandboxRuntimeError as exc:
+                        response = self._error_response(request_id=request_id, exc=exc)
+                    except OSError:
                         continue
-                    response = self._handle(json.loads(payload))
-                    conn.sendall(json.dumps(response, sort_keys=True).encode("utf-8") + b"\n")
+                    except Exception:
+                        # Parser/runtime edge cases must retire only the current
+                        # connection.  In particular, Python's JSON decoder may
+                        # raise ValueError or RecursionError for bounded hostile
+                        # inputs even though they are neither JSONDecodeError nor
+                        # transport failures.
+                        response = self._error_response(
+                            request_id=request_id,
+                            exc=SandboxRuntimeError(
+                                "sandbox_transport_request_invalid",
+                                "control socket request frame could not be processed",
+                            ),
+                        )
+                    encoded = self._encode_response(response, request_id=request_id)
+                    try:
+                        conn.settimeout(_CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
+                        conn.sendall(encoded)
+                    except OSError:
+                        # A client disconnect must retire only this connection;
+                        # it must never kill the control-socket accept worker.
+                        continue
+
+    @staticmethod
+    def _read_request_frame(conn: socket.socket) -> bytes | None:
+        payload = bytearray()
+        while True:
+            remaining = CONTROL_SOCKET_FRAME_MAX_BYTES - len(payload) + 1
+            try:
+                chunk = conn.recv(min(_CONTROL_SOCKET_CHUNK_BYTES, remaining))
+            except socket.timeout as exc:
+                raise SandboxRuntimeError(
+                    "sandbox_transport_request_timeout",
+                    "control socket request frame timed out",
+                ) from exc
+            if not chunk:
+                if not payload:
+                    return None
+                raise SandboxRuntimeError(
+                    "sandbox_transport_request_invalid",
+                    "control socket request frame ended before its newline delimiter",
+                )
+            newline_index = chunk.find(b"\n")
+            if newline_index >= 0:
+                payload.extend(chunk[:newline_index])
+                if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+                    raise SandboxRuntimeError(
+                        "sandbox_transport_request_too_large",
+                        "control socket request frame exceeds the bounded transport limit",
+                    )
+                if chunk[newline_index + 1 :].strip():
+                    raise SandboxRuntimeError(
+                        "sandbox_transport_request_invalid",
+                        "control socket accepts exactly one request frame per connection",
+                    )
+                return bytes(payload)
+            payload.extend(chunk)
+            if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+                raise SandboxRuntimeError(
+                    "sandbox_transport_request_too_large",
+                    "control socket request frame exceeds the bounded transport limit",
+                )
+
+    @staticmethod
+    def _decode_request_frame(frame: bytes) -> dict[str, Any]:
+        try:
+            request = json.loads(frame.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+            raise SandboxRuntimeError(
+                "sandbox_transport_request_invalid",
+                "control socket request frame is not valid UTF-8 JSON",
+            ) from exc
+        if not isinstance(request, dict):
+            raise SandboxRuntimeError(
+                "sandbox_transport_request_invalid",
+                "control socket request frame must contain a JSON object",
+            )
+        return request
+
+    @staticmethod
+    def _response_request_id(request_id: Any) -> str | int | None:
+        if isinstance(request_id, str):
+            if len(request_id.encode("utf-8")) <= _CONTROL_SOCKET_REQUEST_ID_MAX_BYTES:
+                return request_id
+            return None
+        if (
+            isinstance(request_id, int)
+            and not isinstance(request_id, bool)
+            and -(2**63) <= request_id < 2**63
+        ):
+            return request_id
+        return None
+
+    @classmethod
+    def _validate_request_frame(cls, request: dict[str, Any]) -> None:
+        raw_request_id = request.get("id")
+        if raw_request_id is not None and cls._response_request_id(raw_request_id) is None:
+            raise SandboxRuntimeError(
+                "sandbox_transport_request_invalid",
+                "control socket request id is outside the bounded JSON-RPC identity contract",
+            )
+        if request.get("jsonrpc") != "2.0":
+            raise SandboxRuntimeError(
+                "sandbox_transport_request_invalid",
+                "control socket request frame must use JSON-RPC 2.0",
+            )
+        params = request.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise SandboxRuntimeError(
+                "sandbox_transport_request_invalid",
+                "control socket request params must be a JSON object",
+            )
+
+    def _encode_response(self, response: dict[str, Any], *, request_id: Any) -> bytes:
+        try:
+            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+        except Exception:
+            response = self._error_response(
+                request_id=request_id,
+                exc=SandboxRuntimeError(
+                    "sandbox_transport_response_invalid",
+                    "control socket response is not valid JSON",
+                ),
+            )
+            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+        if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+            response = self._error_response(
+                request_id=self._response_request_id(request_id),
+                exc=SandboxRuntimeError(
+                    "sandbox_transport_response_too_large",
+                    "control socket response frame exceeds the bounded transport limit",
+                ),
+            )
+            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+            if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "message": "control socket response frame exceeds the bounded transport limit",
+                        "type": "SandboxRuntimeError",
+                        "error_code": "sandbox_transport_response_too_large",
+                        "hint": "",
+                        "details": None,
+                    },
+                }
+                payload = json.dumps(response, sort_keys=True).encode("utf-8")
+        return payload + b"\n"
+
+    @staticmethod
+    def _error_response(*, request_id: Any, exc: Exception) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "message": sanitize_public_diagnostic_text(str(exc)),
+                "type": safe_public_machine_identifier(
+                    exc.__class__.__name__,
+                    fallback="Exception",
+                ),
+                "error_code": safe_public_machine_identifier(
+                    getattr(exc, "error_code", None),
+                    fallback="sandbox_transport_error",
+                ),
+                "hint": sanitize_public_diagnostic_text(
+                    getattr(exc, "hint", None) or ""
+                ),
+                "details": sanitize_public_diagnostic_payload(
+                    getattr(exc, "details", None)
+                ),
+            },
+        }
 
     def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -589,27 +776,7 @@ class _ControlSocketServer:
                 return self._handle_hpc_fetch_outputs(request, params)
             raise SandboxRuntimeError("sandbox_transport_method_forbidden", "control socket only supports supervised sandbox calls")
         except Exception as exc:
-            return {
-                "jsonrpc": "2.0",
-                "id": request.get("id"),
-                "error": {
-                    "message": sanitize_public_diagnostic_text(str(exc)),
-                    "type": safe_public_machine_identifier(
-                        exc.__class__.__name__,
-                        fallback="Exception",
-                    ),
-                    "error_code": safe_public_machine_identifier(
-                        getattr(exc, "error_code", None),
-                        fallback="sandbox_transport_error",
-                    ),
-                    "hint": sanitize_public_diagnostic_text(
-                        getattr(exc, "hint", None) or ""
-                    ),
-                    "details": sanitize_public_diagnostic_payload(
-                        getattr(exc, "details", None)
-                    ),
-                },
-            }
+            return self._error_response(request_id=request.get("id"), exc=exc)
 
     def _handle_transport_smoke(self, request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         call_identity = str(params.get("call_identity") or request.get("id") or "")

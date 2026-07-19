@@ -70,9 +70,33 @@ The workflow SHALL fetch exactly 14 NCBI protein identities in one sealed provid
 ### Requirement: HMMER-to-UniProt identity-preserving join
 The workflow SHALL parse the sealed EBI HMMER `refprot` output with the exact provider schema, derive UniProt accessions with `hmmer_score_filtered_accessions@1` using score strictly greater than `200`, call UniProt only with that exact non-empty accession artifact/set, and derive `target.fasta` plus `hits_len650_700_200.csv` with `aox_sequence_length_join@1` using UniProt sequence identity and inclusive length `650..700`. HMMER-provided or model-inferred length/sequence MUST NOT replace UniProt truth.
 
+The UniProt call SHALL retain route policy `bio.uniprot_fetch.provider:v1` while binding `provider_config:uniprot:v2`. The complete accession set SHALL be submitted as exactly one SDK call, approval, provider request, and durable controlled operation, with a total operation cap of `100000` accessions. Inside that operation the Host SHALL partition normalized accessions into fixed queries of no more than `100`; `batch_size` SHALL remain the response-page `size` with maximum `100` and MUST NOT change query width. Every query SHALL follow its own `Link: rel=next` chain with an independent `100`-page cap. A remaining next link at the cap SHALL fail non-retryably as `provider_partial_result`. Every next link MUST use HTTPS host `rest.uniprot.org`, implicit or explicit port `443`, exact path `/uniprotkb/search`, and no userinfo or fragment. A malformed or off-origin link SHALL fail as `provider_schema_drift`; the safe error SHALL retain only the link digest and fixed expected endpoint, not the candidate URL.
+
+Before approval, the SDK resource prediction SHALL expose accession count, default `query_batch_size_cap=100`, and `estimated_query_batch_count`. Under the pinned default configuration, `37722` accessions SHALL predict `378` queries. This prediction is transparent planning information, not authorization or an authoritative actual-limit snapshot: the injected Host provider configuration MAY tighten limits and SHALL perform final validation before provider HTTP. The sanitized transcript SHALL bind every request to global page, query-batch index/count, accession start/count/digest, page-in-query, safe headers, status, and response digest; summary pagination SHALL bind total page count, page size, per-query page cap, query count, and query cap. Every response page SHALL be validated only against the exact accession slice/digest of the query that produced it; an identity belonging to another query in the same operation SHALL fail as `provider_identity_mismatch`. Duplicate detection SHALL use one frequency-map pass over normalized accessions, followed only by deterministic sorting of detected duplicate keys, and operation-cap or duplicate failure SHALL occur before provider HTTP.
+
 #### Scenario: Advance from HMMER to UniProt
 - **WHEN** the canonical HMMER score-filter artifact contains one or more accessions
-- **THEN** the UniProt operation binds that exact artifact and exact accession set, and the sequence join preserves HMMER numeric provenance alongside UniProt release, reviewed status, response digest, sequence digest, and explicit mapping annotations
+- **THEN** one UniProt controlled operation binds that exact artifact and exact accession set, all internal queries/pages remain under its one approval and transcript, and the sequence join preserves HMMER numeric provenance alongside UniProt release, reviewed status, response digest, sequence digest, and explicit mapping annotations
+
+#### Scenario: Estimate the r15-sized accession set before approval
+- **WHEN** the exact score-filter artifact contains `37722` accessions under the pinned default query cap of `100`
+- **THEN** the one controlled operation predicts `accession_count=37722`, `query_batch_size_cap=100`, and `estimated_query_batch_count=378` before provider I/O; it does not create 378 operations or approvals, and Host validation remains authoritative if injected limits are tighter
+
+#### Scenario: Keep page size separate from query width
+- **WHEN** the caller sets any allowed `batch_size` and one or more accession queries have `Link: rel=next`
+- **THEN** every query still contains at most 100 accessions, `batch_size` controls only response-page size, page numbering and the 100-page bound restart per query, and every page remains transcript-bound to that query
+
+#### Scenario: Reject an unsafe pagination link
+- **WHEN** UniProt supplies a malformed next link or one with another scheme, host, non-443 port, path, userinfo, or fragment
+- **THEN** pagination stops with `provider_schema_drift`, no request is sent to that link, and public diagnostics contain only its digest plus the fixed expected endpoint
+
+#### Scenario: Reject a cross-query identity swap
+- **WHEN** a UniProt response page contains an identity requested by the operation but not by the exact query slice that produced that page
+- **THEN** response validation fails as `provider_identity_mismatch`, preserves the page/query transcript coordinates, and does not move the record to another query or accept operation-wide membership
+
+#### Scenario: Reject an oversized or duplicate accession set before HTTP
+- **WHEN** the exact operation contains more than `100000` accessions or contains a duplicate accession
+- **THEN** request validation fails before HTTP with a deterministic bounded diagnostic, without partial provider I/O, hidden deduplication, operation splitting, or replacement approval
 
 #### Scenario: Stop before UniProt on upstream empty
 - **WHEN** the canonical HMMER score-filter result is header-only

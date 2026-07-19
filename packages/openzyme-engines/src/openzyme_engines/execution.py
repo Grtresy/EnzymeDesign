@@ -685,6 +685,8 @@ class BioProviderHttpConfig:
     max_retries: int = 2
     retry_backoff_seconds: tuple[float, ...] = (1.0, 2.0)
     batch_size_cap: int = 100
+    uniprot_operation_accession_cap: int = 100_000
+    uniprot_page_cap_per_query: int = 100
     hmmer_poll_interval_seconds: float = 5.0
     hmmer_poll_timeout_seconds: float = 1800.0
     hmmer_page_size: int = 100
@@ -1349,6 +1351,7 @@ class ProviderHttpBioDatabaseAdapter:
             accessions,
             provider="ncbi",
             sdk_method="bio.ncbi_fetch_proteins",
+            accession_cap=self.config.batch_size_cap,
         )
         query = {
             "db": "protein",
@@ -1517,72 +1520,99 @@ class ProviderHttpBioDatabaseAdapter:
             accessions,
             provider="uniprot",
             sdk_method="bio.uniprot_fetch",
+            accession_cap=self.config.uniprot_operation_accession_cap,
         )
         effective_batch_size = self._bounded_batch_size(
             batch_size, sdk_method="bio.uniprot_fetch"
         )
-        query = " OR ".join(
-            f"accession:{urllib_parse.quote(accession)}" for accession in normalized
-        )
         requested_fields = self._uniprot_fields(fields)
-        params = {
-            "query": f"({query})",
-            "format": "json",
-            "size": str(effective_batch_size),
-            "fields": ",".join(requested_fields),
-        }
-        next_url: str | None = (
-            "https://rest.uniprot.org/uniprotkb/search?"
-            + urllib_parse.urlencode(params)
+        query_batches = tuple(
+            normalized[offset : offset + self.config.batch_size_cap]
+            for offset in range(0, len(normalized), self.config.batch_size_cap)
         )
         pages: list[dict[str, Any]] = []
         page_responses: list[BioProviderHttpResponse] = []
         requests: list[dict[str, Any]] = []
-        while next_url is not None:
-            response = self._http_request(
-                "GET",
-                next_url,
-                sdk_method="bio.uniprot_fetch",
-                stage="provider_request",
+        for query_batch_index, query_accessions in enumerate(query_batches, start=1):
+            query = " OR ".join(
+                f"accession:{urllib_parse.quote(accession)}"
+                for accession in query_accessions
             )
-            try:
-                payload = json.loads(response.body)
-            except json.JSONDecodeError as exc:
-                raise self._schema_failure(
-                    "bio.uniprot_fetch",
-                    "UniProt returned non-JSON content.",
-                    response=response,
-                ) from exc
-            if not isinstance(payload, dict) or not isinstance(
-                payload.get("results"), list
-            ):
-                raise self._schema_failure(
-                    "bio.uniprot_fetch",
-                    "UniProt response did not include a results list.",
-                    response=response,
-                )
-            pages.append(payload)
-            page_responses.append(response)
-            requests.append(
-                {
-                    "method": "GET",
-                    "page": len(pages),
-                    "status_code": response.status_code,
-                    "headers": _sanitize_provider_headers(response.headers),
-                    "response_digest": response.body_digest,
-                }
+            params = {
+                "query": f"({query})",
+                "format": "json",
+                "size": str(effective_batch_size),
+                "fields": ",".join(requested_fields),
+            }
+            next_url: str | None = (
+                "https://rest.uniprot.org/uniprotkb/search?"
+                + urllib_parse.urlencode(params)
             )
-            next_url = self._next_link(response.headers)
-            if len(pages) >= 100:
-                raise PipelineSdkFailure(
-                    error_type="provider_partial_result",
-                    message="UniProt pagination exceeded the S13 page cap.",
-                    hint="Split the request into smaller batches.",
-                    stage="provider_pagination",
-                    retryable=False,
+            page_in_query = 0
+            while next_url is not None:
+                response = self._http_request(
+                    "GET",
+                    next_url,
                     sdk_method="bio.uniprot_fetch",
-                    details={"provider": "uniprot", "page_cap": 100},
+                    stage="provider_request",
                 )
+                try:
+                    payload = json.loads(response.body)
+                except json.JSONDecodeError as exc:
+                    raise self._schema_failure(
+                        "bio.uniprot_fetch",
+                        "UniProt returned non-JSON content.",
+                        response=response,
+                    ) from exc
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("results"), list
+                ):
+                    raise self._schema_failure(
+                        "bio.uniprot_fetch",
+                        "UniProt response did not include a results list.",
+                        response=response,
+                    )
+                page_in_query += 1
+                pages.append(payload)
+                page_responses.append(response)
+                requests.append(
+                    {
+                        "method": "GET",
+                        "page": len(pages),
+                        "query_batch_index": query_batch_index,
+                        "query_batch_count": len(query_batches),
+                        "query_accession_start": (
+                            (query_batch_index - 1) * self.config.batch_size_cap
+                        ),
+                        "query_accession_count": len(query_accessions),
+                        "query_accessions_digest": _sha256_text(
+                            _json_text(list(query_accessions))
+                        ),
+                        "page_in_query": page_in_query,
+                        "status_code": response.status_code,
+                        "headers": _sanitize_provider_headers(response.headers),
+                        "response_digest": response.body_digest,
+                    }
+                )
+                next_url = self._next_link(response.headers)
+                if (
+                    next_url is not None
+                    and page_in_query >= self.config.uniprot_page_cap_per_query
+                ):
+                    raise PipelineSdkFailure(
+                        error_type="provider_partial_result",
+                        message="UniProt pagination exceeded the per-query page cap.",
+                        hint="Reduce batch_size or inspect the provider query expansion.",
+                        stage="provider_pagination",
+                        retryable=False,
+                        sdk_method="bio.uniprot_fetch",
+                        details={
+                            "provider": "uniprot",
+                            "page_cap": self.config.uniprot_page_cap_per_query,
+                            "query_batch_index": query_batch_index,
+                            "query_accession_count": len(query_accessions),
+                        },
+                    )
         results = [item for page in pages for item in list(page.get("results") or [])]
         if not results:
             raise PipelineSdkFailure(
@@ -1648,7 +1678,13 @@ class ProviderHttpBioDatabaseAdapter:
             "record_count": len(results),
             "warning_count": len(warnings),
             "request_window": {"start": 0, "size": effective_batch_size},
-            "pagination": {"page_count": len(pages)},
+            "pagination": {
+                "page_count": len(pages),
+                "page_size": effective_batch_size,
+                "page_cap_per_query": self.config.uniprot_page_cap_per_query,
+                "query_batch_count": len(query_batches),
+                "query_batch_size_cap": self.config.batch_size_cap,
+            },
             "identity_complete": bool(normalized_records)
             and len(normalized_records) == len(normalized),
             "identity_contract_id": "uniprot_primary_sequence_identity@1",
@@ -1740,7 +1776,13 @@ class ProviderHttpBioDatabaseAdapter:
                 "provider": "uniprot",
                 "api_version": self.api_version,
                 "requests": requests,
-                "pagination": {"page_count": len(pages)},
+                "pagination": {
+                    "page_count": len(pages),
+                    "page_size": effective_batch_size,
+                    "page_cap_per_query": self.config.uniprot_page_cap_per_query,
+                    "query_batch_count": len(query_batches),
+                    "query_batch_size_cap": self.config.batch_size_cap,
+                },
                 "identity_contract_id": "uniprot_primary_sequence_identity@1",
                 "requested_accessions": list(normalized),
                 "primary_accessions": [
@@ -2369,7 +2411,12 @@ class ProviderHttpBioDatabaseAdapter:
         )
 
     def _normalize_accessions(
-        self, accessions: tuple[str, ...], *, provider: str, sdk_method: str
+        self,
+        accessions: tuple[str, ...],
+        *,
+        provider: str,
+        sdk_method: str,
+        accession_cap: int,
     ) -> tuple[str, ...]:
         normalized: list[str] = []
         for index, accession in enumerate(accessions):
@@ -2394,23 +2441,26 @@ class ProviderHttpBioDatabaseAdapter:
                 retryable=False,
                 sdk_method=sdk_method,
             )
-        if len(normalized) > self.config.batch_size_cap:
+        if len(normalized) > accession_cap:
             raise PipelineSdkFailure(
                 error_type="provider_invalid_request",
-                message=f"{provider} fetch exceeds the S13 batch size cap.",
-                hint="Split the request into smaller batches.",
+                message=f"{provider} fetch exceeds the configured operation accession cap.",
+                hint="Reduce the candidate set before submitting another controlled operation.",
                 stage="provider_request_validation",
                 retryable=False,
                 sdk_method=sdk_method,
                 details={
                     "accession_count": len(normalized),
-                    "limit": self.config.batch_size_cap,
+                    "limit": accession_cap,
                 },
             )
+        accession_counts: dict[str, int] = {}
+        for accession in normalized:
+            accession_counts[accession] = accession_counts.get(accession, 0) + 1
         duplicate_accessions = sorted(
             accession
-            for accession in set(normalized)
-            if sum(candidate == accession for candidate in normalized) > 1
+            for accession, count in accession_counts.items()
+            if count > 1
         )
         if duplicate_accessions:
             raise PipelineSdkFailure(
@@ -2554,7 +2604,34 @@ class ProviderHttpBioDatabaseAdapter:
                 continue
             match = re.search(r"<([^>]+)>", part)
             if match:
-                return match.group(1)
+                candidate = match.group(1)
+                try:
+                    parsed = urllib_parse.urlparse(candidate)
+                    port = parsed.port
+                except ValueError as exc:
+                    raise self._uniprot_schema_failure(
+                        "UniProt pagination returned a malformed next link.",
+                        details={"next_link_digest": _sha256_text(candidate)},
+                    ) from exc
+                if (
+                    parsed.scheme != "https"
+                    or parsed.hostname != "rest.uniprot.org"
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or port not in {None, 443}
+                    or parsed.path != "/uniprotkb/search"
+                    or parsed.fragment
+                ):
+                    raise self._uniprot_schema_failure(
+                        "UniProt pagination left the pinned HTTPS search endpoint.",
+                        details={
+                            "next_link_digest": _sha256_text(candidate),
+                            "expected_endpoint": (
+                                "https://rest.uniprot.org/uniprotkb/search"
+                            ),
+                        },
+                    )
+                return candidate
         return None
 
     def _parse_fasta_records(self, fasta: str) -> list[dict[str, Any]]:
@@ -2816,6 +2893,14 @@ class ProviderHttpBioDatabaseAdapter:
                 )
             page_request = requests[page_number - 1]
             page_response_digest = str(page_request["response_digest"])
+            query_accession_start = int(page_request["query_accession_start"])
+            query_accession_count = int(page_request["query_accession_count"])
+            query_requested_accessions = set(
+                requested_accessions[
+                    query_accession_start : query_accession_start
+                    + query_accession_count
+                ]
+            )
             for result_index, result in enumerate(page_results):
                 if not isinstance(result, dict):
                     raise self._uniprot_schema_failure(
@@ -2855,11 +2940,20 @@ class ProviderHttpBioDatabaseAdapter:
                     if accession in requested_lookup
                 ]
                 matched_requests = list(dict.fromkeys(matched_requests))
-                if len(matched_requests) != 1:
+                if (
+                    len(matched_requests) != 1
+                    or matched_requests[0] not in query_requested_accessions
+                ):
                     raise PipelineSdkFailure(
                         error_type="provider_identity_mismatch",
-                        message="UniProt primary identity did not map to exactly one requested accession.",
-                        hint="Keep the mapping as an annotation and select an identity explicitly.",
+                        message=(
+                            "UniProt primary identity did not map to exactly one accession "
+                            "from the query batch that produced the response page."
+                        ),
+                        hint=(
+                            "Do not accept a cross-query provider response; inspect the "
+                            "sealed response and query-batch transcript."
+                        ),
                         stage="provider_response_validation",
                         retryable=False,
                         sdk_method="bio.uniprot_fetch",
@@ -2868,6 +2962,12 @@ class ProviderHttpBioDatabaseAdapter:
                             "primary_accession": primary_accession,
                             "secondary_accessions": secondary_accessions,
                             "matched_requested_accessions": matched_requests,
+                            "query_batch_index": page_request["query_batch_index"],
+                            "query_accession_start": query_accession_start,
+                            "query_accession_count": query_accession_count,
+                            "query_accessions_digest": page_request[
+                                "query_accessions_digest"
+                            ],
                             "response_digest": page_response_digest,
                             "selection_required": True,
                         },

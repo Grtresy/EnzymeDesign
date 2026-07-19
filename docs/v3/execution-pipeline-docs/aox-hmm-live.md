@@ -89,6 +89,64 @@ bio.uniprot_fetch(
 )
 ```
 
+The control transport accepts the legitimate large accession/metadata envelopes
+this workflow can derive. It uses one JSON-RPC 2.0 NDJSON frame per Unix-socket
+connection with a symmetric `4 MiB` request/response payload cap, excluding the
+newline. The receiver assembles the frame across `64 KiB` socket chunks; a
+single chunk is not the protocol limit. Invalid/incomplete frames, response
+identity drift, and either direction exceeding `4 MiB` fail closed. If the Host
+already observes non-whitespace bytes after the first newline, it rejects before
+dispatch. At most one request may execute per connection; a second frame that
+arrives only after the first was accepted may receive only connection close,
+not a second error, but cannot become another controlled operation. A malformed client connection cannot terminate the Host
+accept worker, and the SDK performs the matching request preflight and bounded
+response read. Do not replay a completed HMMER operation or invent a smaller
+accession set to work around a transport failure; preserve its attempt-local
+checkpoint and fail the attempt if the canonical next request cannot satisfy
+the bounded contract.
+
+When present, the JSON-RPC request id is limited to a string of at most `256`
+UTF-8 bytes or a signed 64-bit integer (not boolean). A semantic error elsewhere
+in a decoded request preserves the safe id; an oversized/invalid id yields a
+structured error with `id=null`. The SDK continues to require exact response-id
+equality.
+
+When the HMMER score filter is non-empty, the complete exact accession artifact
+is passed once to `bio.uniprot_fetch` under `provider_config:uniprot:v2`. That
+single SDK call is one controlled operation and one approval, with an operation
+cap of `100000` accessions. The Host forms fixed queries of at most `100`
+accessions; `batch_size` remains only the UniProt response page `size` (maximum
+`100`), and `Link: rel=next` is followed with an independent `100`-page cap per
+query. The pre-approval resource estimate exposes accession and query-batch
+counts: r15's `37722` accessions therefore require `378` bounded queries inside
+the one operation, not `378` operations or approvals. Query/page indices,
+accession range/count/digest, response digests, total pages, and per-query cap
+remain in the sanitized transcript. Duplicate detection is frequency based and
+linear in the accession scan, with deterministic ordering of duplicate keys.
+
+Pagination never grants a new network origin: every next link must be HTTPS
+`rest.uniprot.org` (implicit or explicit port `443`), exact path
+`/uniprotkb/search`, and contain no userinfo or fragment. A malformed or
+off-origin link fails as `provider_schema_drift`; only its digest and the fixed
+expected endpoint enter diagnostics.
+
+Each response page is also bound to the exact query accession slice and digest
+that produced it. A primary/secondary mapping to an accession from another
+query is a cross-query identity swap and fails as `provider_identity_mismatch`,
+even though that accession exists in the operation-wide request set. The SDK's
+`378` count is transparent prediction under the default `100`-accession query
+cap, not limit authority; the injected Host provider config may tighten the
+actual cap and performs final pre-I/O validation. Making the Host compute and
+seal the canonical resource/limit snapshot into approval is proposal-only in
+[Host-authoritative controlled-operation resource estimate and limit snapshot](../architecture-proposals/host-authoritative-controlled-operation-resource-estimate-and-limit-snapshot.md).
+
+Do not switch this workflow to UniProt asynchronous ID Mapping. These inputs are
+already primary UniProt accessions; async mapping would add durable job handles,
+submit/poll/result recovery, idempotency, approval and verifier/schema changes
+without changing the scientific identity. That cross-layer migration is outside
+this Goal. Bounded search queries inside the one operation are the current
+fail-closed contract and do not authorize replay of a completed UniProt call.
+
 Provider, registration, and fetch responses are deliberately rich provenance
 envelopes. The same artifact can therefore appear in a canonical direct list
 and again in a nested explanatory projection. Executor source MUST use the
@@ -300,6 +358,19 @@ required suffix: NCBI `/provider_parsed/proteins.fasta`, EBI HMMER
 `/provider_parsed/sequences.fasta` plus `/provider_parsed/metadata.json`. Do not
 select positional `artifact_ids`, `adapter_result_envelope` lists, or a file
 with merely a similar basename.
+
+Those four leading-slash strings are logical manifest suffixes, not Host
+locators. The public evidence scanner permits exactly
+`/provider_parsed/proteins.fasta`, `/provider_parsed/parsed_hits.csv`,
+`/provider_parsed/sequences.fasta`, and `/provider_parsed/metadata.json`; it
+does not allow the provider directory generally. While scanning a sealed Python
+source tree it also recognizes the lexical Python path-join form such as
+`Path("aox_hmm")/p.name` instead of misclassifying `/p.name` as an absolute Unix
+path. This is a narrow source-syntax exception: arbitrary text such as
+`prefix)/p.name`, an unknown suffix such as `/provider_parsed/private.txt`,
+traversal, `/home/...`, `/tmp/...`, and every other unrecognized absolute path
+still fail closed. Existing logical `/workspace`, `/openzyme/control.sock`, and
+closed public `/v3/...` routes remain unchanged.
 
 The runner templates likewise own their output paths. The caller declares the
 exact path set below, calls `hpc.fetch_outputs`, and selects each artifact from
