@@ -52,16 +52,13 @@ receptor_path = artifacts.materialize("art_receptor", target_path="/workspace/in
 receptor = artifacts.get("art_receptor")
 ```
 
-It only returns artifacts authorized for the current session, task, and lane. It returns a sandbox-safe artifact reference, not the host `storage_uri`. Any `path` field exists only inside the sandbox.
+It only returns artifacts authorized for the current session, task, and lane. It returns a sandbox-safe projection, never the Host `storage_uri`. This SDK call is not the control-plane agent tool `artifact.get(path, offset, limit)`: it does not implement metadata paging and must not emit that tool's `exact_pageable` hint. On the current S09 path it returns the safe catalog record when that record fits the 4 MiB control frame; an oversized record fails explicitly. Use `materialize()` for file bytes and model large reusable metadata as a registered evidence artifact. True bounded metadata-manifest paging is deferred.
 
-Expected fields on artifact references:
+The only cross-runner stable field on this compatibility response is:
 
 - `artifact_id`
-- `path`
-- `format`
-- `kind`
-- `title`
-- `metadata`
+
+The S09 catalog projection also carries `relative_path`, `kind`, `title`, bounded control-plane identities and `metadata`; the active compatibility runner may instead carry a sandbox-local `path` plus `format`/digest. New code must not infer Host location from either shape.
 
 ## Snapshotting Code
 
@@ -129,6 +126,14 @@ Fetched outputs must be declared, actually returned as readable content by the r
 
 Registering performs a Host-supervised transaction: source digest/tree manifest, validator, temporary Blob write, sealed digest recheck, immutable Artifact row commit, and workspace manifest update. If validation, sealing, provenance, or commit fails, no visible artifact is created and the SDK receives a structured error.
 
+The public `metadata=` parameter remains one logical JSON object. The SDK canonicalizes it with ASCII-safe strings, sorted keys, compact separators and no non-finite values. Objects up to `256 KiB` stay inline. Objects larger than `256 KiB` and no larger than `32 MiB` are automatically written to the attempt-local `/workspace/work/.openzyme/artifact-metadata/<sha256>.json`; only the closed `artifact_registration_metadata_sidecar@1` descriptor crosses the socket. Do not construct that descriptor or file manually. Above `32 MiB`, register the oversized evidence as its own Artifact and keep only a canonical artifact ref in metadata.
+
+The Host opens sidecars through the current workspace with directory-fd anchoring and no-follow semantics, then validates exact path, size, digest, UTF-8, duplicate keys, non-finite values, object root and canonical bytes before validation/seal/catalog mutation. Top-level `content_digest`, `sealed_digest`, and `tree_digest` are Host-owned registration identity fields; caller metadata containing any of them is rejected locally and again at the raw Host boundary. Nested artifact refs may still carry their own digest fields. The sidecar is transport spool only: it is not an 18th AOX deliverable, scientific evidence or canonical metadata storage. The Artifact row still contains the complete logical metadata object.
+
+Successful canonical registration returns `artifact_registration_response@2`. Its `artifact` is the exact closed `{artifact_id, metadata}` projection, not the general public Artifact record; context, path, title and other catalog fields are intentionally absent. The Host-generated artifact id is limited to 256 UTF-8 bytes. `artifact.metadata` is `artifact_registration_metadata_summary@1`, and `validation` is `artifact_registration_validation_summary@1`; both carry digest/count/size identity while keeping the response bounded. A missing large field in either summary never means the canonical row was truncated. The active compatibility runner instead returns a compact `pipeline_provisional_registration_response@1` with `canonical=false`; it omits repeated path fields, remains bounded at the 128-item batch maximum, is run-local collection state and cannot be selected as a durable catalog ref.
+
+`register_many` is limited to 128 items and 32 MiB of unique logical metadata per request. All metadata transports are resolved before the first item commit, so a bad sidecar creates no item Artifact. The compatibility implementation still commits valid items sequentially; a later path/validator/seal/commit failure is not an all-or-nothing transaction. Do not build scientific atomicity assumptions on this helper.
+
 `kind` is a closed wire enum, not a free-form scientific label. The exact
 values are `code`, `log`, `sequence`, `structure`, `report`,
 `research_dossier`, `result`, `cache`, and `other`. Put the concrete encoding
@@ -156,8 +161,11 @@ non-I/O selectors. They are alternatives for three different response types,
 not a selector pipeline:
 
 - `artifacts.registered_artifact_ref(response)` reads only the closed
-  `artifacts.register` response and returns canonical `artifact_id` plus
-  `content_digest`;
+  `artifact_registration_response@2`, requires its bounded metadata and
+  validation summary schemas, requires an exact file projection whose top-level
+  and summary `tree_digest` are null and whose summary `content_digest` and
+  `sealed_digest` both equal the top-level digest, and returns canonical
+  `artifact_id` plus `content_digest`;
 - `artifacts.provider_file_ref(operation, relative_path_suffix=...)` reads only
   `result_summary.transcript_manifest.files` and requires one exact suffix
   match;
@@ -181,7 +189,9 @@ as a registration response.
 
 Built-in validators normally enforce non-empty output plus format checks for
 FASTA, HMM, CSV, JSON, and text-like outputs. `metadata.required_columns` can
-only tighten CSV validation; it cannot bypass the built-in validator.
+only tighten CSV validation; it cannot bypass the built-in validator. It is
+bounded to 4,096 non-empty string entries, 256 UTF-8 bytes per name and 64 KiB
+in aggregate; oversized or non-string shapes fail before Artifact mutation.
 
 The sole current typed exception is a scientifically derived zero-record FASTA:
 
@@ -199,7 +209,8 @@ artifacts.register(
 ```
 
 This profile accepts only an exact zero-byte regular file, `kind=sequence`, a
-FASTA format, one stable lowercase reason and one versioned derivation contract.
+FASTA format, one stable lowercase reason and one versioned derivation contract
+whose identifier is no longer than 256 UTF-8 bytes.
 Without the profile, zero bytes remain invalid; with it, any whitespace,
 header-only file, sentinel residue or other non-zero content remains invalid.
 The byte validator does not decide that the scientific branch was legitimate:

@@ -307,6 +307,18 @@ def test_control_socket_round_trips_frames_larger_than_one_recv(
         ),
         (b"[]\n", False, None),
         (
+            b'{"jsonrpc":"2.0","id":"non_finite","method":"s09.transport_smoke",'
+            b'"params":{"value":NaN}}\n',
+            False,
+            None,
+        ),
+        (
+            b'{"jsonrpc":"2.0","id":"duplicate","method":"s09.transport_smoke",'
+            b'"params":{},"params":{}}\n',
+            False,
+            None,
+        ),
+        (
             json.dumps(
                 {
                     "jsonrpc": "2.0",
@@ -828,6 +840,160 @@ def test_sandbox_sdk_registration_uses_attempt_scoped_roots(
     ).resolve().parents
     assert blob_root.resolve() in Path(result.storage_uri).resolve().parents
     assert blob_root.resolve() in Path(source_snapshot.storage_uri).resolve().parents
+
+
+def test_sandbox_sdk_registers_metadata_larger_than_control_frame_via_sidecar(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "attempt-blobs",
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/register_large_metadata.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "target = Path('output/result.csv')\n"
+            "target.parent.mkdir(parents=True, exist_ok=True)\n"
+            "target.write_text('id,score\\nA,1\\n', encoding='utf-8')\n"
+            "metadata = {\n"
+            "    'contract_id': 'aox_sequence_length_join@2',\n"
+            "    'identity_mappings': [\n"
+            "        {\n"
+            "            'requested_accession': f'A{index:05d}',\n"
+            "            'primary_accession': f'A{index:05d}',\n"
+            "            'padding': 'x' * 480,\n"
+            "        }\n"
+            "        for index in range(10000)\n"
+            "    ],\n"
+            "}\n"
+            "response = artifacts.register(\n"
+            "    '/workspace/output/result.csv',\n"
+            "    kind='result',\n"
+            "    format='csv',\n"
+            "    metadata=metadata,\n"
+            ")\n"
+            "selected = artifacts.registered_artifact_ref(response)\n"
+            "print(json.dumps({\n"
+            "    'schema_id': response['schema_id'],\n"
+            "    'artifact_keys': sorted(response['artifact']),\n"
+            "    'selected': selected,\n"
+            "    'metadata': response['artifact']['metadata'],\n"
+            "}, sort_keys=True))\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/register_large_metadata.py"],
+        timeout_seconds=30,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED, run.stderr_summary
+    response = json.loads(str(run.stdout_summary))
+    assert response["schema_id"] == "artifact_registration_response@2"
+    assert response["artifact_keys"] == ["artifact_id", "metadata"]
+    assert response["metadata"]["projection"] == "bounded_registration_summary"
+    assert "identity_mappings" not in str(run.stdout_summary)
+    result = next(
+        item
+        for item in repositories.artifacts.list_by_session(session.session_id)
+        if item.relative_path == "result.csv"
+    )
+    persisted_metadata = dict(result.metadata or {})
+    assert len(persisted_metadata["identity_mappings"]) == 10_000
+    assert persisted_metadata["identity_mappings"][0]["padding"] == "x" * 480
+    sidecars = list(
+        (
+            workspace_root
+            / workspace.sandbox_workspace_id
+            / "work"
+            / ".openzyme"
+            / "artifact-metadata"
+        ).glob("*.json")
+    )
+    assert len(sidecars) == 1
+    assert sidecars[0].stat().st_size > CONTROL_SOCKET_FRAME_MAX_BYTES
+
+
+def test_sandbox_register_many_prevalidates_all_metadata_sidecars_before_mutation(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        artifact_blob_root=tmp_path / "attempt-blobs",
+        log_root=tmp_path / "logs",
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/register_many_sidecars.py",
+        content=(
+            "import json\n"
+            "from pathlib import Path\n"
+            "from openzyme_pipeline import artifacts\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call\n"
+            "Path('output/one.csv').write_text('id\\n1\\n', encoding='utf-8')\n"
+            "Path('output/two.csv').write_text('id\\n2\\n', encoding='utf-8')\n"
+            "transport = artifacts._metadata_transport({'padding': 'x' * 300000})\n"
+            "descriptor = dict(transport['metadata_sidecar'])\n"
+            "bad = dict(descriptor)\n"
+            "bad['size_bytes'] += 1\n"
+            "try:\n"
+            "    call('artifacts.register_many', {'items': [\n"
+            "        {'path': '/workspace/output/one.csv', 'kind': 'result', "
+            "'format': 'csv', 'metadata_sidecar': descriptor},\n"
+            "        {'path': '/workspace/output/two.csv', 'kind': 'result', "
+            "'format': 'csv', 'metadata_sidecar': bad},\n"
+            "    ]})\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({'error_code': exc.error_code}, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected sidecar prevalidation failure')\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/register_many_sidecars.py"],
+        timeout_seconds=30,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED, run.stderr_summary
+    assert json.loads(str(run.stdout_summary)) == {
+        "error_code": "artifact_registration_metadata_sidecar_size_mismatch"
+    }
+    registered_paths = {
+        item.relative_path
+        for item in repositories.artifacts.list_by_session(session.session_id)
+    }
+    assert "one.csv" not in registered_paths
+    assert "two.csv" not in registered_paths
 
 
 def test_sandbox_raw_artifact_registration_rejects_invalid_kind_nonretryably(

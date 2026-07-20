@@ -34,6 +34,9 @@ S08 采用两层 artifact 架构，不在本 session 引入 canonical Alias/View
   - `artifacts.snapshot_code(paths, entrypoint, metadata=None)`
 - `materialize` 只能读取当前 session/task/lane 授权 artifact，默认落到 `/workspace/input/...`，返回 sandbox-local path 与 artifact digest，不返回 Host `storage_uri`。显式 `target` 必须规范化后仍位于 `/workspace/input` 下，并拒绝 `..`、symlink escape、Host absolute path、对 readonly view 的写入、文件/目录类型冲突，以及同一 target 已存在不同 digest 内容。
 - `register` 只接受 `/workspace/output` 下的文件或目录，并在登记前通过 Host-owned validator registry 执行非空、格式和 required columns 校验。
+- `register(path, kind, format=None, metadata=None)` 的 public signature不增加 sidecar 参数。SDK 将 logical metadata 以 ASCII-safe、sorted-key、compact-separator、禁止 non-finite 的 canonical JSON 编码：`<=256 KiB` 内联，`(256 KiB,32 MiB]` 写入当前 attempt `/workspace/work/.openzyme/artifact-metadata/<sha256>.json`，wire 只传 closed `artifact_registration_metadata_sidecar@1{schema_id,path,content_digest,size_bytes}`；更大 object 在 connect 前返回 `artifact_registration_metadata_too_large`。raw inline caller 同样必须是 object、通过 canonical rule且不超过`256 KiB`。
+- Host 对 sidecar 使用当前 workspace fd-anchored、逐级 `O_DIRECTORY|O_NOFOLLOW` 与最终 `O_NOFOLLOW` regular-file read，在 source validation、Blob seal或Artifact row mutation前核 exact digest-derived path、fstat size、bounded bytes、SHA-256、strict UTF-8、duplicate-key/non-finite rejection、object root与canonical byte equality。top-level `content_digest`、`sealed_digest`、`tree_digest` 是Host-owned output identity，SDK与raw Host boundary都在effect前拒绝caller自报值。sidecar只是transport spool，不是Artifact、科学evidence、Blob或canonical storage；register idempotency仍绑定logical metadata digest，不绑定临时path，catalog保存完整logical metadata。
+- direct success response固定为`artifact_registration_response@2`；其中`artifact`是exact `{artifact_id,metadata}`闭集而不是general public Artifact projection，Host-generated `artifact_id`最多256 UTF-8 bytes，artifact metadata与validator result分别投影为`artifact_registration_metadata_summary@1`和`artifact_registration_validation_summary@1`，完整Artifact row与metadata/validation继续存在canonical catalog。`metadata.required_columns`最多4096项、单名256 UTF-8 bytes、总计64 KiB；response只在4 KiB以内内联列名，否则返回count/digest。`fasta_zero_records@1` 的 `derivation_contract_id` 在validator/effect前限制为最多256 UTF-8 bytes，不能用超长但格式合法的contract id撑破response。active compat provisional response同样不回显path/relative_path等重复可变字段，128-item最大成功投影仍低于4 MiB。`register_many`最多128项、unique logical metadata aggregate最多32 MiB，并在任何item commit前解析全部metadata transport；晚项path/validator/seal/commit失败仍可能留下先前逐项commit，全面跨项transaction属于已记录的outcome-unknown proposal，不能在当前实现中宣称atomic。
 - validator registry 的最低校验由 `kind + format` 决定；`metadata.required_columns` 只能收紧 CSV 等结构化格式要求，不能绕过非空、FASTA、HMM、CSV 或其它内置 validator。
 - `register` 默认执行 copy/seal：Host 读取 candidate output，计算 source digest/tree manifest，复制到 Host-owned temporary Blob，对 sealed copy 重新计算 digest；只有 sealed digest 与 source digest 一致后才创建 immutable Artifact record。
 - `register` 必须把 source digest/tree manifest、validation、temporary Blob write、sealed digest recheck 和 Artifact row commit 作为一个 Host-supervised 事务序列处理；任一步失败都不创建 visible Artifact record，也不得 fallback 到 workspace path。
@@ -93,6 +96,18 @@ S08 采用两层 artifact 架构，不在本 session 引入 canonical Alias/View
 - `artifact_materialize_target_forbidden`
 - `artifact_materialize_type_conflict`
 - `artifact_register_invalid_path`
+- `artifact_registration_metadata_invalid`
+- `artifact_registration_metadata_reserved`
+- `artifact_registration_metadata_inline_too_large`
+- `artifact_registration_metadata_too_large`
+- `artifact_registration_metadata_sidecar_invalid`
+- `artifact_registration_metadata_sidecar_too_large`
+- `artifact_registration_metadata_sidecar_size_mismatch`
+- `artifact_registration_metadata_sidecar_digest_mismatch`
+- `artifact_registration_metadata_sidecar_noncanonical`
+- `artifact_register_many_too_many_items`
+- `artifact_register_many_metadata_too_large`
+- `artifact_registration_response_invalid`
 - `artifact_source_unstable`
 - `artifact_validator_missing`
 - `artifact_validation_failed`
@@ -147,6 +162,9 @@ S08 开工时先落资源边界和原子服务，不要直接从 SDK handler、�
 - materialize 同一 artifact digest 到同一路径时复用 `MaterializationRecord`；digest 不一致或目标路径冲突返回 `artifact_materialization_conflict`，不得覆盖。
 - materialize 拒绝 symlink escape、`..`、Host absolute path、写 readonly view、文件/目录类型冲突和同 target 不同 digest；路径越界返回 `artifact_materialize_target_forbidden`，类型冲突返回 `artifact_materialize_type_conflict`。
 - register 非 `/workspace/output` 路径、空文件、坏 FASTA/HMM/CSV、缺 required columns 时失败。
+- registration metadata 在256 KiB阈值两侧选择inline/sidecar，真实Unix socket以超过4 MiB且不超过32 MiB的logical object成功登记，catalog保留完整object而response保持bounded；超过32 MiB必须在connect前失败。wrong path/schema/size/digest、final或parent symlink、non-UTF-8、duplicate key、NaN/Inf、non-object和noncanonical bytes均在seal/row前失败。
+- registration response的artifact只含exact `artifact_id + metadata summary`；即使catalog context id/title等字段很大也不回显。response在4096个bounded required columns下仍低于固定wire预算，保留完整validation digest/count而不回显大list；artifact id、required-column item/name/aggregate或256-byte derivation-contract id越界均fail closed。
+- `register_many`重复同一sidecar只解析一次；任一metadata sidecar预检失败时零output Artifact mutation，超过128 items或32 MiB unique metadata aggregate在写入前失败。晚项非metadata失败的既有逐项commit语义必须在文档中显式，不得冒充all-or-nothing。
 - CSV `metadata.required_columns` 只能收紧 validator；坏 FASTA/HMM/CSV 不能通过 metadata 绕过内置校验，缺失 `kind + format` validator 时返回 `artifact_validator_missing`。
 - register 时源文件/目录被并发修改，或 size、mtime、digest、tree manifest 任一稳定性检查不一致，返回 `artifact_source_unstable`，不创建 Artifact record。
 - register 目录时必须生成 tree digest、file digest manifest 和 validation result；partial failure 不创建 canonical artifact。
@@ -177,6 +195,7 @@ S09 carry-over integration gate：
 - 不把 persistent sandbox 做成 artifact catalog 的替代存储。
 - 不支持任意 Host path register。
 - 不新增 `register` 参数，继续保持 `artifacts.register(path, kind, format=None, metadata=None)`。
+- `metadata_sidecar` 仅是SDK与Host之间的私有wire descriptor，不是agent参数，也不能被列入AOX normalized deliverables。大型metadata从SQLite row迁移到immutable manifest ref、真正bounded paging、dedup/GC/verifier migration只记录在`../architecture-proposals/bounded-canonical-artifact-metadata-manifest-references.md`，本Goal不实施。
 - 不支持 `register` 的 no-copy/link 模式；未来若需要，只能在单独设计中限定为 Host-owned immutable backend，不能链接 mutable sandbox path。
 - 不引入 canonical Alias/View 层；`current/latest/default` 不作为 S08 持久真状态。
 - 不在本 session 实现外部 provider/HPC 执行。

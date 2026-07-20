@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import socket
 import threading
+import time
 
 import pytest
 
@@ -186,6 +187,20 @@ def test_control_client_rejects_recursive_request_before_connect(
     assert error.value.retryable is False
 
 
+def test_control_client_rejects_non_finite_request_before_connect(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(client.PipelineSdkError) as error:
+        client.ControlClient(socket_path=str(tmp_path / "absent.sock")).call(
+            "s09.transport_smoke",
+            {"value": float("nan")},
+        )
+
+    assert error.value.error_code == "sandbox_transport_request_invalid"
+    assert error.value.stage == "control_socket_request"
+    assert error.value.retryable is False
+
+
 def test_control_client_rejects_oversized_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -230,6 +245,54 @@ def test_control_client_rejects_response_without_newline(
     assert error.value.stage == "control_socket_response"
 
 
+def test_control_client_times_out_on_partial_response_that_remains_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client, "CONTROL_SOCKET_IO_TIMEOUT_SECONDS", 0.05)
+
+    def respond(conn: socket.socket, _frame: bytes) -> None:
+        conn.sendall(b'{"jsonrpc":"2.0"')
+        assert conn.recv(1) == b""
+
+    with _fake_control_server(tmp_path, respond) as (socket_path, _requests):
+        with pytest.raises(client.PipelineSdkError) as error:
+            client.ControlClient(socket_path=socket_path).call(
+                "s09.transport_smoke",
+                {},
+            )
+
+    assert error.value.error_code == "sandbox_transport_response_timeout"
+    assert error.value.stage == "control_socket_response"
+    assert error.value.retryable is False
+
+
+def test_control_client_allows_delayed_first_response_byte(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client, "CONTROL_SOCKET_IO_TIMEOUT_SECONDS", 0.05)
+
+    def respond(conn: socket.socket, frame: bytes) -> None:
+        request = json.loads(frame.decode("utf-8"))
+        time.sleep(0.1)
+        conn.sendall(
+            json.dumps(
+                {"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}},
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+    with _fake_control_server(tmp_path, respond) as (socket_path, _requests):
+        result = client.ControlClient(socket_path=socket_path).call(
+            "s10.controlled_operation",
+            {},
+        )
+
+    assert result == {"ok": True}
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -249,6 +312,8 @@ def test_control_client_rejects_response_without_newline(
             }
         ).encode("utf-8"),
         json.dumps({"jsonrpc": "2.0", "id": "rpc_expected"}).encode("utf-8"),
+        b'{"jsonrpc":"2.0","id":"rpc_expected","result":{"value":NaN}}',
+        b'{"jsonrpc":"2.0","id":"rpc_expected","result":{},"result":{}}',
     ],
 )
 def test_control_client_rejects_invalid_response_shape(payload: bytes) -> None:

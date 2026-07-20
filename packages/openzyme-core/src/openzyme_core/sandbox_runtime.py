@@ -80,6 +80,8 @@ CONTROL_SOCKET_FRAME_MAX_BYTES = 4 * 1024 * 1024
 _CONTROL_SOCKET_CHUNK_BYTES = 64 * 1024
 _CONTROL_SOCKET_IO_TIMEOUT_SECONDS = 5.0
 _CONTROL_SOCKET_REQUEST_ID_MAX_BYTES = 256
+_ARTIFACT_REGISTER_MANY_MAX_ITEMS = 128
+_ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES = 32 * 1024 * 1024
 SandboxAdapterExecutor = Callable[[ControlledOperation, dict[str, Any]], dict[str, Any]]
 SandboxHpcFetchExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 PRIVATE_ADAPTER_PAYLOAD_KEYS = {
@@ -141,6 +143,19 @@ def _sha256_bytes(content: bytes) -> str:
 
 def _json_digest(value: Any) -> str:
     return _sha256_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r} is forbidden")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
 
 
 def _is_sha256_digest(value: str) -> bool:
@@ -653,7 +668,11 @@ class _ControlSocketServer:
     @staticmethod
     def _decode_request_frame(frame: bytes) -> dict[str, Any]:
         try:
-            request = json.loads(frame.decode("utf-8"))
+            request = json.loads(
+                frame.decode("utf-8"),
+                object_pairs_hook=_unique_json_object,
+                parse_constant=_reject_json_constant,
+            )
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise SandboxRuntimeError(
                 "sandbox_transport_request_invalid",
@@ -702,7 +721,11 @@ class _ControlSocketServer:
 
     def _encode_response(self, response: dict[str, Any], *, request_id: Any) -> bytes:
         try:
-            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+            payload = json.dumps(
+                response,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
         except Exception:
             response = self._error_response(
                 request_id=request_id,
@@ -711,7 +734,11 @@ class _ControlSocketServer:
                     "control socket response is not valid JSON",
                 ),
             )
-            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+            payload = json.dumps(
+                response,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
         if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
             response = self._error_response(
                 request_id=self._response_request_id(request_id),
@@ -720,7 +747,11 @@ class _ControlSocketServer:
                     "control socket response frame exceeds the bounded transport limit",
                 ),
             )
-            payload = json.dumps(response, sort_keys=True).encode("utf-8")
+            payload = json.dumps(
+                response,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
             if len(payload) > CONTROL_SOCKET_FRAME_MAX_BYTES:
                 response = {
                     "jsonrpc": "2.0",
@@ -733,7 +764,11 @@ class _ControlSocketServer:
                         "details": None,
                     },
                 }
-                payload = json.dumps(response, sort_keys=True).encode("utf-8")
+                payload = json.dumps(
+                    response,
+                    sort_keys=True,
+                    allow_nan=False,
+                ).encode("utf-8")
         return payload + b"\n"
 
     @staticmethod
@@ -809,6 +844,20 @@ class _ControlSocketServer:
         params: dict[str, Any],
     ) -> dict[str, Any]:
         try:
+            def _optional_object(
+                payload: dict[str, Any],
+                key: str,
+            ) -> dict[str, Any] | None:
+                if key not in payload:
+                    return None
+                value = payload[key]
+                if not isinstance(value, dict):
+                    raise ArtifactBoundaryError(
+                        "artifact_registration_metadata_invalid",
+                        f"artifacts registration {key} must be an object",
+                    )
+                return dict(value)
+
             if method == "artifacts.get":
                 artifact = self.repositories.artifacts.get(str(params.get("artifact_id") or ""))
                 if artifact is None or artifact.session_id != self.session_id:
@@ -823,7 +872,8 @@ class _ControlSocketServer:
                     mode=str(params.get("mode") or "copy"),
                 ).to_payload()
             elif method == "artifacts.register":
-                result = self._artifact_boundary_service().register(
+                service = self._artifact_boundary_service()
+                result = service.register(
                     session_id=self.session_id,
                     sandbox_workspace_id=self.sandbox_workspace_id,
                     path=str(params.get("path") or ""),
@@ -838,14 +888,78 @@ class _ControlSocketServer:
                         if params.get("validation_profile") in {None, ""}
                         else str(params.get("validation_profile"))
                     ),
-                    metadata=dict(params.get("metadata") or {}),
+                    metadata=_optional_object(params, "metadata"),
+                    metadata_sidecar=_optional_object(params, "metadata_sidecar"),
                     source_snapshot_artifact_id=self.source_snapshot_artifact_id,
-                ).to_payload()
+                ).to_control_payload()
             elif method == "artifacts.register_many":
-                items = params.get("items") or []
+                items = params.get("items", [])
                 if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
                     raise ArtifactBoundaryError("invalid_tool_arguments", "artifacts.register_many items must be objects")
+                if len(items) > _ARTIFACT_REGISTER_MANY_MAX_ITEMS:
+                    raise ArtifactBoundaryError(
+                        "artifact_register_many_too_many_items",
+                        "artifacts.register_many exceeds its bounded item limit",
+                        details={
+                            "max_items": _ARTIFACT_REGISTER_MANY_MAX_ITEMS,
+                            "item_count": len(items),
+                        },
+                    )
                 service = self._artifact_boundary_service()
+                resolved_metadata: list[dict[str, Any]] = []
+                metadata_cache: dict[str, dict[str, Any]] = {}
+                resolved_metadata_bytes = 0
+                for item in items:
+                    metadata = _optional_object(item, "metadata")
+                    metadata_sidecar = _optional_object(item, "metadata_sidecar")
+                    try:
+                        cache_key = json.dumps(
+                            {
+                                "metadata": metadata,
+                                "metadata_sidecar": metadata_sidecar,
+                            },
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (RecursionError, TypeError, ValueError) as exc:
+                        raise ArtifactBoundaryError(
+                            "artifact_registration_metadata_invalid",
+                            "artifact registration metadata is not canonical JSON",
+                        ) from exc
+                    cached = metadata_cache.get(cache_key)
+                    if cached is None:
+                        cached = service.resolve_registration_metadata(
+                            session_id=self.session_id,
+                            sandbox_workspace_id=self.sandbox_workspace_id,
+                            metadata=metadata,
+                            metadata_sidecar=metadata_sidecar,
+                        )
+                        cached_size = len(
+                            json.dumps(
+                                cached,
+                                ensure_ascii=True,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            ).encode("utf-8")
+                        )
+                        resolved_metadata_bytes += cached_size
+                        if (
+                            resolved_metadata_bytes
+                            > _ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES
+                        ):
+                            raise ArtifactBoundaryError(
+                                "artifact_register_many_metadata_too_large",
+                                "artifacts.register_many metadata exceeds its aggregate limit",
+                                details={
+                                    "max_bytes": _ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES,
+                                    "observed_bytes": resolved_metadata_bytes,
+                                },
+                            )
+                        metadata_cache[cache_key] = cached
+                    resolved_metadata.append(cached)
                 result = [
                     service.register(
                         session_id=self.session_id,
@@ -862,10 +976,14 @@ class _ControlSocketServer:
                             if item.get("validation_profile") in {None, ""}
                             else str(item.get("validation_profile"))
                         ),
-                        metadata=dict(item.get("metadata") or {}),
+                        _resolved_metadata=metadata_payload,
                         source_snapshot_artifact_id=self.source_snapshot_artifact_id,
-                    ).to_payload()
-                    for item in items
+                    ).to_control_payload()
+                    for item, metadata_payload in zip(
+                        items,
+                        resolved_metadata,
+                        strict=True,
+                    )
                 ]
             elif method == "artifacts.snapshot_code":
                 result = self._artifact_boundary_service().snapshot_code(
@@ -3087,6 +3205,7 @@ class SandboxRuntimeService:
         session_id: str,
         sandbox_workspace_id: str,
         sandbox_run_id: str,
+        sandbox_work_root: Path,
     ) -> dict[str, str]:
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -3098,6 +3217,7 @@ class SandboxRuntimeService:
             "OPENZYME_SANDBOX_RUN_ID": sandbox_run_id,
         }
         env.update(user_env)
+        env["OPENZYME_SANDBOX_WORK_ROOT"] = str(sandbox_work_root)
         return env
 
     def _container_env(
@@ -3118,6 +3238,7 @@ class SandboxRuntimeService:
         }
         user_pythonpath = user_env.get("PYTHONPATH")
         env.update(user_env)
+        env["OPENZYME_SANDBOX_WORK_ROOT"] = "/workspace/work"
         if user_pythonpath:
             env["PYTHONPATH"] = f"/openzyme/sdk:{user_pythonpath}"
         return env
@@ -3154,6 +3275,7 @@ class SandboxRuntimeService:
                     session_id=session_id,
                     sandbox_workspace_id=sandbox_workspace_id,
                     sandbox_run_id=sandbox_run_id,
+                    sandbox_work_root=workspace_path / "work",
                 ),
                 timeout_seconds=timeout_seconds,
                 sandbox_run_id=sandbox_run_id,

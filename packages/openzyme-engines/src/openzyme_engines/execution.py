@@ -12037,7 +12037,6 @@ class ExecutionEngine:
                     request_metadata.get("preprocess_artifact_ids") or []
                 ),
                 "output_dir": request_metadata.get("output_dir"),
-                "content_digest": content_digest,
             }
             try:
                 result = boundary.register(
@@ -12158,7 +12157,6 @@ class ExecutionEngine:
                 ),
                 "preprocess_artifact_ids": [],
                 "output_dir": request_metadata.get("output_dir"),
-                "content_digest": content_digest,
             }
             try:
                 result = boundary.register(

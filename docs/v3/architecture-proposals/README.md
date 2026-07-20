@@ -37,3 +37,4 @@
 - `provider-retry-policy-and-failed-attempt-evidence.md`：把 `Retry-After`、错误分类、backoff/jitter、预算与每次失败 HTTP attempt 纳入 Host 权威 retry policy 和 secret-safe durable evidence；当前 Goal 只记录，不实施。
 - `artifact-path-addressing-for-arbitrary-dictionary-keys.md`：为 `artifact.get` 引入 key/index 分型的结构化 path segments，使包含点、空格、空键或 Unicode 的 dictionary key 可无歧义寻址；当前 Goal 只对不可寻址 key 返回 `root_only` 父容器 hint，不实施新寻址合同。
 - `controlled-operation-outcome-unknown-after-response-failure.md`：分离 handler effect commit 与 control-response delivery，在序列化、frame cap 或传输失败后用 stable result handle、`outcome_unknown` 和只读 reconcile 防止把已提交副作用误报成普通失败并重复执行；当前 Goal 只记录，不实施。
+- `bounded-canonical-artifact-metadata-manifest-references.md`：把大型 catalog metadata 从重复 SQLite JSON row 正规化为 immutable manifest binding，增加真正 bounded 的分页读取、去重、GC、迁移与 verifier closure；当前 Goal 只实现 attempt-local digest-bound transport sidecar 和 bounded registration response，不实施 repository/schema 迁移。

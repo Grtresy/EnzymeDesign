@@ -801,6 +801,71 @@ produce gap-free HMMER closure, the exact UniProt active/inactive partition,
 `aox_sequence_length_join@2` evidence, all fixed 17 deliverables, a published
 report, and passed offline verification.
 
+### r27 live attempt: permanent NO-GO
+
+r27 pinned clean commit
+`d922f136fa44fe1142ad58a65647a0eee58ce281` and started positive attempt
+`positive-a02c118c11dc4e7fb0ef516157ad9100` from fresh roots. Its formal public
+session was
+`sess_formal_positive-a02c118c11dc4e7fb0ef516157ad9100`, with one source-bound
+sandbox run `srun_d113874405da`. The formal NCBI
+`op_03f66d724571`, MAFFT `op_df5fcd35a6a5`, hmmbuild
+`op_f204992a915e`, EBI HMMER `op_34b43ff3008e`, and UniProt
+`op_3de913af306f` operations all reached `completed`. Chrome approved the
+canonical NCBI card `appr_edfdc623cbe0` and resumed that same operation; the
+later attempt failure means there is no terminal Chrome receipt and this does
+not satisfy the browser GO criterion.
+
+The real EBI HMMER search closed over 69 result pages and 68,592 hits without
+truncation, from which the versioned score filter selected 37,772 accessions.
+The one real UniProt operation processed that exact set in 378 query batches
+and closed it as 32,176 active plus 5,596 inactive records, comprising 5,594
+`DELETED` and 2 `MERGED`; the active-sequence length join produced 2,561 hits.
+These counts prove that the corrected provider/scientific path reached the
+post-UniProt join, but they are not a completed positive attempt.
+
+The join's required sorted identity mappings made its logical catalog metadata
+17,016,803 canonical JSON bytes. The old SDK inlined that object into an exact
+17,767,360-byte control request, beyond the unchanged 4 MiB
+frame cap. The first registration of
+`hits_len650_700_200.csv` therefore failed before Host dispatch as non-retryable
+`sandbox_transport_request_too_large` at `control_socket_request`. No catalog
+Artifact row for that path was created, so there is no partially registered
+scientific artifact to adopt. This is a harness transport blocker, not a
+scientific empty result and not permission to truncate identity mappings or
+raise the frame limit.
+
+The self-consistent but non-eligible failure bundle digest is
+`sha256:4920739cde6aa9bb7f5fd484674bbbccbc8d385bf7c6c98b872390d922ccac3c`.
+The sealed campaign decision is permanent **NO-GO**, with blocker
+`host_public_api_transport_failed` at `attempt[1].scientific_outcome` and
+decision digest
+`sha256:4628f5f2a91eed77808b09b875e3daaddf893160503d60850985b714aedd0c0b`.
+The persistent MICU ledger moved from `47,528,993` to
+`49,959,197 / 500,000,000`, leaving `450,040,803` with zero hard-limit breach.
+The driver did not spend additional budget on positive 2 or the fault attempt
+after positive 1 was disqualified.
+
+r27 is permanently non-reusable and cannot be retrospectively counted as
+positive 1. Its roots, old pin, operations, provider bytes, mutable sandbox
+outputs, metadata object, artifact refs, browser state, bundle, and decision
+cannot be adopted into another attempt. After the bounded metadata-transport
+correction, the next campaign must create a new clean commit/SDK pin and new
+blank-world roots, then independently run both positives and the controlled
+fault under the existing GO rule.
+
+A post-correction transport-only replay used the retained exact r27 HMMER and
+UniProt inputs outside every campaign root, with a fresh single-process
+file-backed SQLite database/workspace and the current SDK over a real Unix
+socket. It reproduced 2,561 hits, CSV digest
+`sha256:6a2aa371c2c366c9f539e23e4df9c6e1528c735be8515be5bff7bf2031237d67`,
+and the exact 17,016,803-byte logical metadata digest
+`sha256:873a5ff9be6114f761b0ed48a9be2509c74bbb024955555dfe4700d015524f25`.
+The SDK emitted one same-size/digest sidecar, the Host catalog retained every
+logical field, and the strict selectable `artifact_registration_response@2`
+was only 1,234 bytes. This diagnostic made no provider, HPC, or MICU call and is
+explicitly non-cutover; it neither repairs nor makes r27 reusable.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger

@@ -5,10 +5,12 @@ from dataclasses import replace
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
 from typing import Any
 from uuid import uuid4
@@ -28,12 +30,35 @@ WORKSPACE_ROOT = PurePosixPath("/workspace")
 WORKSPACE_INPUT = PurePosixPath("/workspace/input")
 WORKSPACE_OUTPUT = PurePosixPath("/workspace/output")
 WORKSPACE_SRC = PurePosixPath("/workspace/src")
+WORKSPACE_WORK = PurePosixPath("/workspace/work")
 WORKSPACE_DIRECTORIES = ("src", "input", "work", "output", "logs", "manifest")
 FASTA_ZERO_RECORDS_VALIDATION_PROFILE = "fasta_zero_records@1"
+ARTIFACT_REGISTRATION_METADATA_SIDECAR_SCHEMA_ID = (
+    "artifact_registration_metadata_sidecar@1"
+)
+ARTIFACT_REGISTRATION_METADATA_INLINE_MAX_BYTES = 256 * 1024
+ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES = 32 * 1024 * 1024
+ARTIFACT_REGISTRATION_RESPONSE_SCHEMA_ID = "artifact_registration_response@2"
+ARTIFACT_REGISTRATION_METADATA_SUMMARY_SCHEMA_ID = (
+    "artifact_registration_metadata_summary@1"
+)
+ARTIFACT_REGISTRATION_VALIDATION_SUMMARY_SCHEMA_ID = (
+    "artifact_registration_validation_summary@1"
+)
+ARTIFACT_REGISTRATION_VALIDATION_INLINE_COLUMNS_MAX_BYTES = 4 * 1024
+ARTIFACT_REGISTRATION_ARTIFACT_ID_MAX_BYTES = 256
+ARTIFACT_REQUIRED_COLUMNS_MAX_ITEMS = 4_096
+ARTIFACT_REQUIRED_COLUMN_MAX_BYTES = 256
+ARTIFACT_REQUIRED_COLUMNS_MAX_BYTES = 64 * 1024
+ARTIFACT_DERIVATION_CONTRACT_ID_MAX_BYTES = 256
+ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS = frozenset(
+    {"content_digest", "sealed_digest", "tree_digest"}
+)
 _EMPTY_RESULT_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _DERIVATION_CONTRACT_PATTERN = re.compile(
     r"^[a-z][a-z0-9_.-]*@[1-9][0-9]*$"
 )
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ArtifactBoundaryError(RuntimeError):
@@ -101,6 +126,85 @@ class RegisterResult:
             "content_digest": self.content_digest,
             "tree_digest": self.tree_digest,
             "validation": self.validation,
+            "reused": self.reused,
+        }
+
+    def to_control_payload(self) -> dict[str, Any]:
+        metadata = dict(self.artifact.metadata or {})
+        metadata_bytes = _canonical_registration_metadata_bytes(metadata)
+        artifact_id = self.artifact.artifact_id
+        if (
+            not isinstance(artifact_id, str)
+            or not artifact_id
+            or len(artifact_id.encode("utf-8"))
+            > ARTIFACT_REGISTRATION_ARTIFACT_ID_MAX_BYTES
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_registration_response_invalid",
+                "artifact registration response artifact identity is invalid",
+            )
+        content_digest = self.content_digest
+        tree_digest = self.tree_digest
+        is_file_identity = content_digest is not None and tree_digest is None
+        is_tree_identity = tree_digest is not None and content_digest is None
+        if is_file_identity == is_tree_identity:
+            raise ArtifactBoundaryError(
+                "artifact_registration_response_invalid",
+                "artifact registration response must contain exactly one canonical content or tree digest",
+            )
+        selected_digest = content_digest if is_file_identity else tree_digest
+        if (
+            not isinstance(selected_digest, str)
+            or _SHA256_PATTERN.fullmatch(selected_digest) is None
+        ):
+            raise ArtifactBoundaryError(
+                "artifact_registration_response_invalid",
+                "artifact registration response selected digest is invalid",
+            )
+        if metadata.get("sealed_digest") != selected_digest:
+            raise ArtifactBoundaryError(
+                "artifact_registration_response_invalid",
+                "artifact registration response sealed digest is inconsistent",
+            )
+        if is_file_identity:
+            metadata_identity_valid = (
+                metadata.get("content_digest") == content_digest
+                and metadata.get("tree_digest") is None
+            )
+        else:
+            metadata_identity_valid = (
+                metadata.get("tree_digest") == tree_digest
+                and metadata.get("content_digest") is None
+            )
+        if not metadata_identity_valid:
+            raise ArtifactBoundaryError(
+                "artifact_registration_response_invalid",
+                "artifact registration response metadata digest identity is inconsistent",
+            )
+        # The control response is intentionally not the general public Artifact
+        # projection.  Session/task/lane/title fields can originate outside this
+        # boundary and have no registration-response byte contract.  Return only
+        # the Host-generated identity needed by the selector plus a bounded
+        # metadata summary; the complete record remains in the catalog.
+        artifact = {
+            "artifact_id": artifact_id,
+            "metadata": {
+            "schema_id": ARTIFACT_REGISTRATION_METADATA_SUMMARY_SCHEMA_ID,
+            "projection": "bounded_registration_summary",
+            "metadata_digest": _sha256_bytes(metadata_bytes),
+            "metadata_size_bytes": len(metadata_bytes),
+            "metadata_field_count": len(metadata),
+            "content_digest": metadata.get("content_digest"),
+            "sealed_digest": metadata.get("sealed_digest"),
+            "tree_digest": metadata.get("tree_digest"),
+            },
+        }
+        return {
+            "schema_id": ARTIFACT_REGISTRATION_RESPONSE_SCHEMA_ID,
+            "artifact": artifact,
+            "content_digest": content_digest,
+            "tree_digest": tree_digest,
+            "validation": _bounded_registration_validation(self.validation),
             "reused": self.reused,
         }
 
@@ -220,6 +324,283 @@ def _resolve_workspace_host_path(
         if parent.is_symlink():
             raise ArtifactBoundaryError(error_code, "path traverses a symlink")
     return target
+
+
+def _canonical_registration_metadata_bytes(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_invalid",
+            "artifact registration metadata is not canonical JSON",
+        ) from exc
+
+
+def _reject_host_owned_registration_metadata(metadata: dict[str, Any]) -> None:
+    reserved_fields = sorted(
+        ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS.intersection(metadata)
+    )
+    if reserved_fields:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_reserved",
+            "artifact registration metadata contains Host-owned digest fields",
+            details={"reserved_fields": reserved_fields},
+        )
+
+
+def _bounded_registration_validation(validation: dict[str, Any]) -> dict[str, Any]:
+    validation_payload = dict(validation)
+    validation_bytes = _canonical_registration_metadata_bytes(validation_payload)
+    raw_columns = validation_payload.get("required_columns")
+    columns = list(raw_columns) if isinstance(raw_columns, list) else []
+    columns_bytes = _canonical_registration_metadata_bytes(
+        {"required_columns": columns}
+    )
+    summary: dict[str, Any] = {
+        "schema_id": ARTIFACT_REGISTRATION_VALIDATION_SUMMARY_SCHEMA_ID,
+        "projection": "bounded_registration_summary",
+        "status": validation_payload.get("status"),
+        "format": validation_payload.get("format"),
+        "validation_profile": validation_payload.get("validation_profile"),
+        "empty_result_reason": validation_payload.get("empty_result_reason"),
+        "derivation_contract_id": validation_payload.get("derivation_contract_id"),
+        "required_columns_count": len(columns),
+        "required_columns_digest": _sha256_bytes(columns_bytes),
+        "validation_digest": _sha256_bytes(validation_bytes),
+        "validation_size_bytes": len(validation_bytes),
+    }
+    if len(columns_bytes) <= ARTIFACT_REGISTRATION_VALIDATION_INLINE_COLUMNS_MAX_BYTES:
+        summary["required_columns"] = columns
+    return summary
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r} is forbidden")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
+
+
+def _open_directory_no_follow(path: Path) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(path, flags)
+
+
+def _open_child_directory_no_follow(parent_fd: int, name: str) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(name, flags, dir_fd=parent_fd)
+
+
+def _read_registration_metadata_sidecar(
+    *,
+    workspace_path: Path,
+    filename: str,
+    expected_size_bytes: int,
+) -> bytes:
+    descriptors: list[int] = []
+    file_descriptor = -1
+    try:
+        workspace_fd = _open_directory_no_follow(workspace_path)
+        descriptors.append(workspace_fd)
+        work_fd = _open_child_directory_no_follow(workspace_fd, "work")
+        descriptors.append(work_fd)
+        private_fd = _open_child_directory_no_follow(work_fd, ".openzyme")
+        descriptors.append(private_fd)
+        metadata_fd = _open_child_directory_no_follow(
+            private_fd,
+            "artifact-metadata",
+        )
+        descriptors.append(metadata_fd)
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(filename, flags, dir_fd=metadata_fd)
+        file_stat = os.fstat(file_descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise OSError("metadata sidecar is not a regular file")
+        if file_stat.st_size != expected_size_bytes:
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_sidecar_size_mismatch",
+                "artifact registration metadata sidecar size does not match its binding",
+                details={
+                    "expected_size_bytes": expected_size_bytes,
+                    "actual_size_bytes": file_stat.st_size,
+                },
+            )
+        with os.fdopen(file_descriptor, "rb", closefd=True) as handle:
+            file_descriptor = -1
+            payload = handle.read(
+                ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES + 1
+            )
+        if len(payload) > ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES:
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_sidecar_too_large",
+                "artifact registration metadata sidecar exceeds the bounded size limit",
+                details={
+                    "max_bytes": ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES,
+                    "size_bytes": len(payload),
+                },
+            )
+        if len(payload) != expected_size_bytes:
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_sidecar_size_mismatch",
+                "artifact registration metadata sidecar changed while it was read",
+                details={
+                    "expected_size_bytes": expected_size_bytes,
+                    "actual_size_bytes": len(payload),
+                },
+            )
+        return payload
+    except ArtifactBoundaryError:
+        raise
+    except OSError as exc:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar is unavailable or unsafe",
+        ) from exc
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _registration_metadata_from_sidecar(
+    *,
+    workspace_path: Path,
+    sidecar: dict[str, Any],
+) -> dict[str, Any]:
+    if set(sidecar) != {"schema_id", "path", "content_digest", "size_bytes"}:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar has an invalid closed schema",
+        )
+    if sidecar.get("schema_id") != ARTIFACT_REGISTRATION_METADATA_SIDECAR_SCHEMA_ID:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar schema identity is invalid",
+        )
+    digest = sidecar.get("content_digest")
+    if not isinstance(digest, str) or _SHA256_PATTERN.fullmatch(digest) is None:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar digest is invalid",
+        )
+    size_bytes = sidecar.get("size_bytes")
+    if (
+        not isinstance(size_bytes, int)
+        or isinstance(size_bytes, bool)
+        or size_bytes < 0
+    ):
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar size is invalid",
+        )
+    if size_bytes > ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_too_large",
+            "artifact registration metadata sidecar exceeds the bounded size limit",
+            details={
+                "max_bytes": ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES,
+                "size_bytes": size_bytes,
+            },
+        )
+    raw_path = sidecar.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar path is invalid",
+        )
+    expected_path = (
+        WORKSPACE_WORK
+        / ".openzyme"
+        / "artifact-metadata"
+        / f"{digest.removeprefix('sha256:')}.json"
+    )
+    if raw_path != expected_path.as_posix():
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar path is not canonical",
+        )
+    public_path = PurePosixPath(raw_path)
+    _workspace_relative(
+        public_path,
+        WORKSPACE_WORK,
+        error_code="artifact_registration_metadata_sidecar_invalid",
+    )
+    payload = _read_registration_metadata_sidecar(
+        workspace_path=workspace_path,
+        filename=f"{digest.removeprefix('sha256:')}.json",
+        expected_size_bytes=size_bytes,
+    )
+    actual_digest = _sha256_bytes(payload)
+    if actual_digest != digest:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_digest_mismatch",
+            "artifact registration metadata sidecar digest does not match its binding",
+            details={"expected_digest": digest, "actual_digest": actual_digest},
+        )
+    try:
+        decoded = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, RecursionError, TypeError, ValueError) as exc:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar is not valid UTF-8 JSON",
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_invalid",
+            "artifact registration metadata sidecar must contain one JSON object",
+        )
+    if _canonical_registration_metadata_bytes(decoded) != payload:
+        raise ArtifactBoundaryError(
+            "artifact_registration_metadata_sidecar_noncanonical",
+            "artifact registration metadata sidecar bytes are not canonical JSON",
+        )
+    return decoded
+
+
+def load_artifact_registration_metadata_sidecar(
+    *,
+    workspace_path: Path,
+    sidecar: dict[str, Any],
+) -> dict[str, Any]:
+    """Load one SDK metadata sidecar through the Host's fd-anchored boundary."""
+
+    return _registration_metadata_from_sidecar(
+        workspace_path=workspace_path,
+        sidecar=sidecar,
+    )
 
 
 def _file_digest(path: Path) -> FileDigest:
@@ -443,9 +824,12 @@ def _validate_zero_record_fasta(
             "artifact_validation_failed",
             "fasta_zero_records@1 requires one stable empty-result reason",
         )
-    if not isinstance(
-        derivation_contract_id, str
-    ) or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation_contract_id) is None:
+    if (
+        not isinstance(derivation_contract_id, str)
+        or len(derivation_contract_id.encode("utf-8"))
+        > ARTIFACT_DERIVATION_CONTRACT_ID_MAX_BYTES
+        or _DERIVATION_CONTRACT_PATTERN.fullmatch(derivation_contract_id) is None
+    ):
         raise ArtifactBoundaryError(
             "artifact_validation_failed",
             "fasta_zero_records@1 requires one versioned derivation contract",
@@ -495,6 +879,53 @@ def _validate_json(path: Path) -> None:
     json.loads(path.read_text(encoding="utf-8"))
 
 
+def _required_columns_from_metadata(metadata: dict[str, Any]) -> tuple[str, ...]:
+    raw = metadata.get("required_columns")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "metadata.required_columns must be a bounded list of strings",
+        )
+    if len(raw) > ARTIFACT_REQUIRED_COLUMNS_MAX_ITEMS:
+        raise ArtifactBoundaryError(
+            "artifact_validation_failed",
+            "metadata.required_columns exceeds the bounded item limit",
+            details={
+                "max_items": ARTIFACT_REQUIRED_COLUMNS_MAX_ITEMS,
+                "item_count": len(raw),
+            },
+        )
+    columns: list[str] = []
+    total_bytes = 0
+    for item in raw:
+        if not isinstance(item, str) or not item:
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "metadata.required_columns entries must be non-empty strings",
+            )
+        item_bytes = len(item.encode("utf-8"))
+        if item_bytes > ARTIFACT_REQUIRED_COLUMN_MAX_BYTES:
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "metadata.required_columns contains an oversized column name",
+                details={"max_column_bytes": ARTIFACT_REQUIRED_COLUMN_MAX_BYTES},
+            )
+        total_bytes += item_bytes
+        if total_bytes > ARTIFACT_REQUIRED_COLUMNS_MAX_BYTES:
+            raise ArtifactBoundaryError(
+                "artifact_validation_failed",
+                "metadata.required_columns exceeds the bounded byte limit",
+                details={
+                    "max_bytes": ARTIFACT_REQUIRED_COLUMNS_MAX_BYTES,
+                    "observed_bytes": total_bytes,
+                },
+            )
+        columns.append(item)
+    return tuple(columns)
+
+
 def _run_validator(
     path: Path,
     *,
@@ -504,8 +935,7 @@ def _run_validator(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     normalized_format = None if format_value in {None, ""} else str(format_value).lower()
-    required_columns_raw = metadata.get("required_columns") or ()
-    required_columns = tuple(str(item) for item in required_columns_raw)
+    required_columns = _required_columns_from_metadata(metadata)
     profile_details: dict[str, str] = {}
     try:
         if validation_profile is not None:
@@ -569,6 +999,66 @@ class ArtifactBoundaryService:
     repositories: Any
     workspace_root: Path | None = None
     blob_store_root: Path | None = None
+
+    def resolve_registration_metadata(
+        self,
+        *,
+        session_id: str,
+        sandbox_workspace_id: str,
+        metadata: dict[str, Any] | None = None,
+        metadata_sidecar: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._require_workspace(session_id, sandbox_workspace_id)
+        workspace_path = self._workspace_path(sandbox_workspace_id)
+        return self._resolve_registration_metadata(
+            workspace_path=workspace_path,
+            metadata=metadata,
+            metadata_sidecar=metadata_sidecar,
+        )
+
+    @staticmethod
+    def _resolve_registration_metadata(
+        *,
+        workspace_path: Path,
+        metadata: dict[str, Any] | None,
+        metadata_sidecar: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if metadata_sidecar is not None:
+            if metadata is not None:
+                raise ArtifactBoundaryError(
+                    "artifact_registration_metadata_sidecar_invalid",
+                    "artifact registration must use exactly one metadata transport",
+                )
+            resolved = _registration_metadata_from_sidecar(
+                workspace_path=workspace_path,
+                sidecar=metadata_sidecar,
+            )
+            _reject_host_owned_registration_metadata(resolved)
+            return resolved
+        if metadata is None:
+            return {}
+        if not isinstance(metadata, dict):
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_invalid",
+                "inline artifact registration metadata must be a JSON object",
+            )
+        payload = _canonical_registration_metadata_bytes(metadata)
+        if len(payload) > ARTIFACT_REGISTRATION_METADATA_INLINE_MAX_BYTES:
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_inline_too_large",
+                "inline artifact registration metadata exceeds its bounded limit",
+                hint=(
+                    "Use the installed openzyme_pipeline.artifacts.register helper "
+                    "so large metadata is transported by a digest-bound sidecar."
+                ),
+                details={
+                    "max_bytes": ARTIFACT_REGISTRATION_METADATA_INLINE_MAX_BYTES,
+                    "size_bytes": len(payload),
+                },
+            )
+        resolved = dict(metadata)
+        _reject_host_owned_registration_metadata(resolved)
+        return resolved
 
     def materialize(
         self,
@@ -675,11 +1165,14 @@ class ArtifactBoundaryService:
         format: str | None = None,
         validation_profile: str | None = None,
         metadata: dict[str, Any] | None = None,
+        metadata_sidecar: dict[str, Any] | None = None,
+        _resolved_metadata: dict[str, Any] | None = None,
         invocation_id: str | None = None,
         run_id: str | None = None,
         source_snapshot_artifact_id: str | None = None,
     ) -> RegisterResult:
         workspace = self._require_workspace(session_id, sandbox_workspace_id)
+        workspace_path = self._workspace_path(sandbox_workspace_id)
         kind_value = _artifact_kind(kind)
         explicit_source_snapshot = source_snapshot_artifact_id is not None
         if source_snapshot_artifact_id is None:
@@ -707,7 +1200,26 @@ class ArtifactBoundaryService:
                 "source_snapshot_unavailable",
                 "source snapshot artifact is not bound to this sandbox workspace",
             )
-        metadata_payload = dict(metadata or {})
+        if _resolved_metadata is not None:
+            if metadata is not None or metadata_sidecar is not None:
+                raise ArtifactBoundaryError(
+                    "artifact_registration_metadata_invalid",
+                    "resolved registration metadata is mutually exclusive with wire transports",
+                )
+            metadata_payload = dict(_resolved_metadata)
+            resolved_bytes = _canonical_registration_metadata_bytes(metadata_payload)
+            if len(resolved_bytes) > ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES:
+                raise ArtifactBoundaryError(
+                    "artifact_registration_metadata_sidecar_too_large",
+                    "resolved artifact registration metadata exceeds its bounded limit",
+                )
+            _reject_host_owned_registration_metadata(metadata_payload)
+        else:
+            metadata_payload = self._resolve_registration_metadata(
+                workspace_path=workspace_path,
+                metadata=metadata,
+                metadata_sidecar=metadata_sidecar,
+            )
         if format is not None:
             metadata_payload["format"] = str(format)
         metadata_validation_profile = metadata_payload.get("validation_profile")
@@ -730,7 +1242,6 @@ class ArtifactBoundaryService:
         if validation_profile is not None:
             metadata_payload["validation_profile"] = str(validation_profile)
         public_path = _public_path(path, default=WORKSPACE_OUTPUT / "artifact")
-        workspace_path = self._workspace_path(sandbox_workspace_id)
         source_path = _resolve_workspace_host_path(
             workspace_path,
             public_path,

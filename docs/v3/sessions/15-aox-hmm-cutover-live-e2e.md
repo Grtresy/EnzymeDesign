@@ -610,6 +610,60 @@ validation context，后者是唯一 cutover pin。最终 receipt 完成 r26 dia
 workflow knowledge repin 前置条件，但自身仍是 ordinary `/tmp`、`non_cutover=true`，
 不会改变当前 **NO-GO**，也不得被 fresh attempt adoption。
 
+## r27 blank-world live attempt：永久 NO-GO
+
+r27 以 clean commit
+`d922f136fa44fe1142ad58a65647a0eee58ce281` 和 fresh roots 启动 positive
+attempt `positive-a02c118c11dc4e7fb0ef516157ad9100`。formal public session 为
+`sess_formal_positive-a02c118c11dc4e7fb0ef516157ad9100`，同一 source-bound
+sandbox run 为 `srun_d113874405da`。formal NCBI
+`op_03f66d724571`、MAFFT `op_df5fcd35a6a5`、hmmbuild
+`op_f204992a915e`、EBI HMMER `op_34b43ff3008e` 和 UniProt
+`op_3de913af306f` 均达到 `completed`。Chrome 在 canonical approval
+`appr_edfdc623cbe0` 上批准并恢复同一个 NCBI operation；由于 attempt 后续失败，
+没有 terminal Chrome receipt，不能把这次 approval-resume 单独解释为 Chrome GO proof。
+
+真实 EBI HMMER result 覆盖 69 页、68,592 hits 且 `truncated=false`，版本化
+score filter 得到 37,772 个 accession。唯一真实 UniProt operation 对该 exact set
+执行 378 个 query batch，闭合为 32,176 active 加 5,596 inactive，其中
+5,594 `DELETED`、2 `MERGED`；随后 active-sequence length join 得到 2,561 hits。
+这些真实 count 只证明纠正后的 provider/scientific path 到达 post-UniProt join，
+不等于 positive 已完成。
+
+join 所需的 sorted identity mappings 使 logical catalog metadata 达到
+17,016,803 canonical JSON bytes。旧 SDK 将它内联进 exact 17,767,360-byte control
+request，超过保持不变的 4 MiB frame cap。首次登记
+`hits_len650_700_200.csv` 因而在 Host dispatch 前以 non-retryable
+`sandbox_transport_request_too_large` / `control_socket_request` fail closed。
+catalog 中没有该路径的 Artifact row，也没有可供后续采用的 partially registered
+scientific artifact。该结果是 harness transport blocker，不是科学 empty，也不授权删除或
+截断 identity mappings、提高 frame cap，或把 sandbox working copy 当作 canonical output。
+
+通过自身完整性校验但明确 non-eligible 的 failure bundle digest 为
+`sha256:4920739cde6aa9bb7f5fd484674bbbccbc8d385bf7c6c98b872390d922ccac3c`。
+sealed campaign decision 是永久 **NO-GO**，blocker 为
+`host_public_api_transport_failed` / `attempt[1].scientific_outcome`，decision digest 为
+`sha256:4628f5f2a91eed77808b09b875e3daaddf893160503d60850985b714aedd0c0b`。
+持久 MICU 账本从 `47,528,993` 增至
+`49,959,197 / 500,000,000`，remaining `450,040,803`，hard-limit breach 为零；
+positive 1 已失格后，driver 没有继续浪费额度运行 positive 2 或 fault。
+
+r27 永久不可追认为 positive 1，也不得复用或 adoption 其 roots、旧 pin、operation、
+provider bytes、mutable sandbox outputs、metadata、artifact refs、browser state、bundle 或
+decision。完成 bounded metadata-transport correction 后，下一轮必须生成新的 clean
+commit/SDK pin 与全新 blank-world roots，再独立执行两次 positive 和一次 controlled fault；
+当前文档不得预写其结果。
+
+correction 后的只读 transport diagnostic 使用 r27 保留的 exact HMMER/UniProt
+输入，在 campaign root 外的全新单进程 file-backed SQLite/workspace 重新执行当前
+`aox_sequence_length_join@2` 与真实 Unix-socket registration。它重现 2,561 hits、
+`sha256:6a2aa371c2c366c9f539e23e4df9c6e1528c735be8515be5bff7bf2031237d67`
+CSV 和 17,016,803-byte / `sha256:873a5ff9be6114f761b0ed48a9be2509c74bbb024955555dfe4700d015524f25`
+logical metadata；current SDK 产生同 digest/size 的唯一 sidecar，Host catalog 逐字段保留完整
+logical metadata，而 `artifact_registration_response@2` 仅 1,234 bytes 并可由 strict
+selector 选出同 CSV digest。该诊断没有 provider/HPC/MICU I/O，`diagnostic_only=true`，
+不改变 r27 的永久 NO-GO，也不是下一轮可采用的 Artifact 或 cutover evidence。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

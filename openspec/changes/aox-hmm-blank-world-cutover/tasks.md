@@ -72,6 +72,7 @@
   - [x] Run the final-source real HMMER AFA preflight and record `2562` aligned records, `517` total passes including AAB, and `516` non-reference passes as ordinary non-cutover diagnostic evidence.
   - [x] Preserve the superseded pure-v3 receipt `sha256:caf483bedbe2865cdf3be0677dbcb3a27d6ccfb9fd1a57bbc0093a35ef90bcf5` and temporary 2-CPU Podman calibration receipt `sha256:b9749e6c3f23dd553a1e33b55f7cb9a67a1aee6dfbfae8fb4235ce0aa52f563c` as non-cutover diagnostics; do not reuse their old identities or ordinary `/tmp` bytes.
   - [x] Complete final comparison receipt `sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e`: two independent authoritative-source exact-cutover-NumPy-`2.4.4` 2-worker real-candidate runs have identical raw outputs and pin-only-normalized equality to frozen pure-v3 bytes, record unavailable correction activation without inventing zero, distinguish reference-validation NumPy `2.4.6` without claiming a direct full-set patch A/B or allowing fallback, and repin the knowledge workflow plus focused expected hashes in dependency order.
+- [x] 6.27 Preserve r27 as permanent NO-GO, implement the bounded canonical artifact-registration metadata transport (`256 KiB` inline / `32 MiB` sidecar), fd-anchored strict Host validation, bounded `artifact_registration_response@2` metadata/validation summaries, strict selector, honest provisional compat-runner response, register-many item/aggregate/prevalidation bounds, real >4 MiB local/compat socket regression, and the exact r27 17,016,803-byte file-backed-SQLite replay without changing the 4 MiB frame or truncating catalog metadata.
 
 ## 7. Architecture and operator documentation
 
@@ -80,11 +81,12 @@
 - [x] 7.3 Audit all implementation-time harness findings, directly test/document only small corrections, and create separate detailed deferred documents for each major architecture adjustment without implementing them.
 - [x] 7.4 Record the deferred two-phase transactional attempt-evidence collector, exact artifact-root closure, failure atomicity, recovery, schema migration, and fresh-live acceptance plan in its own architecture proposal without implementing it in this Goal.
 - [x] 7.5 Record the deferred Host-authoritative controlled-operation resource-estimate/limit snapshot, approval/config binding, drift handling, migration, and verification plan in its own architecture proposal without implementing it in this Goal.
+- [x] 7.6 Record the deferred immutable metadata-manifest binding, true bounded paging, deduplication, GC, migration and offline-verifier closure in its own architecture proposal without implementing it in this Goal.
 
 ## 8. Verification and cutover decision
 
-- [ ] 8.1 Re-run scoring/provider/harness/execution/campaign focused tests and ruff after the pre-live harness closure, then fix every regression without weakening scientific gates.
-- [ ] 8.2 Re-run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
+- [x] 8.1 Re-run scoring/provider/harness/execution/campaign focused tests and ruff after the pre-live harness closure, then fix every regression without weakening scientific gates.
+- [x] 8.2 Re-run frontend tests/build, default non-live pytest, `./scripts/check-mainline.sh`, and `uv run python -m openzyme_host_api.evals` from a clean configuration boundary.
 - [ ] 8.3 Preflight NCBI/PubMed/EBI/UniProt, MICU, image/SDK, HPC runner/toolchain, and Chrome availability while recording exact blocker evidence.
 - [ ] 8.4 Run positive attempt 1 from clean roots and require published report plus passed offline verification.
 - [ ] 8.5 Run positive attempt 2 from different clean roots on the identical commit/config and require published report plus passed offline verification.

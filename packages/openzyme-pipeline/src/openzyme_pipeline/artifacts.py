@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
 import re
+import stat
 from typing import Any
+from uuid import uuid4
 
 from .client import PipelineSdkError, call
 
@@ -11,6 +16,31 @@ WORKSPACE_INPUT_ROOT = Path("/workspace/input")
 WORKSPACE_OUTPUT_ROOT = Path("/workspace/output")
 COMPAT_INPUT_ROOT = Path("/openzyme/input")
 COMPAT_OUTPUT_ROOT = Path("/openzyme/output")
+ARTIFACT_REGISTRATION_METADATA_INLINE_MAX_BYTES = 256 * 1024
+ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES = 32 * 1024 * 1024
+ARTIFACT_REGISTRATION_METADATA_SIDECAR_SCHEMA_ID = (
+    "artifact_registration_metadata_sidecar@1"
+)
+ARTIFACT_REGISTRATION_RESPONSE_SCHEMA_ID = "artifact_registration_response@2"
+ARTIFACT_REGISTRATION_METADATA_SUMMARY_SCHEMA_ID = (
+    "artifact_registration_metadata_summary@1"
+)
+ARTIFACT_REGISTRATION_VALIDATION_SUMMARY_SCHEMA_ID = (
+    "artifact_registration_validation_summary@1"
+)
+ARTIFACT_REGISTRATION_ARTIFACT_ID_MAX_BYTES = 256
+ARTIFACT_REGISTER_MANY_MAX_ITEMS = 128
+ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS = frozenset(
+    {"content_digest", "sealed_digest", "tree_digest"}
+)
+ARTIFACT_REGISTRATION_METADATA_WORK_ROOT = Path(
+    os.environ.get("OPENZYME_SANDBOX_WORK_ROOT", "/workspace/work")
+)
+ARTIFACT_REGISTRATION_METADATA_SIDECAR_ROOT = (
+    ARTIFACT_REGISTRATION_METADATA_WORK_ROOT
+    / ".openzyme"
+    / "artifact-metadata"
+)
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Keep these wire values identical to ``openzyme_domain.models.ArtifactKind``.
 # The sandbox SDK deliberately remains dependency-free, so importing the domain
@@ -44,11 +74,10 @@ def registered_artifact_ref(response: dict[str, Any]) -> dict[str, str]:
     chaining them through this selector.
     """
 
-    artifact = response.get("artifact")
-    if not isinstance(artifact, dict):
-        if isinstance(response.get("artifact_id"), str) and isinstance(
-            response.get("content_digest"), str
-        ):
+    if response.get("schema_id") != ARTIFACT_REGISTRATION_RESPONSE_SCHEMA_ID:
+        if set(response) == {"artifact_id", "content_digest"} and isinstance(
+            response.get("artifact_id"), str
+        ) and isinstance(response.get("content_digest"), str):
             raise _projection_error(
                 "artifact selector output is already a canonical artifact ref; "
                 "use it directly instead of passing it to registered_artifact_ref",
@@ -60,25 +89,140 @@ def registered_artifact_ref(response: dict[str, Any]) -> dict[str, str]:
                 ),
             )
         raise _projection_error(
-            "artifact registration response has no artifact object; pass only the "
+            "artifact registration response schema is invalid; pass only the current "
             "direct response returned by artifacts.register",
             error_code="artifact_registration_projection_invalid",
         )
+    expected_keys = {
+        "schema_id",
+        "artifact",
+        "content_digest",
+        "tree_digest",
+        "validation",
+        "reused",
+    }
+    if set(response) != expected_keys or not isinstance(response.get("reused"), bool):
+        raise _projection_error(
+            "artifact registration response does not match its closed schema",
+            error_code="artifact_registration_projection_invalid",
+        )
+    artifact = response.get("artifact")
+    if not isinstance(artifact, dict) or set(artifact) != {"artifact_id", "metadata"}:
+        raise _projection_error(
+            "artifact registration response artifact does not match its closed schema",
+            error_code="artifact_registration_projection_invalid",
+        )
     artifact_id = _required_text(artifact.get("artifact_id"), label="artifact_id")
+    if len(artifact_id.encode("utf-8")) > ARTIFACT_REGISTRATION_ARTIFACT_ID_MAX_BYTES:
+        raise _projection_error(
+            "artifact registration response artifact_id exceeds its bounded limit",
+            error_code="artifact_registration_projection_invalid",
+        )
     content_digest = _required_digest(
         response.get("content_digest"),
         label="artifact registration content_digest",
     )
     metadata = artifact.get("metadata")
-    if isinstance(metadata, dict):
-        metadata_digest = metadata.get("content_digest") or metadata.get(
-            "sealed_digest"
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("schema_id")
+        != ARTIFACT_REGISTRATION_METADATA_SUMMARY_SCHEMA_ID
+        or metadata.get("projection") != "bounded_registration_summary"
+    ):
+        raise _projection_error(
+            "artifact registration metadata summary is invalid",
+            error_code="artifact_registration_projection_invalid",
         )
-        if metadata_digest is not None and metadata_digest != content_digest:
-            raise _projection_error(
-                "artifact registration response has inconsistent content digests",
-                error_code="artifact_registration_projection_invalid",
-            )
+    expected_metadata_keys = {
+        "schema_id",
+        "projection",
+        "metadata_digest",
+        "metadata_size_bytes",
+        "metadata_field_count",
+        "content_digest",
+        "sealed_digest",
+        "tree_digest",
+    }
+    if (
+        set(metadata) != expected_metadata_keys
+        or not isinstance(metadata.get("metadata_size_bytes"), int)
+        or isinstance(metadata.get("metadata_size_bytes"), bool)
+        or int(metadata["metadata_size_bytes"]) < 0
+        or not isinstance(metadata.get("metadata_field_count"), int)
+        or isinstance(metadata.get("metadata_field_count"), bool)
+        or int(metadata["metadata_field_count"]) < 0
+    ):
+        raise _projection_error(
+            "artifact registration metadata summary does not match its closed schema",
+            error_code="artifact_registration_projection_invalid",
+        )
+    _required_digest(
+        metadata.get("metadata_digest"),
+        label="artifact registration metadata_digest",
+    )
+    if (
+        response.get("tree_digest") is not None
+        or metadata.get("tree_digest") is not None
+    ):
+        raise _projection_error(
+            "file artifact registration response must not carry a tree digest",
+            error_code="artifact_registration_projection_invalid",
+        )
+    if (
+        metadata.get("content_digest") != content_digest
+        or metadata.get("sealed_digest") != content_digest
+    ):
+        raise _projection_error(
+            "artifact registration response has inconsistent content digests",
+            error_code="artifact_registration_projection_invalid",
+        )
+    validation = response.get("validation")
+    if (
+        not isinstance(validation, dict)
+        or validation.get("schema_id")
+        != ARTIFACT_REGISTRATION_VALIDATION_SUMMARY_SCHEMA_ID
+        or validation.get("projection") != "bounded_registration_summary"
+    ):
+        raise _projection_error(
+            "artifact registration validation summary is invalid",
+            error_code="artifact_registration_projection_invalid",
+        )
+    expected_validation_keys = {
+        "schema_id",
+        "projection",
+        "status",
+        "format",
+        "validation_profile",
+        "empty_result_reason",
+        "derivation_contract_id",
+        "required_columns_count",
+        "required_columns_digest",
+        "validation_digest",
+        "validation_size_bytes",
+    }
+    if "required_columns" in validation:
+        expected_validation_keys.add("required_columns")
+    if (
+        set(validation) != expected_validation_keys
+        or not isinstance(validation.get("required_columns_count"), int)
+        or isinstance(validation.get("required_columns_count"), bool)
+        or int(validation["required_columns_count"]) < 0
+        or not isinstance(validation.get("validation_size_bytes"), int)
+        or isinstance(validation.get("validation_size_bytes"), bool)
+        or int(validation["validation_size_bytes"]) < 0
+    ):
+        raise _projection_error(
+            "artifact registration validation summary does not match its closed schema",
+            error_code="artifact_registration_projection_invalid",
+        )
+    _required_digest(
+        validation.get("required_columns_digest"),
+        label="artifact registration required_columns_digest",
+    )
+    _required_digest(
+        validation.get("validation_digest"),
+        label="artifact registration validation_digest",
+    )
     return {
         "artifact_id": artifact_id,
         "content_digest": content_digest,
@@ -238,6 +382,7 @@ def register(
 ) -> dict[str, Any]:
     _validate_artifact_kind(kind)
     resolved = _resolve_output_path(path)
+    metadata_transport = _metadata_transport(_metadata_object(metadata))
     return dict(
         call(
             "artifacts.register",
@@ -246,7 +391,7 @@ def register(
                 "kind": kind,
                 "format": format,
                 "validation_profile": validation_profile,
-                "metadata": dict(metadata or {}),
+                **metadata_transport,
             },
         )
     )
@@ -261,6 +406,18 @@ def register_many(
     metadata: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     _validate_artifact_kind(kind)
+    if len(paths) > ARTIFACT_REGISTER_MANY_MAX_ITEMS:
+        raise PipelineSdkError(
+            "artifacts.register_many exceeds its bounded item limit",
+            error_code="artifact_register_many_too_many_items",
+            stage="artifacts.request_serialization",
+            retryable=False,
+            details={
+                "max_items": ARTIFACT_REGISTER_MANY_MAX_ITEMS,
+                "item_count": len(paths),
+            },
+        )
+    metadata_transport = _metadata_transport(_metadata_object(metadata))
     items: list[dict[str, Any]] = []
     for path in paths:
         resolved = _resolve_output_path(path)
@@ -270,10 +427,199 @@ def register_many(
                 "kind": kind,
                 "format": format,
                 "validation_profile": validation_profile,
-                "metadata": dict(metadata or {}),
+                **metadata_transport,
             }
         )
     return list(call("artifacts.register_many", {"items": items}))
+
+
+def _metadata_object(metadata: object) -> dict[str, Any]:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, dict):
+        raise PipelineSdkError(
+            "artifact registration metadata must be a JSON object",
+            error_code="artifact_registration_metadata_invalid",
+            stage="artifacts.request_serialization",
+            retryable=False,
+        )
+    result = dict(metadata)
+    reserved_fields = sorted(
+        ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS.intersection(result)
+    )
+    if reserved_fields:
+        raise PipelineSdkError(
+            "artifact registration metadata contains Host-owned digest fields",
+            error_code="artifact_registration_metadata_reserved",
+            stage="artifacts.request_validation",
+            retryable=False,
+            details={"reserved_fields": reserved_fields},
+        )
+    return result
+
+
+def _metadata_transport(metadata: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = json.dumps(
+            metadata,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise PipelineSdkError(
+            "artifact registration metadata is not canonical JSON",
+            error_code="artifact_registration_metadata_invalid",
+            stage="artifacts.request_serialization",
+            retryable=False,
+        ) from exc
+    if len(payload) <= ARTIFACT_REGISTRATION_METADATA_INLINE_MAX_BYTES:
+        return {"metadata": metadata}
+    if len(payload) > ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES:
+        raise PipelineSdkError(
+            "artifact registration metadata exceeds the bounded sidecar limit",
+            error_code="artifact_registration_metadata_too_large",
+            stage="artifacts.request_serialization",
+            retryable=False,
+            hint=(
+                "Register oversized evidence as a separate artifact and keep only "
+                "its canonical artifact reference in catalog metadata."
+            ),
+            details={
+                "max_bytes": ARTIFACT_REGISTRATION_METADATA_SIDECAR_MAX_BYTES,
+                "size_bytes": len(payload),
+            },
+        )
+    digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    _write_metadata_sidecar(payload, digest=digest)
+    return {
+        "metadata_sidecar": {
+            "schema_id": ARTIFACT_REGISTRATION_METADATA_SIDECAR_SCHEMA_ID,
+            "path": (
+                "/workspace/work/.openzyme/artifact-metadata/"
+                f"{digest.removeprefix('sha256:')}.json"
+            ),
+            "content_digest": digest,
+            "size_bytes": len(payload),
+        }
+    }
+
+
+def _write_metadata_sidecar(payload: bytes, *, digest: str) -> Path:
+    work_root = ARTIFACT_REGISTRATION_METADATA_WORK_ROOT
+    root = work_root / ".openzyme" / "artifact-metadata"
+    target_name = f"{digest.removeprefix('sha256:')}.json"
+    target = root / target_name
+    directory_descriptors: list[int] = []
+    temporary_name: str | None = None
+    try:
+        work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory_flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            directory_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_DIRECTORY"):
+            directory_flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        work_fd = os.open(work_root, directory_flags)
+        directory_descriptors.append(work_fd)
+        os.fchmod(work_fd, 0o700)
+        parent_fd = work_fd
+        for name in (".openzyme", "artifact-metadata"):
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+            directory_descriptors.append(child_fd)
+            os.fchmod(child_fd, 0o700)
+            parent_fd = child_fd
+        metadata_fd = directory_descriptors[-1]
+
+        existing_flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            existing_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            existing_flags |= os.O_NOFOLLOW
+        try:
+            existing_fd = os.open(target_name, existing_flags, dir_fd=metadata_fd)
+        except FileNotFoundError:
+            existing_fd = -1
+        if existing_fd >= 0:
+            with os.fdopen(existing_fd, "rb", closefd=True) as handle:
+                file_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != len(
+                    payload
+                ):
+                    raise OSError(
+                        "metadata sidecar digest path contains different bytes"
+                    )
+                existing = handle.read(len(payload) + 1)
+                if existing != payload:
+                    raise OSError(
+                        "metadata sidecar digest path contains different bytes"
+                    )
+                os.fchmod(handle.fileno(), 0o600)
+            return target
+
+        temporary_name = f".metadata-{uuid4().hex}.tmp"
+        create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            create_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            create_flags |= os.O_NOFOLLOW
+        descriptor = os.open(
+            temporary_name,
+            create_flags,
+            0o600,
+            dir_fd=metadata_fd,
+        )
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(
+                temporary_name,
+                target_name,
+                src_dir_fd=metadata_fd,
+                dst_dir_fd=metadata_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            existing_fd = os.open(target_name, existing_flags, dir_fd=metadata_fd)
+            with os.fdopen(existing_fd, "rb", closefd=True) as handle:
+                file_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != len(
+                    payload
+                ):
+                    raise OSError(
+                        "metadata sidecar digest path contains different bytes"
+                    )
+                if handle.read(len(payload) + 1) != payload:
+                    raise OSError(
+                        "metadata sidecar digest path contains different bytes"
+                    )
+                os.fchmod(handle.fileno(), 0o600)
+        return target
+    except OSError as exc:
+        raise PipelineSdkError(
+            "artifact registration metadata sidecar could not be materialized",
+            error_code="artifact_registration_metadata_sidecar_write_failed",
+            stage="artifacts.request_serialization",
+            retryable=False,
+            details={"content_digest": digest, "size_bytes": len(payload)},
+        ) from exc
+    finally:
+        if temporary_name is not None and directory_descriptors:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_descriptors[-1])
+            except FileNotFoundError:
+                pass
+        for descriptor in reversed(directory_descriptors):
+            os.close(descriptor)
 
 
 def snapshot_code(

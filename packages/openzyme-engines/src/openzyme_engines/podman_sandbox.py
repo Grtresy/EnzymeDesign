@@ -21,6 +21,7 @@ from openzyme_domain import RunStatus
 from openzyme_domain import SessionArtifactRecord
 from openzyme_runtime import immutable_source_tree_digest
 from openzyme_runtime import ArtifactBoundaryError
+from openzyme_runtime import load_artifact_registration_metadata_sidecar
 from openzyme_runtime import PodmanContainerLease
 from openzyme_runtime import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
 
@@ -32,6 +33,42 @@ DEFAULT_SANDBOX_IMAGE = "localhost/openzyme-pipeline-sandbox:dev"
 _CONTROL_SOCKET_START_ATTEMPTS = 100
 _CONTROL_SOCKET_START_POLL_SECONDS = 0.01
 _CONTROL_SOCKET_STOP_GRACE_SECONDS = 2.0
+_CONTROL_SOCKET_FRAME_MAX_BYTES = 4 * 1024 * 1024
+_CONTROL_SOCKET_CHUNK_BYTES = 64 * 1024
+_CONTROL_SOCKET_IO_TIMEOUT_SECONDS = 5.0
+_CONTROL_SOCKET_REQUEST_ID_MAX_BYTES = 256
+_ARTIFACT_REGISTER_MANY_MAX_ITEMS = 128
+_ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES = 32 * 1024 * 1024
+_ARTIFACT_METADATA_INLINE_MAX_BYTES = 256 * 1024
+_ARTIFACT_REQUIRED_COLUMNS_MAX_ITEMS = 4_096
+_ARTIFACT_REQUIRED_COLUMN_MAX_BYTES = 256
+_ARTIFACT_REQUIRED_COLUMNS_MAX_BYTES = 64 * 1024
+_ARTIFACT_DERIVATION_CONTRACT_ID_MAX_BYTES = 256
+_ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS = frozenset(
+    {"content_digest", "sealed_digest", "tree_digest"}
+)
+_PROVISIONAL_REGISTRATION_RESPONSE_SCHEMA_ID = (
+    "pipeline_provisional_registration_response@1"
+)
+
+
+class _ControlSocketProtocolError(ValueError):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r} is forbidden")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
 
 
 def _safe_host_segment(value: str, *, label: str) -> str:
@@ -393,11 +430,170 @@ class _ControlSocketServer:
                 except socket.timeout:
                     continue
                 with conn:
-                    payload = conn.recv(65536).decode("utf-8").strip()
-                    if not payload:
+                    request_id: Any = None
+                    try:
+                        conn.settimeout(_CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
+                        frame = self._read_frame(conn)
+                        if frame is None or not frame.strip():
+                            continue
+                        request = self._decode_request_frame(frame)
+                        request_id = self._response_request_id(request.get("id"))
+                        self._validate_request_frame(request)
+                        conn.settimeout(None)
+                        response = self._handle(request)
+                    except Exception as exc:
+                        response = {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "message": str(exc),
+                                "type": exc.__class__.__name__,
+                                "error_code": getattr(exc, "error_code", None)
+                                or "sandbox_transport_request_invalid",
+                            },
+                        }
+                    encoded = self._encode_response(response, request_id=request_id)
+                    try:
+                        conn.settimeout(_CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
+                        conn.sendall(encoded)
+                    except OSError:
                         continue
-                    response = self._handle(json.loads(payload))
-                    conn.sendall(json.dumps(response, sort_keys=True).encode("utf-8") + b"\n")
+
+    @staticmethod
+    def _read_frame(conn: socket.socket) -> bytes | None:
+        payload = bytearray()
+        while True:
+            remaining = _CONTROL_SOCKET_FRAME_MAX_BYTES - len(payload) + 1
+            try:
+                chunk = conn.recv(min(_CONTROL_SOCKET_CHUNK_BYTES, remaining))
+            except socket.timeout as exc:
+                raise _ControlSocketProtocolError(
+                    "sandbox_transport_request_timeout",
+                    "control socket request frame timed out",
+                ) from exc
+            if not chunk:
+                if not payload:
+                    return None
+                raise _ControlSocketProtocolError(
+                    "sandbox_transport_request_invalid",
+                    "control request ended before its newline delimiter",
+                )
+            newline_index = chunk.find(b"\n")
+            if newline_index >= 0:
+                payload.extend(chunk[:newline_index])
+                if len(payload) > _CONTROL_SOCKET_FRAME_MAX_BYTES:
+                    raise _ControlSocketProtocolError(
+                        "sandbox_transport_request_too_large",
+                        "control request exceeds its bounded limit",
+                    )
+                if chunk[newline_index + 1 :].strip():
+                    raise _ControlSocketProtocolError(
+                        "sandbox_transport_request_invalid",
+                        "control socket accepts one request per connection",
+                    )
+                return bytes(payload)
+            payload.extend(chunk)
+            if len(payload) > _CONTROL_SOCKET_FRAME_MAX_BYTES:
+                raise _ControlSocketProtocolError(
+                    "sandbox_transport_request_too_large",
+                    "control request exceeds its bounded limit",
+                )
+
+    @staticmethod
+    def _decode_request_frame(frame: bytes) -> dict[str, Any]:
+        try:
+            request = json.loads(
+                frame.decode("utf-8"),
+                object_pairs_hook=_unique_json_object,
+                parse_constant=_reject_json_constant,
+            )
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+            raise _ControlSocketProtocolError(
+                "sandbox_transport_request_invalid",
+                "control request frame is not valid UTF-8 JSON",
+            ) from exc
+        if not isinstance(request, dict):
+            raise _ControlSocketProtocolError(
+                "sandbox_transport_request_invalid",
+                "control request frame must contain a JSON object",
+            )
+        return request
+
+    @staticmethod
+    def _response_request_id(request_id: Any) -> str | int | None:
+        if isinstance(request_id, str):
+            if len(request_id.encode("utf-8")) <= _CONTROL_SOCKET_REQUEST_ID_MAX_BYTES:
+                return request_id
+            return None
+        if (
+            isinstance(request_id, int)
+            and not isinstance(request_id, bool)
+            and -(2**63) <= request_id < 2**63
+        ):
+            return request_id
+        return None
+
+    @classmethod
+    def _validate_request_frame(cls, request: dict[str, Any]) -> None:
+        raw_request_id = request.get("id")
+        if raw_request_id is not None and cls._response_request_id(raw_request_id) is None:
+            raise _ControlSocketProtocolError(
+                "sandbox_transport_request_invalid",
+                "control request id is outside the bounded JSON-RPC identity contract",
+            )
+        if request.get("jsonrpc") != "2.0":
+            raise _ControlSocketProtocolError(
+                "sandbox_transport_request_invalid",
+                "control request frame must use JSON-RPC 2.0",
+            )
+        params = request.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise _ControlSocketProtocolError(
+                "sandbox_transport_request_invalid",
+                "control request params must be a JSON object",
+            )
+
+    @classmethod
+    def _encode_response(
+        cls,
+        response: dict[str, Any],
+        *,
+        request_id: Any,
+    ) -> bytes:
+        try:
+            encoded = json.dumps(
+                response,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (RecursionError, TypeError, ValueError):
+            encoded = b""
+            error_code = "sandbox_transport_response_invalid"
+            message = "control socket response is not valid JSON"
+        else:
+            error_code = "sandbox_transport_response_too_large"
+            message = "control socket response exceeds its bounded limit"
+        if len(encoded) > _CONTROL_SOCKET_FRAME_MAX_BYTES or not encoded:
+            bounded_error = {
+                "jsonrpc": "2.0",
+                "id": cls._response_request_id(request_id),
+                "error": {
+                    "message": message,
+                    "type": "ValueError",
+                    "error_code": error_code,
+                },
+            }
+            encoded = json.dumps(
+                bounded_error,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > _CONTROL_SOCKET_FRAME_MAX_BYTES:
+                encoded = (
+                    b'{"error":{"error_code":"sandbox_transport_response_too_large"},'
+                    b'"id":null,"jsonrpc":"2.0"}'
+                )
+        return encoded + b"\n"
 
     def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -410,7 +606,66 @@ class _ControlSocketServer:
             elif method == "artifacts.register":
                 result = self._register(params)
             elif method == "artifacts.register_many":
-                result = [self._register(item) for item in list(params.get("items") or [])]
+                items = params.get("items", [])
+                if not isinstance(items, list) or not all(
+                    isinstance(item, dict) for item in items
+                ):
+                    raise ValueError("artifacts.register_many items must be objects")
+                if len(items) > _ARTIFACT_REGISTER_MANY_MAX_ITEMS:
+                    raise ValueError("artifacts.register_many exceeds its bounded item limit")
+                resolved_metadata: list[dict[str, Any]] = []
+                metadata_cache: dict[str, dict[str, Any]] = {}
+                resolved_metadata_bytes = 0
+                for item in items:
+                    try:
+                        cache_key = json.dumps(
+                            {
+                                "metadata": item.get("metadata")
+                                if "metadata" in item
+                                else None,
+                                "metadata_sidecar": item.get("metadata_sidecar")
+                                if "metadata_sidecar" in item
+                                else None,
+                            },
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            allow_nan=False,
+                        )
+                    except (RecursionError, TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "artifact registration metadata is not canonical JSON"
+                        ) from exc
+                    cached = metadata_cache.get(cache_key)
+                    if cached is None:
+                        cached = self._registration_metadata(item)
+                        cached_size = len(
+                            json.dumps(
+                                cached,
+                                ensure_ascii=True,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                allow_nan=False,
+                            ).encode("utf-8")
+                        )
+                        resolved_metadata_bytes += cached_size
+                        if (
+                            resolved_metadata_bytes
+                            > _ARTIFACT_REGISTER_MANY_METADATA_MAX_BYTES
+                        ):
+                            raise ValueError(
+                                "artifacts.register_many metadata exceeds its aggregate limit"
+                            )
+                        metadata_cache[cache_key] = cached
+                    resolved_metadata.append(cached)
+                result = [
+                    self._register(item, resolved_metadata=metadata)
+                    for item, metadata in zip(
+                        items,
+                        resolved_metadata,
+                        strict=True,
+                    )
+                ]
             elif self.control_handler is not None:
                 result = self.control_handler(method, params)
             else:
@@ -469,7 +724,12 @@ class _ControlSocketServer:
             "mode": str(params.get("mode") or "copy"),
         }
 
-    def _register(self, params: dict[str, Any]) -> dict[str, Any]:
+    def _register(
+        self,
+        params: dict[str, Any],
+        *,
+        resolved_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raw_kind = str(params["kind"]) if "kind" in params else "result"
         try:
             kind = ArtifactKind(raw_kind)
@@ -501,7 +761,11 @@ class _ControlSocketServer:
             raise ValueError("registered artifact path escapes output directory")
         if not host_path.is_file():
             raise ValueError(f"registered artifact does not exist: {sandbox_path}")
-        metadata = dict(params.get("metadata") or {})
+        metadata = (
+            self._registration_metadata(params)
+            if resolved_metadata is None
+            else dict(resolved_metadata)
+        )
         output_format = params.get("format")
         validation_profile = params.get("validation_profile")
         if output_format is not None:
@@ -530,14 +794,84 @@ class _ControlSocketServer:
             ),
             metadata=metadata,
         )
-        self.registered.append(_RegisteredOutput(host_path=host_path, relative_path=relative_path, kind=kind, metadata=metadata))
-        return {
-            "artifact_id": f"pipeline:{len(self.registered)}:{relative_path}",
-            "path": str(sandbox_path),
-            "relative_path": relative_path,
-            "kind": kind.value,
-            "metadata": metadata,
+        metadata_bytes = json.dumps(
+            metadata,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        with host_path.open("rb") as handle:
+            observed_content_digest = (
+                f"sha256:{hashlib.file_digest(handle, 'sha256').hexdigest()}"
+            )
+        result = {
+            "schema_id": _PROVISIONAL_REGISTRATION_RESPONSE_SCHEMA_ID,
+            "canonical": False,
+            "artifact_id": f"pipeline:{len(self.registered) + 1}",
+            "observed_content_digest": observed_content_digest,
+            "metadata": {
+                "schema_id": "pipeline_provisional_metadata_summary@1",
+                "projection": "bounded_provisional_summary",
+                "metadata_digest": (
+                    f"sha256:{hashlib.sha256(metadata_bytes).hexdigest()}"
+                ),
+                "metadata_size_bytes": len(metadata_bytes),
+                "metadata_field_count": len(metadata),
+            },
         }
+        self.registered.append(
+            _RegisteredOutput(
+                host_path=host_path,
+                relative_path=relative_path,
+                kind=kind,
+                metadata=metadata,
+            )
+        )
+        return result
+
+    def _registration_metadata(self, params: dict[str, Any]) -> dict[str, Any]:
+        if "metadata_sidecar" not in params:
+            if "metadata" not in params:
+                return {}
+            metadata = params.get("metadata")
+            if not isinstance(metadata, dict):
+                raise ValueError("artifact registration metadata must be an object")
+            payload = json.dumps(
+                metadata,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(payload) > _ARTIFACT_METADATA_INLINE_MAX_BYTES:
+                raise ValueError("inline artifact registration metadata is too large")
+            resolved = dict(metadata)
+            self._reject_host_owned_registration_metadata(resolved)
+            return resolved
+        if "metadata" in params:
+            raise ValueError("artifact registration must use exactly one metadata transport")
+        sidecar = params.get("metadata_sidecar")
+        if not isinstance(sidecar, dict):
+            raise ValueError("artifact registration metadata sidecar must be an object")
+        resolved = load_artifact_registration_metadata_sidecar(
+            workspace_path=self.output_dir.parent,
+            sidecar=dict(sidecar),
+        )
+        self._reject_host_owned_registration_metadata(resolved)
+        return resolved
+
+    @staticmethod
+    def _reject_host_owned_registration_metadata(metadata: dict[str, Any]) -> None:
+        reserved_fields = sorted(
+            _ARTIFACT_REGISTRATION_HOST_OWNED_DIGEST_FIELDS.intersection(metadata)
+        )
+        if reserved_fields:
+            raise ArtifactBoundaryError(
+                "artifact_registration_metadata_reserved",
+                "artifact registration metadata contains Host-owned digest fields",
+                details={"reserved_fields": reserved_fields},
+            )
 
     def _validate_registered_output(
         self,
@@ -549,7 +883,32 @@ class _ControlSocketServer:
         metadata: dict[str, Any],
     ) -> None:
         output_format = str(metadata.get("format") or "").lower()
-        required_columns = [str(column) for column in list(metadata.get("required_columns") or [])]
+        raw_required_columns = metadata.get("required_columns")
+        if raw_required_columns is None:
+            required_columns: list[str] = []
+        elif not isinstance(raw_required_columns, list):
+            raise ValueError("metadata.required_columns must be a bounded list")
+        else:
+            if len(raw_required_columns) > _ARTIFACT_REQUIRED_COLUMNS_MAX_ITEMS:
+                raise ValueError("metadata.required_columns exceeds its item limit")
+            required_columns = []
+            total_column_bytes = 0
+            for column in raw_required_columns:
+                if not isinstance(column, str) or not column:
+                    raise ValueError(
+                        "metadata.required_columns entries must be non-empty strings"
+                    )
+                column_bytes = len(column.encode("utf-8"))
+                if column_bytes > _ARTIFACT_REQUIRED_COLUMN_MAX_BYTES:
+                    raise ValueError(
+                        "metadata.required_columns contains an oversized name"
+                    )
+                total_column_bytes += column_bytes
+                if total_column_bytes > _ARTIFACT_REQUIRED_COLUMNS_MAX_BYTES:
+                    raise ValueError(
+                        "metadata.required_columns exceeds its byte limit"
+                    )
+                required_columns.append(column)
         if validation_profile is None and not output_format and not required_columns:
             return
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -563,6 +922,8 @@ class _ControlSocketServer:
                 or not isinstance(reason, str)
                 or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason) is None
                 or not isinstance(derivation_contract_id, str)
+                or len(derivation_contract_id.encode("utf-8"))
+                > _ARTIFACT_DERIVATION_CONTRACT_ID_MAX_BYTES
                 or re.fullmatch(
                     r"[a-z][a-z0-9_.-]*@[1-9][0-9]*",
                     derivation_contract_id,

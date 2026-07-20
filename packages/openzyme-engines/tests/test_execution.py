@@ -3073,6 +3073,9 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     assert fasta_artifact.metadata["provider"] == "ncbi"
     assert fasta_artifact.metadata["response_digest"].startswith("sha256:")
     assert fasta_artifact.metadata["source_code_artifact_id"] == code_artifact_id
+    assert fasta_artifact.metadata["content_digest"] == _content_digest(
+        Path(fasta_artifact.storage_uri).read_text(encoding="utf-8")
+    )
     assert (
         Path(fasta_artifact.storage_uri)
         .read_text(encoding="utf-8")

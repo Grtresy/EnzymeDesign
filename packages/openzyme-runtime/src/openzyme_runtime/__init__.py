@@ -45,6 +45,7 @@ from .bootstrap import validate_runtime_foundation_support
 from .artifact_boundary import ArtifactBoundaryError
 from .artifact_boundary import ArtifactBoundaryService
 from .artifact_boundary import FASTA_ZERO_RECORDS_VALIDATION_PROFILE
+from .artifact_boundary import load_artifact_registration_metadata_sidecar
 from .artifact_boundary import register_artifact_boundary_tools
 from .artifact_boundary import summarize_workspace_directory
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
@@ -318,6 +319,7 @@ __all__ = [
     "live_hpc_skip_reason",
     "live_llm_skip_reason",
     "live_tavily_skip_reason",
+    "load_artifact_registration_metadata_sidecar",
     "quality_eval_skip_reason",
     "project_artifact_for_agent",
     "project_artifact_list_for_agent",

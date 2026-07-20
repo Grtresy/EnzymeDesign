@@ -14,6 +14,20 @@ from uuid import uuid4
 # duplicated instead of importing the Host runtime.
 CONTROL_SOCKET_FRAME_MAX_BYTES = 4 * 1024 * 1024
 _CONTROL_SOCKET_CHUNK_BYTES = 64 * 1024
+CONTROL_SOCKET_IO_TIMEOUT_SECONDS = 5.0
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r} is forbidden")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        result[key] = value
+    return result
 
 
 class PipelineSdkError(RuntimeError):
@@ -56,7 +70,11 @@ class ControlClient:
             "params": params,
         }
         try:
-            request_payload = json.dumps(request, sort_keys=True).encode("utf-8")
+            request_payload = json.dumps(
+                request,
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
         except (TypeError, ValueError, RecursionError) as exc:
             raise PipelineSdkError(
                 "control socket request is not valid JSON",
@@ -77,9 +95,24 @@ class ControlClient:
             )
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
                 client.connect(self.socket_path)
                 client.sendall(request_payload + b"\n")
-                response_payload = self._read_response_frame(client)
+                # A controlled operation can legitimately remain paused in the
+                # Host while it waits for approval or a provider/HPC result.  Its
+                # outer sandbox/approval lifecycle owns that wait.  The fixed
+                # socket timeout applies again only after the Host starts a
+                # response, so a stalled partial frame still fails closed.
+                client.settimeout(None)
+                try:
+                    response_payload = self._read_response_frame(client)
+                except TimeoutError as exc:
+                    raise PipelineSdkError(
+                        "control socket response timed out before its newline delimiter",
+                        error_code="sandbox_transport_response_timeout",
+                        stage="control_socket_response",
+                        retryable=False,
+                    ) from exc
         except OSError as exc:
             raise PipelineSdkError(
                 "control socket is unavailable",
@@ -111,6 +144,7 @@ class ControlClient:
     @staticmethod
     def _read_response_frame(client: socket.socket) -> bytes:
         payload = bytearray()
+        response_started = False
         while True:
             remaining = CONTROL_SOCKET_FRAME_MAX_BYTES - len(payload) + 1
             chunk = client.recv(min(_CONTROL_SOCKET_CHUNK_BYTES, remaining))
@@ -121,6 +155,9 @@ class ControlClient:
                     stage="control_socket_response",
                     retryable=False,
                 )
+            if not response_started:
+                client.settimeout(CONTROL_SOCKET_IO_TIMEOUT_SECONDS)
+                response_started = True
             newline_index = chunk.find(b"\n")
             if newline_index >= 0:
                 payload.extend(chunk[:newline_index])
@@ -151,7 +188,11 @@ class ControlClient:
     @staticmethod
     def _decode_response_frame(payload: bytes, *, request_id: str) -> dict[str, Any]:
         try:
-            response = json.loads(payload.decode("utf-8"))
+            response = json.loads(
+                payload.decode("utf-8"),
+                object_pairs_hook=_unique_json_object,
+                parse_constant=_reject_json_constant,
+            )
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise PipelineSdkError(
                 "control socket response is not valid UTF-8 JSON",
@@ -194,7 +235,20 @@ def supervised_sandbox_mode() -> bool:
 
 
 def canonical_digest(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise PipelineSdkError(
+            "canonical digest input is not valid JSON",
+            error_code="sandbox_transport_request_invalid",
+            stage="control_socket_request",
+            retryable=False,
+        ) from exc
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
