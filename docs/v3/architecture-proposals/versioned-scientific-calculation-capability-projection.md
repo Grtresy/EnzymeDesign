@@ -28,6 +28,10 @@ artifact metadata、collector/verifier schema 以及历史 bundle 兼容，属�
 - workflow pack 可以告诉 agent 一个 calculation id 和数学约束，但若没有 exact callable
   projection，agent 仍需猜测参数、返回类型和 serializer。r3 executor 因而把
   `aox_motif_rule_score@1` 写成 alignment percent-identity approximation。
+- r32 的受控 AOX SOP 已列出 exact callable 与 accessor 名，但没有投影 Python 返回类型；
+  executor 因而把 `result.to_fasta() -> str` 直接交给 bytes-only `Path.write_bytes`，在完成
+  真实 NCBI operation 后以 `memoryview(str)` TypeError fail closed。当前 Goal 只补足该已安装
+  facade 的精确类型事实与 UTF-8 边界；统一 registry/typed projection 仍属于本提案的大改。
 - Host collector 能离线识别错误 bytes，但这种事后拒绝没有在执行前低摩擦地告诉 agent
   “应调用哪个 typed capability、如何注册结果、哪些 branch 输出必须为空”。
 - 部分 branch-only calculation 由 collector 直接重算，executor 只能手写等价逻辑。即使

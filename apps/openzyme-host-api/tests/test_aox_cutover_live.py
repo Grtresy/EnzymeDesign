@@ -10,6 +10,7 @@ import struct
 import threading
 import time
 from types import SimpleNamespace
+from typing import get_type_hints
 import zlib
 
 from fastapi import FastAPI
@@ -37,8 +38,11 @@ from openzyme_host_api.aox_cutover_evidence import safe_micu_ledger_snapshot
 from openzyme_host_api.aox_cutover_evidence import seal_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import verify_attempt_bundle
 from openzyme_host_api.aox_cutover_evidence import _report_publish_receipt_is_valid
+from openzyme_pipeline import aox_hmmer
 from openzyme_pipeline import aox_motif
 from openzyme_pipeline import aox_reference
+from openzyme_pipeline import aox_sequence_join
+from openzyme_pipeline import aox_similarity
 from openzyme_runtime import OpenZymeSettings
 from openzyme_host_api import aox_cutover_evidence as cutover_evidence
 
@@ -47,6 +51,35 @@ def _digest(label: str) -> str:
     import hashlib
 
     return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
+def test_pinned_scientific_result_accessor_types_match_workflow_facts() -> None:
+    text_accessors = (
+        aox_reference.HmmReferenceSetSelectionResult.to_fasta,
+        aox_reference.HmmReferenceSetSelectionResult.metadata_json,
+        aox_reference.ScoringReferenceSelectionResult.to_fasta,
+        aox_reference.ScoringReferenceSelectionResult.metadata_json,
+        aox_reference.ScoringInputAssemblyResult.to_fasta,
+        aox_reference.ScoringInputAssemblyResult.metadata_json,
+        aox_hmmer.ScoreFilteredAccessionsResult.to_csv,
+        aox_sequence_join.SequenceLengthJoinResult.hits_csv,
+        aox_sequence_join.SequenceLengthJoinResult.target_fasta,
+        aox_motif.ScoringResult.to_csv,
+        aox_similarity.SimilarityGraphResult.nodes_csv,
+        aox_similarity.SimilarityGraphResult.edges_csv,
+        aox_similarity.SimilarityGraphResult.manifest_json,
+    )
+    metadata_accessors = (
+        aox_hmmer.ScoreFilteredAccessionsResult.metadata,
+        aox_sequence_join.SequenceLengthJoinResult.metadata,
+        aox_motif.ScoringResult.metadata,
+    )
+
+    assert all(get_type_hints(accessor)["return"] is str for accessor in text_accessors)
+    assert all(
+        get_type_hints(accessor)["return"] == dict[str, object]
+        for accessor in metadata_accessors
+    )
 
 
 class _OperationReadProvider:
@@ -1540,6 +1573,10 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
         "build_similarity_graph(candidate_fasta, cdhit_membership_csv, ...)"
         in prompt
     )
+    assert "Every primary payload accessor named by that table returns Python str" in prompt
+    assert "metadata() returns a dict" in prompt
+    assert "Encode payload text exactly once with UTF-8" in prompt
+    assert "never pass str to a bytes-only writer" in prompt
     assert "supply every bound expected_*_digest" in prompt
     assert "never reimplement or approximate" in prompt
 

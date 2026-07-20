@@ -821,6 +821,43 @@ direct `artifacts.snapshot_code` 则返回 selection-aware recovery；不得生�
 增加无审计 inspection fallback 或放宽 provenance。变更后的 workflow knowledge 与 manifest
 必须重算 digest；下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
 
+## r32 blank-world live attempt：永久 NO-GO
+
+r32 以 clean commit `f54ea431ceaeff9274527afb20816c8110e39ee3`、相同 config
+digest `sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+及当时 workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`
+和 fresh roots 启动 positive attempt
+`positive-9f2badd3274d42fdabb4e1421f7d5e47`。独立 known-positive probe 完成
+真实 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign 六项 check；formal researcher
+完成真实 PubMed。Chrome UI 对 canonical approval `appr_3ea9addd5614` 批准 formal NCBI
+operation `op_b5857f8371a9`，driver 观察到同 operation/digest continuation，NCBI operation
+真实完成。
+
+同一 source-bound sandbox run `srun_0ee366725cd1` 随后在封存源码
+`aox_cutover.py:268` 将 `result.to_fasta()` 返回的 Python `str` 直接传给 bytes-only
+`Path.write_bytes` helper，以
+`TypeError: memoryview: a bytes-like object is required, not 'str'` / `sandbox_exec_nonzero`
+fail closed。execution task 显式 failed；reporter 发布诚实失败报告，但没有后续 formal
+provider/HPC operation、terminal Chrome observation、eligible report、positive 2 或 fault。
+
+non-eligible bundle 的 network-free verification 为 `issues=[]`，digest
+`sha256:039cbb6551cd785f9c5c9ac023cfa6d899503d52a0df7c570ced942e603411a6`；
+sealed decision 保持永久 **NO-GO**，digest
+`sha256:7b168335c45f7e8865aea8e92f591596c5a743d24894d1a958adc2882e45e5e8`。
+MICU 从 `59,877,108` 增至 `62,008,441 / 500,000,000`，delta `2,131,333`，
+remaining `437,991,559`，零 breach/overage。
+
+r32 的 roots、effects、artifacts、browser state、bundle 与 decision 永久不可复用。局部
+correction 不修改科学 callable 或 implementation digest，而是把 primary FASTA/CSV/JSON
+accessor 与 `metadata_json()` 的 agent-facing 类型明确为 `str`、`metadata()` 明确为
+`dict[str, object]`，并要求 bytes-only writer 前 exactly-once UTF-8 encode；type/annotation
+drift 必须 fail closed，禁止 best-effort coercion。AOX SOP digest 更新为
+`sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26`，
+workflow ref 更新为
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`；
+下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

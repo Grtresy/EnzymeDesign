@@ -417,15 +417,26 @@ scientific contract violation. This fixes calculation identity only; the agent
 remains free to choose legal batching, ordering, inspection, retry and source
 layout.
 
-| scientific output | installed callable | canonical serializer(s) |
+| scientific output | installed callable | canonical result accessor(s) and Python type |
 |---|---|---|
-| 13-record HMM reference | `openzyme_pipeline.aox_reference.select_hmm_reference_set` | `result.to_fasta()`, `result.metadata_json()` |
-| coordinate reference | `openzyme_pipeline.aox_reference.select_scoring_reference` | `result.to_fasta()`, `result.metadata_json()` |
-| reference-plus-target scoring input | `openzyme_pipeline.aox_reference.assemble_scoring_input` | `result.to_fasta()`, `result.metadata_json()` |
-| HMMER score-filtered accessions | `openzyme_pipeline.aox_hmmer.parse_and_filter_csv` | `result.to_csv()`, `result.metadata()` |
-| UniProt identity/length join | `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions` | `result.hits_csv()`, `result.target_fasta()`, `result.metadata()` |
-| motif reference-coordinate score | `openzyme_pipeline.aox_motif.score_aligned_fasta` | `result.to_csv()`, `result.metadata()` |
-| candidate similarity graph | `openzyme_pipeline.aox_similarity.build_similarity_graph` | `result.nodes_csv()`, `result.edges_csv()`, `result.manifest_json()` |
+| 13-record HMM reference | `openzyme_pipeline.aox_reference.select_hmm_reference_set` | `result.to_fasta() -> str`, `result.metadata_json() -> str` |
+| coordinate reference | `openzyme_pipeline.aox_reference.select_scoring_reference` | `result.to_fasta() -> str`, `result.metadata_json() -> str` |
+| reference-plus-target scoring input | `openzyme_pipeline.aox_reference.assemble_scoring_input` | `result.to_fasta() -> str`, `result.metadata_json() -> str` |
+| HMMER score-filtered accessions | `openzyme_pipeline.aox_hmmer.parse_and_filter_csv` | `result.to_csv() -> str`, `result.metadata() -> dict[str, object]` |
+| UniProt identity/length join | `openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions` | `result.hits_csv() -> str`, `result.target_fasta() -> str`, `result.metadata() -> dict[str, object]` |
+| motif reference-coordinate score | `openzyme_pipeline.aox_motif.score_aligned_fasta` | `result.to_csv() -> str`, `result.metadata() -> dict[str, object]` |
+| candidate similarity graph | `openzyme_pipeline.aox_similarity.build_similarity_graph` | `result.nodes_csv() -> str`, `result.edges_csv() -> str`, `result.manifest_json() -> str` |
+
+Every primary payload accessor in this table returns Python `str` in the pinned
+SDK. Before passing such a value to a bytes-only boundary such as
+`Path.write_bytes`, encode it exactly once with `.encode("utf-8")`; do not pass
+`str` to a bytes-only writer and do not reimplement or reserialize the primary
+payload. `metadata_json()` also returns canonical text. `metadata()` returns the
+stated structured Python `dict`; if it is persisted as diagnostic metadata,
+serialize that returned object rather than rebuilding its fields. A missing or
+drifted annotation is a fail-closed SDK/workflow mismatch, not permission for
+best-effort coercion. These type facts do not prescribe the executor's source
+layout, batching or operation order.
 
 The following is the stable minimum call map for executor-authored source. The
 first positional arguments are bytes read from the exact materialized or
@@ -442,7 +453,7 @@ aox_reference.select_hmm_reference_set(
     expected_implementation_digest,
     expected_input_digest,
 )
-# -> result.to_fasta(), result.metadata_json()
+# -> result.to_fasta() -> str, result.metadata_json() -> str
 
 aox_reference.select_scoring_reference(
     ncbi_fasta,
@@ -452,7 +463,7 @@ aox_reference.select_scoring_reference(
     expected_implementation_digest,
     expected_input_digest,
 )
-# -> result.to_fasta(), result.metadata_json()
+# -> result.to_fasta() -> str, result.metadata_json() -> str
 
 aox_reference.assemble_scoring_input(
     scoring_reference_fasta,
@@ -464,7 +475,7 @@ aox_reference.assemble_scoring_input(
     expected_scoring_reference_input_digest,
     expected_target_input_digest,
 )
-# -> result.to_fasta(), result.metadata_json()
+# -> result.to_fasta() -> str, result.metadata_json() -> str
 
 aox_hmmer.parse_and_filter_csv(
     parsed_hits_csv,
@@ -474,7 +485,7 @@ aox_hmmer.parse_and_filter_csv(
     expected_implementation_digest,
     expected_input_digest,
 )
-# -> result.to_csv(), result.metadata()
+# -> result.to_csv() -> str, result.metadata() -> dict[str, object]
 
 aox_sequence_join.join_score_filtered_accessions(
     score_filtered_csv,
@@ -491,7 +502,8 @@ aox_sequence_join.join_score_filtered_accessions(
     expected_uniprot_fasta_digest,
     expected_uniprot_metadata_digest,
 )
-# -> result.hits_csv(), result.target_fasta(), result.metadata()
+# -> result.hits_csv() -> str, result.target_fasta() -> str
+# -> result.metadata() -> dict[str, object]
 
 aox_motif.score_aligned_fasta(
     scoring_alignment_fasta,
@@ -501,7 +513,7 @@ aox_motif.score_aligned_fasta(
     expected_implementation_digest,
     expected_input_digest,
 )
-# -> result.to_csv(), result.metadata()
+# -> result.to_csv() -> str, result.metadata() -> dict[str, object]
 
 aox_similarity.build_similarity_graph(
     candidate_fasta,
@@ -515,7 +527,8 @@ aox_similarity.build_similarity_graph(
     expected_candidate_fasta_digest,
     expected_membership_digest,
 )
-# -> result.nodes_csv(), result.edges_csv(), result.manifest_json()
+# -> result.nodes_csv() -> str, result.edges_csv() -> str
+# -> result.manifest_json() -> str
 ```
 
 Use `empty_result_reason=None` for a non-empty graph and the reached stable

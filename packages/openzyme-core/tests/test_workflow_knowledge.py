@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241"
+        "sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:e8a8810ebb52c7ae0f9e34ca8108cfe47a4143ec0551d37a6852275377dd3413"
+            "sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -155,6 +155,12 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "openzyme_pipeline.aox_sequence_join.join_score_filtered_accessions",
         "openzyme_pipeline.aox_motif.score_aligned_fasta",
         "openzyme_pipeline.aox_similarity.build_similarity_graph",
+        "result.to_fasta() -> str",
+        "result.to_csv() -> str",
+        "result.metadata() -> dict[str, object]",
+        "result.manifest_json() -> str",
+        'encode it exactly once with `.encode("utf-8")`',
+        "`str` to a bytes-only writer",
         "`biopython_trace_guarded_numpy_gotoh@1`",
         "`numpy_three_state_gap_switch_correction@1`",
         "`similarity_parallel_execution_failed`",

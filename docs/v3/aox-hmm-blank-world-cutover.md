@@ -780,13 +780,13 @@ as the only cutover runtime. Its ordinary `/tmp`, `non_cutover=true` status
 closes the r26 benchmark/reviewer and workflow-knowledge pin gate, but it is
 not sealed live evidence and cannot satisfy a positive attempt or campaign GO.
 
-After the r31 source-preflight disclosure correction froze new document bytes,
-the dependency-order knowledge repin superseded r31's historical selection ref
-`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`
+After the r32 serializer-type disclosure correction froze new document bytes,
+the dependency-order knowledge repin superseded r32's historical selection ref
+`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`
 and produced current selection ref
-`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`.
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`.
 Its exact knowledge digests are `aox-hmm-live`
-`sha256:e8a8810ebb52c7ae0f9e34ca8108cfe47a4143ec0551d37a6852275377dd3413`,
+`sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26`,
 `aox-motif-rule-score-v1`
 `sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376`,
 and `aox-sequence-similarity-v1`
@@ -1060,6 +1060,51 @@ The Host does not generate placeholder source, add an unaudited inspection
 fallback, or weaken provenance. Changed workflow knowledge and its manifest
 must be digest-repinned, and the next campaign requires a fresh clean
 commit/config/workflow pin and wholly fresh roots.
+
+### r32 live attempt: permanent NO-GO
+
+r32 pinned clean commit
+`f54ea431ceaeff9274527afb20816c8110e39ee3`, the unchanged config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`,
+and historical workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`.
+Fresh positive attempt `positive-9f2badd3274d42fdabb4e1421f7d5e47`
+passed all six isolated real known-positive checks: NCBI, UniProt, MAFFT,
+hmmbuild, CD-HIT, and HMMalign. The formal researcher obtained real PubMed
+evidence. Chrome UI resolved canonical approval `appr_3ea9addd5614` for NCBI
+operation `op_b5857f8371a9`, and the driver observed continuation of the same
+operation and operation digest.
+
+The NCBI operation completed, but the same source-bound sandbox run
+`srun_0ee366725cd1` then failed at sealed `aox_cutover.py:268`. The executor
+passed the Python `str` returned by `result.to_fasta()` directly to its
+bytes-only `Path.write_bytes` helper, causing
+`TypeError: memoryview: a bytes-like object is required, not 'str'` and terminal
+`sandbox_exec_nonzero`. The execution task explicitly failed. The reporter
+published an honest failure report, but no later formal provider/HPC operation,
+terminal Chrome observation, eligible report, second positive, or controlled
+fault exists.
+
+The non-eligible bundle independently passed network-free verification with
+`issues=[]` at
+`sha256:039cbb6551cd785f9c5c9ac023cfa6d899503d52a0df7c570ced942e603411a6`.
+The sealed decision remains permanent **NO-GO** at
+`sha256:7b168335c45f7e8865aea8e92f591596c5a743d24894d1a958adc2882e45e5e8`.
+MICU moved from `59,877,108` to `62,008,441 / 500,000,000`, a delta of
+`2,131,333`, leaving `437,991,559` with zero breach or reservation overage.
+
+r32 and all of its roots, effects, artifacts, browser state, bundle, and
+decision are permanently non-reusable. The bounded correction does not change
+the scientific callables or their implementation digests. It projects every
+current primary FASTA/CSV/JSON accessor and `metadata_json()` as Python `str`,
+projects `metadata()` as `dict[str, object]`, and requires exactly-once UTF-8
+encoding before a bytes-only boundary. Type or annotation drift fails closed;
+there is no best-effort coercion. The changed AOX SOP digest is
+`sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26`
+and the new workflow ref is
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`.
+The next campaign requires a fresh clean commit/config/workflow pin and wholly
+fresh roots.
 
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
