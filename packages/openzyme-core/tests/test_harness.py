@@ -3933,6 +3933,20 @@ def test_sandbox_exec_catalog_exposes_v2_long_operation_timeout_bound() -> None:
     assert "not a read-only environment-inspection shortcut" in sandbox_exec.description
 
 
+def test_materialize_catalog_exposes_host_managed_read_only_input_boundary() -> None:
+    materialize = next(
+        descriptor
+        for descriptor in builtin_tool_descriptors()
+        if descriptor.tool_name == "artifacts.materialize"
+    )
+
+    assert "/workspace/input mount is Host-managed and read-only" in materialize.description
+    assert "materialize creates the requested target and parent directories" in (
+        materialize.description
+    )
+    assert "must not mkdir, write, or pre-create them" in materialize.description
+
+
 def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
     tool_names = {descriptor.tool_name for descriptor in top_level_tool_descriptors()}
     assert "deep_research.start" not in tool_names

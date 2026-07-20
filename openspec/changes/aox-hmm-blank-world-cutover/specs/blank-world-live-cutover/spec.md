@@ -91,6 +91,8 @@ Provider outputs SHALL be selected from the unique transcript-manifest entry end
 
 The sandbox SDK SHALL expose strict direct-field selectors for provider files, artifact registration results, and fetched outputs. A selector SHALL read only its documented canonical field, require one canonical artifact id/digest, and reject missing, duplicated, malformed, or nested-only data without recursive fallback or external I/O. A completed controlled-operation response SHALL be reusable from attempt-local sandbox working state after a local source/parser error; such a local error SHALL NOT authorize another controlled operation for the same reached SDK method.
 
+The sandbox process SHALL treat `/workspace/input` as a Host-managed read-only mount. Caller source SHALL NOT create, write, copy, or pre-create a materialization target or its parents there; `artifacts.materialize()` SHALL create and authorize the requested target and missing parents through the Host boundary, after which source may read only the returned path. Mutable scratch SHALL use `/workspace/work` and registerable output SHALL use `/workspace/output`. `EROFS`, target drift, or a local input mutation attempt SHALL fail closed without remount, alternate-path fallback, or duplicate controlled operation.
+
 #### Scenario: Execute through the installed calculation map
 - **WHEN** the formal executor derives reference sets, HMMER filters, identity joins, scoring input, motif scores, or the similarity graph
 - **THEN** each output is reproducible from the named callable/serializer, exact sealed inputs, and versioned contract/implementation digest
@@ -106,6 +108,10 @@ The sandbox SDK SHALL expose strict direct-field selectors for provider files, a
 #### Scenario: Select a rich response without counting nested provenance twice
 - **WHEN** one provider or fetched artifact appears once in its canonical direct list and again in a nested provenance projection
 - **THEN** the strict SDK selector returns the one canonical id/digest pair without walking the nested copy or replaying the completed operation
+
+#### Scenario: Materialize into the Host-managed input tree
+- **WHEN** executor source requests a nested `/workspace/input/...` materialization target
+- **THEN** it does not pre-create the target or parents, the Host materialization boundary creates them, and the sandbox consumes only the returned read-only path
 
 #### Scenario: Stop a duplicate operation before external dispatch
 - **WHEN** a local parser/source failure is followed by a second approval request for an SDK method already reached in that cutover session, or any prior controlled operation is terminal failed

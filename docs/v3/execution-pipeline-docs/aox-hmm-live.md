@@ -57,6 +57,15 @@ a failed or empty real operation with cached fixture sequences, the reference
 accessions, pseudo-HMM construction, local stand-in clustering, invented scores,
 synthetic hits, or fabricated graph edges.
 
+`/workspace/input` is a Host-managed read-only mount inside the sandbox
+process. Never create a directory or file there and never pre-create a target
+or parent for `artifacts.materialize()`. The materialize call itself creates
+the requested input target and missing parents through the Host boundary and
+returns the path to read after success. Use `/workspace/work` for mutable
+scratch/checkpoints and `/workspace/output` for files that will be registered.
+An input-root `EROFS` is a local source failure and does not authorize a retry,
+alternate mount, or duplicate controlled operation.
+
 Every `openzyme_pipeline.bio` provider call requires an explicit canonical
 `output_dir="/workspace/output/<provider-specific-directory>"`. A relative
 path, `/workspace/output` itself, `/workspace/input`, traversal, whitespace, or

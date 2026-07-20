@@ -780,13 +780,13 @@ as the only cutover runtime. Its ordinary `/tmp`, `non_cutover=true` status
 closes the r26 benchmark/reviewer and workflow-knowledge pin gate, but it is
 not sealed live evidence and cannot satisfy a positive attempt or campaign GO.
 
-After the r32 serializer-type disclosure correction froze new document bytes,
-the dependency-order knowledge repin superseded r32's historical selection ref
-`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`
+After the r33 read-only-input disclosure correction froze new document bytes,
+the dependency-order knowledge repin superseded r33's historical selection ref
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`
 and produced current selection ref
-`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`.
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`.
 Its exact knowledge digests are `aox-hmm-live`
-`sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26`,
+`sha256:a9f636a1ba9c974b31c984db900fd07687ce2399d0412e80b73d69fee3ff2c0a`,
 `aox-motif-rule-score-v1`
 `sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376`,
 and `aox-sequence-similarity-v1`
@@ -1103,6 +1103,54 @@ there is no best-effort coercion. The changed AOX SOP digest is
 `sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26`
 and the new workflow ref is
 `workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`.
+The next campaign requires a fresh clean commit/config/workflow pin and wholly
+fresh roots.
+
+### r33 live attempt: permanent NO-GO
+
+r33 pinned clean commit
+`2ef39e02273ceb3784f6f77f53100ce2af26228b`, the unchanged config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`,
+workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`,
+and fresh declaration commit
+`sha256:b783665a70b36f475b582bde3486eda65ed82cc7f9f43d8d8083793459635316`.
+Fresh positive attempt `positive-44e0487fd8fb49569facd6d93d77f69e`
+again passed all six isolated real known-positive checks: NCBI, UniProt, MAFFT,
+hmmbuild, CD-HIT, and HMMalign. The formal researcher obtained real PubMed PMID
+`42278471` evidence. The formal source also followed the r32 correction and
+encoded canonical serializer text as UTF-8 before bytes-only writers.
+
+At module import, however, the executor called
+`Path('/workspace/input/aox_cutover').mkdir(...)`. `/workspace/input` is
+correctly mounted read-only to the sandbox process, so source-bound run
+`srun_0e6b36a1f5e2` failed before any formal provider/HPC operation or approval
+with `OSError: [Errno 30] Read-only file system` and terminal
+`sandbox_exec_nonzero`. The execution task explicitly failed and the reporter
+published an honest failure report. No Chrome handoff/approval, eligible
+report, second positive, or controlled fault exists.
+
+The non-eligible bundle independently passed network-free verification with
+`issues=[]` at
+`sha256:5abc24e21fee44da499e6b01f051e0cf34503ab4fbb749ac462aae06d2d72a2f`.
+The sealed decision remains permanent **NO-GO** at
+`sha256:318d3d623d42395684e0af52a96576e3fef046990c94ed6a3a846eb89596c8c8`.
+MICU moved from `62,008,441` to `64,808,804 / 500,000,000`, a delta of
+`2,800,363`, leaving `435,191,196` with zero breach or reservation overage.
+
+r33 and all of its roots, effects, artifacts, browser state, bundle, and
+decision are permanently non-reusable. The bounded correction does not change
+the read-only mount or materialization authority. The materialize tool
+descriptor, mandatory artifacts document, AOX SOP, and formal prompt now state
+that caller source must not mkdir/write/copy/pre-create under
+`/workspace/input`; `artifacts.materialize()` itself creates and authorizes the
+requested target and parents through the Host. Mutable scratch and registerable
+files use `/workspace/work` and `/workspace/output`. `EROFS` does not authorize
+a remount, alternate-path fallback, or duplicate operation. The changed AOX
+SOP digest is
+`sha256:a9f636a1ba9c974b31c984db900fd07687ce2399d0412e80b73d69fee3ff2c0a`
+and the new workflow ref is
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`.
 The next campaign requires a fresh clean commit/config/workflow pin and wholly
 fresh roots.
 

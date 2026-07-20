@@ -205,7 +205,10 @@ def artifact_tool_descriptors() -> tuple[ToolDescriptor, ...]:
             tool_name="artifacts.materialize",
             description=(
                 "Copy or map an authorized catalog artifact into the executor sandbox input tree. "
-                "Returns only a sandbox-safe /workspace path and digest; never returns Host storage paths."
+                "The /workspace/input mount is Host-managed and read-only to the sandbox process: "
+                "materialize creates the requested target and parent directories, so caller source "
+                "must not mkdir, write, or pre-create them. Returns only a sandbox-safe /workspace "
+                "path and digest; never returns Host storage paths."
             ),
             input_schema={
                 "type": "object",

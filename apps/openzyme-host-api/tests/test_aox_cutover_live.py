@@ -1544,6 +1544,10 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "docs.read('sdk-overview')" in prompt
     assert "selected pinned AOX/HMM SOP is already present" in prompt
     assert "do not reread it" in prompt
+    assert "/workspace/input is a Host-managed read-only mount" in prompt
+    assert "never mkdir, write, copy, or pre-create a materialization target" in prompt
+    assert "artifacts.materialize itself creates the target and missing parents" in prompt
+    assert "use /workspace/work for mutable scratch" in prompt
     assert "Every otherwise-valid sandbox.exec invocation" in prompt
     assert "that reaches source preflight, including Python -c" in prompt
     assert "never use it as a read-only environment-inspection shortcut" in prompt

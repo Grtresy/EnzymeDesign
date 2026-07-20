@@ -46,6 +46,17 @@ receptor_path = artifacts.materialize("art_receptor", target_path="/workspace/in
 
 `artifacts.materialize()` copies or maps an authorized artifact into the sandbox and returns a sandbox-safe path. The target must stay inside the allowed sandbox workspace/input area. Use this when the executor needs ordinary file operations before a pipeline run.
 
+`/workspace/input` is a Host-managed read-only mount from the sandbox process's
+point of view. Caller source MUST NOT call `mkdir`, `write_*`, `open(..., "w")`,
+`shutil.copy*`, or any equivalent mutation for that root, its requested target,
+or its parent directories. `artifacts.materialize()` itself creates and
+authorizes the requested target and any missing parents through the Host
+boundary; consume the returned path only after the call succeeds. Put mutable
+copies and scratch files under `/workspace/work`, and put registerable final
+files under `/workspace/output`. An `EROFS`/read-only failure is a real local
+source error, not permission to remount, retry an operation, or choose another
+path boundary.
+
 `artifacts.get()` remains available as a lightweight reference API for compatibility:
 
 ```python

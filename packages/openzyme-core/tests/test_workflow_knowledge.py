@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf"
+        "sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:d325d4e72bd89217b9506d79e168b6d4f177c348082efd067a425217a415fe26"
+            "sha256:a9f636a1ba9c974b31c984db900fd07687ce2399d0412e80b73d69fee3ff2c0a"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -161,6 +161,9 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "result.manifest_json() -> str",
         'encode it exactly once with `.encode("utf-8")`',
         "`str` to a bytes-only writer",
+        "`/workspace/input` is a Host-managed read-only mount",
+        "Never create a directory or file there",
+        "materialize call itself creates",
         "`biopython_trace_guarded_numpy_gotoh@1`",
         "`numpy_three_state_gap_switch_correction@1`",
         "`similarity_parallel_execution_failed`",

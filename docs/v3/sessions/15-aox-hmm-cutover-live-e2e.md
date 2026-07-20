@@ -858,6 +858,45 @@ workflow ref 更新为
 `workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`；
 下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
 
+## r33 blank-world live attempt：永久 NO-GO
+
+r33 以 clean commit `2ef39e02273ceb3784f6f77f53100ce2af26228b`、相同 config
+digest `sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`、
+workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:e50efdcdbf7f7d90de2c822d09f87d76f83dc718ed915ad1640dd2134eee7baf`
+及 fresh declaration commit
+`sha256:b783665a70b36f475b582bde3486eda65ed82cc7f9f43d8d8083793459635316`
+和 fresh roots 启动 positive attempt
+`positive-44e0487fd8fb49569facd6d93d77f69e`。独立 known-positive probe 再次完成
+真实 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign 六项 check；formal researcher
+完成真实 PubMed PMID `42278471`。formal source 已正确执行 r32 的 text-to-bytes 修复。
+
+但 executor 在 module import 阶段执行
+`Path('/workspace/input/aox_cutover').mkdir(...)`。sandbox process 看到的
+`/workspace/input` 正确为 read-only mount，因此 source-bound run
+`srun_0e6b36a1f5e2` 在任何 formal provider/HPC operation 或 approval 前以
+`OSError: [Errno 30] Read-only file system` / `sandbox_exec_nonzero` fail closed。
+execution task 显式 failed，reporter 发布诚实失败报告；没有 Chrome handoff/approval、
+eligible report、positive 2 或 fault。
+
+non-eligible bundle 的 network-free verification 为 `issues=[]`，digest
+`sha256:5abc24e21fee44da499e6b01f051e0cf34503ab4fbb749ac462aae06d2d72a2f`；
+sealed decision 保持永久 **NO-GO**，digest
+`sha256:318d3d623d42395684e0af52a96576e3fef046990c94ed6a3a846eb89596c8c8`。
+MICU 从 `62,008,441` 增至 `64,808,804 / 500,000,000`，delta `2,800,363`，
+remaining `435,191,196`，零 breach/overage。
+
+r33 的 roots、effects、artifacts、browser state、bundle 与 decision 永久不可复用。局部
+correction 不改变只读 mount，而是在 materialize tool descriptor、强制 artifacts 文档、
+AOX SOP 与 formal prompt 中明示：caller 不得在 `/workspace/input` mkdir/write/copy/
+pre-create，`artifacts.materialize()` 自身通过 Host 创建并授权 target/parents；mutable
+scratch 与 registerable output 分别使用 `/workspace/work` 与 `/workspace/output`，`EROFS`
+不授权 remount、alternate-path fallback 或 duplicate operation。AOX SOP digest 更新为
+`sha256:a9f636a1ba9c974b31c984db900fd07687ce2399d0412e80b73d69fee3ff2c0a`，
+workflow ref 更新为
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`；
+下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；
