@@ -783,6 +783,44 @@ normalization 证明；
 r30 effects，也不改变 fail-closed 语义。下一轮必须使用新的 clean commit/config/SDK pin
 与全新 blank-world roots。
 
+## r31 blank-world live attempt：永久 NO-GO
+
+r31 以 clean commit `d430be9d106f5a978794a0c588e8fcd28e013e7f`、相同 config
+digest `sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+及当时 workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`
+和 fresh roots 启动 positive attempt
+`positive-9dfa89f23352424f8ba0f1d993ad6a3f`。独立 known-positive probe 再次完成
+真实 NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign 六项 check，且保持 formal
+data isolation；formal researcher 也选择了真实 PubMed artifact
+`art_provider_5eaf6f6b2864`。
+
+formal executor 随后在 `/workspace/src` 没有任何显式源码文件时，以
+`sandbox.exec` 的 `python -c` 请求探测已安装 package/callable signature。现有 runtime
+正确地在创建 `SandboxRun`、process 和任何 controlled operation 前对整个 source tree
+执行 snapshot，因此以 `source_snapshot_empty` fail closed。execution task
+`aox_execution_cutover_4f9d1ec865484a73b4544cdb8ccedfcb` 显式 failed，reporter 保持
+blocked；没有 formal approval、Chrome handoff、formal provider/HPC operation、published
+report、positive 2 或 controlled fault。
+
+non-eligible bundle 的 network-free verification 为 `issues=[]`，digest
+`sha256:72a118a7b888cecc066274e9b101a36d0d95cce8d3cf4e7e93c0c0f5d9db730a`；
+sealed decision 保持永久 **NO-GO**，digest
+`sha256:762cabdc53719ce4129755a35a33656d13ed6899f3164cf8113b60b57c31313c`。
+MICU 从 `58,976,497` 增至 `59,877,108 / 500,000,000`，delta `900,611`，
+remaining `440,122,892`，零 breach/overage。
+
+r31 的 roots、effects、artifacts、browser state、bundle 与 decision 永久不可复用。局部
+correction 不改变正确的 snapshot runtime，只通过 tool descriptor、executor contract、受控
+docs 与 probe/formal prompt 明示：通过前序校验并进入 source preflight 的每次
+`sandbox.exec`，包括 `python -c`、package/signature inspection 和 diagnostics，都要求
+eligible non-empty `/workspace/src` 并封存 whole-tree snapshot；前序校验仍可先返回自身
+错误。只读 API facts 优先来自 controlled docs，确需 runtime introspection 时先 author 显式
+inspection source。empty-source error 增加 `sandbox.exec` whole-tree factual pre-run hint，
+direct `artifacts.snapshot_code` 则返回 selection-aware recovery；不得生成 placeholder source、
+增加无审计 inspection fallback 或放宽 provenance。变更后的 workflow knowledge 与 manifest
+必须重算 digest；下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

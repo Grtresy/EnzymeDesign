@@ -1539,10 +1539,26 @@ class ArtifactBoundaryService:
         workspace_path = self._workspace_path(sandbox_workspace_id)
         source_root = (workspace_path / "src").resolve()
         if not source_root.exists() or not source_root.is_dir():
-            raise ArtifactBoundaryError("source_snapshot_empty", "workspace source directory is empty")
+            raise ArtifactBoundaryError(
+                "source_snapshot_empty",
+                "workspace source directory is empty",
+                hint=(
+                    "Ensure the selected source paths contain at least one eligible "
+                    "regular file under /workspace/src. Omit paths to select the whole "
+                    "source tree; an empty paths list selects no files."
+                ),
+            )
         selected_files = self._select_source_files(source_root, paths)
         if not selected_files:
-            raise ArtifactBoundaryError("source_snapshot_empty", "source snapshot contains no files")
+            raise ArtifactBoundaryError(
+                "source_snapshot_empty",
+                "source snapshot contains no files",
+                hint=(
+                    "Ensure the selected source paths contain at least one eligible "
+                    "regular file under /workspace/src. Omit paths to select the whole "
+                    "source tree; an empty paths list selects no files."
+                ),
+            )
         file_entries: list[dict[str, Any]] = []
         for source_file in selected_files:
             digest = _file_digest(source_file)

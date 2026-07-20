@@ -3926,6 +3926,11 @@ def test_sandbox_exec_catalog_exposes_v2_long_operation_timeout_bound() -> None:
         "minimum": 1,
         "maximum": 3_600,
     }
+    assert "entire non-empty /workspace/src tree" in sandbox_exec.description
+    assert "Every otherwise-valid invocation" in sandbox_exec.description
+    assert "including Python -c, package/signature inspection" in sandbox_exec.description
+    assert "source_snapshot_empty" in sandbox_exec.description
+    assert "not a read-only environment-inspection shortcut" in sandbox_exec.description
 
 
 def test_top_level_tool_catalog_hides_direct_engine_start_tools() -> None:
@@ -4621,6 +4626,11 @@ def test_executor_prompt_uses_docs_driven_execution_contract() -> None:
     assert "use controlled docs when capability details are needed" in prompt
     assert "sandbox.workspace.status" in prompt
     assert "Author source with sandbox.file.* and run it with sandbox.exec" in prompt
+    assert "Every otherwise-valid sandbox.exec invocation" in prompt
+    assert "that reaches source preflight, including Python -c" in prompt
+    assert "requires at least one eligible regular source file" in prompt
+    assert "never use sandbox.exec as a read-only environment-inspection shortcut" in prompt
+    assert "author that inspection source under /workspace/src" in prompt
     assert "Host-supervised SDK from inside that sandbox run" in prompt
     assert "Never call a runner, SSH, Slurm" in prompt
     assert "Do not treat execution.pipeline.start as the required authoring path" in prompt

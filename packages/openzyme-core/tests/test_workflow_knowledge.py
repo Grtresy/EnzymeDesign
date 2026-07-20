@@ -88,7 +88,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
 
     assert manifest.selection_ref == (
         "workflow:aox-hmm-live@2.0.0#"
-        "sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98"
+        "sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241"
     )
     pack = registry.resolve(manifest.selection_ref)
     documents = {document.doc_id: document for document in pack.documents}
@@ -96,7 +96,7 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         doc_id: document.content_sha256 for doc_id, document in documents.items()
     } == {
         "aox-hmm-live": (
-            "sha256:4dcd18bc0a65161770fdddcb7f53ac3be245ddaf60cb04c06dd0f496dbbca7c0"
+            "sha256:e8a8810ebb52c7ae0f9e34ca8108cfe47a4143ec0551d37a6852275377dd3413"
         ),
         "aox-motif-rule-score-v1": (
             "sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376"
@@ -163,6 +163,8 @@ def test_aox_workflow_v2_pins_scientific_acceptance_without_strategy_graph() -> 
         "cutover runtime pin",
         "NumPy `2.4.4`",
         "new calculation id",
+        "Do not use `sandbox.exec` as a read-only environment-inspection shortcut",
+        "`source_snapshot_empty` before `SandboxRun` or process creation",
         "sha256:ace8baa8bfa070a621186d7b3db3acddcdf39abe26070e72270fc727b0017b5e",
         "`request_digest`",
         "`params_digest`",

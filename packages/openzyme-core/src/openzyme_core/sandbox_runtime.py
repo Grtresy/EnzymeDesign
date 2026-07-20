@@ -3565,10 +3565,18 @@ class SandboxRuntimeService:
             )
             return result.to_payload()
         except ArtifactBoundaryError as exc:
+            hint = exc.hint
+            if exc.error_code == "source_snapshot_empty":
+                hint = (
+                    "Author at least one eligible regular file under /workspace/src "
+                    "before calling sandbox.exec; sandbox.exec snapshots the whole "
+                    "source tree. This failure occurs before SandboxRun creation or "
+                    "process invocation."
+                )
             raise SandboxRuntimeError(
                 exc.error_code,
                 str(exc),
-                hint=exc.hint,
+                hint=hint,
                 details=exc.details,
                 retryable=exc.retryable,
             ) from exc

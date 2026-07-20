@@ -645,6 +645,36 @@ def test_snapshot_code_then_register_seals_output_and_keeps_duplicate_paths(tmp_
     assert "storage_uri" not in json.dumps(first.to_payload())
 
 
+def test_snapshot_code_empty_paths_reports_empty_selection_without_committing(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    source = workspace_root / workspace.sandbox_workspace_id / "src" / "main.py"
+    source.write_text("print('ready')\n", encoding="utf-8")
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        blob_store_root=tmp_path / "blobs",
+    )
+
+    with pytest.raises(ArtifactBoundaryError) as exc_info:
+        service.snapshot_code(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            paths=[],
+            entrypoint="/workspace/src/main.py",
+        )
+
+    assert exc_info.value.error_code == "source_snapshot_empty"
+    assert exc_info.value.hint == (
+        "Ensure the selected source paths contain at least one eligible regular file "
+        "under /workspace/src. Omit paths to select the whole source tree; an empty "
+        "paths list selects no files."
+    )
+    assert repositories.artifacts.list_by_session(session.session_id) == []
+
+
 def test_large_registration_metadata_sidecar_persists_full_catalog_metadata_and_returns_bounded_control_payload(
     tmp_path: Path,
 ) -> None:

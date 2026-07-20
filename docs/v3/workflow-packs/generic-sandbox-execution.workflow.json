@@ -1,7 +1,7 @@
 {
   "workflow_id": "generic-sandbox-execution",
   "version": "1.0.0",
-  "content_sha256": "sha256:5511f82693ed772ad5e6a46956a7ecb5966a928e373ec4a5790a8c49796dc5a8",
+  "content_sha256": "sha256:eea03addb6a979893df3c5d68597934bfd9886a95fec02af7a6b354ddaac99e6",
   "title": "Generic sandbox execution",
   "summary": "Domain-neutral controlled sandbox authoring and Host-supervised execution workflow.",
   "capability_requirements": [
@@ -17,12 +17,12 @@
     {
       "doc_id": "sandbox-rules",
       "version": "v3",
-      "content_sha256": "sha256:d8992785a90d53f5b54917f445a874577c67f031669e12d1b4252729ce66e095"
+      "content_sha256": "sha256:634d20095c8b6ddb46b8ebb0d6abbe98c06a5ec254942ebdb40185efde3eb40c"
     },
     {
       "doc_id": "sdk-overview",
       "version": "v3",
-      "content_sha256": "sha256:4bd0805ceb14af1490ec14f02aff4ae524a60ba3baacfeecd10c0f256df8099e"
+      "content_sha256": "sha256:5ada428d28a009f820faa2f3ea3987ac6ce326ad3df6311518c099db781fe2a6"
     }
   ]
 }

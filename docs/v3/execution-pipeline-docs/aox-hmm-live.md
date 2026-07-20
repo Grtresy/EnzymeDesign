@@ -345,8 +345,16 @@ fallback, or recursive selection.
 
 After every controlled operation completes, persist its full response in the
 same sandbox's mutable `/workspace/work` before doing downstream local parsing.
-Before the first operation-bearing run, use bounded read-only inspection to
-resolve any uncertain helper contract and finalize the source. A completed
+Before the first operation-bearing run, resolve uncertain helper contracts from
+the already selected SOP plus controlled `docs.search` / `docs.read` content.
+Do not use `sandbox.exec` as a read-only environment-inspection shortcut: every
+otherwise-valid invocation that reaches source preflight, including `python -c`,
+package/signature inspection, and diagnostics, first snapshots the entire
+non-empty `/workspace/src` tree. Earlier request, workspace, layout, and runtime
+validation can fail before source preflight. If runtime
+introspection is still necessary, author that inspection source explicitly
+under `/workspace/src` before executing it. An empty tree fails as
+`source_snapshot_empty` before `SandboxRun` or process creation. A completed
 operation MUST NOT be replayed merely because response selection,
 serialization, or later Python source failed. Under bundle/probe `@1`/`@2`, a
 terminal failed sandbox run makes the attempt ineligible and its effects cannot
@@ -372,7 +380,9 @@ EBI HMMER polling remains bounded at `1800s`; every `sandbox.exec` invocation
 whose source may reach `bio.hmmer_search` MUST request
 `timeout_seconds=3600` under `s09.exec_policy.v2`; the formal live session and
 public request are bounded at no less than `7200s`. Short inspection or
-source-repair commands that cannot reach HMMER may use shorter bounds. This
+source-repair commands that cannot reach HMMER may use shorter bounds, but they
+still require an explicitly authored non-empty source tree and receive their
+own source snapshot. This
 fixes a world constraint, not an execution graph: the agent remains free to
 author, inspect and repair source, but an undersized HMM-capable command fails
 before approval/provider dispatch and never authorizes a duplicate operation.

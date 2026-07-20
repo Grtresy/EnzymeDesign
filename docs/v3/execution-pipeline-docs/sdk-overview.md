@@ -30,6 +30,18 @@ The sandbox file/command tools may run ordinary bash and Python within the isola
 
 External SDK calls are supervised operations. The Host supervisor applies SDK operation policy, quota, and approval gates. The stable executor-facing path is sandbox-first: edit files in the persistent sandbox workspace, snapshot source when needed, and run code through `sandbox.exec`; the Host builds an `ExecutionPlan`, asks the Web UI for approval when needed, then continues the supervised operation. Current migration code may still mention `execution.pipeline.start`, but that is a compatibility bridge rather than the executor authoring contract. AOX/HMM evals use a single-plan approval policy to require one plan approval across bio, bio_tools, external tool, and output-registration steps. Plans carry a static per-operation `max_calls`; repeated calls and literal bounded loops count toward it, while dynamically unbounded external calls fail before execution. The Host atomically consumes this budget before each provider/tool/HPC action. Runtime SDK calls can still trigger a secondary approval gate if the sandbox requests an unapproved or changed operation, but an exhausted approved call budget fails with `execution_plan_quota_exceeded` rather than reopening approval. Pipeline code should not implement its own approval or resume protocol.
 
+After the earlier request, workspace, layout, and runtime checks, every
+otherwise-valid `sandbox.exec` invocation that reaches source preflight first
+snapshots the entire non-empty `/workspace/src` tree. This includes `python -c`,
+package/signature inspection, and diagnostic commands. It is therefore not a
+read-only environment-inspection shortcut. Use `docs.search` / `docs.read` for
+controlled API facts; if runtime introspection is still necessary, first author
+an explicit inspection source under `/workspace/src` and execute that file. An
+empty tree fails as `source_snapshot_empty` before a `SandboxRun` or container
+process is created.
+This is a provenance constraint, not a prescribed scientific strategy or
+script layout.
+
 The sandbox control transport is bounded newline-delimited JSON-RPC 2.0. One
 Unix-socket connection carries exactly one request frame and one response frame;
 each payload is limited to `4 MiB`, excluding its terminating newline. A

@@ -18,6 +18,7 @@ Visible paths:
 Rules:
 
 - Use sandbox file/command tools for ordinary CRUD, bash, and Python inside `/workspace`.
+- Every otherwise-valid `sandbox.exec` that reaches source preflight, including `python -c`, package/signature inspection, and diagnostics, snapshots the entire non-empty `/workspace/src` first. Earlier request, workspace, layout, and runtime validation can fail before this preflight. It is not a read-only environment-inspection shortcut. Prefer controlled docs for API facts; when runtime introspection is still needed, author an explicit source file under `/workspace/src` before execution. An empty tree returns `source_snapshot_empty` before `SandboxRun` or process creation.
 - Use `artifacts.materialize` to move catalog inputs into the sandbox.
 - Use `artifacts.snapshot_code` before dry-run / execution so plans and approvals bind to an immutable source digest.
 - Treat the configured sandbox image tag as discovery metadata only. The Host binds the plan to the resolved immutable image id, the exact Pipeline SDK source-tree digest, and the sandbox protocol; it revalidates all three before execution and starts Podman by digest. Image-tag or SDK drift fails before any external operation.

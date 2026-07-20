@@ -780,11 +780,13 @@ as the only cutover runtime. Its ordinary `/tmp`, `non_cutover=true` status
 closes the r26 benchmark/reviewer and workflow-knowledge pin gate, but it is
 not sealed live evidence and cannot satisfy a positive attempt or campaign GO.
 
-After the final document bytes were frozen, the dependency-order knowledge
-repin produced current selection ref
-`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`.
+After the r31 source-preflight disclosure correction froze new document bytes,
+the dependency-order knowledge repin superseded r31's historical selection ref
+`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`
+and produced current selection ref
+`workflow:aox-hmm-live@2.0.0#sha256:0d78c5246018b71a7ef79258cc410dfd4f300495bb4e5a37af58e096a0e29241`.
 Its exact knowledge digests are `aox-hmm-live`
-`sha256:4dcd18bc0a65161770fdddcb7f53ac3be245ddaf60cb04c06dd0f496dbbca7c0`,
+`sha256:e8a8810ebb52c7ae0f9e34ca8108cfe47a4143ec0551d37a6852275377dd3413`,
 `aox-motif-rule-score-v1`
 `sha256:9c6f1f62a77dcade8e8b24c4e23af391e3b308a96bbac43783b8dbf4f7c2d376`,
 and `aox-sequence-similarity-v1`
@@ -1011,6 +1013,53 @@ representation corrections: they do not raise metadata limits, adopt r30
 effects, replay provider calls, or weaken fail-closed semantics. The next
 campaign requires a fresh clean commit/config/SDK pin and wholly fresh
 blank-world roots.
+
+### r31 live attempt: permanent NO-GO
+
+r31 pinned clean commit
+`d430be9d106f5a978794a0c588e8fcd28e013e7f` with the unchanged config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+and historical workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:eb4a36e2d4ef3e294406d6fcf93d8414c00afa8fff8d7060ef7fed34f7632d98`,
+and started fresh positive attempt
+`positive-9dfa89f23352424f8ba0f1d993ad6a3f`. The independent known-positive probe
+again passed all six real checks—NCBI, UniProt, MAFFT, hmmbuild, CD-HIT, and
+HMMalign—with formal-data isolation. The formal researcher also adopted the
+real PubMed artifact `art_provider_5eaf6f6b2864`.
+
+The formal executor then requested `sandbox.exec` with `python -c` to inspect
+installed package and callable signatures while `/workspace/src` contained no
+explicit source file. The existing runtime correctly snapshots the whole source
+tree before creating a `SandboxRun` or process, so it failed closed as
+`source_snapshot_empty` before any formal controlled operation. Execution task
+`aox_execution_cutover_4f9d1ec865484a73b4544cdb8ccedfcb` explicitly finished
+failed and reporting remained blocked. No formal approval, Chrome handoff,
+formal provider/HPC operation, published report, positive 2, or controlled
+fault exists.
+
+The non-eligible bundle independently passed network-free integrity verification
+with `issues=[]` at
+`sha256:72a118a7b888cecc066274e9b101a36d0d95cce8d3cf4e7e93c0c0f5d9db730a`.
+The sealed decision remains permanent **NO-GO** at
+`sha256:762cabdc53719ce4129755a35a33656d13ed6899f3164cf8113b60b57c31313c`.
+MICU moved from `58,976,497` to `59,877,108 / 500,000,000`, a delta of
+`900,611`, leaving `440,122,892` with zero breach or reservation overage.
+
+r31 and all of its roots, effects, artifacts, browser state, bundle, and
+decision are permanently non-reusable. The bounded correction does not change
+the correct source-snapshot runtime. It exposes through the tool descriptor,
+executor contract, controlled docs, and probe/formal prompts that every
+otherwise-valid `sandbox.exec` reaching source preflight—including `python -c`,
+package/signature inspection, and diagnostics—requires an eligible non-empty
+`/workspace/src` and receives a whole-tree snapshot; earlier validation can
+return its own error first. Controlled docs remain the read-only API-fact path;
+when runtime introspection is still needed, the executor first authors an
+explicit inspection source. Empty-source failure now carries a factual pre-run
+hint, while direct `artifacts.snapshot_code` reports selection-aware recovery.
+The Host does not generate placeholder source, add an unaudited inspection
+fallback, or weaken provenance. Changed workflow knowledge and its manifest
+must be digest-repinned, and the next campaign requires a fresh clean
+commit/config/workflow pin and wholly fresh roots.
 
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file

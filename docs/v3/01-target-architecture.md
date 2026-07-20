@@ -191,6 +191,7 @@ restore context
 - 被 `engine invocation` 统一调度和恢复
 - 不拥有产品顶层真状态
 - `execution` 默认通过 executor-owned persistent sandbox workspace 承载脚本迭代、Python/bash 操作和 SDK 调用，而不是让 executor 直接调用 runner tool
+- 通过前序 request、workspace、layout 与 runtime 校验并进入 source preflight 的每次 `sandbox.exec`（包括 `python -c`、包/签名探测与诊断）都先对整个非空 `/workspace/src` 建立 CODE snapshot；前序校验可以更早返回自身错误，空树则在 `SandboxRun` 与进程创建前以 `source_snapshot_empty` fail closed。只读 API 事实优先来自受控 docs，确需 runtime introspection 时先把显式探测源码写入 `/workspace/src`，不得把 exec 当作无审计环境检查捷径
 - 进入 dry-run、approval、正式执行或结果审计的源码必须 snapshot 为 CODE artifact；Host 用 snapshot digest 绑定 plan、run、artifact provenance 和 workspace projection
 - 外部 provider、明确配置的本地 adapter 和 HPC 调用必须通过 `openzyme_pipeline` SDK 进入 Host supervisor，再由 Host 选择受控 adapter、runner 或独立 HPC placement workspace；AOX/HMM `bio_tools` 的 S14 产品 route 是 HPC-only，不以 Host-local Apptainer 作为 fallback
 - preprocess 是 pipeline 可调用能力，由 executor 在受控代码中判断和编排；preprocess 产物必须先登记为可信 workspace artifact，再被 HPC step 消费
@@ -304,6 +305,7 @@ Web UI 的默认交互是 conversation-first：用户通过消息表达目标，
 - `deep_research` 默认优先内嵌 LangGraph / LangChain 实现
 - `execution` 默认继续复用 `apps/mcp-hpc-runner`
 - `execution` 的 executor-facing 默认入口是 sandbox-first：先通过 `sandbox.workspace.status` 理解自己的持久工作区，后续通过 `sandbox.file.*` / `sandbox.exec` 编辑和运行受控代码；`execution.pipeline.*` 若仍存在，只是 Host 内部或迁移兼容桥，不再是 executor 必须调用的主路径
+- `sandbox.exec` 中通过前序 request/workspace/layout/runtime 校验并进入 source preflight 的所有调用都先封存整个非空 `/workspace/src`；即使只是 `python -c`、包/签名探测或诊断也不例外。前序校验仍可更早失败；进入 source preflight 后的空树在 run/process 前返回 `source_snapshot_empty`。harness 应把该真实约束和受控 docs/显式 inspection source 路径呈现给 agent，但不替 agent 规定科学策略
 - `execution` 默认运行在 rootless Podman persistent sandbox 中，通过注入的 `openzyme_pipeline` SDK 和 agent-facing `sandbox.*` tools 访问受控 sandbox workspace、artifacts、bio、bio_tools、preprocess 与后续领域 SDK
 - executor sandbox base image 默认由 Host-level image registry / bootstrap contract 管理，记录 `image_ref`、resolved `image_digest`、最低能力声明和 `sandbox_protocol_version`；MAFFT、CD-HIT、HMMER、Apptainer SIF、HPC runner 等领域 packaging 不进入 base image，由后续 backend/toolchain registry 管理
 - 同一 `sandbox_workspace_id` 默认单活 `sandbox.exec`；artifact materialization 按 artifact digest、target path 和 mode 幂等复用；SDK approval 按完整 operation digest 复用，digest 漂移必须重新审批或结构化失败

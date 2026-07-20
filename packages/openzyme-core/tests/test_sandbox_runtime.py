@@ -4010,6 +4010,15 @@ def test_sandbox_exec_requires_source_snapshot_and_forbids_env_secrets(tmp_path:
             argv=["python", "-c", "print('no source')"],
         )
     assert empty_source.value.error_code == "source_snapshot_empty"
+    assert empty_source.value.hint == (
+        "Author at least one eligible regular file under /workspace/src before calling "
+        "sandbox.exec; sandbox.exec snapshots the whole source tree. This failure "
+        "occurs before SandboxRun creation or process invocation."
+    )
+    assert repositories.sandbox_runs.list_by_workspace(
+        workspace.sandbox_workspace_id
+    ) == []
+    assert repositories.artifacts.list_by_session(session.session_id) == []
 
     service.write_file(
         session_id=session.session_id,

@@ -1415,6 +1415,13 @@ def test_known_positive_probe_prompt_exposes_fixed_runner_output_contracts(
     assert "Both helpers already return the terminal canonical" in prompt
     assert "never chain selectors" in prompt
     assert "docs.read('artifacts')" in prompt
+    assert "docs.read('bio')" in prompt
+    assert "docs.read('bio-tools')" in prompt
+    assert "docs.read('sdk-overview')" in prompt
+    assert "Every otherwise-valid sandbox.exec that reaches source preflight" in prompt
+    assert "including Python -c or package/signature inspection" in prompt
+    assert "never spend the probe's sole run as a read-only" in prompt
+    assert "put it in the explicitly authored operation-bearing source" in prompt
     assert "one operation-bearing sandbox.exec run" in prompt
     assert "Cross-run effect adoption is not available" in prompt
     assert "Persist each completed operation response under /workspace/work" in prompt
@@ -1499,6 +1506,16 @@ def test_formal_prompt_exposes_host_owned_cache_bypass_contract(tmp_path: Path) 
     assert "artifacts.fetched_output_ref" in prompt
     assert "only the direct response returned by artifacts.register" in prompt
     assert "never chain selectors, synthesize a registration envelope" in prompt
+    assert "docs.read('bio')" in prompt
+    assert "docs.read('bio-tools')" in prompt
+    assert "docs.read('sdk-overview')" in prompt
+    assert "selected pinned AOX/HMM SOP is already present" in prompt
+    assert "do not reread it" in prompt
+    assert "Every otherwise-valid sandbox.exec invocation" in prompt
+    assert "that reaches source preflight, including Python -c" in prompt
+    assert "never use it as a read-only environment-inspection shortcut" in prompt
+    assert "first author an explicit inspection source under /workspace/src" in prompt
+    assert "any local nonzero run makes the attempt ineligible" in prompt
     assert "every normalized final FASTA with kind='sequence', format='fasta'" in prompt
     assert "AOX_ref.hmm with kind='result', format='hmm'" in prompt
     assert "every normalized final CSV with kind='result', format='csv'" in prompt

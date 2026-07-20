@@ -346,8 +346,12 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ToolDescriptor(
             tool_name="sandbox.exec",
             description=(
-                "Run bounded direct argv after source snapshot preflight; no implicit "
-                "shell (use bash -lc explicitly)."
+                "Run bounded direct argv only after the Host snapshots the entire "
+                "non-empty /workspace/src tree. Every otherwise-valid invocation, "
+                "including Python -c, package/signature inspection, and diagnostics, "
+                "fails closed with source_snapshot_empty when that tree has no files. "
+                "This is not a read-only environment-inspection shortcut; author "
+                "explicit source first. No implicit shell (use bash -lc explicitly)."
             ),
             input_schema={
                 "type": "object",

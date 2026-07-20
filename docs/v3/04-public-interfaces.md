@@ -100,6 +100,8 @@ approval resolve 的 `actor_ref` 只能来自已认证 principal；请求体提�
 
 这些工具面向 executor 的 persistent sandbox working copy。它们允许 executor 在隔离容器中读写文件、运行 bash/Python、把 catalog artifact 显式搬入 sandbox、登记输出 artifact，并在 dry-run / execution 前把源码快照固化为 `ArtifactKind.CODE`。它们不得暴露 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、SSH/Slurm config 或 credentials。
 
+`sandbox.exec` 不是只读环境检查接口：通过前序 request、workspace、layout 与 runtime 校验并进入 source preflight 的所有调用，包括 `python -c`、包/签名探测和诊断，都会先封存整个非空 `/workspace/src`。前序校验可以更早返回自身错误；进入 source preflight 后的空树在 `SandboxRun` 与进程产生前返回 `source_snapshot_empty`。agent 应先从 `docs.search` / `docs.read` 读取受控 API 事实；仍需 runtime introspection 时先用 `sandbox.file.*` 写入显式 inspection source。该约束只呈现 provenance 真相，不固定科学策略或脚本结构。
+
 默认 master 内部 team coordination tool surface 还应包括：
 
 - `protocol.thread`
@@ -267,6 +269,7 @@ V3 internal tools must return an LLM-readable envelope. The Python `ToolResult.c
 - `artifacts.register` 只登记 `/workspace/output` 下的 sandbox output 或 Host-supervised fetched output；public Python signature保持 `metadata` object，SDK 自动对 `<=256 KiB` canonical JSON 内联、对 `(256 KiB,32 MiB]` 使用 attempt-local digest-bound sidecar，Host 在任何 visible effect 前通过 fd-anchored/no-follow loader核 path/size/digest/strict JSON。top-level `content_digest`、`sealed_digest`、`tree_digest` 是Host-owned output identity，SDK与raw Host boundary均拒绝caller自报。sidecar 不是 canonical artifact/storage，完整 logical metadata 仍写入 Artifact row。direct success 固定返回 `artifact_registration_response@2`；其中artifact exact闭集只有`artifact_id`与bounded `metadata` summary，general catalog context不会回显，validation使用独立bounded summary，缺字段不表示catalog object为空。`registered_artifact_ref` 只接受该 exact schema；active compat runner 的compact `pipeline_provisional_registration_response@1(canonical=false)` 必须被拒绝。Host 随后完成 validator、copy/seal、sealed digest recheck 和 provenance 完整性检查；同一路径不同 digest 创建不同 `artifact_id`，不覆盖旧 artifact
 - `artifacts.snapshot_code` 把 sandbox `/workspace/src` 中的 pipeline source 固化为 `ArtifactKind.CODE`；execution plan、approval、run 与 output provenance 必须引用这个快照，而不是引用可漂移的 working copy；source tree digest canonicalization 必须稳定
 - `sandbox.exec` 在同一 `sandbox_workspace_id` 下默认单活执行；active run 期间第二个 exec 和 agent-facing write/patch/delete 返回 conflict，read/list 可并发
+- `sandbox.exec` 中通过前序 request/workspace/layout/runtime 校验并进入 source preflight 的每次调用都先 snapshot 整个非空 `/workspace/src`；`python -c`、package/signature inspection 与 diagnostics 不豁免。前序校验可更早返回自身错误；进入 source preflight 后的空树以 `source_snapshot_empty` 在 run/process 前失败。harness 不自动生成占位源码，也不提供未审计的 exec inspection fallback
 - `sandbox.exec.argv` 是 direct exec-form 数组，不存在隐式 shell parsing。Python heredoc 等明显未包裹 shell 语法必须在 source snapshot、SandboxRun 与容器进程产生前返回 typed tool error；harness 只呈现“先用 `sandbox.file.*` 写脚本再执行”或“显式使用 `["bash", "-lc", ...]`”两种真实可行路径，不自动改写 agent 命令
 - `hpc.workspace(label)` 按 `sandbox_workspace_id + normalized_label` 复用 logical remote placement workspace；`stage_artifact` / `fetch_outputs` 只返回 opaque refs、artifact refs 和 bounded summary，不返回真实远端路径
 - artifact tool results、workspace projection、events 与 capability projection 都不得返回 Host repo path、Host artifact path、sandbox host path、runner private path、`storage_uri`、`source_storage_uri` 或 `intermediate_storage_uri`

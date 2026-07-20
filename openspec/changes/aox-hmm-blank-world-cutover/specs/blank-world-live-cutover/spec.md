@@ -132,6 +132,19 @@ EOF before the newline, invalid UTF-8/JSON, duplicate object keys, non-finite JS
 - **WHEN** a decoded request has a safe string/int64 id but invalid params or other request semantics, or instead carries an oversized/invalid id
 - **THEN** the first error preserves the safe id, the second uses `id=null`, neither request dispatches a partial operation, and the next connection remains serviceable
 
+### Requirement: Source-bearing sandbox execution is explicit
+Every otherwise-valid `sandbox.exec` invocation that reaches source preflight SHALL bind an immutable snapshot of the entire non-empty `/workspace/src` tree before `SandboxRun` creation or process invocation. Earlier request, workspace, layout, and runtime validation MAY fail before source preflight. The snapshot requirement includes `python -c`, package/signature inspection, and diagnostic commands; none of them SHALL be represented as a read-only environment-inspection shortcut. The agent-facing tool descriptor, executor contract, controlled execution docs, and AOX live prompts MUST expose this constraint and the factual recovery path without prescribing a scientific strategy. Controlled docs SHALL remain the read-only source for installed API facts. If runtime introspection is still necessary, the executor MUST first author an explicit inspection source under `/workspace/src`.
+
+An empty tree MUST fail as `source_snapshot_empty` with a factual hint that at least one explicit source file is required and that no `SandboxRun` or process was created. The Host MUST NOT generate placeholder source, silently rewrite `python -c` into a source artifact, add an untracked inspection fallback, or weaken source-provenance closure.
+
+#### Scenario: Reject source-free Python inspection before a run
+- **WHEN** an executor requests `sandbox.exec` for `python -c`, package/signature inspection, or diagnostics while `/workspace/src` contains no explicit file
+- **THEN** it receives `source_snapshot_empty` before `SandboxRun`, process, controlled operation, provider, or runner activity; no CODE Artifact is committed, and the hint directs it to controlled docs or an explicitly authored inspection source without choosing its scientific plan
+
+#### Scenario: Preserve strategy freedom with source-bearing introspection
+- **WHEN** controlled docs do not settle a runtime fact and the executor decides introspection is necessary
+- **THEN** it may author and execute an explicit inspection source under `/workspace/src`, which receives the same whole-tree snapshot and ordinary failure semantics as every other command
+
 ### Requirement: Preserve typed adapter failure diagnostics across the sandbox boundary
 When a Host adapter raises a structured failure, the sandbox control response and dependency-free pipeline SDK SHALL preserve the sanitized `error_code`, `hint`, and safe `details` together with top-level `stage` and `retryable`. A non-null stage MUST be a safe public machine identifier. Retryability MUST be a boolean or degrade to unknown; string or numeric truthiness MUST NOT be interpreted as retryability. For `hpc_staging_failed`, the SDK-visible contract MUST carry `stage="hpc_staging"` and the closed Host-trusted `details.runner_failure` projection while excluding SSH target, argv, stderr, credential, Host/remote path, and locator fields. Existing `details.stage` and `details.retryable` MAY remain as compatibility copies, but they MUST NOT be the only representation consumed by the SDK.
 

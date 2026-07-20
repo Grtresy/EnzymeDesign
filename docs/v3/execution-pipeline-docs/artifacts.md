@@ -74,6 +74,18 @@ source = artifacts.snapshot_code(
 
 `snapshot_code` creates an immutable `ArtifactKind.CODE` record with `sandbox_workspace_id`, entrypoint, `source_tree_digest`, file digest manifest, and parent snapshot metadata. `sandbox.exec`, approvals, SDK operations, backend runs, and output provenance must bind to this snapshot. If the executor edits `/workspace/src` after a run starts, the existing run keeps its original snapshot; formal output from new source requires a new `sandbox.exec` / snapshot.
 
+`sandbox.exec` performs this whole-tree snapshot preflight on every otherwise-valid
+invocation that reaches source preflight, not only on commands expected to reach
+an external operation. Earlier request, workspace, layout, and runtime validation
+can fail before this point. The snapshot requirement includes `python -c`,
+package/signature inspection, and diagnostics. If `/workspace/src` has no eligible
+regular file, it returns `source_snapshot_empty` before creating a `SandboxRun` or
+process. Controlled docs are the read-only API-inspection path; runtime
+introspection, when still necessary, must itself be authored under `/workspace/src`
+before execution. For a direct `artifacts.snapshot_code` call, omit `paths` to
+select the whole source tree; `paths=[]` selects no files and therefore fails as
+`source_snapshot_empty` even when the tree itself contains files.
+
 Cutover evidence does not treat that directory-backed catalog record as an
 ordinary file. The collector converts a typed
 `semantic_type=pipeline_source_snapshot` / `format=source_tree` directory into
