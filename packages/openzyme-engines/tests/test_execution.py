@@ -670,6 +670,15 @@ class CountingBioFixtureAdapter(DeterministicBioDatabaseAdapter):
         return super().ncbi_fetch_proteins(**kwargs)
 
 
+class RecordingUniprotFixtureAdapter(DeterministicBioDatabaseAdapter):
+    def __init__(self) -> None:
+        self.batch_sizes: list[int | None] = []
+
+    def uniprot_fetch(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.batch_sizes.append(kwargs["batch_size"])
+        return super().uniprot_fetch(**kwargs)
+
+
 class CapturingTimeoutRunner(CapturingFailedRunner):
     def submit_execution(self, session_id: str, payload: dict[str, object]):  # type: ignore[no-untyped-def]
         from openzyme_engines.execution import ExecutionOutcome
@@ -1533,6 +1542,47 @@ def _seed_sandbox_adapter_run(
             updated_at="2026-04-20T12:00:06+00:00",
             started_at="2026-04-20T12:00:06+00:00",
         )
+    )
+
+
+def _sandbox_uniprot_operation(
+    *,
+    sandbox_workspace_id: str,
+    sandbox_run_id: str,
+    params: dict[str, object],
+    operation_id: str = "op_sandbox_uniprot",
+) -> ControlledOperation:
+    return ControlledOperation(
+        operation_id=operation_id,
+        session_id="sess_001",
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id=sandbox_run_id,
+        logical_operation_key="bio.uniprot_fetch",
+        operation_digest="sha256:" + hashlib.sha256(operation_id.encode()).hexdigest(),
+        params_digest=_payload_digest(params),
+        backend_category="provider_http",
+        status=ControlledOperationStatus.RUNNING,
+        created_at="2026-07-20T00:00:01+00:00",
+        updated_at="2026-07-20T00:00:01+00:00",
+        task_id="task_001",
+        lane_id="lane_001",
+        approval_id=f"appr_{operation_id}",
+        approval_state="approved",
+        route_reason="static_policy:v1",
+        source_snapshot_artifact_id="art_source_snapshot",
+        source_snapshot_digest="sha256:source",
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
+        sdk_module="bio",
+        function_name="uniprot_fetch",
+        route_policy_id="bio.uniprot_fetch.provider:v1",
+        placement="provider",
+        selected_backend="provider_http",
+        resource_class="network_io",
+        runtime_packaging_id="provider_http:v1",
+        provider_config_digest="provider_config:uniprot:v1",
+        expected_outputs_summary={"output_dir": params["output_dir"]},
+        resource_estimate={"network_io": True},
+        idempotency_key="bio.uniprot_fetch:" + _payload_digest(params),
     )
 
 
@@ -3096,6 +3146,471 @@ def test_pipeline_bio_ncbi_and_uniprot_fetch_persist_bounded_artifacts() -> None
     )
     assert status["details"]["bio_artifact_ids"]
     assert "P12345" not in str(status.get("sandbox_outcome", {}))
+
+
+def _compat_uniprot_call_context(
+    batch_size: object,
+) -> tuple[
+    ExecutionEngine,
+    Session,
+    EngineInvocation,
+    dict[str, object],
+    RecordingUniprotFixtureAdapter,
+]:
+    repositories = _build_repositories()
+    session = _seed_session(repositories)
+    code_artifact_id = _pipeline_source_id(
+        repositories,
+        "code_compat_uniprot_batch",
+        "from openzyme_pipeline import bio\n"
+        "bio.uniprot_fetch(accessions=['P12345'], output_dir='/workspace/output/bio/compat-batch', batch_size=1)\n",
+    )
+    adapter = RecordingUniprotFixtureAdapter()
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        sandbox_runner=HandlerSandboxRunner(),
+        bio_adapter=adapter,
+        allow_bio_fixture_adapter=True,
+    )
+    started = engine.start_pipeline(
+        session_id=session.session_id,
+        task_id="task_001",
+        invocation_id="inv_compat_uniprot_batch",
+        code_artifact_id=code_artifact_id,
+        inputs={},
+        dry_run=True,
+    )
+    assert started.invocation.status is EngineInvocationStatus.SUCCEEDED
+    params: dict[str, object] = {
+        "accessions": ["P12345"],
+        "fields": [],
+        "batch_size": batch_size,
+        "output_dir": "/workspace/output/bio/compat-batch",
+    }
+    operation_key = engine._pipeline_operation_key("bio.uniprot_fetch", params)
+    engine._update_pipeline_document(
+        started.invocation,
+        {"approved_operation_keys": [operation_key]},
+    )
+    return engine, session, started.invocation, params, adapter
+
+
+def _controlled_uniprot_call_context(
+    *,
+    tmp_path: Path,
+    batch_size: object,
+) -> tuple[
+    ExecutionEngine,
+    ControlledOperation,
+    dict[str, object],
+    RecordingUniprotFixtureAdapter,
+]:
+    repositories = _build_repositories()
+    _seed_session(repositories)
+    workspace_root = tmp_path / "workspaces"
+    sandbox_workspace_id = _seed_sandbox_adapter_workspace(
+        repositories,
+        workspace_root=workspace_root,
+    )
+    params: dict[str, object] = {
+        "accessions": ["P12345"],
+        "fields": [],
+        "batch_size": batch_size,
+        "output_dir": "/workspace/output/bio/controlled-batch",
+    }
+    operation = _sandbox_uniprot_operation(
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id="srun_controlled_uniprot_batch",
+        params=params,
+        operation_id="op_controlled_uniprot_batch",
+    )
+    _seed_sandbox_adapter_run(
+        repositories,
+        sandbox_workspace_id=sandbox_workspace_id,
+        sandbox_run_id=operation.sandbox_run_id,
+    )
+    adapter = RecordingUniprotFixtureAdapter()
+    engine = ExecutionEngine(
+        repositories,
+        ImmediateSuccessRunner(),
+        bio_adapter=adapter,
+        allow_bio_fixture_adapter=True,
+        sandbox_workspace_root=workspace_root,
+    )
+    return engine, operation, params, adapter
+
+
+@pytest.mark.parametrize("batch_size", (True, 1.5, "1"))
+def test_compat_uniprot_batch_size_rejects_values_int_would_coerce(
+    batch_size: object,
+) -> None:
+    engine, session, invocation, params, adapter = _compat_uniprot_call_context(
+        batch_size
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._run_pipeline_bio(
+            session=session,
+            invocation=invocation,
+            method="bio.uniprot_fetch",
+            params=params,
+        )
+
+    assert exc_info.value.error_type == "invalid_batch_size"
+    assert exc_info.value.stage == "bio_input_validation"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details == {"batch_size": batch_size}
+    assert adapter.batch_sizes == []
+
+
+def test_compat_uniprot_batch_size_accepts_exact_integer() -> None:
+    engine, session, invocation, params, adapter = _compat_uniprot_call_context(1)
+
+    result = engine._run_pipeline_bio(
+        session=session,
+        invocation=invocation,
+        method="bio.uniprot_fetch",
+        params=params,
+    )
+
+    assert result["artifact_count"] == 4
+    assert adapter.batch_sizes == [1]
+    assert type(adapter.batch_sizes[0]) is int
+
+
+@pytest.mark.parametrize("batch_size", (True, 1.5, "1"))
+def test_controlled_uniprot_batch_size_rejects_values_int_would_coerce(
+    tmp_path: Path,
+    batch_size: object,
+) -> None:
+    engine, operation, params, adapter = _controlled_uniprot_call_context(
+        tmp_path=tmp_path,
+        batch_size=batch_size,
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine.execute_sandbox_adapter_operation(
+            operation,
+            {"adapter_params": params},
+        )
+
+    assert exc_info.value.error_type == "provider_invalid_request"
+    assert exc_info.value.stage == "bio_input_validation"
+    assert exc_info.value.retryable is False
+    assert exc_info.value.details["batch_size"] == batch_size
+    assert adapter.batch_sizes == []
+
+
+def test_controlled_uniprot_batch_size_accepts_exact_integer(tmp_path: Path) -> None:
+    engine, operation, params, adapter = _controlled_uniprot_call_context(
+        tmp_path=tmp_path,
+        batch_size=1,
+    )
+
+    result = engine.execute_sandbox_adapter_operation(
+        operation,
+        {"adapter_params": params},
+    )
+
+    assert len(result["adapter_result"]["registered_artifact_ids"]) == 4
+    assert adapter.batch_sizes == [1]
+    assert type(adapter.batch_sizes[0]) is int
+
+
+def _seed_bio_later_draft_conflict(
+    *,
+    repositories: CoreRepositories,
+    output_root: Path,
+    output_dir_relative: str,
+    suffix: str,
+) -> tuple[
+    tuple[BioArtifactDraft, BioArtifactDraft],
+    Path,
+    Path,
+    str,
+    str,
+]:
+    first_sentinel = '{"sentinel":"first"}\n'
+    later_sentinel = '{"sentinel":"later"}\n'
+    first_path = output_root / "first.json"
+    later_path = output_root / "later.json"
+    first_path.parent.mkdir(parents=True, exist_ok=True)
+    first_path.write_text(first_sentinel, encoding="utf-8")
+    later_path.write_text(later_sentinel, encoding="utf-8")
+    repositories.artifacts.save(
+        SessionArtifactRecord(
+            artifact_id=f"art_existing_bio_later_{suffix}",
+            session_id="sess_001",
+            task_id="task_001",
+            lane_id="lane_001",
+            invocation_id="seed_invocation",
+            run_id=None,
+            kind=ArtifactKind.RESULT,
+            storage_uri=str(later_path),
+            relative_path=f"{output_dir_relative}/later.json",
+            title="later.json",
+            description=None,
+            metadata={
+                "format": "json",
+                "content_digest": _content_digest(later_sentinel),
+            },
+            created_at="2026-07-20T00:00:00+00:00",
+        )
+    )
+    drafts = (
+        BioArtifactDraft(
+            relative_path="first.json",
+            kind=ArtifactKind.RESULT,
+            title="first.json",
+            content='{"replacement":"first"}\n',
+            format="json",
+            metadata={},
+        ),
+        BioArtifactDraft(
+            relative_path="later.json",
+            kind=ArtifactKind.RESULT,
+            title="later.json",
+            content='{"replacement":"later"}\n',
+            format="json",
+            metadata={},
+        ),
+    )
+    return drafts, first_path, later_path, first_sentinel, later_sentinel
+
+
+def _assert_later_bio_conflict_left_no_partial_write(
+    *,
+    repositories: CoreRepositories,
+    output_dir_relative: str,
+    first_path: Path,
+    later_path: Path,
+    first_sentinel: str,
+    later_sentinel: str,
+) -> None:
+    assert first_path.read_text(encoding="utf-8") == first_sentinel
+    assert later_path.read_text(encoding="utf-8") == later_sentinel
+    assert not any(
+        artifact.relative_path == f"{output_dir_relative}/first.json"
+        for artifact in repositories.artifacts.list_by_session("sess_001")
+    )
+
+
+def test_compat_bio_artifact_persistence_preflights_later_conflict_before_writes(
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+    engine, session, invocation, _params, _adapter = _compat_uniprot_call_context(1)
+    engine._ensure_pipeline_artifact_boundary_workspace(invocation)
+    workspace_root = engine.sandbox_workspace_root
+    assert workspace_root is not None
+    output_dir_relative = "bio/compat-preflight"
+    output_root = (
+        workspace_root
+        / engine._pipeline_sandbox_workspace_id(invocation)
+        / "output"
+        / output_dir_relative
+    )
+    drafts, first_path, later_path, first_sentinel, later_sentinel = (
+        _seed_bio_later_draft_conflict(
+            repositories=engine.repositories,
+            output_root=output_root,
+            output_dir_relative=output_dir_relative,
+            suffix="compat",
+        )
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._persist_bio_artifacts(
+            session=session,
+            invocation=invocation,
+            output_dir_relative=output_dir_relative,
+            operation_key="compat-preflight",
+            drafts=drafts,
+            request_metadata={
+                "sdk_method": "bio.uniprot_fetch",
+                "provider": "uniprot",
+                "output_dir": f"/workspace/output/{output_dir_relative}",
+            },
+        )
+
+    assert exc_info.value.error_type == "provider_output_path_invalid"
+    assert exc_info.value.details["relative_path"].endswith("/later.json")
+    _assert_later_bio_conflict_left_no_partial_write(
+        repositories=engine.repositories,
+        output_dir_relative=output_dir_relative,
+        first_path=first_path,
+        later_path=later_path,
+        first_sentinel=first_sentinel,
+        later_sentinel=later_sentinel,
+    )
+
+
+def test_controlled_bio_artifact_persistence_preflights_later_conflict_before_writes(
+    tmp_path: Path,
+) -> None:
+    engine, operation, _params, _adapter = _controlled_uniprot_call_context(
+        tmp_path=tmp_path,
+        batch_size=1,
+    )
+    output_dir_relative = "bio/controlled-preflight"
+    workspace_root = engine.sandbox_workspace_root
+    assert workspace_root is not None
+    output_root = (
+        workspace_root
+        / operation.sandbox_workspace_id
+        / "output"
+        / output_dir_relative
+    )
+    drafts, first_path, later_path, first_sentinel, later_sentinel = (
+        _seed_bio_later_draft_conflict(
+            repositories=engine.repositories,
+            output_root=output_root,
+            output_dir_relative=output_dir_relative,
+            suffix="controlled",
+        )
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._persist_sandbox_bio_artifacts(
+            operation=operation,
+            output_dir_relative=output_dir_relative,
+            operation_key=operation.operation_id,
+            drafts=drafts,
+            request_metadata={
+                "sdk_method": "bio.uniprot_fetch",
+                "provider": "uniprot",
+                "output_dir": f"/workspace/output/{output_dir_relative}",
+            },
+        )
+
+    assert exc_info.value.error_type == "provider_output_path_invalid"
+    assert exc_info.value.details["relative_path"].endswith("/later.json")
+    _assert_later_bio_conflict_left_no_partial_write(
+        repositories=engine.repositories,
+        output_dir_relative=output_dir_relative,
+        first_path=first_path,
+        later_path=later_path,
+        first_sentinel=first_sentinel,
+        later_sentinel=later_sentinel,
+    )
+
+
+def _oversized_later_bio_metadata_drafts() -> tuple[
+    BioArtifactDraft,
+    BioArtifactDraft,
+]:
+    return (
+        BioArtifactDraft(
+            relative_path="first.json",
+            kind=ArtifactKind.RESULT,
+            title="first.json",
+            content='{"first":true}\n',
+            format="json",
+            metadata={},
+        ),
+        BioArtifactDraft(
+            relative_path="later.json",
+            kind=ArtifactKind.RESULT,
+            title="later.json",
+            content='{"later":true}\n',
+            format="json",
+            metadata={"oversized": "x" * 300_000},
+        ),
+    )
+
+
+def _assert_oversized_bio_metadata_left_no_partial_effect(
+    *,
+    repositories: CoreRepositories,
+    output_root: Path,
+    output_dir_relative: str,
+) -> None:
+    assert not (output_root / "first.json").exists()
+    assert not (output_root / "later.json").exists()
+    assert not any(
+        artifact.relative_path.startswith(f"{output_dir_relative}/")
+        for artifact in repositories.artifacts.list_by_session("sess_001")
+    )
+
+
+def test_compat_bio_artifact_persistence_preflights_all_metadata_before_writes() -> None:
+    engine, session, invocation, _params, _adapter = _compat_uniprot_call_context(1)
+    engine._ensure_pipeline_artifact_boundary_workspace(invocation)
+    workspace_root = engine.sandbox_workspace_root
+    assert workspace_root is not None
+    output_dir_relative = "bio/compat-metadata-preflight"
+    output_root = (
+        workspace_root
+        / engine._pipeline_sandbox_workspace_id(invocation)
+        / "output"
+        / output_dir_relative
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._persist_bio_artifacts(
+            session=session,
+            invocation=invocation,
+            output_dir_relative=output_dir_relative,
+            operation_key="compat-metadata-preflight",
+            drafts=_oversized_later_bio_metadata_drafts(),
+            request_metadata={
+                "sdk_method": "bio.uniprot_fetch",
+                "provider": "uniprot",
+                "output_dir": f"/workspace/output/{output_dir_relative}",
+            },
+        )
+
+    assert exc_info.value.error_type == "provider_artifactization_failed"
+    assert exc_info.value.details["boundary_error_code"] == (
+        "artifact_registration_metadata_inline_too_large"
+    )
+    _assert_oversized_bio_metadata_left_no_partial_effect(
+        repositories=engine.repositories,
+        output_root=output_root,
+        output_dir_relative=output_dir_relative,
+    )
+
+
+def test_controlled_bio_artifact_persistence_preflights_all_metadata_before_writes(
+    tmp_path: Path,
+) -> None:
+    engine, operation, _params, _adapter = _controlled_uniprot_call_context(
+        tmp_path=tmp_path,
+        batch_size=1,
+    )
+    workspace_root = engine.sandbox_workspace_root
+    assert workspace_root is not None
+    output_dir_relative = "bio/controlled-metadata-preflight"
+    output_root = (
+        workspace_root
+        / operation.sandbox_workspace_id
+        / "output"
+        / output_dir_relative
+    )
+
+    with pytest.raises(PipelineSdkFailure) as exc_info:
+        engine._persist_sandbox_bio_artifacts(
+            operation=operation,
+            output_dir_relative=output_dir_relative,
+            operation_key=operation.operation_id,
+            drafts=_oversized_later_bio_metadata_drafts(),
+            request_metadata={
+                "sdk_method": "bio.uniprot_fetch",
+                "provider": "uniprot",
+                "output_dir": f"/workspace/output/{output_dir_relative}",
+            },
+        )
+
+    assert exc_info.value.error_type == "provider_artifactization_failed"
+    assert exc_info.value.details["boundary_error_code"] == (
+        "artifact_registration_metadata_inline_too_large"
+    )
+    _assert_oversized_bio_metadata_left_no_partial_effect(
+        repositories=engine.repositories,
+        output_root=output_root,
+        output_dir_relative=output_dir_relative,
+    )
 
 
 def test_sandbox_adapter_executor_runs_bio_provider_and_registers_artifacts(

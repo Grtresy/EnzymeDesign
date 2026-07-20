@@ -538,6 +538,7 @@ BIO_PROVIDER_NAMES = {
     "bio.hmmer_search": "ebi_hmmer",
     "rcsb_pdb.download_structure": "rcsb_pdb",
 }
+_SEQUENCE_DIGEST_INDEX_CONTRACT_ID = "canonical_sequence_digest_index@1"
 BIO_SAFE_HEADER_NAMES = {
     "content-type",
     "date",
@@ -589,6 +590,40 @@ def _sha256_text(content: str) -> str:
 
 def _sha256_bytes(content: bytes) -> str:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _sequence_digest_index_metadata(
+    sequence_digests: dict[str, str],
+) -> dict[str, Any]:
+    canonical_index = {
+        str(accession): str(sequence_digests[accession])
+        for accession in sorted(sequence_digests)
+    }
+    return {
+        "sequence_digest_count": len(canonical_index),
+        "sequence_digest_index_digest": _sha256_text(_json_text(canonical_index)),
+        "sequence_digest_index_contract_id": _SEQUENCE_DIGEST_INDEX_CONTRACT_ID,
+    }
+
+
+def _exact_optional_uniprot_batch_size(
+    value: Any,
+    *,
+    sdk_method: str,
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PipelineSdkFailure(
+            error_type="invalid_batch_size",
+            message="bio.uniprot_fetch batch_size must be an exact integer.",
+            hint="Retry with batch_size omitted or set to a positive integer.",
+            stage="bio_input_validation",
+            retryable=False,
+            sdk_method=sdk_method,
+            details={"batch_size": value},
+        )
+    return value
 
 
 def _scrub_provider_text(value: str) -> str:
@@ -738,6 +773,15 @@ class BioArtifactDraft:
     content: str
     format: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBioArtifactDraft:
+    draft: BioArtifactDraft
+    storage_path: Path
+    workspace_relative_path: PurePosixPath
+    safe_content: str
+    content_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1501,12 +1545,14 @@ class ProviderHttpBioDatabaseAdapter:
                         "retrieved_at": retrieved_at,
                         "identity_contract_id": "ncbi_requested_resolved_protein_identity@1",
                         "aggregate_fasta_digest": aggregate_fasta_digest,
-                        "sequence_digests": {
-                            str(record["requested_accession"]): str(
-                                record["sequence_digest"]
-                            )
-                            for record in resolved_records
-                        },
+                        **_sequence_digest_index_metadata(
+                            {
+                                str(record["requested_accession"]): str(
+                                    record["sequence_digest"]
+                                )
+                                for record in resolved_records
+                            }
+                        ),
                     },
                 ),
                 self._draft(
@@ -1815,10 +1861,14 @@ class ProviderHttpBioDatabaseAdapter:
             "uniprot_release": release,
             "uniprot_release_date": release_date,
             "identity_contract_id": _UNIPROT_IDENTITY_CONTRACT_ID,
-            "sequence_digests": {
-                str(record["primary_accession"]): str(record["sequence_digest"])
-                for record in normalized_records
-            },
+            **_sequence_digest_index_metadata(
+                {
+                    str(record["primary_accession"]): str(
+                        record["sequence_digest"]
+                    )
+                    for record in normalized_records
+                }
+            ),
         }
         if not fasta:
             fasta_metadata.update(
@@ -2682,6 +2732,16 @@ class ProviderHttpBioDatabaseAdapter:
     def _bounded_batch_size(self, value: int | None, *, sdk_method: str) -> int:
         if value is None:
             return self.config.batch_size_cap
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise PipelineSdkFailure(
+                error_type="provider_invalid_request",
+                message="UniProt batch_size must be an exact integer.",
+                hint="Retry with batch_size omitted or set to a positive integer.",
+                stage="provider_request_validation",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"batch_size": value},
+            )
         if value <= 0 or value > self.config.batch_size_cap:
             raise PipelineSdkFailure(
                 error_type="provider_invalid_request",
@@ -9664,20 +9724,10 @@ class ExecutionEngine:
                 )
             elif method == "bio.uniprot_fetch":
                 batch_size_value = params.get("batch_size")
-                try:
-                    batch_size = (
-                        None if batch_size_value is None else int(batch_size_value)
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise PipelineSdkFailure(
-                        error_type="invalid_batch_size",
-                        message="bio.uniprot_fetch batch_size must be an integer.",
-                        hint="Retry with batch_size omitted or set to a positive integer.",
-                        stage="bio_input_validation",
-                        retryable=False,
-                        sdk_method=method,
-                        details={"batch_size": batch_size_value},
-                    ) from exc
+                batch_size = _exact_optional_uniprot_batch_size(
+                    batch_size_value,
+                    sdk_method=method,
+                )
                 result = adapter.uniprot_fetch(
                     accessions=tuple(
                         str(value) for value in list(params.get("accessions") or [])
@@ -9964,18 +10014,10 @@ class ExecutionEngine:
                 ) from exc
         elif method == "bio.uniprot_fetch":
             batch_size_value = params.get("batch_size")
-            try:
-                batch_size = None if batch_size_value is None else int(batch_size_value)
-            except (TypeError, ValueError) as exc:
-                raise PipelineSdkFailure(
-                    error_type="invalid_batch_size",
-                    message="bio.uniprot_fetch batch_size must be an integer.",
-                    hint="Retry with batch_size omitted or set to a positive integer.",
-                    stage="bio_input_validation",
-                    retryable=False,
-                    sdk_method=method,
-                    details={"batch_size": batch_size_value},
-                ) from exc
+            batch_size = _exact_optional_uniprot_batch_size(
+                batch_size_value,
+                sdk_method=method,
+            )
             try:
                 result = adapter.uniprot_fetch(
                     accessions=tuple(
@@ -11961,6 +12003,93 @@ class ExecutionEngine:
             persisted.append(record)
         return tuple(persisted)
 
+    def _prepare_bio_artifact_drafts(
+        self,
+        *,
+        session_id: str,
+        output_root: Path,
+        output_dir_relative: str,
+        drafts: tuple[BioArtifactDraft, ...],
+        sdk_method: str,
+    ) -> tuple[_PreparedBioArtifactDraft, ...]:
+        prepared: list[_PreparedBioArtifactDraft] = []
+        seen_paths: set[str] = set()
+        for draft in drafts:
+            relative = PurePosixPath(draft.relative_path)
+            relative_path = relative.as_posix()
+            if (
+                relative.is_absolute()
+                or not relative_path
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise PipelineSdkFailure(
+                    error_type="provider_artifactization_failed",
+                    message=f"Bio SDK generated invalid artifact path {draft.relative_path!r}.",
+                    hint="Retry after fixing the Host bio provider adapter.",
+                    stage="bio_artifact_registration",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                )
+            workspace_relative_path = PurePosixPath(output_dir_relative) / relative
+            public_path = workspace_relative_path.as_posix()
+            if public_path in seen_paths:
+                raise PipelineSdkFailure(
+                    error_type="provider_output_path_invalid",
+                    message=f"Bio provider emitted duplicate output path {public_path!r}.",
+                    hint="Use one distinct relative path for each provider output.",
+                    stage="bio_output_path_validation",
+                    retryable=False,
+                    sdk_method=sdk_method,
+                    details={"relative_path": public_path},
+                )
+            seen_paths.add(public_path)
+            safe_content = _sanitize_provider_content(draft.content)
+            content_digest = _sha256_text(safe_content)
+            self._reject_bio_output_conflict(
+                session_id=session_id,
+                relative_path=public_path,
+                content_digest=content_digest,
+                sdk_method=sdk_method,
+            )
+            prepared.append(
+                _PreparedBioArtifactDraft(
+                    draft=draft,
+                    storage_path=output_root / relative_path,
+                    workspace_relative_path=workspace_relative_path,
+                    safe_content=safe_content,
+                    content_digest=content_digest,
+                )
+            )
+        return tuple(prepared)
+
+    @staticmethod
+    def _preflight_bio_registration_metadata(
+        *,
+        boundary: ArtifactBoundaryService,
+        session_id: str,
+        sandbox_workspace_id: str,
+        workspace_relative_path: PurePosixPath,
+        metadata: dict[str, Any],
+        sdk_method: str | None,
+    ) -> None:
+        try:
+            boundary.resolve_registration_metadata(
+                session_id=session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                metadata=metadata,
+            )
+        except ArtifactBoundaryError as exc:
+            raise PipelineSdkFailure(
+                error_type="provider_artifactization_failed",
+                message=f"Bio provider output {workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
+                hint=exc.hint
+                or "Inspect the provider transcript and retry after fixing the adapter output.",
+                stage="bio_artifact_registration",
+                retryable=False,
+                sdk_method=sdk_method,
+                details={"boundary_error_code": exc.error_code, **exc.details},
+            ) from exc
+
     def _persist_bio_artifacts(
         self,
         *,
@@ -11982,34 +12111,18 @@ class ExecutionEngine:
         output_root = (
             workspace_root / sandbox_workspace_id / "output" / output_dir_relative
         )
-        for draft in drafts:
-            relative = PurePosixPath(draft.relative_path)
-            relative_path = relative.as_posix()
-            if (
-                relative.is_absolute()
-                or not relative_path
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                raise PipelineSdkFailure(
-                    error_type="provider_artifactization_failed",
-                    message=f"Bio SDK generated invalid artifact path {draft.relative_path!r}.",
-                    hint="Retry after fixing the Host bio provider adapter.",
-                    stage="bio_artifact_registration",
-                    retryable=False,
-                    sdk_method=request_metadata.get("sdk_method"),
-                )
-            storage_path = output_root / relative_path
-            storage_path.parent.mkdir(parents=True, exist_ok=True)
-            safe_content = _sanitize_provider_content(draft.content)
-            storage_path.write_text(safe_content, encoding="utf-8")
-            workspace_relative_path = PurePosixPath(output_dir_relative) / relative_path
-            content_digest = _sha256_text(safe_content)
-            self._reject_bio_output_conflict(
-                session_id=session.session_id,
-                relative_path=workspace_relative_path.as_posix(),
-                content_digest=content_digest,
-                sdk_method=str(request_metadata.get("sdk_method") or ""),
-            )
+        prepared_drafts = self._prepare_bio_artifact_drafts(
+            session_id=session.session_id,
+            output_root=output_root,
+            output_dir_relative=output_dir_relative,
+            drafts=drafts,
+            sdk_method=str(request_metadata.get("sdk_method") or ""),
+        )
+        prepared_registrations: list[
+            tuple[_PreparedBioArtifactDraft, dict[str, Any]]
+        ] = []
+        for prepared in prepared_drafts:
+            draft = prepared.draft
             metadata = {
                 **_sanitize_provider_value(draft.metadata),
                 "producer": "host_supervised_bio_provider",
@@ -12038,11 +12151,24 @@ class ExecutionEngine:
                 ),
                 "output_dir": request_metadata.get("output_dir"),
             }
+            self._preflight_bio_registration_metadata(
+                boundary=boundary,
+                session_id=session.session_id,
+                sandbox_workspace_id=sandbox_workspace_id,
+                workspace_relative_path=prepared.workspace_relative_path,
+                metadata=metadata,
+                sdk_method=request_metadata.get("sdk_method"),
+            )
+            prepared_registrations.append((prepared, metadata))
+        for prepared, metadata in prepared_registrations:
+            draft = prepared.draft
+            prepared.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            prepared.storage_path.write_text(prepared.safe_content, encoding="utf-8")
             try:
                 result = boundary.register(
                     session_id=session.session_id,
                     sandbox_workspace_id=sandbox_workspace_id,
-                    path=f"/workspace/output/{workspace_relative_path.as_posix()}",
+                    path=f"/workspace/output/{prepared.workspace_relative_path.as_posix()}",
                     kind=draft.kind,
                     format=draft.format,
                     metadata=metadata,
@@ -12057,7 +12183,7 @@ class ExecutionEngine:
             except ArtifactBoundaryError as exc:
                 raise PipelineSdkFailure(
                     error_type="provider_artifactization_failed",
-                    message=f"Bio provider output {workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
+                    message=f"Bio provider output {prepared.workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
                     hint=exc.hint
                     or "Inspect the provider transcript and retry after fixing the adapter output.",
                     stage="bio_artifact_registration",
@@ -12103,34 +12229,18 @@ class ExecutionEngine:
             workspace_root=workspace_root,
             blob_store_root=self.artifact_blob_root,
         )
-        for draft in drafts:
-            relative = PurePosixPath(draft.relative_path)
-            relative_path = relative.as_posix()
-            if (
-                relative.is_absolute()
-                or not relative_path
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                raise PipelineSdkFailure(
-                    error_type="provider_artifactization_failed",
-                    message=f"Bio SDK generated invalid artifact path {draft.relative_path!r}.",
-                    hint="Retry after fixing the Host bio provider adapter.",
-                    stage="bio_artifact_registration",
-                    retryable=False,
-                    sdk_method=request_metadata.get("sdk_method"),
-                )
-            storage_path = output_root / relative_path
-            storage_path.parent.mkdir(parents=True, exist_ok=True)
-            safe_content = _sanitize_provider_content(draft.content)
-            storage_path.write_text(safe_content, encoding="utf-8")
-            workspace_relative_path = PurePosixPath(output_dir_relative) / relative_path
-            content_digest = _sha256_text(safe_content)
-            self._reject_bio_output_conflict(
-                session_id=operation.session_id,
-                relative_path=workspace_relative_path.as_posix(),
-                content_digest=content_digest,
-                sdk_method=str(request_metadata.get("sdk_method") or ""),
-            )
+        prepared_drafts = self._prepare_bio_artifact_drafts(
+            session_id=operation.session_id,
+            output_root=output_root,
+            output_dir_relative=output_dir_relative,
+            drafts=drafts,
+            sdk_method=str(request_metadata.get("sdk_method") or ""),
+        )
+        prepared_registrations: list[
+            tuple[_PreparedBioArtifactDraft, dict[str, Any]]
+        ] = []
+        for prepared in prepared_drafts:
+            draft = prepared.draft
             metadata = {
                 **_sanitize_provider_value(draft.metadata),
                 "producer": "host_supervised_bio_provider",
@@ -12158,11 +12268,24 @@ class ExecutionEngine:
                 "preprocess_artifact_ids": [],
                 "output_dir": request_metadata.get("output_dir"),
             }
+            self._preflight_bio_registration_metadata(
+                boundary=boundary,
+                session_id=operation.session_id,
+                sandbox_workspace_id=operation.sandbox_workspace_id,
+                workspace_relative_path=prepared.workspace_relative_path,
+                metadata=metadata,
+                sdk_method=request_metadata.get("sdk_method"),
+            )
+            prepared_registrations.append((prepared, metadata))
+        for prepared, metadata in prepared_registrations:
+            draft = prepared.draft
+            prepared.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            prepared.storage_path.write_text(prepared.safe_content, encoding="utf-8")
             try:
                 result = boundary.register(
                     session_id=operation.session_id,
                     sandbox_workspace_id=operation.sandbox_workspace_id,
-                    path=f"/workspace/output/{workspace_relative_path.as_posix()}",
+                    path=f"/workspace/output/{prepared.workspace_relative_path.as_posix()}",
                     kind=draft.kind,
                     format=draft.format,
                     metadata=metadata,
@@ -12180,7 +12303,7 @@ class ExecutionEngine:
             except ArtifactBoundaryError as exc:
                 raise PipelineSdkFailure(
                     error_type="provider_artifactization_failed",
-                    message=f"Bio provider output {workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
+                    message=f"Bio provider output {prepared.workspace_relative_path.as_posix()!r} failed artifact boundary registration.",
                     hint=exc.hint
                     or "Inspect the provider transcript and retry after fixing the adapter output.",
                     stage="bio_artifact_registration",

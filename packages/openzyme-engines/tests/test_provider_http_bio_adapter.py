@@ -63,6 +63,10 @@ def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
+def _canonical_json_digest(value: Any) -> str:
+    return _digest(json.dumps(value, sort_keys=True, indent=2) + "\n")
+
+
 def _fixture_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -183,7 +187,19 @@ def test_ncbi_aox_references_prove_one_to_one_identity_and_digests() -> None:
     assert parsed_fasta.metadata["aggregate_fasta_digest"] == _digest(
         parsed_fasta.content
     )
-    assert len(parsed_fasta.metadata["sequence_digests"]) == 13
+    sequence_digest_index = {
+        record["requested_accession"]: record["sequence_digest"]
+        for record in metadata["records"]
+    }
+    assert "sequence_digests" not in parsed_fasta.metadata
+    assert parsed_fasta.metadata["sequence_digest_count"] == 13
+    assert parsed_fasta.metadata["sequence_digest_index_digest"] == (
+        _canonical_json_digest(sequence_digest_index)
+    )
+    assert (
+        parsed_fasta.metadata["sequence_digest_index_contract_id"]
+        == "canonical_sequence_digest_index@1"
+    )
     _assert_offline_recomputable_raw_responses(
         result,
         expected_bodies=(response_body,),
@@ -893,6 +909,65 @@ def test_uniprot_batches_one_operation_across_bounded_search_queries() -> None:
     )
 
 
+def test_uniprot_large_sequence_index_stays_out_of_fasta_artifact_metadata() -> None:
+    accessions = tuple(f"P{index:05d}" for index in range(5_000))
+
+    def urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        del timeout
+        parsed = urllib_parse.urlparse(request.full_url)
+        query = urllib_parse.parse_qs(parsed.query)["query"][0]
+        query_accessions = tuple(re.findall(r"accession:([A-Z0-9]+)", query))
+        return FakeHttpResponse(
+            body=json.dumps(
+                {
+                    "results": [
+                        _uniprot_record(accession, "MPEPTIDE")
+                        for accession in query_accessions
+                    ]
+                }
+            ),
+            headers={"x-uniprot-release": "2026_03"},
+        )
+
+    result = ProviderHttpBioDatabaseAdapter(
+        BioProviderHttpConfig(),
+        urlopen=urlopen,
+        sleep=lambda _seconds: None,
+    ).uniprot_fetch(
+        accessions=accessions,
+        fields=(),
+        batch_size=100,
+        retrieved_at="2026-07-20T00:00:00+00:00",
+    )
+
+    metadata_payload = json.loads(
+        _artifact(result, "provider_parsed/metadata.json").content
+    )
+    sequence_digest_index = {
+        record["primary_accession"]: record["sequence_digest"]
+        for record in metadata_payload["records"]
+    }
+    fasta_artifact = _artifact(result, "provider_parsed/sequences.fasta")
+    encoded_fasta_metadata = json.dumps(
+        fasta_artifact.metadata,
+        sort_keys=True,
+    ).encode("utf-8")
+
+    assert len(metadata_payload["records"]) == 5_000
+    assert len(sequence_digest_index) == 5_000
+    assert len(json.dumps(sequence_digest_index).encode("utf-8")) > 256 * 1024
+    assert len(encoded_fasta_metadata) < 256 * 1024
+    assert "sequence_digests" not in fasta_artifact.metadata
+    assert fasta_artifact.metadata["sequence_digest_count"] == 5_000
+    assert fasta_artifact.metadata["sequence_digest_index_digest"] == (
+        _canonical_json_digest(sequence_digest_index)
+    )
+    assert (
+        fasta_artifact.metadata["sequence_digest_index_contract_id"]
+        == "canonical_sequence_digest_index@1"
+    )
+
+
 def test_uniprot_real_scale_preflight_is_linear_and_partitions_37772() -> None:
     config = BioProviderHttpConfig()
     adapter = ProviderHttpBioDatabaseAdapter(
@@ -1313,6 +1388,27 @@ def test_uniprot_partitions_active_deleted_and_merged_inactive_records() -> None
     assert "P18173" not in parsed_fasta.content
     assert "A0A8N4L368" not in parsed_fasta.content
     assert "A0A034VJ86" not in parsed_fasta.content
+    assert parsed_fasta.metadata["database"] == "uniprotkb"
+    assert parsed_fasta.metadata["uniprot_release"] == "2026_03"
+    assert (
+        parsed_fasta.metadata["identity_contract_id"]
+        == "uniprot_primary_sequence_identity@2"
+    )
+    assert "sequence_digests" not in parsed_fasta.metadata
+    assert parsed_fasta.metadata["sequence_digest_count"] == 1
+    assert (
+        parsed_fasta.metadata["sequence_digest_count"]
+        + metadata["inactive_record_count"]
+        == len(metadata["requested_accessions"])
+        == 4
+    )
+    assert parsed_fasta.metadata["sequence_digest_index_digest"] == (
+        _canonical_json_digest({"P12345": _digest("MPEPTIDE")})
+    )
+    assert (
+        parsed_fasta.metadata["sequence_digest_index_contract_id"]
+        == "canonical_sequence_digest_index@1"
+    )
     assert result.summary["identity_complete"] is True
     assert result.summary["active_record_count"] == 1
     assert result.summary["inactive_record_count"] == 3
@@ -1511,6 +1607,15 @@ def test_uniprot_all_deleted_records_emit_typed_zero_record_fasta() -> None:
     )
     assert fasta.metadata["derivation_contract_id"] == (
         "uniprot_primary_sequence_identity@2"
+    )
+    assert "sequence_digests" not in fasta.metadata
+    assert fasta.metadata["sequence_digest_count"] == 0
+    assert fasta.metadata["sequence_digest_index_digest"] == (
+        _canonical_json_digest({})
+    )
+    assert (
+        fasta.metadata["sequence_digest_index_contract_id"]
+        == "canonical_sequence_digest_index@1"
     )
     assert result.summary["record_count"] == 1
     assert result.summary["active_record_count"] == 0

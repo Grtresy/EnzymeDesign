@@ -739,6 +739,50 @@ closed `details.runner_failure` 经 sandbox control response 传入 `PipelineSdk
 自动 retry、reconnect、重开 approval、backend fallback 或 effect adoption。下一轮必须基于
 新的 clean commit/SDK pin 与全新 blank-world roots。
 
+## r30 blank-world live attempt：永久 NO-GO
+
+r30 以 clean commit `24c403effb2a5f30821392384c552c83a03f4cf5`、config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+和 fresh roots 启动 positive attempt
+`positive-7d634900da8c4cc3b1580f68a9c055df`。独立 known-positive probe 的真实
+NCBI、UniProt、MAFFT、hmmbuild、CD-HIT、HMMalign 六项 check 全部通过。formal
+路径随后完成真实 NCBI、MAFFT、hmmbuild 与 EBI HMMER；HMMER 完整物化
+`68,592` hits / `69` pages，`truncated=false`。formal UniProt 在唯一受控 operation
+内完成 `378` 个 query batch，抓取并校验全部 `37,772` 个 requested identity，其中
+`32,176` 个是 active sequence、`5,596` 个是 typed inactive identity。
+
+失败发生在 UniProt provider artifactization，而不是 provider 抓取或科学 empty 分支。
+`providers/uniprot/provider_parsed/sequences.fasta` 已形成 `20,297,730` bytes 的
+FASTA draft，但其 Artifact metadata 内联了 `32,176` 项 active-sequence
+`sequence_digests` map，超过
+ArtifactBoundary 的 `256 KiB` metadata limit；此时 `69,353,082` bytes 的 raw pages
+Artifact 已登记。Host 以 `provider_artifactization_failed`、stage
+`bio_artifact_registration`、`retryable=false` 显式失败，sandbox exit `1`。不得把已登记的
+raw pages、尚未登记的 FASTA draft 或既有 provider effects 追认为可消费的 formal output。
+
+Chrome 确实通过 Web UI 批准了 formal operation `op_a6d1d125c83c`，但运行没有到达
+terminal observation handoff，因此没有 terminal Chrome proof。formal report 未生成，
+positive 2 与 controlled fault 也未运行。non-eligible bundle 自身 offline verify 通过且
+`issues=[]`，digest 为
+`sha256:825d2a13c9188c3fadc5c130c2c7ce0b10444c0a957ed2fb44e4c67f04d92887`；
+sealed decision 保持永久 **NO-GO**，digest 为
+`sha256:e8122845ff9e9b2467990da4cfacee02782311c0c11d6bef636721e824a45ecb`。
+MICU 从 `56,276,589` 增至 `58,976,497 / 500,000,000`，delta `2,699,908`，
+remaining `441,023,503`，零 breach/overage。
+
+r30 的 roots、pin、operation、provider bytes、artifact、browser state、bundle 与 decision
+永久不可复用。局部 correction 要求完整 active/inactive identity partition 留在独立
+canonical `metadata.json`，FASTA Artifact metadata 仅以 sequence count、exact canonical
+index digest 与 contract id 替代线性 active-sequence digest map，并继续保留固定 provider
+provenance。该 bounded catalog summary 不作为 cutover eligibility 输入；formal UniProt
+既有的 raw→parsed metadata→FASTA 科学闭包仍须由 offline verifier 独立重算，其他
+provider 路径继续依赖各自既有 byte-Artifact/operation contract，不能把摘要当作 raw
+normalization 证明；
+`batch_size` 必须是 exact non-bool integer，并在登记任一 draft 前对全部 artifact draft
+执行 path-conflict preflight。该 correction 不提高 metadata limit、不重放 provider、不采用
+r30 effects，也不改变 fail-closed 语义。下一轮必须使用新的 clean commit/config/SDK pin
+与全新 blank-world roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

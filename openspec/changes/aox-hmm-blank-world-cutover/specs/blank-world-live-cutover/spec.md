@@ -164,6 +164,27 @@ A canonical success MUST use `artifact_registration_response@2`; its `artifact` 
 - **WHEN** any `register_many` sidecar is invalid, or item/unique-metadata caps are exceeded
 - **THEN** no item is committed due to metadata transport; the implementation and evidence MUST still describe later non-metadata item failures as sequential partial-commit risk rather than falsely claiming an atomic batch
 
+### Requirement: Bounded provider sequence Artifact metadata
+Host-supervised NCBI and UniProt provider results MUST keep their complete per-sequence identity records in the separate canonical parsed `metadata.json` Artifact. A parsed FASTA Artifact MUST NOT inline the linearly growing accession-to-sequence-digest map. It SHALL replace only that per-sequence component with `sequence_digest_count`, `sequence_digest_index_digest`, and `sequence_digest_index_contract_id=canonical_sequence_digest_index@1`, while retaining the existing fixed-size database, retrieval, release, identity-contract, aggregate-digest, and zero-record validation provenance applicable to that provider result.
+
+`canonical_sequence_digest_index@1` freezes the following exact preimage and key semantics. The index is one JSON object whose keys are the NCBI requested accessions that produced the canonical FASTA records, or the UniProt active primary accessions that produced the canonical FASTA records; typed inactive UniProt identities MUST NOT appear. Every value is that record's canonical `sha256:<lowercase-hex>` sequence digest from parsed `metadata.json`. The Host serializes the object with Python-compatible `sort_keys=true`, `indent=2`, ASCII-safe JSON string escaping and the corresponding default indented separators, appends exactly one LF, encodes the resulting text as UTF-8, and computes SHA-256 over those exact bytes. `sequence_digest_count` MUST equal both the object member count and parsed FASTA record count. This bounded catalog summary is not an independent cutover evidence item or eligibility input. Formal UniProt evidence MUST continue to establish its existing authoritative raw-provider-response to parsed-`metadata.json` to FASTA scientific closure without trusting the summary; NCBI and other paths continue to rely on their existing byte-Artifact and operation contracts rather than treating this summary as proof of raw normalization. Any future eligibility consumer requires a separately versioned evidence contract and verifier.
+
+Before writing any draft in one provider result, the Host MUST preflight every draft path, reject within-result duplicates and conflicts with an existing catalog digest, and resolve every registration metadata transport. This preflight MUST NOT be represented as transactional validation/sealing/catalog commit across the Artifact set.
+
+`bio.uniprot_fetch.batch_size` MUST be either omitted or an exact non-boolean integer. Boolean, floating-point, and numeric-string values MUST fail before provider dispatch and MUST NOT be coerced by `int(...)` or another fallback.
+
+#### Scenario: Register a real-scale UniProt FASTA without linear inline metadata
+- **WHEN** one UniProt operation validates tens of thousands of accessions and constructs its parsed FASTA plus canonical parsed metadata
+- **THEN** the complete active/inactive identity partition remains in `metadata.json`, only active primary accessions contribute to the bounded FASTA count/index-digest/contract summary, fixed provider provenance remains present, and Artifact registration does not fail merely because the sequence count exceeds the inline metadata budget
+
+#### Scenario: Reject a later provider draft before any partial write
+- **WHEN** any later draft has a conflicting path or registration metadata that exceeds the inline Host-provider transport limit
+- **THEN** the Host returns the canonical non-retryable conflict or `provider_artifactization_failed` before writing or registering any draft in that provider result, without claiming all later content-validation or sealing failures are transactionally atomic
+
+#### Scenario: Reject coercible UniProt batch-size values
+- **WHEN** a controlled or compatibility invocation supplies `true`, `1.5`, or `"1"` as `batch_size`
+- **THEN** it fails input validation before calling the provider adapter, while an exact integer within the configured cap remains accepted
+
 ### Requirement: Runner-issued toolchain execution identity
 Every cutover-eligible MAFFT, hmmbuild, hmmalign, and CD-HIT operation SHALL carry a closed `mcp_hpc_toolchain_runtime_identity@1` issued by the runner execution boundary. The runner-owned manifest SHALL bind the tool, adapter, command template, contract digest, and private SIF locator; callers MUST NOT submit or override the locator, runtime request/identity, or equivalent deployment metadata. The observed image digest MUST equal the exact prerequisite digest for the operation's versioned toolchain id.
 

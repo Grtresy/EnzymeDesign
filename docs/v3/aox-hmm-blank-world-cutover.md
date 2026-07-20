@@ -958,6 +958,60 @@ adapter's safe top-level `stage`, boolean `retryable`, sanitized hint, and close
 backend fallback, or effect adoption. The next campaign requires a new clean
 commit/SDK pin and wholly fresh blank-world roots.
 
+### r30 live attempt: permanent NO-GO
+
+r30 pinned clean commit
+`24c403effb2a5f30821392384c552c83a03f4cf5` with config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+and started fresh positive attempt
+`positive-7d634900da8c4cc3b1580f68a9c055df`. Its independent known-positive
+probe passed all six real checks: NCBI, UniProt, MAFFT, hmmbuild, CD-HIT, and
+HMMalign. The formal path then completed real NCBI, MAFFT, hmmbuild, and EBI
+HMMER. HMMER closed without truncation over exactly 68,592 hits and 69 pages.
+The formal UniProt operation fetched and validated the exact 37,772 requested
+identity partition over 378 query batches: 32,176 active sequence entries and
+5,596 typed inactive entries.
+
+Provider artifactization nevertheless failed while registering
+`providers/uniprot/provider_parsed/sequences.fasta`. The 20,297,730-byte FASTA
+draft carried a 32,176-entry active-sequence `sequence_digests` map inline in Artifact metadata,
+which exceeded the 256 KiB ArtifactBoundary metadata limit. The
+69,353,082-byte raw-pages artifact had already registered, but no partial
+success can make the provider result consumable. The sandbox therefore exited
+`1` with non-retryable `provider_artifactization_failed` at
+`bio_artifact_registration`. This is an artifact-boundary representation
+failure, not a scientific empty result and not permission to raise the bounded
+metadata limit.
+
+Chrome genuinely approved formal operation `op_a6d1d125c83c` through the Web
+UI, but the formal failure occurred before the terminal observation handoff.
+There is consequently no terminal Chrome proof, published formal report,
+positive 2, or controlled fault evidence. The non-eligible bundle passed its
+own network-free verification with `issues=[]` at
+`sha256:825d2a13c9188c3fadc5c130c2c7ce0b10444c0a957ed2fb44e4c67f04d92887`.
+The sealed campaign decision remains permanent **NO-GO** at
+`sha256:e8122845ff9e9b2467990da4cfacee02782311c0c11d6bef636721e824a45ecb`.
+MICU moved from `56,276,589` to `58,976,497 / 500,000,000`, a delta of
+`2,699,908`, leaving `441,023,503` with zero breach or reservation overage.
+
+r30 and all of its roots, pin state, operations, provider bytes, artifacts,
+browser state, bundle, and decision are permanently non-reusable. The bounded
+correction keeps the full active/inactive identity partition in the separate
+canonical `metadata.json`; FASTA Artifact metadata replaces only the linear
+active-sequence digest map with its count, exact canonical index digest and
+contract id while retaining fixed provider provenance. The bounded summary is
+catalog metadata, not an eligibility input; formal UniProt's existing raw
+response to parsed metadata to FASTA closure remains independently verified,
+while other provider paths retain their existing byte-Artifact and operation
+contracts rather than using the summary as raw-normalization proof. It must
+also reject boolean `batch_size` values while
+accepting only an exact integer, and preflight path conflicts across all
+artifact drafts before registering any draft. These are local validation and
+representation corrections: they do not raise metadata limits, adopt r30
+effects, replay provider calls, or weaken fail-closed semantics. The next
+campaign requires a fresh clean commit/config/SDK pin and wholly fresh
+blank-world roots.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger

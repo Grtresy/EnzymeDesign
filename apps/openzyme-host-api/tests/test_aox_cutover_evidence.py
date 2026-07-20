@@ -7761,6 +7761,32 @@ def test_sequence_join_recomputes_active_sequence_from_raw_after_reseal(
     )
 
 
+def test_sequence_join_rejects_resealed_uniprot_fasta_tamper(
+    tmp_path: Path,
+) -> None:
+    _, bundle_path, artifact_root = _build_bundle(tmp_path)
+    fasta_path = artifact_root / "formal/provider/uniprot-candidates.fasta"
+    lines = fasta_path.read_text(encoding="utf-8").splitlines()
+    sequence_index = next(
+        index for index, line in enumerate(lines) if line and not line.startswith(">")
+    )
+    replacement = "A" if lines[sequence_index][-1] != "A" else "C"
+    lines[sequence_index] = lines[sequence_index][:-1] + replacement
+    tampered = ("\n".join(lines) + "\n").encode("utf-8")
+    _reseal_sequence_join_artifact(
+        bundle_path=bundle_path,
+        artifact_root=artifact_root,
+        artifact_id="art_uniprot_candidates",
+        content=tampered,
+    )
+
+    result = verify_attempt_bundle(bundle_path, artifact_root=artifact_root)
+
+    assert any(
+        issue.code == "sequence_join_recompute_failed" for issue in result.issues
+    )
+
+
 @pytest.mark.parametrize(
     "tamper",
     ("unknown_entry_type", "active_inactive_reason", "raw_reviewed_mismatch"),
