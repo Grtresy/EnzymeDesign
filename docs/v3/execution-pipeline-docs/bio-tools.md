@@ -115,6 +115,14 @@ Functions:
 - `bio_tools.hmmalign(hmm=..., fasta=..., placement=..., expected_outputs=..., params=...)`
 - `bio_tools.hmmer_search_cli(hmm=..., target_fasta=..., placement=..., expected_outputs=..., params=...)`: public SDK name reserved for an offline/HPC route, but Session 14 keeps it disabled as `unsupported_in_s14`. Use `bio.hmmer_search(hmm_artifact_id=..., hmm_artifact_digest=..., database="refprot", output_dir="/workspace/output/...")` for the current AOX/HMM main route.
 
+Runner pre-execution staging failure is exposed as a structured
+`PipelineSdkError(error_code="hpc_staging_failed", stage="hpc_staging")`.
+Its boolean `retryable`, sanitized `hint`, and closed
+`details.runner_failure` projection let the agent distinguish phases such as
+`input_parent` without exposing SSH targets, stderr, credentials, or paths.
+Retryability does not trigger SDK/harness replay and does not authorize a second
+dispatch inside the same attempt.
+
 `bio_tools.cdhit` 的 canonical membership 输出固定为
 `cdhit_cluster_membership@1`，每个真实 `.clstr` member 一行，列顺序为
 `cluster_id,member_id,representative_id,is_representative,identity_to_representative,member_length`。

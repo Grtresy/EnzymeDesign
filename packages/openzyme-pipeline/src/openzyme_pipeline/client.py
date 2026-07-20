@@ -130,11 +130,12 @@ class ControlClient:
                 details = error.get("details")
                 if not isinstance(details, dict):
                     details = {} if details is None else {"value": details}
+                retryable = error.get("retryable")
                 raise PipelineSdkError(
                     str(error.get("message") or error),
                     error_code=None if error.get("error_code") is None else str(error.get("error_code")),
                     stage=None if error.get("stage") is None else str(error.get("stage")),
-                    retryable=None if error.get("retryable") is None else bool(error.get("retryable")),
+                    retryable=retryable if isinstance(retryable, bool) else None,
                     hint=None if error.get("hint") is None else str(error.get("hint")),
                     details=details,
                 )

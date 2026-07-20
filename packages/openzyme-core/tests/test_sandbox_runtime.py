@@ -155,6 +155,7 @@ def test_control_socket_error_envelope_rejects_private_machine_code(
         error_code = "sk-abcdefghijklmnop"
         hint = "inspect /tmp/private-hint"
         details = {"host_path": "/custom/private"}
+        retryable = "false"
 
     def fail_transport(
         _server: _ControlSocketServer,
@@ -185,6 +186,7 @@ def test_control_socket_error_envelope_rejects_private_machine_code(
     serialized = json.dumps(response, sort_keys=True)
 
     assert response["error"]["error_code"] == "sandbox_transport_error"
+    assert response["error"]["retryable"] is None
     assert "/home/operator" not in serialized
     assert "/tmp/private-hint" not in serialized
     assert "sk-abcdefghijklmnop" not in serialized
@@ -2231,6 +2233,144 @@ def test_sandbox_exec_s12_adapter_envelopes_separate_approval_and_host_result(
     assert persisted.input_artifact_digests == ()
 
 
+def test_sandbox_exec_preserves_typed_adapter_failure_for_pipeline_sdk(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+
+    class TypedStagingFailure(RuntimeError):
+        error_type = "hpc_staging_failed"
+        message = "HPC input staging failed before tool execution."
+        hint = "Retry only in a fresh attempt after checking runner connectivity."
+        stage = "hpc_staging"
+        retryable = True
+        details = {
+            "runner_failure": {
+                "schema_id": "runner_failure@1",
+                "run_id": "runner_attempt_001",
+                "phase": "input_parent",
+                "input_ordinal": 1,
+                "content_digest": "sha256:" + "a" * 64,
+                "returncode": 255,
+                "timed_out": False,
+                "elapsed_seconds": 60.25,
+            },
+            "remote_path": "/private/runner/input.fasta",
+            "credential": "sk-private-runner-token",
+        }
+
+    adapter_calls: list[str] = []
+
+    def _adapter_executor(
+        _operation: ControlledOperation,
+        _envelope: dict[str, object],
+    ) -> dict[str, object]:
+        adapter_calls.append(_operation.operation_id)
+        raise TypedStagingFailure
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        adapter_executor=_adapter_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/typed_adapter_failure.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline.client import PipelineSdkError, call, canonical_digest\n"
+            "params = {'accessions': ['AAB57849.1']}\n"
+            "try:\n"
+            "    call('s10.controlled_operation', {\n"
+            "        'schema_version': 's12.adapter_envelope.v1',\n"
+            "        'route_policy_id': 'bio.ncbi_fetch_proteins.provider:v1',\n"
+            "        'sdk_module': 'bio',\n"
+            "        'function_name': 'ncbi_fetch_proteins',\n"
+            "        'idempotency_key': 'typed_adapter_failure_001',\n"
+            "        'params_digest': canonical_digest(params),\n"
+            "        'params': params,\n"
+            "        'expected_outputs': {'kind': 'fasta'},\n"
+            "        'resource_estimate': {'requests': 1},\n"
+            "    })\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({\n"
+            "        'error_code': exc.error_code,\n"
+            "        'stage': exc.stage,\n"
+            "        'retryable': exc.retryable,\n"
+            "        'hint': exc.hint,\n"
+            "        'details': exc.details,\n"
+            "        'display_message': str(exc),\n"
+            "    }, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected typed adapter failure')\n"
+        ),
+        create_dirs=True,
+    )
+    holder: dict[str, object] = {}
+
+    def _run() -> None:
+        holder["run"] = service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "src/typed_adapter_failure.py"],
+            timeout_seconds=10,
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    pending = _wait_for_pending_approval(repositories, session.session_id)
+    _resolve_s10_approval(
+        repositories,
+        pending.approval_id,
+        decision="approved",
+    )
+    thread.join(timeout=5)
+
+    assert thread.is_alive() is False
+    run = holder["run"]
+    assert isinstance(run, SandboxRunRecord)
+    assert run.status is SandboxRunStatus.COMPLETED, run.stderr_summary
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["error_code"] == "hpc_staging_failed"
+    assert payload["stage"] == "hpc_staging"
+    assert payload["retryable"] is True
+    assert payload["hint"] == (
+        "Retry only in a fresh attempt after checking runner connectivity."
+    )
+    assert "stage=hpc_staging" in payload["display_message"]
+    assert "retryable=True" in payload["display_message"]
+    assert payload["details"]["stage"] == "hpc_staging"
+    assert payload["details"]["retryable"] is True
+    assert payload["details"]["runner_failure"] == {
+        "schema_id": "runner_failure@1",
+        "run_id": "runner_attempt_001",
+        "phase": "input_parent",
+        "input_ordinal": 1,
+        "content_digest": "sha256:" + "a" * 64,
+        "returncode": 255,
+        "timed_out": False,
+        "elapsed_seconds": 60.25,
+    }
+    assert payload["details"]["operation_id"] == str(pending.request_ref)
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "remote_path" not in serialized
+    assert "/private/runner" not in serialized
+    assert "credential" not in serialized
+    assert "sk-private-runner-token" not in serialized
+    operation = repositories.controlled_operations.get(str(pending.request_ref))
+    assert operation is not None
+    assert operation.status is ControlledOperationStatus.FAILED
+    assert adapter_calls == [operation.operation_id]
+
+
 def test_sandbox_exec_s12_rejects_unsuccessful_or_inconsistent_host_result(
     tmp_path: Path,
 ) -> None:
@@ -3036,6 +3176,103 @@ def test_sandbox_exec_public_hpc_fetch_outputs_fails_structured_without_run(
         "error_code": "hpc_fetch_not_declared",
         "message": "hpc.fetch_outputs requires a completed Host-supervised HPC run with declared outputs",
     }
+    assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
+
+
+def test_sandbox_exec_hpc_fetch_preserves_typed_failure_for_pipeline_sdk(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(
+        repositories,
+        tmp_path,
+    )
+    fetch_calls: list[str] = []
+
+    class TypedFetchFailure(RuntimeError):
+        error_type = "hpc_staging_failed"
+        message = "HPC output staging failed before transfer."
+        hint = "Retry only in a fresh attempt after checking runner connectivity."
+        stage = "hpc_staging"
+        retryable = True
+        details = {
+            "runner_failure": {
+                "schema_id": "runner_failure@1",
+                "run_id": "runner_attempt_002",
+                "phase": "input_parent",
+                "input_ordinal": 1,
+                "content_digest": "sha256:" + "b" * 64,
+                "returncode": 255,
+                "timed_out": False,
+                "elapsed_seconds": 60.5,
+            },
+            "remote_path": "/private/runner/output.fasta",
+        }
+
+    def _hpc_fetch_executor(params: dict[str, object]) -> dict[str, object]:
+        fetch_calls.append(str(params["run_id"]))
+        raise TypedFetchFailure
+
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+        hpc_fetch_executor=_hpc_fetch_executor,
+    )
+    service.write_file(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        actor_ref=agent.agent_id,
+        path="/workspace/src/typed_hpc_fetch_failure.py",
+        content=(
+            "import json\n"
+            "from openzyme_pipeline import hpc\n"
+            "from openzyme_pipeline.client import PipelineSdkError\n"
+            "ws = hpc.workspace('aox_hmm')\n"
+            "try:\n"
+            "    ws.fetch_outputs({'run_id': 'run_staging_failed'})\n"
+            "except PipelineSdkError as exc:\n"
+            "    print(json.dumps({\n"
+            "        'error_code': exc.error_code,\n"
+            "        'stage': exc.stage,\n"
+            "        'retryable': exc.retryable,\n"
+            "        'hint': exc.hint,\n"
+            "        'details': exc.details,\n"
+            "        'display_message': str(exc),\n"
+            "    }, sort_keys=True))\n"
+            "else:\n"
+            "    raise SystemExit('expected typed HPC fetch failure')\n"
+        ),
+        create_dirs=True,
+    )
+
+    run = service.exec_command(
+        session_id=session.session_id,
+        sandbox_workspace_id=workspace.sandbox_workspace_id,
+        agent_id=agent.agent_id,
+        argv=["python", "src/typed_hpc_fetch_failure.py"],
+        timeout_seconds=10,
+    )
+
+    assert run.status is SandboxRunStatus.COMPLETED, run.stderr_summary
+    payload = json.loads(str(run.stdout_summary))
+    assert payload["error_code"] == "hpc_staging_failed"
+    assert payload["stage"] == "hpc_staging"
+    assert payload["retryable"] is True
+    assert payload["hint"] == (
+        "Retry only in a fresh attempt after checking runner connectivity."
+    )
+    assert "stage=hpc_staging" in payload["display_message"]
+    assert "retryable=True" in payload["display_message"]
+    assert payload["details"]["run_id"] == "run_staging_failed"
+    assert payload["details"]["operation_id"] is None
+    assert payload["details"]["stage"] == "hpc_staging"
+    assert payload["details"]["retryable"] is True
+    assert payload["details"]["runner_failure"]["phase"] == "input_parent"
+    serialized = json.dumps(payload, sort_keys=True)
+    assert "remote_path" not in serialized
+    assert "/private/runner" not in serialized
+    assert fetch_calls == ["run_staging_failed"]
     assert repositories.controlled_operations.list_by_run(run.sandbox_run_id) == []
 
 

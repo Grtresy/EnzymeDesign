@@ -132,6 +132,15 @@ EOF before the newline, invalid UTF-8/JSON, duplicate object keys, non-finite JS
 - **WHEN** a decoded request has a safe string/int64 id but invalid params or other request semantics, or instead carries an oversized/invalid id
 - **THEN** the first error preserves the safe id, the second uses `id=null`, neither request dispatches a partial operation, and the next connection remains serviceable
 
+### Requirement: Preserve typed adapter failure diagnostics across the sandbox boundary
+When a Host adapter raises a structured failure, the sandbox control response and dependency-free pipeline SDK SHALL preserve the sanitized `error_code`, `hint`, and safe `details` together with top-level `stage` and `retryable`. A non-null stage MUST be a safe public machine identifier. Retryability MUST be a boolean or degrade to unknown; string or numeric truthiness MUST NOT be interpreted as retryability. For `hpc_staging_failed`, the SDK-visible contract MUST carry `stage="hpc_staging"` and the closed Host-trusted `details.runner_failure` projection while excluding SSH target, argv, stderr, credential, Host/remote path, and locator fields. Existing `details.stage` and `details.retryable` MAY remain as compatibility copies, but they MUST NOT be the only representation consumed by the SDK.
+
+This transport is diagnostic only. `retryable=true` MUST NOT cause or authorize automatic replay, reconnect, approval reopening, backend fallback, additional operation dispatch, or adoption of an earlier effect inside the failed attempt.
+
+#### Scenario: Observe a retryable staging failure without replay
+- **WHEN** an approved adapter operation or explicit HPC output fetch terminates with typed `hpc_staging_failed`, safe runner phase evidence, and `retryable=true`
+- **THEN** sandbox code receives one `PipelineSdkError` with `error_code=hpc_staging_failed`, `stage=hpc_staging`, `retryable=true`, the sanitized hint and closed runner manifest, the adapter/fetch executor is called exactly once, and no private locator crosses the control socket
+
 ### Requirement: Bounded canonical artifact-registration metadata transport
 The public SDK SHALL continue to accept one logical metadata object through `artifacts.register(..., metadata=...)` without asking the agent to choose a wire placement. The SDK MUST encode that object as ASCII-safe canonical JSON with sorted keys, compact separators and no non-finite values. A payload of at most `256 * 1024` bytes SHALL remain inline. A payload larger than `256 KiB` and no larger than `32 * 1024 * 1024` bytes SHALL be written under the attempt-local logical path `/workspace/work/.openzyme/artifact-metadata/<sha256>.json`, while the request carries only the exact closed `artifact_registration_metadata_sidecar@1` fields `schema_id`, `path`, `content_digest`, and `size_bytes`. A larger payload MUST fail before control-socket connect as `artifact_registration_metadata_too_large`. A raw inline caller MUST provide an object satisfying the same canonical rules and `256 KiB` limit.
 

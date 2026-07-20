@@ -700,6 +700,45 @@ nonzero-run fail-closed。下一次 fresh pin 只把 live request envelope 调�
 timeout、一次 pre-response retry 与 configured `max_tokens=8192` request cap；这些是
 请求设置而不是消费目标，且必须进入新 config identity。
 
+## r29 blank-world live attempt：永久 NO-GO
+
+r29 以 clean commit `2c0adce5adf5905560fa552c3efabc70c6f7d31d`、config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+和 fresh roots 启动 positive attempt
+`positive-39ce51e320414f149023e2ddc5f55e18`。sealed config 已精确绑定
+`timeout=300`、`max_retries=1`、`max_tokens=8192` 与
+`context_window_tokens=200000`。
+
+attempt-local 持久状态和 probe failure record 显示，真实 NCBI
+`op_09ec33fb0dd8`、MAFFT `op_7a35f469bd77`、hmmbuild
+`op_d80afc32de56`、UniProt `op_f4b0261fb759` 已完成。CD-HIT
+`op_9d6144ff379a` 使用的 UniProt FASTA digest 为
+`sha256:fbaf487d05f7a9cdff8afae156367ae521378aa67036e62ae7ea514b762add97`，
+但在 payload 执行前的 staging 阶段失败；HMMalign 未运行。Host-trusted
+`runner_failure@1` 精确记录 `phase=input_parent`、`input_ordinal=1`、
+`returncode=255`、`timed_out=false`、`elapsed_seconds=60.267664`。这只能证明
+SSH input-parent staging command 失败；private stderr 没有越过安全边界，不能进一步断言
+DNS、认证或具体网络层根因。此前 exact toolchain pin 和随后只读 SSH connectivity probe
+均成功，只能说明现象与已恢复的 transient connectivity 一致，不能授权续跑或复用。
+
+故障发生在 independent probe 内且早于 formal product session；formal task、controlled
+operation、approval、Chrome receipt 与 report 均未产生。bundle 的六项 known-positive
+check 因 `probe_attestation_unavailable` 诚实保持 failed；上述四个已完成 operation 来自
+attempt-local 持久状态，不能写成 bundle 已证明四项 check passed。non-eligible bundle 自身
+offline integrity verify 通过，digest 为
+`sha256:84c5083e6b1bc562ffb7c6826fb74010c6ea2807998c7cd074962ed263feae1e`。
+sealed campaign decision 保持 **NO-GO**，blocker 为 `hpc_staging_failed` /
+`attempt[1].scientific_outcome`，decision digest 为
+`sha256:d7073ddcff93146fdc72330de4143bf78b1e03a13075038ca680d56ac7270867`。
+MICU 从 `55,691,311` 增至 `56,276,589 / 500,000,000`，本次 delta
+`585,278`，remaining `443,723,411`，零 breach/overage；positive 2 与 fault 未运行。
+
+r29 的 roots、pin、operation、artifact 与 browser state 永久不可复用。本次局部 harness
+correction 只把 adapter 已产生的安全顶层 `stage`、boolean `retryable`、sanitized hint 与
+closed `details.runner_failure` 经 sandbox control response 传入 `PipelineSdkError`；不新增
+自动 retry、reconnect、重开 approval、backend fallback 或 effect adoption。下一轮必须基于
+新的 clean commit/SDK pin 与全新 blank-world roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

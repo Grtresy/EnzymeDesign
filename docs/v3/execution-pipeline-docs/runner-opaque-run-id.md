@@ -69,6 +69,12 @@ target, command argv, stderr text, credential, local path, remote path,
 agent-facing error type `hpc_staging_failed`; its `details.runner_failure`
 contains only the validated closed projection above, so an agent can distinguish
 the honest failure phase without gaining runner-private addressing data.
+The adapter, sandbox control response, and dependency-free pipeline SDK also
+preserve top-level `stage="hpc_staging"`, typed boolean `retryable`, and the
+sanitized hint. A malformed non-boolean retryability value degrades to unknown;
+it is never truthiness-coerced. `retryable=true` is diagnostic only and does not
+authorize same-attempt replay, approval reopening, backend fallback, or adoption
+of an earlier effect.
 
 This diagnostic contract adds no reconnect loop, additional automatic retry,
 connection reuse, or timeout-value relaxation. The existing rsync-to-at-most-one

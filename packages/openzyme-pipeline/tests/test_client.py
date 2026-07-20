@@ -141,6 +141,7 @@ def test_control_client_preserves_runtime_write_fence_contract(
                             "fence is no longer authoritative"
                         ),
                         "error_code": "runtime_write_fenced",
+                        "stage": "session_runtime_write_fence",
                         "hint": "Fail closed for the current runtime attempt.",
                         "details": {
                             "boundary": "session_runtime_write_fence",
@@ -162,12 +163,47 @@ def test_control_client_preserves_runtime_write_fence_contract(
             )
 
     assert error.value.error_code == "runtime_write_fenced"
+    assert error.value.stage == "session_runtime_write_fence"
     assert error.value.retryable is False
     assert error.value.hint == "Fail closed for the current runtime attempt."
     assert error.value.details == {
         "boundary": "session_runtime_write_fence",
         "disposition": "fail_closed",
     }
+
+
+def test_control_client_does_not_truthiness_coerce_retryable(
+    tmp_path: Path,
+) -> None:
+    def respond(conn: socket.socket, frame: bytes) -> None:
+        request = json.loads(frame.decode("utf-8"))
+        conn.sendall(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {
+                        "message": "adapter returned a malformed retryability field",
+                        "error_code": "adapter_execution_failed",
+                        "stage": "adapter_execution",
+                        "retryable": "false",
+                    },
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+    with _fake_control_server(tmp_path, respond) as (socket_path, _requests):
+        with pytest.raises(client.PipelineSdkError) as error:
+            client.ControlClient(socket_path=socket_path).call(
+                "s09.transport_smoke",
+                {},
+            )
+
+    assert error.value.error_code == "adapter_execution_failed"
+    assert error.value.stage == "adapter_execution"
+    assert error.value.retryable is None
 
 
 def test_control_client_rejects_recursive_request_before_connect(

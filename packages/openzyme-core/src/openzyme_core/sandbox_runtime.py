@@ -116,12 +116,14 @@ class SandboxRuntimeError(RuntimeError):
         error_code: str,
         message: str,
         *,
+        stage: str | None = None,
         hint: str | None = None,
         details: dict[str, Any] | None = None,
         retryable: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.stage = stage
         self.hint = hint
         self.details = {} if details is None else dict(details)
         self.retryable = retryable
@@ -778,27 +780,35 @@ class _ControlSocketServer:
     @staticmethod
     def _error_response(*, request_id: Any, exc: Exception) -> dict[str, Any]:
         public_message = getattr(exc, "public_message", None) or str(exc)
+        raw_stage = getattr(exc, "stage", None)
+        raw_retryable = getattr(exc, "retryable", None)
+        error = {
+            "message": sanitize_public_diagnostic_text(public_message),
+            "type": safe_public_machine_identifier(
+                exc.__class__.__name__,
+                fallback="Exception",
+            ),
+            "error_code": safe_public_machine_identifier(
+                getattr(exc, "error_code", None),
+                fallback="sandbox_transport_error",
+            ),
+            "hint": sanitize_public_diagnostic_text(
+                getattr(exc, "hint", None) or ""
+            ),
+            "details": sanitize_public_diagnostic_payload(
+                getattr(exc, "details", None)
+            ),
+            "retryable": raw_retryable if isinstance(raw_retryable, bool) else None,
+        }
+        if raw_stage is not None:
+            error["stage"] = safe_public_machine_identifier(
+                raw_stage,
+                fallback="sandbox_runtime",
+            )
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {
-                "message": sanitize_public_diagnostic_text(public_message),
-                "type": safe_public_machine_identifier(
-                    exc.__class__.__name__,
-                    fallback="Exception",
-                ),
-                "error_code": safe_public_machine_identifier(
-                    getattr(exc, "error_code", None),
-                    fallback="sandbox_transport_error",
-                ),
-                "hint": sanitize_public_diagnostic_text(
-                    getattr(exc, "hint", None) or ""
-                ),
-                "details": sanitize_public_diagnostic_payload(
-                    getattr(exc, "details", None)
-                ),
-                "retryable": getattr(exc, "retryable", None),
-            },
+            "error": error,
         }
 
     def _handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -1106,12 +1116,21 @@ class _ControlSocketServer:
                 }
             )
         except Exception as exc:
-            error_code, error_summary, hint, details = self._adapter_execution_error(exc)
+            (
+                error_code,
+                error_summary,
+                stage,
+                retryable,
+                hint,
+                details,
+            ) = self._adapter_execution_error(exc)
             raise SandboxRuntimeError(
                 error_code,
                 error_summary,
+                stage=stage,
                 hint=hint,
                 details={"run_id": run_id, "operation_id": None if operation is None else operation.operation_id, **details},
+                retryable=retryable,
             ) from exc
         if not isinstance(result, dict):
             raise SandboxRuntimeError(
@@ -2108,7 +2127,14 @@ class _ControlSocketServer:
         try:
             execution = self.adapter_executor(operation, dict(envelope))
         except Exception as exc:
-            error_code, error_summary, hint, details = self._adapter_execution_error(exc)
+            (
+                error_code,
+                error_summary,
+                stage,
+                retryable,
+                hint,
+                details,
+            ) = self._adapter_execution_error(exc)
             self._fail_adapter_operation(
                 operation,
                 continuation_id,
@@ -2118,8 +2144,10 @@ class _ControlSocketServer:
             raise SandboxRuntimeError(
                 error_code,
                 error_summary,
+                stage=stage,
                 hint=hint,
                 details={"operation_id": operation.operation_id, **details},
+                retryable=retryable,
             ) from exc
         if not isinstance(execution, dict):
             self._fail_adapter_operation(
@@ -2234,7 +2262,10 @@ class _ControlSocketServer:
             ),
         }
 
-    def _adapter_execution_error(self, exc: Exception) -> tuple[str, str, str | None, dict[str, Any]]:
+    def _adapter_execution_error(
+        self,
+        exc: Exception,
+    ) -> tuple[str, str, str | None, bool | None, str | None, dict[str, Any]]:
         error_code = safe_public_machine_identifier(
             getattr(exc, "error_code", None)
             or getattr(exc, "error_type", None),
@@ -2249,17 +2280,27 @@ class _ControlSocketServer:
         details = getattr(exc, "details", None)
         safe_details = dict(details) if isinstance(details, dict) else {}
         stage = getattr(exc, "stage", None)
-        retryable = getattr(exc, "retryable", None)
+        raw_retryable = getattr(exc, "retryable", None)
+        retryable = raw_retryable if isinstance(raw_retryable, bool) else None
         if stage is not None:
             safe_details["stage"] = str(stage)
         if retryable is not None:
-            safe_details["retryable"] = bool(retryable)
+            safe_details["retryable"] = retryable
         scrubbed = sanitize_public_diagnostic_payload(
             _scrub_private_adapter_payload(safe_details)
         )
         return (
             error_code,
             error_summary,
+            (
+                None
+                if stage is None
+                else safe_public_machine_identifier(
+                    stage,
+                    fallback="adapter_execution",
+                )
+            ),
+            retryable,
             None if hint is None else sanitize_public_diagnostic_text(hint),
             dict(scrubbed) if isinstance(scrubbed, dict) else {},
         )

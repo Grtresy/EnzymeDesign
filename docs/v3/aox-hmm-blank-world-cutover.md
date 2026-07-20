@@ -911,6 +911,53 @@ pre-response retry, and a configured `max_tokens=8192` request cap; those are
 settings, not consumption targets, and must be sealed into the new config
 identity.
 
+### r29 live attempt: permanent NO-GO
+
+r29 pinned clean commit
+`2c0adce5adf5905560fa552c3efabc70c6f7d31d` with config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`
+and started fresh positive attempt
+`positive-39ce51e320414f149023e2ddc5f55e18`. The sealed config contains the
+corrected live envelope exactly: `timeout=300`, `max_retries=1`,
+`max_tokens=8192`, and `context_window_tokens=200000`.
+
+Attempt-local persisted state and the probe failure record show real completion
+of NCBI `op_09ec33fb0dd8`, MAFFT `op_7a35f469bd77`, hmmbuild
+`op_d80afc32de56`, and UniProt `op_f4b0261fb759`. CD-HIT operation
+`op_9d6144ff379a` failed before payload execution while staging the valid
+UniProt FASTA input whose digest is
+`sha256:fbaf487d05f7a9cdff8afae156367ae521378aa67036e62ae7ea514b762add97`;
+HMMalign never ran. The Host-trusted `runner_failure@1` record is exactly
+`phase=input_parent`, `input_ordinal=1`, `returncode=255`,
+`timed_out=false`, and `elapsed_seconds=60.267664`. This proves failure of the
+SSH input-parent staging command, but private stderr was intentionally not
+projected, so it does not prove a more specific DNS, authentication, or network
+cause. The earlier exact toolchain pin and a later read-only SSH connectivity
+probe both succeeded; that is consistent with recovered transient connectivity,
+not authority to resume or reuse the failed attempt.
+
+The failure happened inside the independent probe before a formal product
+session. Therefore no formal task, controlled operation, approval, Chrome
+receipt, or report exists, and the bundle's six known-positive checks honestly
+remain failed as `probe_attestation_unavailable`; the four completed operations
+must not be misreported as passed bundle checks. The non-eligible bundle passed
+its own offline integrity verification at
+`sha256:84c5083e6b1bc562ffb7c6826fb74010c6ea2807998c7cd074962ed263feae1e`.
+The sealed campaign decision remains **NO-GO** with `hpc_staging_failed` at
+`attempt[1].scientific_outcome`, decision digest
+`sha256:d7073ddcff93146fdc72330de4143bf78b1e03a13075038ca680d56ac7270867`.
+MICU moved from `55,691,311` to `56,276,589 / 500,000,000`, a delta of
+`585,278`, leaving `443,723,411` with zero breach or reservation overage.
+Positive 2 and the controlled fault were not run.
+
+r29 and all of its roots, pin state, operations, artifacts, and browser state
+are permanently non-reusable. The bounded harness correction only preserves the
+adapter's safe top-level `stage`, boolean `retryable`, sanitized hint, and closed
+`details.runner_failure` across the sandbox control response into
+`PipelineSdkError`. It adds no automatic retry, reconnect, approval reopening,
+backend fallback, or effect adoption. The next campaign requires a new clean
+commit/SDK pin and wholly fresh blank-world roots.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger
