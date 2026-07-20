@@ -1669,8 +1669,14 @@ Every live attempt, including the known-positive probe, positive 2 and the
 controlled-fault attempt, uses a same-process loopback HTTP Host.  The current
 product drain remains synchronous while a supervised sandbox waits for an
 approval, so the cutover driver keeps at most one bounded drain request in
-flight and uses the public workspace/approval routes concurrently until that
-request returns before a later sequential drain may begin. Cutover pins
+flight and polls the same-row compact
+`GET /v3/sessions/{session_id}/pending-approvals` control projection before
+resolving through the public approval route. Ordinary auto-approval and
+fail-closed cleanup never poll the composite workspace; the driver reads that
+bounded collection projection only at the Chrome handoff and after drain
+retirement. The compact response derives from the same durable
+Approval/ControlledOperation/SandboxRun rows as `workspace.pending_approvals`
+and fails closed on response, session, or approval identity drift. Cutover pins
 `max_signals_per_drain=1`: each response is followed by a durable
 operation/task/sandbox terminal-state check before another signal may be
 claimed. Multiple approvals emitted serially inside that one agent turn remain
@@ -1686,8 +1692,9 @@ or continues scientific execution. Transient cleanup reads/resolves are
 retried with stable idempotency while the original coordination blocker remains
 authoritative. A successful drain response is not by itself
 proof that no last approval became visible: after observing worker terminal,
-the coordinator performs one public workspace GET that is known to begin after
-that response. Failure arbitration happens only after the drain worker joins:
+the coordinator performs one compact pending-approval GET known to begin after
+that response, then reads one bounded public workspace as the final semantic
+snapshot. Failure arbitration happens only after the drain worker joins:
 a drain-command exception remains authoritative, otherwise the earliest public
 coordination exception remains authoritative, and a cleanup-only exception uses
 `runtime_drain_coordination_cleanup_failed`. Cleanup is still attempted
@@ -1772,7 +1779,11 @@ fully decodable PNG, and Host acceptance timing. Public API receipts use the
 closed seven-field form including `response_semantic_digest`. The last public
 workspace GET and full `after_cursor=0,replay=true` event GET are copied into
 bundle-level attestation artifacts; they are not registered back into product
-state. Browser approval evidence is valid only for `chrome-once` positive 1.
+state. Artifact occurrences in that composite workspace use the deterministic
+bounded `artifact.list` item contract; exact canonical metadata remains in the
+catalog and is available through paged `artifact.get`, rather than being
+repeated across artifact, activity, index, and capability branches. Browser
+approval evidence is valid only for `chrome-once` positive 1.
 Because the synchronous sandbox can commit a pending approval before the drain
 returns and before its `approval.requested` event is backfilled, the Web UI also
 reconciles the currently selected public workspace every five seconds. These
