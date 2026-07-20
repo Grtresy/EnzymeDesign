@@ -226,6 +226,21 @@ class _OutOfOrderJsonClient:
         return _JsonResponse({"route": route})
 
 
+def _approval_projection_response(
+    route: str,
+    *,
+    session_id: str,
+    pending_approvals: list[dict[str, object]],
+) -> _JsonResponse:
+    workspace_route = f"/v3/sessions/{session_id}/workspace"
+    compact_route = f"/v3/sessions/{session_id}/pending-approvals"
+    assert route in {workspace_route, compact_route}
+    payload: dict[str, object] = {"pending_approvals": pending_approvals}
+    if route == compact_route:
+        payload["session_id"] = session_id
+    return _JsonResponse(payload)
+
+
 class _SerialApprovalJsonClient:
     base_url = "http://127.0.0.1:54321"
 
@@ -239,9 +254,10 @@ class _SerialApprovalJsonClient:
         self.resolve_calls: list[tuple[str, str, bool]] = []
         self.call_order: list[str] = []
         self.drain_payloads: list[dict[str, object]] = []
+        self.get_routes: list[str] = []
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == "/v3/sessions/sess_serial/workspace"
+        self.get_routes.append(route)
         with self._condition:
             ready = self._condition.wait_for(
                 lambda: self._current_index is not None or self._force_release,
@@ -258,7 +274,11 @@ class _SerialApprovalJsonClient:
                 pending = [
                     {"approval_id": self.approval_ids[self._current_index]}
                 ]
-        return _JsonResponse({"pending_approvals": pending})
+        return _approval_projection_response(
+            route,
+            session_id="sess_serial",
+            pending_approvals=pending,
+        )
 
     def post(
         self,
@@ -341,7 +361,9 @@ class _ConcurrentDrainAndWorkspaceFailureJsonClient:
         self.drain_failure_started = threading.Event()
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == "/v3/sessions/sess_concurrent_failure/workspace"
+        assert route == (
+            "/v3/sessions/sess_concurrent_failure/pending-approvals"
+        )
         self.workspace_get_started.set()
         assert self.drain_failure_started.wait(timeout=2.0)
         drain_thread = next(
@@ -393,7 +415,9 @@ class _CoordinationCleanupFailureJsonClient:
         self.drain_error = RuntimeError("private drain failure detail")
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == "/v3/sessions/sess_cleanup_precedence/workspace"
+        assert route == (
+            "/v3/sessions/sess_cleanup_precedence/pending-approvals"
+        )
         self.workspace_get_count += 1
         if self.workspace_get_count == 1:
             raise self.primary_error
@@ -449,7 +473,9 @@ class _DelayedCoordinationCleanupApprovalJsonClient:
         self.resolve_calls: list[tuple[str, str]] = []
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == "/v3/sessions/sess_delayed_cleanup/workspace"
+        assert route == (
+            "/v3/sessions/sess_delayed_cleanup/pending-approvals"
+        )
         self.workspace_get_count += 1
         if self.workspace_get_count == 1:
             raise self.primary_error
@@ -461,9 +487,15 @@ class _DelayedCoordinationCleanupApprovalJsonClient:
             self.fail_first_cleanup_read
         )
         if successful_cleanup_read <= self.empty_cleanup_reads:
-            return _JsonResponse({"pending_approvals": []})
-        return _JsonResponse(
-            {"pending_approvals": [{"approval_id": self.approval_id}]}
+            return _approval_projection_response(
+                route,
+                session_id="sess_delayed_cleanup",
+                pending_approvals=[],
+            )
+        return _approval_projection_response(
+            route,
+            session_id="sess_delayed_cleanup",
+            pending_approvals=[{"approval_id": self.approval_id}],
         )
 
     def post(
@@ -504,13 +536,12 @@ class _DrainReturnsPendingApprovalJsonClient:
         self.resolve_calls: list[tuple[str, str, bool]] = []
 
     def get(self, route: str) -> _JsonResponse:
-        assert route == "/v3/sessions/sess_post_response/workspace"
-        return _JsonResponse(
-            {
-                "pending_approvals": (
-                    [{"approval_id": self.approval_id}] if self.pending else []
-                )
-            }
+        return _approval_projection_response(
+            route,
+            session_id="sess_post_response",
+            pending_approvals=(
+                [{"approval_id": self.approval_id}] if self.pending else []
+            ),
         )
 
     def post(
@@ -2556,6 +2587,13 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
     assert coordination.workspace_response_binding[
         "response_semantic_digest"
     ] == live.canonical_digest(coordination.workspace)
+    assert raw_client.get_routes.count(
+        "/v3/sessions/sess_serial/workspace"
+    ) == 1
+    assert all(
+        route == "/v3/sessions/sess_serial/pending-approvals"
+        for route in raw_client.get_routes[:-1]
+    )
     sealed = api.sealed_receipts
     assert [receipt.sequence for receipt in sealed] == list(
         range(1, len(sealed) + 1)

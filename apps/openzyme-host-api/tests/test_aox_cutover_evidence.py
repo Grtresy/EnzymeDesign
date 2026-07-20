@@ -405,6 +405,16 @@ def _public_api_receipts(
     ]
 
 
+def test_public_api_receipt_route_accepts_compact_pending_approval_read() -> None:
+    route = "/v3/sessions/sess_aox_live/pending-approvals"
+
+    assert cutover_evidence._public_api_route_is_canonical("GET", route)
+    assert not cutover_evidence._public_api_route_is_canonical("POST", route)
+    assert not cutover_evidence._public_api_route_is_canonical(
+        "GET", f"{route}?include=workspace"
+    )
+
+
 def _ledger_snapshot(
     *,
     charged_tokens: int = 10,

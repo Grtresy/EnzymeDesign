@@ -1010,6 +1010,49 @@ class _PublicHostClient:
             "public_response_binding": response_binding,
         }
 
+    def get_pending_approvals(
+        self,
+        session_id: str,
+        *,
+        _timeout_seconds: float | None = None,
+    ) -> tuple[dict[str, Any], ...]:
+        route = f"/v3/sessions/{session_id}/pending-approvals"
+        payload = self.get_json(route, _timeout_seconds=_timeout_seconds)
+        if set(payload) != {"session_id", "pending_approvals"}:
+            raise LiveProductPathError(
+                "pending_approval_projection_invalid",
+                "Host pending-approval projection has an invalid response shape",
+            )
+        if payload.get("session_id") != session_id:
+            raise LiveProductPathError(
+                "pending_approval_projection_invalid",
+                "Host pending-approval projection changed session identity",
+            )
+        raw_items = payload.get("pending_approvals")
+        if not isinstance(raw_items, list):
+            raise LiveProductPathError(
+                "pending_approval_projection_invalid",
+                "Host pending-approval projection is not a list",
+            )
+        approvals: list[dict[str, Any]] = []
+        approval_ids: set[str] = set()
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                raise LiveProductPathError(
+                    "pending_approval_projection_invalid",
+                    "Host pending-approval projection contains a non-object item",
+                )
+            item = dict(raw_item)
+            approval_id = str(item.get("approval_id") or "")
+            if not approval_id or approval_id in approval_ids:
+                raise LiveProductPathError(
+                    "pending_approval_projection_invalid",
+                    "Host pending-approval projection contains an invalid identity",
+                )
+            approval_ids.add(approval_id)
+            approvals.append(item)
+        return tuple(approvals)
+
     @staticmethod
     def response_binding(
         receipt: PublicApiReceipt,
@@ -1291,7 +1334,11 @@ class _PublicHostClient:
         elif method == "POST" and path == "/v3/sessions":
             permitted = True
         elif len(segments) == 4 and segments[:2] == ["v3", "sessions"]:
-            permitted = method == "GET" and segments[3] in {"workspace", "events"}
+            permitted = method == "GET" and segments[3] in {
+                "workspace",
+                "events",
+                "pending-approvals",
+            }
             permitted = permitted or (method == "POST" and segments[3] == "messages")
         elif len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
             permitted = method == "POST" and segments[3:] == ["runtime", "drain"]
@@ -1928,25 +1975,21 @@ class LiveAoxAttemptRunner:
                         },
                     )
 
-                # The workspace response below must be known to have started
-                # after a bounded drain response before it can prove that the
-                # response exposed no new approval.  Reading the Event after
-                # the GET would leave a race where the drain publishes
-                # ``waiting_approval`` between the snapshot and the check.
+                # The compact approval response below must be known to have
+                # started after a bounded drain response before it can prove
+                # that the response exposed no new approval.  Durable events
+                # are not sufficient here: a synchronous sandbox can persist
+                # the approval row before the derived approval.requested
+                # activity event is backfilled.
                 drain_was_done = drain_done.is_set()
-                latest_workspace = api.get_json(
-                    f"/v3/sessions/{session_id}/workspace",
-                    _timeout_seconds=max(0.001, deadline - time.monotonic()),
+                pending = list(
+                    api.get_pending_approvals(
+                        session_id,
+                        _timeout_seconds=max(
+                            0.001, deadline - time.monotonic()
+                        ),
+                    )
                 )
-                latest_workspace_receipt = api.last_receipt
-                latest_binding = api.response_binding(
-                    latest_workspace_receipt, semantic_value=latest_workspace
-                )
-                pending = [
-                    dict(item)
-                    for item in latest_workspace.get("pending_approvals") or []
-                    if isinstance(item, dict)
-                ]
                 acted = False
                 for approval in pending:
                     approval_id = str(approval.get("approval_id") or "")
@@ -1958,13 +2001,37 @@ class LiveAoxAttemptRunner:
                         approval_id=approval_id,
                     )
                     if browser_gate_enabled and browser_approval_receipt is None:
+                        # Chrome observes the composite public workspace.  Pay
+                        # for that projection exactly at the browser handoff,
+                        # then bind the approval found by the compact control
+                        # read to the same pending item in the workspace.
+                        browser_workspace = api.get_json(
+                            f"/v3/sessions/{session_id}/workspace",
+                            _timeout_seconds=max(
+                                0.001, deadline - time.monotonic()
+                            ),
+                        )
+                        browser_workspace_receipt = api.last_receipt
+                        workspace_matches = [
+                            dict(item)
+                            for item in browser_workspace.get("pending_approvals")
+                            or []
+                            if isinstance(item, dict)
+                            and str(item.get("approval_id") or "") == approval_id
+                        ]
+                        if len(workspace_matches) != 1:
+                            raise LiveProductPathError(
+                                "pending_approval_projection_drift",
+                                "compact and workspace approval projections disagree",
+                                details={"approval_id": approval_id},
+                            )
                         browser_approval_receipt, latest_workspace = (
                             self._wait_for_browser_approval(
                                 api,
                                 session_id=session_id,
-                                workspace=latest_workspace,
-                                workspace_receipt=latest_workspace_receipt,
-                                pending_approval=approval,
+                                workspace=browser_workspace,
+                                workspace_receipt=browser_workspace_receipt,
+                                pending_approval=workspace_matches[0],
                                 started=started,
                                 pre_event_cursor=pre_event_cursor,
                             )
@@ -2007,9 +2074,10 @@ class LiveAoxAttemptRunner:
                 if not acted:
                     # A bounded drain may return ``waiting_approval`` after the
                     # approval and continuation have become durable.  Always
-                    # inspect the post-response workspace once before leaving
-                    # this coordination seam so that the approval can be
-                    # resolved and the next drain can resume the continuation.
+                    # inspect the post-response compact control view once
+                    # before leaving this coordination seam so that the
+                    # approval can be resolved and the next drain can resume
+                    # the continuation.
                     if drain_was_done:
                         break
                     if drain_done.is_set():
@@ -2032,17 +2100,12 @@ class LiveAoxAttemptRunner:
             rejected: set[str] = set()
             while not drain_done.is_set() and time.monotonic() < cleanup_deadline:
                 try:
-                    cleanup_workspace = api.get_json(
-                        f"/v3/sessions/{session_id}/workspace",
+                    cleanup_pending = api.get_pending_approvals(
+                        session_id,
                         _timeout_seconds=max(
                             0.001, cleanup_deadline - time.monotonic()
                         ),
                     )
-                    cleanup_pending = [
-                        dict(item)
-                        for item in cleanup_workspace.get("pending_approvals") or []
-                        if isinstance(item, dict)
-                    ]
                     for approval in cleanup_pending:
                         approval_id = str(approval.get("approval_id") or "")
                         if (

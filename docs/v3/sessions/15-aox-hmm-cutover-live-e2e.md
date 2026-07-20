@@ -897,6 +897,81 @@ workflow ref 更新为
 `workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`；
 下一轮必须使用 fresh clean commit/config/workflow pin 与全新 roots。
 
+## r35-r36 blank-world live attempts：永久 NO-GO
+
+r35 与 r36 都使用 clean commit
+`94ee5eb74a7b0e9b3d0fa65dc49efa43580a4f65`、config digest
+`sha256:bc83b3c14973a513279361f220710e137d0da8f259f68e7026badad69fe68485`
+和 workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`
+在各自 fresh roots 启动。两轮 known-positive probe 都完成 exact 两项真实 provider 与四项真实
+HPC check；formal PubMed、NCBI 与 MAFFT 也完成，Chrome approval 能恢复同一 controlled
+operation。r36 的 browser proof 明确绑定 `appr_695463728f65` 与
+`op_2198e01dc526`。
+
+两轮 formal hmmbuild 随后都在 payload 前以 `hpc_staging_failed` 停止。runner-private
+failure manifest 分别证明 `phase=remote_layout`、return code `255`、约 `60s`；稍后的独立
+只读 `ssh -o BatchMode=yes -o ConnectTimeout=15 Diannan true` 健康检查成功，只说明登录节点
+恢复，不授权重放、采用或把失败 attempt 追认为 positive。
+
+r35 attempt `positive-ed6e23d5a63843a0800f71c7e12a95a9` 的 non-eligible bundle
+digest 为
+`sha256:9de50d9f24e5521d1022c69f2c1f3d7aabd08ecef7c47d9b7deb022d113f9a90`，
+campaign decision digest 为
+`sha256:e1699b0b28f2a2f561eeb3b027d795684860d17e481babab2e703e29476d8c15`；
+MICU 从 `66,138,051` 增至 `67,127,906 / 500,000,000`。r36 attempt
+`positive-a7286a020bbb4fb6a18211fbced008ad` 的 bundle digest 为
+`sha256:d3a421ef4bbbee57879be457671344537e60414273f948fc5db109589d73bef6`，
+decision digest 为
+`sha256:1c06f3f0995c5c369f502b6fa496dab03b3021c20a560401cf0aacf69c370319`；
+MICU 增至 `67,949,791 / 500,000,000`。两轮均永久 **NO-GO**，所有 roots、effects、
+artifacts、browser state、bundle 与 decision 不可复用。
+
+## r37 launch：未封存、非 evidence
+
+r37 的 shell wrapper 错误地把含未引用空格/括号的 `.env` 当作 zsh source；解析失败后外层
+shell 仍继续，产生 incomplete root，但没有 canonical attempt bundle 或 campaign decision。
+它不能作为 live 证据或后续输入，也不能复用。持久账本仍诚实保留其实际消耗：r38 启动前累计
+为 `68,091,186 / 500,000,000`，不因 r37 不具备 evidence 资格而回滚。
+
+## r38 blank-world live attempt：永久 NO-GO
+
+r38 继续使用相同 clean commit/config/workflow identity，并在 fresh root 启动 attempt
+`positive-f53ef36dcdf04817baebfdaeed1bbf59`。known-positive probe 再次完成 exact six
+真实 checks；formal PubMed、exact-14 NCBI、MAFFT 与 hmmbuild 均完成。Chrome UI 对 formal
+approval `appr_d1fc2d27fa5a` / operation `op_236676e6a836` 给出 durable same-operation
+proof。真实 EBI HMMER 随后完成 `68,592` hits、`69` pages 与 `37,772` 个 score-`>200`
+accessions；唯一 UniProt operation 真实完成约 `378` 个 100-accession query batch。sequence
+join、length filter 与 scoring-input assembly 已继续推进到 HMMalign approval
+`appr_df15c554b6cf` / operation `op_6fdb7e5a9f64`。
+
+该次没有在科学计算处失败。formal session 的 43 个 Artifact row 合计包含约
+`36,963,643` bytes metadata JSON，最大单项约 `17,769,460` bytes；旧 workspace 把相同
+metadata 同时复制到 artifact、artifact index、activity 与 capability branches。r38 DB 上旧代码
+构造 workspace 需约 `57.766s`，JSON response 为 `106,364,236` bytes。cutover driver 又在
+同步 drain 的完整 EBI/UniProt 生命周期内每 `0.5s` GET 该 composite workspace；approval
+resolve 在 SQLite `BEGIN IMMEDIATE` write UoW 内还通过 activity backfill 与 command response
+重复构造 workspace。HMMalign approval 虽已 durable approved，continuation 在放大事务/轮询下
+未及时 claim，最终 public command 以 `internal_error` fail closed。该错误不能改写为科学成功。
+
+r38 non-eligible bundle 的 network-free verification 为 `issues=[]`，digest
+`sha256:66a3582c593b9ac979f21ce039385eb00fe1fe07e3c1dce543b7c22e5fdb0669`；
+sealed decision digest
+`sha256:1f0870318927623b124895b4d370ea5b00fd23ebfe2f50cf9a72280e3b3c8e32`
+保持永久 **NO-GO**。MICU 从 `68,091,186` 增至
+`69,063,458 / 500,000,000`，remaining `430,936,542`，零 breach/overage。
+
+局部 correction 不改变 Artifact canonical truth、approval 状态机、single-process SQLite 或
+同步 continuation：新增同源只读
+`GET /v3/sessions/{session_id}/pending-approvals`，只投影 approval/operation/sandbox identity；
+driver 热循环与 cleanup 不再 GET composite workspace，Chrome handoff 与 drain 退休后的最终
+snapshot 才读取 workspace。workspace/artifact activity/capability branches 复用已有
+`artifact.list` bounded item contract，完整 metadata 仍原样保存在 catalog 并可由
+`artifact.get` 分页读取；mutation 的 activity-event backfill 直接构造 sanitized activity feed，
+不再递归构造整个 workspace。对 r38 DB 的 correction 后只读 benchmark 为 pending projection
+约 `0.0013s`，workspace build `2.771s`，JSON `727,362` bytes；该 benchmark 只是修复验证，
+绝不把 r38 追认为 positive。下一 campaign 必须使用 fresh clean commit/config pin 与全新 roots。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

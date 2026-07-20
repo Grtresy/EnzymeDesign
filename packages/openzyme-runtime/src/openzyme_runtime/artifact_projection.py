@@ -46,6 +46,7 @@ _PRIMARY_IDENTITY_METADATA_KEYS = {
     "format",
     "output_format",
     "provider",
+    "provenance",
     "schema_id",
     "sealed_digest",
     "semantic_type",

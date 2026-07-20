@@ -4475,9 +4475,10 @@ def _public_api_route_is_canonical(method: str, route: str) -> bool:
     if len(segments) == 4 and segments[:2] == ["v3", "sessions"]:
         if _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is None:
             return False
-        return (method == "GET" and segments[3] in {"workspace", "events"}) or (
-            method == "POST" and segments[3] == "messages"
-        )
+        return (
+            method == "GET"
+            and segments[3] in {"workspace", "events", "pending-approvals"}
+        ) or (method == "POST" and segments[3] == "messages")
     if len(segments) == 5 and segments[:2] == ["v3", "sessions"]:
         return (
             _ATTEMPT_ID_PATTERN.fullmatch(segments[2]) is not None

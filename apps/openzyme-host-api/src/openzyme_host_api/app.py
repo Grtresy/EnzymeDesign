@@ -204,6 +204,13 @@ class V3SessionWorkspaceResponse(BaseModel):
     workspace: dict[str, Any]
 
 
+class V3PendingApprovalsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    pending_approvals: list[dict[str, Any]]
+
+
 class V3CommandResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1242,6 +1249,29 @@ def create_app(
                     session_id=session_id,
                 )
                 return service.workspace(session_id)
+        except Exception as exc:  # pragma: no cover - normalized below
+            raise _as_http_error(exc) from exc
+
+    @app.get(
+        "/v3/sessions/{session_id}/pending-approvals",
+        response_model=V3PendingApprovalsResponse,
+    )
+    def get_v3_pending_approvals(
+        session_id: str, request: Request
+    ) -> dict[str, Any]:
+        try:
+            principal = _request_principal(request)
+            with dependencies.v3_service_scope(mode="read") as service:
+                _require_session_access(
+                    service,
+                    principal=principal,
+                    security=security,
+                    session_id=session_id,
+                )
+                return {
+                    "session_id": session_id,
+                    "pending_approvals": service.pending_approvals(session_id),
+                }
         except Exception as exc:  # pragma: no cover - normalized below
             raise _as_http_error(exc) from exc
 

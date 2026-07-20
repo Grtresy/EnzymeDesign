@@ -395,6 +395,18 @@ class V3HostApiService:
                 .to_dict()
             )
 
+    def pending_approvals(self, session_id: str) -> list[dict[str, Any]]:
+        """Return only the durable approval-control projection for a session."""
+
+        with self.operation_lock:
+            if self.repositories.sessions.get(session_id) is None:
+                raise ValueError(f"session {session_id!r} does not exist")
+            return list(
+                SessionProjectionBuilder(self.repositories).build_pending_approvals(
+                    session_id
+                )
+            )
+
     def list_sessions(self, project_id: str) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
         for session in self.repositories.sessions.list_by_project(project_id):
@@ -477,7 +489,13 @@ class V3HostApiService:
             for event in self.events(session_id, limit=10_000)
         }
         current = {_event_fingerprint(event) for event in events}
-        for item in self.workspace(session_id).get("activity_feed", []):
+        # Activity-event backfill needs only the activity projection.  Building
+        # the composite workspace here used to project the complete artifact
+        # catalog while a mutation still owned its SQLite write transaction.
+        # That coupled approval latency to unrelated scientific metadata size.
+        for item in SessionProjectionBuilder(
+            self.repositories
+        ).build_public_activity_feed(session_id):
             event = {
                 "event_id": _new_id("evt"),
                 "session_id": session_id,

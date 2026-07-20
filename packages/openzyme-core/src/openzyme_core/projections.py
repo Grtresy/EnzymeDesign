@@ -13,7 +13,7 @@ from openzyme_domain import MemoryKind
 from openzyme_runtime import sanitize_public_diagnostic_text
 
 from .artifact_projection import PRIVATE_ARTIFACT_KEYS
-from .artifact_projection import project_artifact_for_agent
+from .artifact_projection import project_artifact_list_item_for_agent
 from .artifact_projection import sanitize_private_artifact_fields
 from .repositories import CoreRepositories
 from .task_board import TaskBoardService
@@ -198,12 +198,7 @@ class SessionProjectionBuilder:
             entry.to_dict()
             for entry in build_conversation_projection(self.repositories, session_id)
         )
-        approvals = tuple(
-            self._project_pending_approval(approval)
-            for approval in self.repositories.approvals.list_pending_by_session(
-                session_id
-            )
-        )
+        approvals = self.build_pending_approvals(session_id)
         inbox = tuple(
             message.to_dict()
             for message in self.repositories.inbox.list_by_session(session_id)
@@ -217,10 +212,7 @@ class SessionProjectionBuilder:
         )
         delegation = self.build_delegation_projection(session_id).to_dict()
         agent_traces = self.build_agent_traces_projection(session_id)
-        activity_feed = tuple(
-            self._sanitize_execution_projection(item.to_dict())
-            for item in self.build_activity_feed(session_id)
-        )
+        activity_feed = self.build_public_activity_feed(session_id)
         artifacts = tuple(
             self._project_workspace_artifact(artifact)
             for artifact in self.repositories.artifacts.list_by_session(session_id)
@@ -276,6 +268,32 @@ class SessionProjectionBuilder:
             scientific_evidence=scientific_evidence,
             capabilities=capabilities,
             runtime_state=runtime_state,
+        )
+
+    def build_pending_approvals(
+        self, session_id: str
+    ) -> tuple[dict[str, Any], ...]:
+        """Build the compact canonical approval-control projection.
+
+        Approval coordination must not require projecting the artifact catalog,
+        activity feed, reports, or capability read models.  The records still
+        come from the same durable approval/operation/sandbox rows used by the
+        composite workspace projection.
+        """
+
+        return tuple(
+            self._project_pending_approval(approval)
+            for approval in self.repositories.approvals.list_pending_by_session(
+                session_id
+            )
+        )
+
+    def build_public_activity_feed(
+        self, session_id: str
+    ) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            self._sanitize_execution_projection(item.to_dict())
+            for item in self.build_activity_feed(session_id)
         )
 
     def _project_pending_approval(self, approval: Any) -> dict[str, Any]:
@@ -1353,7 +1371,7 @@ class SessionProjectionBuilder:
             artifact_payloads: list[dict[str, Any]] = []
             for run in runs:
                 for item in self.repositories.artifacts.list_by_run(run.run_id):
-                    artifact_payload = project_artifact_for_agent(item)
+                    artifact_payload = project_artifact_list_item_for_agent(item)
                     artifact_payloads.append(artifact_payload)
             projected["artifacts"] = artifact_payloads
             projected["output_artifact_ids"] = [
@@ -1548,7 +1566,12 @@ class SessionProjectionBuilder:
         }
 
     def _project_workspace_artifact(self, artifact: Any) -> dict[str, Any]:
-        payload = project_artifact_for_agent(artifact)
+        # A session workspace is a collection read model, not the exact
+        # single-artifact read surface.  Reuse the bounded list-item contract so
+        # large canonical metadata remains available through artifact.get
+        # without being repeated in artifacts, artifact_index, activity_feed,
+        # and capability projections.
+        payload = project_artifact_list_item_for_agent(artifact)
         metadata = dict(payload.get("metadata") or {})
         payload["provenance"] = self._project_artifact_provenance(payload, metadata)
         return self._sanitize_execution_projection(

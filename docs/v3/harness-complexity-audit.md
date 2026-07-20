@@ -155,6 +155,16 @@ Harness 负责 tools、state、permissions、recovery、projection 和 execution
 
   追加修正记录：workspace projection 新增 diagnostic-only `runtime_state`，明确区分 `agent_turn_failed`、`runtime_signal_failed`、`task_failed`、`runtime_attention` 与 `outcome_unconsumed` / `capability_outcome_ready`。terminal capability outcome 只表示 evidence ready 和 owner wakeup，不代表 teammate/task completed。该 projection 和 `runtime.consistency.warning` / `runtime.state_attention` events 只提示 follow-up，不自动写 task completed/failed；业务终态仍由 `task.finish` 写入。
 
+- [x] Composite workspace 被当作 approval control poll，导致科学 metadata 反向放大 runtime coordination。
+
+  证据：AOX r38 formal session 的 Artifact metadata JSON 合计约 36.96 MiB；旧 projection 将同一 metadata 重复放入 artifacts、artifact index、activity feed 与 capability branches，产生约 106.36 MiB workspace。live driver 在同步 drain 内每 0.5 秒 GET workspace，approval resolve 的 write UoW 又通过 activity-event backfill 与 command response 重复构造它。
+
+  Doctrine 风险：harness 把“是否存在 pending approval”这个小控制事实绑定到无关科学 payload 大小，既增加低摩擦世界读取成本，也延长 single-process SQLite write transaction，使 agent 已批准的 continuation 无法及时推进。
+
+  目标边界：approval control read 只投影 durable Approval / ControlledOperation / SandboxRun identity；workspace 仍是 UI composite snapshot，但所有 Artifact collection occurrence 必须有界，exact metadata 留在 canonical catalog 并按需分页读取。activity-event backfill 不得递归构造 workspace。
+
+  修正记录：新增同源只读 `GET /v3/sessions/{session_id}/pending-approvals`；cutover hot loop/cleanup 只读 compact view，Chrome handoff和 drain 退休后证据才读取 workspace。workspace/activity/capability 统一复用 bounded artifact item，activity backfill 直接构造 sanitized feed。r38 DB 只读 benchmark 降至约 0.69 MiB / 2.77 秒，compact read 约 1.3 ms；canonical Artifact metadata 未删除或截断。
+
 - [x] Design / deep-research planner fallback 会掩盖真实 provider 或 contract 失败。
 
   证据：已删除的旧 graph 路径曾在 LLM planner 异常或非法 action 时调用 heuristic next action，并把 blocked action 重新加入 `allowed_actions`。已删除的旧 deep research graph 曾在缺少 model 或 researcher 未调用 search 时编造 supervisor plan、tool call 和硬编码 enzyme search query。

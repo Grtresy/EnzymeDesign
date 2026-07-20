@@ -579,6 +579,111 @@ def test_v3_workspace_api_projects_closed_sandbox_stdio_metadata(
     assert "/home/" not in json.dumps(sandbox_run, sort_keys=True)
 
 
+def test_v3_pending_approval_and_resolve_stay_bounded_with_large_artifact_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bootstrap_client, foundation = _build_client(monkeypatch)
+    del bootstrap_client
+    provider = SQLiteRepositoryProvider(str(tmp_path / "bounded-workspace.sqlite3"))
+    dependencies = HostApiDependencies(
+        foundation=foundation,
+        security_policy=_local_test_security(),
+        v3_repository_provider=provider,
+        v3_sandbox_workspace_root=tmp_path / "workspaces",
+    )
+    session_id = "sess_bounded_workspace"
+    approval_id = "appr_bounded_workspace"
+    large_sequence_map = {
+        f"P{index:05d}": f"sequence-payload-{index:05d}-" + "x" * 80
+        for index in range(10_000)
+    }
+
+    with TestClient(create_app(dependencies)) as client:
+        created = client.post(
+            "/v3/sessions",
+            json={
+                "session_id": session_id,
+                "project_id": "proj_bounded_workspace",
+                "objective": "Keep composite reads independent of exact metadata size.",
+            },
+        )
+        assert created.status_code == 200
+        with provider.write() as owner:
+            owner.repositories.artifacts.save(
+                SessionArtifactRecord(
+                    artifact_id="art_large_metadata",
+                    session_id=session_id,
+                    task_id=None,
+                    lane_id=None,
+                    invocation_id=None,
+                    run_id=None,
+                    kind=ArtifactKind.RESULT,
+                    storage_uri="/private/artifacts/large-metadata.json",
+                    relative_path="formal/large-metadata.json",
+                    title="Large canonical metadata",
+                    description=None,
+                    metadata={
+                        "schema_id": "large_scientific_metadata@1",
+                        "content_digest": f"sha256:{'a' * 64}",
+                        "sequence_count": len(large_sequence_map),
+                        "sequence_digests": large_sequence_map,
+                    },
+                    created_at="2026-07-20T12:00:00+00:00",
+                )
+            )
+            owner.repositories.approvals.save(
+                ApprovalRequest(
+                    approval_id=approval_id,
+                    session_id=session_id,
+                    task_id=None,
+                    lane_id=None,
+                    kind="execution_launch",
+                    requested_action="Approve bounded projection test",
+                    status=ApprovalRequestStatus.PENDING,
+                    request_ref="artifact://approvals/bounded.json",
+                    resolution_ref=None,
+                    created_at="2026-07-20T12:00:01+00:00",
+                )
+            )
+
+        compact = client.get(f"/v3/sessions/{session_id}/pending-approvals")
+        workspace = client.get(f"/v3/sessions/{session_id}/workspace")
+        resolved = client.post(
+            f"/v3/approvals/{approval_id}/resolve",
+            json={"decision": "approved"},
+        )
+
+    assert compact.status_code == 200
+    assert compact.json() == {
+        "session_id": session_id,
+        "pending_approvals": workspace.json()["pending_approvals"],
+    }
+    assert resolved.status_code == 200
+    resolved_payload = resolved.json()
+    resolved_json = json.dumps(
+        resolved_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert len(resolved_json) < 250_000
+    assert "sequence-payload-00000" not in resolved_json
+    projected_artifact = next(
+        item
+        for item in resolved_payload["workspace"]["artifacts"]
+        if item["artifact_id"] == "art_large_metadata"
+    )
+    assert projected_artifact["metadata"]["sequence_count"] == 10_000
+    assert "sequence_digests" not in projected_artifact["metadata"]
+    assert projected_artifact["metadata_summary"]["original_json_chars"] > 1_000_000
+    assert projected_artifact["metadata_summary"]["omitted_field_count"] >= 1
+    with provider.read() as owner:
+        durable_artifact = owner.repositories.artifacts.get("art_large_metadata")
+    assert durable_artifact is not None
+    assert durable_artifact.metadata["sequence_digests"] == large_sequence_map
+
+
 def test_v3_runtime_health_marks_local_fixtures_non_cutover() -> None:
     client = TestClient(
         create_app(
