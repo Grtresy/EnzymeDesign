@@ -664,6 +664,42 @@ logical metadata，而 `artifact_registration_response@2` 仅 1,234 bytes 并可
 selector 选出同 CSV digest。该诊断没有 provider/HPC/MICU I/O，`diagnostic_only=true`，
 不改变 r27 的永久 NO-GO，也不是下一轮可采用的 Artifact 或 cutover evidence。
 
+## r28 blank-world live attempt：永久 NO-GO
+
+r28 以 clean commit `bea16bef2a54c8fb75a7649fe8a17a0c6ee7bc07`、config
+digest `sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`
+和 fresh roots 启动 positive attempt
+`positive-cfddd24986bf465fa49ef70449c5ec63`。known-positive probe 的两个真实
+provider 与四个真实 HPC operation 全部完成；formal researcher 也选择了唯一 PubMed
+artifact `art_provider_0f7b34ba9a29`，其中包含真实 PMID `39273329` 与 `37659597`。
+formal executor 尚未进入任何 controlled operation，因此这次运行没有验证正式路径的
+large-metadata transport correction。
+
+formal executor 有三次独立 MICU 请求精确触达 sealed `120s` timeout；当前配置
+`max_retries=0`，scheduler 虽保持同一 durable task 恢复，却增加了 restore/diagnostic
+压力。恢复过程中，`world.inspect` 因错误复用 closed opaque-ref namespace 规则，三次拒绝
+安全且合法的 canonical task id
+`aox_execution_cutover_daf581ffa2b34590940f55322e6bb5ec`。最终
+`srun_9b0a7b28365f` 将 `- <<'PY'...` 作为 Python 的 literal argv element；
+`sandbox.exec` 没有隐式 shell parsing，故 Python exit `2` / `sandbox_exec_nonzero`。
+该 run 的 operation list 为空，但真实 nonzero run 仍按既定规则使 attempt 失格；executor
+随后显式 `task.finish(failed)`。formal 没有 approval，也没有可提交的 Chrome terminal
+observation。
+
+bundle `sha256:be8edc94d95f9800dfae403270372447e6b4335388b0d2f51bd23cbfa472c577`
+经独立 offline verify 无 integrity issue，但科学资格明确为 non-eligible。sealed decision
+保持 **NO-GO**，blocker 为 `task_failed` / `attempt[1].scientific_outcome`，decision
+digest 为 `sha256:5b832c85c1c79e0903a3a6cfa1ab1696b8d58642c2f79f47bd5125c312e57d56`。
+MICU 累计从 `49,959,197` 增至 `55,691,311 / 500,000,000`，remaining
+`444,308,689`，零 breach/overage；positive 1 失格后没有继续运行 positive 2 或 fault。
+
+r28 永久不可复用。局部 correction 让 `world.inspect` 接受安全 product task id，在
+agent-facing schema 明示 direct argv，并在 source snapshot、SandboxRun 与进程产生前拒绝
+未包裹的 Python heredoc，返回 typed corrective hint；不得自动包成 shell，也不放宽真实
+nonzero-run fail-closed。下一次 fresh pin 只把 live request envelope 调整为 `300s`
+timeout、一次 pre-response retry 与 configured `max_tokens=8192` request cap；这些是
+请求设置而不是消费目标，且必须进入新 config identity。
+
 ## 当前实施状态的表述规则
 
 - focused/unit/eval/frontend/mainline 测试通过只能说明实现行为满足对应非 live gate，不能写成 cutover GO；

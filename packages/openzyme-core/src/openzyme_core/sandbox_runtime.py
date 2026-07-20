@@ -232,6 +232,10 @@ _TOOLCHAIN_RUNTIME_IDENTITY_FIELDS = (
 _SAFE_TOOLCHAIN_IDENTIFIER_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
 )
+_PYTHON_EXECUTABLE_PATTERN = re.compile(r"python(?:\d+(?:\.\d+)*t?)?\Z")
+_UNWRAPPED_HEREDOC_ARG_PATTERN = re.compile(
+    r"^[ \t]*(?:-[ \t]*)?<<-?[ \t]*[^\s\r\n]+[ \t]*\r?\n"
+)
 
 
 def _project_toolchain_runtime_identity(value: Any) -> dict[str, str] | None:
@@ -3176,6 +3180,27 @@ class SandboxRuntimeService:
             raise SandboxRuntimeError("invalid_tool_arguments", "sandbox.exec argv must be non-empty")
         forbidden = {"ssh", "scp", "sftp", "sbatch", "srun", "apptainer", "singularity", "docker", "podman", "curl", "wget"}
         executable = Path(values[0]).name
+        has_unwrapped_heredoc = False
+        if _PYTHON_EXECUTABLE_PATTERN.fullmatch(executable):
+            for argument in values[1:]:
+                if _UNWRAPPED_HEREDOC_ARG_PATTERN.match(argument):
+                    has_unwrapped_heredoc = True
+                    break
+                if (
+                    argument in {"-", "--", "-c", "-m"}
+                    or not argument.startswith("-")
+                ):
+                    break
+        if has_unwrapped_heredoc:
+            raise SandboxRuntimeError(
+                "sandbox_argv_shell_syntax_unsupported",
+                "sandbox.exec argv uses direct exec-form arguments and does not parse an unwrapped shell heredoc",
+                hint=(
+                    "Write the code with sandbox.file.write and run "
+                    '["python", "/workspace/src/<file>.py"], or explicitly use '
+                    '["bash", "-lc", "<command>"] when shell parsing is intentional.'
+                ),
+            )
         if executable in forbidden:
             raise SandboxRuntimeError("sandbox_path_forbidden", f"command {executable!r} is forbidden in sandbox.exec")
         joined = " ".join(values)

@@ -866,6 +866,51 @@ logical field, and the strict selectable `artifact_registration_response@2`
 was only 1,234 bytes. This diagnostic made no provider, HPC, or MICU call and is
 explicitly non-cutover; it neither repairs nor makes r27 reusable.
 
+### r28 live attempt: permanent NO-GO
+
+r28 pinned clean commit
+`bea16bef2a54c8fb75a7649fe8a17a0c6ee7bc07` with config digest
+`sha256:b6952e6aaf2eb0af312b116a57b5c842ac20d89720cccaf3a8538421fae1ce54`
+and started fresh positive attempt
+`positive-cfddd24986bf465fa49ef70449c5ec63`. The independent known-positive
+probe completed its exact two provider and four HPC operations. The formal
+researcher also selected one succeeded PubMed artifact,
+`art_provider_0f7b34ba9a29`, with real PMIDs including `39273329` and
+`37659597`. The formal executor never entered a controlled operation, so r28
+does not validate the corrected large-metadata transport on the formal path.
+
+The formal executor had three separate MICU requests reach the sealed
+`120s` timeout with `max_retries=0`; scheduler recovery kept the same durable
+task but increased restore/diagnostic pressure. During those resumes,
+`world.inspect` incorrectly rejected the safe canonical product task id
+`aox_execution_cutover_daf581ffa2b34590940f55322e6bb5ec` because its task
+filter reused an opaque-reference namespace policy. The terminal failure was
+sandbox run `srun_9b0a7b28365f`: the executor supplied Python the literal argv
+element `- <<'PY'...`, although `sandbox.exec` uses direct argv without an
+implicit shell. Python exited `2` with `sandbox_exec_nonzero`; the executor
+then correctly failed the task under the no-adoption rule. The run had no
+controlled operation, and formal approval/Chrome observation counts remained
+zero.
+
+The non-eligible bundle independently verifies with no integrity issues at
+`sha256:be8edc94d95f9800dfae403270372447e6b4335388b0d2f51bd23cbfa472c577`.
+The sealed decision remains **NO-GO** with `task_failed` at
+`attempt[1].scientific_outcome`, decision digest
+`sha256:5b832c85c1c79e0903a3a6cfa1ab1696b8d58642c2f79f47bd5125c312e57d56`.
+The persistent MICU ledger moved from `49,959,197` to
+`55,691,311 / 500,000,000`, leaving `444,308,689` with no breach or overage;
+the driver did not run positive 2 or the fault attempt after disqualification.
+
+r28 is permanently non-reusable. The bounded correction accepts safe product
+task ids in `world.inspect`, describes direct argv in the agent-visible tool
+schema, and rejects an unwrapped Python heredoc before source snapshot,
+SandboxRun, or process creation with a typed corrective hint. It does not
+auto-wrap commands in a shell or relax nonzero-run fail-closed semantics. The
+next pin also raises only the live request envelope to a `300s` timeout, one
+pre-response retry, and a configured `max_tokens=8192` request cap; those are
+settings, not consumption targets, and must be sealed into the new config
+identity.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger

@@ -70,6 +70,20 @@ def test_gpt_55_profile_honors_prompt_budget_overrides(monkeypatch) -> None:
     assert profile.profile_known is True
 
 
+def test_unknown_factory_keeps_conservative_fallback(monkeypatch) -> None:
+    monkeypatch.delenv("OPENZYME_LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)
+
+    profile = model_context_profile_from_env_or_factory(object())
+
+    assert profile.model == "unknown"
+    assert profile.context_window_tokens == 32_768
+    assert profile.default_output_tokens == 4_096
+    assert profile.max_output_tokens is None
+    assert profile.profile_known is False
+
+
 def test_gpt_55_profile_keeps_previous_executor_prompt_under_budget(monkeypatch) -> None:
     monkeypatch.delenv("OPENZYME_LLM_CONTEXT_WINDOW_TOKENS", raising=False)
     monkeypatch.delenv("OPENZYME_LLM_DEFAULT_OUTPUT_TOKENS", raising=False)

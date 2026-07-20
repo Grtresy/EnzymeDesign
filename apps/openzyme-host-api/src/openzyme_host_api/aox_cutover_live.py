@@ -3237,7 +3237,11 @@ class LiveAoxAttemptRunner:
             + "Current bundle @1 cannot adopt effects across a failed sandbox run: after any "
             + "local nonzero run, preserve checkpoints only as failure evidence, start no more "
             + "controlled operations in that attempt, explicitly fail the task, and let a fresh "
-            + "attempt retry. "
+            + "attempt retry. sandbox.exec argv is direct argv with no implicit shell parsing: "
+            + "never put heredoc, redirection, or pipeline syntax inside a Python argv element; "
+            + "write scripts with sandbox.file.write or sandbox.file.patch and then invoke the "
+            + "script path. Use an explicit ['bash', '-lc', '<command>'] argv only when shell "
+            + "parsing is intentional. "
             + "Every sandbox.exec invocation whose source may reach the real EBI HMMER wait "
             + "must use timeout_seconds="
             + str(int(AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS))

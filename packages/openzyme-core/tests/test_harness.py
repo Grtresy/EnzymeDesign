@@ -3430,6 +3430,11 @@ class FakeToolCallingInvoker:
 
 class FakeModelFactory:
     def __init__(self, response: object | dict[str, object]) -> None:
+        # Harness behavior tests need a deterministic model profile; prompt-budget
+        # fallback behavior is covered independently in test_prompt_budget.py.
+        self.model = "harness-test-model"
+        self.context_window_tokens = 200_000
+        self.default_output_tokens = 8_192
         self.response = response
         self.invokers: dict[str, FakeToolCallingInvoker] = {}
 

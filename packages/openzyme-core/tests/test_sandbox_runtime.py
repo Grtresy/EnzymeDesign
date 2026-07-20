@@ -3793,6 +3793,59 @@ def test_sandbox_exec_requires_source_snapshot_and_forbids_env_secrets(tmp_path:
     assert bad_env.value.error_code == "sandbox_env_forbidden"
 
 
+def test_sandbox_exec_rejects_unwrapped_python_heredoc_before_snapshot(
+    tmp_path: Path,
+) -> None:
+    repositories = _build_repositories()
+    session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)
+    service = _service(
+        repositories,
+        workspace_root=workspace_root,
+        log_root=tmp_path / "logs",
+    )
+
+    with pytest.raises(SandboxRuntimeError) as invalid_argv:
+        service.exec_command(
+            session_id=session.session_id,
+            sandbox_workspace_id=workspace.sandbox_workspace_id,
+            agent_id=agent.agent_id,
+            argv=["python", "- <<'PY'\nprint('must not run')\nPY"],
+        )
+
+    assert (
+        invalid_argv.value.error_code
+        == "sandbox_argv_shell_syntax_unsupported"
+    )
+    assert invalid_argv.value.hint is not None
+    assert "sandbox.file.write" in invalid_argv.value.hint
+    assert repositories.sandbox_runs.list_by_workspace(
+        workspace.sandbox_workspace_id
+    ) == []
+    assert repositories.artifacts.list_by_session(session.session_id) == []
+    for python_argv in (
+        ("python3.12", "-u", "<<-EOF\nprint('must not run')\nEOF"),
+        ("python3.13t", "-u", "- <<'EOF-1'\nprint('must not run')\nEOF-1"),
+        ("python", "<<0\nprint('must not run')\n0"),
+    ):
+        with pytest.raises(SandboxRuntimeError) as unsupported:
+            service._validate_argv(python_argv)
+        assert (
+            unsupported.value.error_code
+            == "sandbox_argv_shell_syntax_unsupported"
+        )
+
+    for direct_argv in (
+        ("python", "src/script.py", "<<literal"),
+        ("python", "/workspace/src/parse.py", "<<EOF\npayload\nEOF"),
+        ("python", "-c", "print(1 << 2)\n"),
+        ("python", "-", "<<'PY'\npayload\nPY"),
+        ("python-wrapper", "- <<'PY'\nprint('not an interpreter')\nPY"),
+    ):
+        assert service._validate_argv(direct_argv) == direct_argv
+    explicit_shell = ("bash", "-lc", "python - <<'PY'\nprint('allowed')\nPY")
+    assert service._validate_argv(explicit_shell) == explicit_shell
+
+
 def test_sandbox_exec_timeout_nonzero_and_truncated_logs(tmp_path: Path) -> None:
     repositories = _build_repositories()
     session, agent, workspace, workspace_root = _seed_workspace(repositories, tmp_path)

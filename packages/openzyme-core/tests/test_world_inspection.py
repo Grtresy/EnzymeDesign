@@ -677,6 +677,88 @@ def test_capability_facts_bind_teammate_to_current_task_and_keep_master_session_
     assert "inv_sandbox_adapter_op_world" in teammate_result.content
     assert "inv_other_task_newest" not in teammate_result.content
 
+    canonical_product_task_id = (
+        "aox_execution_cutover_daf581ffa2b34590940f55322e6bb5ec"
+    )
+    repositories.tasks.save(
+        Task(
+            task_id=canonical_product_task_id,
+            session_id=session.session_id,
+            subject="Canonical product task",
+            description="A safe product-owned task id need not use the task_ prefix.",
+            status=TaskStatus.IN_PROGRESS,
+            priority=TaskPriority.NORMAL,
+            kind="execution",
+            assigned_ref=agent.agent_id,
+            created_at="2026-07-05T10:32:00+00:00",
+            updated_at="2026-07-05T10:32:00+00:00",
+        )
+    )
+    repositories.invocations.save(
+        EngineInvocation(
+            invocation_id="inv_aox_product_task",
+            session_id=session.session_id,
+            task_id=canonical_product_task_id,
+            lane_id=None,
+            engine_name="execution",
+            status=EngineInvocationStatus.RUNNING,
+            input_ref=None,
+            output_ref=None,
+            approval_id=None,
+            idempotency_key="aox-product-task",
+            started_at="2026-07-05T10:32:01+00:00",
+        )
+    )
+    product_task_context = SessionRuntimeContext(
+        repositories=repositories,
+        event_sink=MemoryEventBus(),
+        snapshot=SessionRuntimeSnapshot.load(repositories, session.session_id),
+        tool_registry=registry,
+        restore_focus=RestoreFocus(task_id=canonical_product_task_id),
+        agent_id=agent.agent_id,
+        actor_kind="teammate",
+        actor_role="executor",
+    )
+    product_task_result = registry.dispatch(
+        product_task_context,
+        ToolInvocation(
+            call_id="call_teammate_product_task",
+            tool_name="world.inspect",
+            arguments={
+                "sections": ["tasks", "capabilities"],
+                "task_id": canonical_product_task_id,
+            },
+            task_id=canonical_product_task_id,
+        ),
+    )
+    assert product_task_result.ok is True
+    assert json.loads(product_task_result.content)["filters"]["task_id"] == (
+        canonical_product_task_id
+    )
+    product_payload = json.loads(product_task_result.content)
+    assert product_payload["capabilities"]["execution"][0]["task_id"] == (
+        canonical_product_task_id
+    )
+
+    product_mismatch_result = registry.dispatch(
+        product_task_context,
+        ToolInvocation(
+            call_id="call_teammate_product_task_mismatch",
+            tool_name="world.inspect",
+            arguments={"sections": ["tasks"], "task_id": "task_other"},
+            task_id=canonical_product_task_id,
+        ),
+    )
+    assert product_mismatch_result.ok is False
+    assert (
+        product_mismatch_result.error_code
+        == "world_inspection_task_scope_mismatch"
+    )
+    assert "task_other" not in product_mismatch_result.content
+    assert json.loads(product_mismatch_result.content)["canonical_task_id"] == (
+        canonical_product_task_id
+    )
+
     mismatch_result = registry.dispatch(
         teammate_context,
         ToolInvocation(
@@ -713,6 +795,64 @@ def test_capability_facts_bind_teammate_to_current_task_and_keep_master_session_
         ),
     )
     assert master_result.ok is True
+
+    master_product_task_result = registry.dispatch(
+        master_context,
+        ToolInvocation(
+            call_id="call_master_product_task",
+            tool_name="world.inspect",
+            arguments={
+                "sections": ["tasks"],
+                "task_id": canonical_product_task_id,
+            },
+        ),
+    )
+    assert master_product_task_result.ok is True
+    assert json.loads(master_product_task_result.content)["filters"]["task_id"] == (
+        canonical_product_task_id
+    )
+
+    foreign_session = Session(
+        session_id="sess_foreign",
+        project_id="proj_foreign",
+        title="Foreign world",
+        objective="Must stay outside the current session projection.",
+        status=SessionStatus.ACTIVE,
+        created_at="2026-07-05T10:40:00+00:00",
+        updated_at="2026-07-05T10:40:00+00:00",
+    )
+    repositories.sessions.save(foreign_session)
+    repositories.tasks.save(
+        Task(
+            task_id="aox_foreign_product_task",
+            session_id=foreign_session.session_id,
+            subject="Foreign private subject",
+            description="Foreign private description",
+            status=TaskStatus.IN_PROGRESS,
+            priority=TaskPriority.NORMAL,
+            kind="execution",
+            assigned_ref=None,
+            created_at="2026-07-05T10:40:01+00:00",
+            updated_at="2026-07-05T10:40:01+00:00",
+        )
+    )
+    foreign_task_result = registry.dispatch(
+        master_context,
+        ToolInvocation(
+            call_id="call_master_foreign_task",
+            tool_name="world.inspect",
+            arguments={
+                "sections": ["tasks"],
+                "task_id": "aox_foreign_product_task",
+            },
+        ),
+    )
+    assert foreign_task_result.ok is True
+    foreign_payload = json.loads(foreign_task_result.content)
+    assert foreign_payload["tasks"]["assigned_task"] is None
+    assert foreign_session.session_id not in foreign_task_result.content
+    assert "Foreign private subject" not in foreign_task_result.content
+    assert "Foreign private description" not in foreign_task_result.content
     assert "inv_sandbox_adapter_op_world" in master_result.content
     assert "inv_other_task_newest" in master_result.content
 

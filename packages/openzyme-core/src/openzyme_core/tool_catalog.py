@@ -345,7 +345,10 @@ def sandbox_tool_descriptors() -> tuple[ToolDescriptor, ...]:
         ),
         ToolDescriptor(
             tool_name="sandbox.exec",
-            description="Run a bounded bash/python command in the executor sandbox workspace after source snapshot preflight.",
+            description=(
+                "Run bounded direct argv after source snapshot preflight; no implicit "
+                "shell (use bash -lc explicitly)."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

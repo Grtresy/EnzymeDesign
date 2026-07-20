@@ -253,6 +253,26 @@ def _safe_fact_ref(value: Any) -> str | None:
     return text
 
 
+def _safe_task_filter_ref(value: Any) -> str | None:
+    """Accept bounded product task ids without treating them as external refs."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if (
+        not text
+        or len(text) > _OPAQUE_FACT_REF_MAX_LENGTH
+        or not text[0].isalnum()
+        or _has_sensitive_ref_component(text)
+        or _has_credential_like_prefix(text)
+        or not all(
+            char.isascii() and (char.isalnum() or char in "-._:+")
+            for char in text
+        )
+    ):
+        return None
+    return text
+
+
 def _bounded_safe_refs(values: list[Any]) -> list[str]:
     refs = (_safe_fact_ref(value) for value in values)
     return [ref for ref in refs if ref is not None][:_CAPABILITY_RELATED_REF_LIMIT]
@@ -286,7 +306,7 @@ def _task_scope_error(
 ) -> ToolResult:
     details = {
         "actor_scope": "current_task",
-        "canonical_task_id": _safe_fact_ref(canonical_task_id),
+        "canonical_task_id": _safe_task_filter_ref(canonical_task_id),
     }
     return ToolResult(
         call_id=invocation.call_id,
@@ -597,7 +617,10 @@ class WorldInspectionService:
         if task_id is None:
             return None
         task = self.context.repositories.tasks.get(task_id)
-        if task is None:
+        if (
+            task is None
+            or task.session_id != self.context.snapshot.session.session_id
+        ):
             return None
         return task.to_dict()
 
@@ -640,7 +663,7 @@ class WorldInspectionService:
             item = {
                 "invocation_id": _safe_fact_ref(invocation.invocation_id),
                 "engine_name": engine_name,
-                "task_id": _safe_fact_ref(invocation.task_id),
+                "task_id": _safe_task_filter_ref(invocation.task_id),
                 "lane_id": _safe_fact_ref(invocation.lane_id),
                 "status": invocation.status.value,
                 "approval_id": _safe_fact_ref(invocation.approval_id),
@@ -698,7 +721,7 @@ def register_world_inspection_tools(registry: ToolRegistry) -> None:
         requested_task_id = (
             None
             if requested_task_value is None
-            else _safe_fact_ref(requested_task_value)
+            else _safe_task_filter_ref(requested_task_value)
         )
         if requested_task_value is not None and requested_task_id is None:
             return _task_scope_error(
@@ -709,7 +732,7 @@ def register_world_inspection_tools(registry: ToolRegistry) -> None:
         effective_task_id = requested_task_id
         if context.actor_kind == "teammate":
             canonical_task_value = context.restore_focus.task_id or invocation.task_id
-            canonical_task_id = _safe_fact_ref(canonical_task_value)
+            canonical_task_id = _safe_task_filter_ref(canonical_task_value)
             if canonical_task_id is None:
                 return _task_scope_error(
                     invocation,
