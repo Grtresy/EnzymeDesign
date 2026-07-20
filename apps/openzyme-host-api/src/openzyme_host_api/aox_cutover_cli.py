@@ -27,6 +27,7 @@ from .aox_cutover_launch import AoxCutoverLaunchError
 from .aox_cutover_launch import pin_aox_cutover_launch
 from .aox_cutover_launch import prepare_aox_cutover_launch
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 
 
 _PIN_COMMIT_BASENAME = ".aox-cutover-pin-commit.json"
@@ -606,7 +607,15 @@ def _add_driver_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--max-drains", type=int, default=120)
-    parser.add_argument("--max-signals-per-drain", type=int, default=10)
+    parser.add_argument(
+        "--max-signals-per-drain",
+        type=int,
+        default=AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN,
+        help=(
+            "must remain 1 so cutover inspects durable terminal state between "
+            "agent signals"
+        ),
+    )
     parser.add_argument("--max-steps-per-agent", type=int, default=16)
 
 

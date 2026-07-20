@@ -238,6 +238,7 @@ class _SerialApprovalJsonClient:
         self.drain_started = threading.Event()
         self.resolve_calls: list[tuple[str, str, bool]] = []
         self.call_order: list[str] = []
+        self.drain_payloads: list[dict[str, object]] = []
 
     def get(self, route: str) -> _JsonResponse:
         assert route == "/v3/sessions/sess_serial/workspace"
@@ -268,6 +269,7 @@ class _SerialApprovalJsonClient:
     ) -> _JsonResponse:
         del headers
         if route == "/v3/sessions/sess_serial/runtime/drain":
+            self.drain_payloads.append(dict(json))
             with self._condition:
                 self._current_index = 0
                 self._drain_inflight = True
@@ -2379,6 +2381,7 @@ def test_cli_exposes_real_live_campaign_command(tmp_path: Path) -> None:
     assert args.command == "run-live"
     assert args.approval_mode == "auto"
     assert args.max_drains == 120
+    assert args.max_signals_per_drain == 1
     assert args.browser_completion_hold_seconds == 60.0
 
 
@@ -2533,6 +2536,13 @@ def test_runtime_drain_coordinates_three_serial_approvals_while_blocked(
         raw_client.release_all()
 
     assert raw_client.drain_started.is_set()
+    assert raw_client.drain_payloads == [
+        {
+            "max_signals": 1,
+            "max_steps_per_agent": 16,
+            "auto_enqueue_ready_tasks": False,
+        }
+    ]
     assert coordination.approval_ids == approval_ids
     assert coordination.workspace == {"pending_approvals": []}
     assert coordination.browser_approval_receipt is None

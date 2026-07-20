@@ -273,6 +273,7 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
     assert first.settings.llm.timeout == 45.0
     assert first.settings.llm.purpose_policies == {}
     assert first.payload["driver"]["micu_hard_limit_tokens"] == 500_000_000
+    assert first.payload["driver"]["max_signals_per_drain"] == 1
     assert first.payload["host"]["storage_profile"] == "single_process_sqlite"
     runner_expectations = first.payload["execution"]["aox_runner_contract_expectations"]
     assert runner_expectations["schema_id"] == "aox_runner_contract_expectations@1"
@@ -287,6 +288,25 @@ def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) 
     assert str(tmp_path) not in json.dumps(first.payload, sort_keys=True)
     assert "llm-test-key" not in json.dumps(first.payload, sort_keys=True)
     assert "ncbi@example.org" not in json.dumps(first.payload, sort_keys=True)
+
+
+def test_effective_config_rejects_multi_signal_cutover_drain(tmp_path: Path) -> None:
+    hpc_config = tmp_path / "hpc.toml"
+    hpc_config.write_text("revision=1\n", encoding="utf-8")
+    ledger = tmp_path / "micu.sqlite3"
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.build_aox_cutover_effective_config(
+            _settings(ledger_path=ledger, hpc_config_path=hpc_config),
+            driver=launch.AoxCutoverDriverConfig(max_signals_per_drain=2),
+            ledger_path=ledger,
+        )
+
+    assert error.value.code == "aox_launch_signal_fence_invalid"
+    assert error.value.details == {
+        "expected_max_signals_per_drain": 1,
+        "observed_max_signals_per_drain": 2,
+    }
 
 
 @pytest.mark.parametrize(

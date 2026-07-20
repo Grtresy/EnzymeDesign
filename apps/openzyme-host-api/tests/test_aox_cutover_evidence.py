@@ -199,7 +199,7 @@ def _effective_config(
             "browser_observation_mode": "chrome_devtools_mcp_file_handoff",
             "timeout_seconds": 7_200.0,
             "max_drains": 120,
-            "max_signals_per_drain": 10,
+            "max_signals_per_drain": 1,
             "max_steps_per_agent": 16,
             "browser_poll_interval_seconds": 0.5,
             "browser_approval_timeout_seconds": 300.0,
@@ -343,7 +343,7 @@ def _public_api_receipts(
         "skill_keys": [_identity()["workflow_ref"]],
     }
     drain_request = {
-        "max_signals": 10,
+        "max_signals": 1,
         "max_steps_per_agent": 16,
         "auto_enqueue_ready_tasks": False,
     }

@@ -1154,6 +1154,56 @@ and the new workflow ref is
 The next campaign requires a fresh clean commit/config/workflow pin and wholly
 fresh roots.
 
+### r34 live attempt: permanent NO-GO
+
+r34 pinned clean commit
+`bd87adbb03a005ed8d87a0cd00c7336727a12e94`, config digest
+`sha256:38a8754f42babcfb4cfed1a794a52d5f741d6275dc3b386635a9761d77eaa9ef`,
+workflow ref
+`workflow:aox-hmm-live@2.0.0#sha256:55f8b73f05c56805b1ed97db5d964956365d093fb81cec751cb18b3cd1e9a69a`,
+and fresh declaration commit
+`sha256:e255bda0b0b19d7108a0aa7271b9763d4c587cea0f6ef56fcd983f85a211fe72`.
+Fresh positive attempt `positive-66a1cde757804d5c851a84f21a77fb35`
+stopped in its independent known-positive probe before any formal session.
+
+The original probe task used source-bound sandbox run
+`srun_b3605082148d`. Real NCBI `op_8cd0e405d335`, UniProt
+`op_644823f9483a`, MAFFT `op_ecc41e1f61b3`, and hmmbuild
+`op_e202d38e35b8` completed. CD-HIT `op_9c45ba4e7a4d` then failed during
+runner staging with `hpc_staging_failed`, `stage=hpc_staging`, and
+`retryable=true`; HMMalign never ran. The task explicitly finished failed and
+correctly stated that the attempt forbade retry or another controlled
+operation.
+
+The campaign driver nevertheless configured its single synchronous drain with
+`max_signals=10`. Before that drain returned to the driver-level terminal-state
+check, it consumed the queued master wakeup and allowed two replacement probe
+tasks. Their first NCBI operations `op_198e3c268386` and
+`op_9e164b1204bb` were rejected by the existing operation-budget guard and both
+sandbox runs failed. No replacement effect was adopted, but these extra turns
+wasted MICU and changed the final blocker from the authoritative first
+`hpc_staging_failed` to `cutover_operation_budget_exceeded`.
+
+The non-eligible bundle independently passed network-free verification with
+`issues=[]` at
+`sha256:ec1299a5f055f4be0ed07a6965994f58ce7f55165b8580ffe1e038301e27e944`.
+The sealed decision remains permanent **NO-GO** at
+`sha256:8dd7676ccd48653b570618e8aa1680998630011a4733d3ce6c8f14f968ab654e`.
+MICU moved from `64,808,804` to `66,138,051 / 500,000,000`, a delta of
+`1,329,247`, leaving `433,861,949` with zero breach or reservation overage.
+No formal research/execution/report path, Chrome handoff, positive 2, or
+controlled fault exists.
+
+r34 and all of its roots, effects, artifacts, tasks, browser state, bundle, and
+decision are permanently non-reusable. The bounded correction does not retry
+the transient CD-HIT failure and does not constrain strategy inside an agent
+turn. It correctionally fixes the cutover launch/runtime/evidence contract to
+exactly one durable signal per drain and rejects any other pinned value. The
+driver therefore inspects durable operation, task, and sandbox terminal state
+before it can claim a queued master wakeup. The next campaign requires a fresh
+clean commit, a new config digest carrying `max_signals_per_drain=1`, and wholly
+fresh roots without adopting r34 effects.
+
 Attempt evidence collection is still file-by-file and therefore does not yet
 provide transaction-wide atomicity or prove exact equality between every file
 under a final artifact root and the declared bundle inventory. The larger
@@ -1360,7 +1410,7 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover pin \
   --browser-observation-submission-timeout-seconds 180 \
   --timeout-seconds 7200 \
   --max-drains 120 \
-  --max-signals-per-drain 10 \
+  --max-signals-per-drain 1 \
   --max-steps-per-agent 16
 ```
 
@@ -1609,7 +1659,7 @@ uv --project apps/openzyme-host-api run openzyme-aox-cutover run-live \
   --browser-observation-submission-timeout-seconds 180 \
   --timeout-seconds 7200 \
   --max-drains 120 \
-  --max-signals-per-drain 10 \
+  --max-signals-per-drain 1 \
   --max-steps-per-agent 16 \
   --browser-observation-receipt \
     /tmp/openzyme-aox-browser-handoff/<campaign-id>.json
@@ -1620,7 +1670,13 @@ controlled-fault attempt, uses a same-process loopback HTTP Host.  The current
 product drain remains synchronous while a supervised sandbox waits for an
 approval, so the cutover driver keeps at most one bounded drain request in
 flight and uses the public workspace/approval routes concurrently until that
-request returns before a later sequential drain may begin. It auto-resolves
+request returns before a later sequential drain may begin. Cutover pins
+`max_signals_per_drain=1`: each response is followed by a durable
+operation/task/sandbox terminal-state check before another signal may be
+claimed. Multiple approvals emitted serially inside that one agent turn remain
+coordinated by the same in-flight drain. A failed turn may leave a master
+wakeup queued as evidence, but the driver must stop and must not let that
+wakeup create a replacement task or operation. It auto-resolves
 probe and non-Chrome approvals, keeps positive 1's first formal approval
 exclusively for the browser, and continues coordinating any later serial
 approvals from that same drain. A coordination failure rejects every

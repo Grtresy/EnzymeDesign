@@ -65,7 +65,7 @@ def _pin_args(tmp_path: Path):
             "--max-drains",
             "121",
             "--max-signals-per-drain",
-            "11",
+            "1",
             "--max-steps-per-agent",
             "17",
         ]
@@ -208,7 +208,7 @@ def test_pin_uses_same_driver_bounds_and_writes_safe_no_replace_json(
     assert driver.browser_observation_submission_timeout_seconds == 181.0
     assert driver.timeout_seconds == 7201.0
     assert driver.max_drains == 121
-    assert driver.max_signals_per_drain == 11
+    assert driver.max_signals_per_drain == 1
     assert driver.max_steps_per_agent == 17
     assert json.loads(args.identity_output.read_text(encoding="utf-8")) == identity
     assert (

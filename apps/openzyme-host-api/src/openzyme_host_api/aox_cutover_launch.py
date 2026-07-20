@@ -37,6 +37,7 @@ from .aox_cutover_runtime_config import (
     AOX_BLANK_WORLD_RUNTIME_CONFIG_SCHEMA_ID,
 )
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_MIN_ATTEMPT_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .aox_cutover_runtime_config import AoxRuntimeConfigSchemaError
@@ -131,7 +132,7 @@ class AoxCutoverDriverConfig:
     approval_mode: Literal["auto", "chrome-once"] = "auto"
     timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
     max_drains: int = 120
-    max_signals_per_drain: int = 10
+    max_signals_per_drain: int = AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
     max_steps_per_agent: int = 16
     browser_poll_interval_seconds: float = 0.5
     browser_approval_timeout_seconds: float = 300.0
@@ -669,6 +670,17 @@ def _validate_driver(driver: AoxCutoverDriverConfig) -> None:
             "aox_launch_driver_bounds_invalid",
             "AOX cutover driver bounds must be positive and finite",
             details={"fields": invalid},
+        )
+    if driver.max_signals_per_drain != AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN:
+        raise AoxCutoverLaunchError(
+            "aox_launch_signal_fence_invalid",
+            "AOX cutover must inspect durable state after every single runtime signal",
+            details={
+                "expected_max_signals_per_drain": (
+                    AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
+                ),
+                "observed_max_signals_per_drain": driver.max_signals_per_drain,
+            },
         )
 
     hmmer_poll_timeout_seconds = float(

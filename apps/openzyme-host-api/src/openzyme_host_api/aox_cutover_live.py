@@ -58,6 +58,7 @@ from .aox_cutover_evidence import sandbox_calculation_digest
 from .aox_cutover_evidence import seal_source_tree_envelope
 from .aox_cutover_evidence import typed_empty_artifact_validation_receipt
 from .aox_cutover_runtime_config import AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
+from .aox_cutover_runtime_config import AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
 from .aox_cutover_runtime_config import AOX_CUTOVER_SANDBOX_EXEC_TIMEOUT_SECONDS
 from .app import HostApiDependencies
 from .app import create_app
@@ -1312,7 +1313,7 @@ class LiveAoxAttemptRunner:
     approval_mode: Literal["auto", "chrome-once"] = "auto"
     timeout_seconds: float = AOX_CUTOVER_DEFAULT_ATTEMPT_TIMEOUT_SECONDS
     max_drains: int = 120
-    max_signals_per_drain: int = 10
+    max_signals_per_drain: int = AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
     max_steps_per_agent: int = 16
     browser_poll_interval_seconds: float = 0.5
     browser_approval_timeout_seconds: float = 300.0
@@ -1331,6 +1332,17 @@ class LiveAoxAttemptRunner:
             or self.browser_observation_submission_timeout_seconds <= 0
         ):
             raise ValueError("live attempt timeout and max_drains must be positive")
+        if self.max_signals_per_drain != AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN:
+            raise LiveProductPathError(
+                "cutover_runtime_signal_fence_invalid",
+                "live cutover must return to the driver after every runtime signal",
+                details={
+                    "expected_max_signals_per_drain": (
+                        AOX_CUTOVER_MAX_SIGNALS_PER_DRAIN
+                    ),
+                    "observed_max_signals_per_drain": self.max_signals_per_drain,
+                },
+            )
         if (
             self.approval_mode == "chrome-once"
             and not (self.ui_dist_dir / "index.html").is_file()
