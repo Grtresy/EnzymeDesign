@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from dataclasses import replace
 import hashlib
 import json
+import os
+from pathlib import Path
+from pathlib import PurePosixPath
+import stat
 from typing import Any
+from typing import NoReturn
 
 from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import ControlledOperationResultArtifactRef
@@ -46,9 +51,7 @@ _RUNNER_SUCCESS_STATUSES = frozenset({"completed", "succeeded", "success"})
 _RUNNER_ACTIVE_STATUSES = frozenset(
     {"submitted", "queued", "pending", "running", "in_progress"}
 )
-_RUNNER_TERMINAL_FAILURE_STATUSES = frozenset(
-    {"failed", "cancelled", "canceled"}
-)
+_RUNNER_TERMINAL_FAILURE_STATUSES = frozenset({"failed", "cancelled", "canceled"})
 _PROVEN_PRE_EFFECT_PROVIDER_STAGES = frozenset(
     {
         "adapter_input_validation",
@@ -59,11 +62,45 @@ _PROVEN_PRE_EFFECT_PROVIDER_STAGES = frozenset(
         "bio_input_validation",
     }
 )
-
-
-RepositoryScopeFactory = Callable[
-    [], AbstractContextManager[CoreRepositories]
-]
+_S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
+_PROVIDER_TRANSCRIPT_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024
+_PROVIDER_BOUNDED_SUMMARY_MAX_BYTES = 1536 * 1024
+_PROVIDER_REQUEST_KEYS = frozenset(
+    {
+        "approval_requirement",
+        "input_artifact_ids",
+        "operation_digest",
+        "operation_id",
+        "output_dir",
+        "params",
+        "preprocess_artifact_ids",
+        "provider_config_digest",
+        "provider_request_id",
+        "requested_at",
+        "route_policy_id",
+        "runtime_packaging_id",
+        "sdk_method",
+        "selected_backend",
+        "source_code_artifact_id",
+        "source_code_digest",
+    }
+)
+_PROVIDER_OBSERVATION_KEYS = frozenset(
+    {
+        "api_version",
+        "canonical_error",
+        "observation",
+        "output_dir",
+        "provider",
+        "provider_config_digest",
+        "provider_request_id",
+        "route_policy_id",
+        "status",
+        "summary",
+        "warnings",
+    }
+)
+RepositoryScopeFactory = Callable[[], AbstractContextManager[CoreRepositories]]
 EngineRegistryFactory = Callable[[CoreRepositories], Any]
 
 
@@ -112,9 +149,7 @@ class HostProviderControlledOperationRouteAdapter:
             "request_digest": request.request_digest,
         }
         digest = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:24]
         return f"provider_req_{digest}"
 
@@ -136,9 +171,7 @@ class HostProviderControlledOperationRouteAdapter:
                         error_code="durable_operation_missing",
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                     )
-                engine = self.engine_registry_factory(repositories).require(
-                    "execution"
-                )
+                engine = self.engine_registry_factory(repositories).require("execution")
                 if not callable(
                     getattr(engine, "execute_sandbox_adapter_operation", None)
                 ):
@@ -147,9 +180,7 @@ class HostProviderControlledOperationRouteAdapter:
                         effect_certainty=ExternalEffectCertainty.NO_EFFECT,
                     )
                 envelope = dict(request.request_envelope)
-                envelope["_durable_backend_handle_ref"] = (
-                    execution.backend_handle_ref
-                )
+                envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
                 with repositories.controlled_operation_write_fence(execution):
                     raw_result = ExecutionEngineSandboxHostGateway(
                         engine
@@ -223,14 +254,11 @@ class HostProviderControlledOperationRouteAdapter:
             )
             if not records:
                 return None
-            relative_paths = {record.relative_path for record in records}
-            has_observation = any(
-                path.endswith("provider_observation.json")
-                for path in relative_paths
-            )
-            has_error = any(
-                path.endswith("provider_error.json") for path in relative_paths
-            )
+            relative_names = {
+                PurePosixPath(str(record.relative_path)).name for record in records
+            }
+            has_observation = "provider_observation.json" in relative_names
+            has_error = "provider_error.json" in relative_names
             if has_error and has_observation:
                 return self._terminal_failure(
                     error_code="durable_provider_terminal_failure",
@@ -238,17 +266,424 @@ class HostProviderControlledOperationRouteAdapter:
                 )
             if not has_observation:
                 return None
-            return self._materialized_from_records(
-                execution=execution,
-                records=records,
-                bounded_summary={
-                    "status": "recovered",
-                    "artifact_count": len(records),
-                    "registered_artifact_ids": [
-                        record.artifact_id for record in records
-                    ],
-                },
+            operation = repositories.controlled_operations.get(execution.operation_id)
+            if operation is None:
+                return self._terminal_failure(
+                    error_code="durable_operation_missing",
+                    effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                )
+            try:
+                adapter_result = self._recover_provider_adapter_result(
+                    execution=execution,
+                    operation=operation,
+                    records=records,
+                )
+                return self._materialized_from_records(
+                    execution=execution,
+                    operation=operation,
+                    records=records,
+                    bounded_summary=dict(adapter_result["bounded_summary"]),
+                    adapter_result=adapter_result,
+                )
+            except PipelineSdkFailure as exc:
+                return self._terminal_failure(
+                    error_code=exc.error_type,
+                    effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                )
+
+    def _recover_provider_adapter_result(
+        self,
+        *,
+        execution: ControlledOperationExecution,
+        operation: Any,
+        records: tuple[Any, ...],
+    ) -> dict[str, Any]:
+        ordered_records = tuple(
+            sorted(
+                records,
+                key=lambda record: (
+                    str(getattr(record, "created_at", "")),
+                    str(record.artifact_id),
+                ),
             )
+        )
+        records_by_name: dict[str, Any] = {}
+        seen_paths: set[str] = set()
+        for record in ordered_records:
+            relative_path = str(record.relative_path)
+            parsed_path = PurePosixPath(relative_path)
+            if (
+                parsed_path.is_absolute()
+                or not relative_path
+                or any(part in {"", ".", ".."} for part in parsed_path.parts)
+                or relative_path in seen_paths
+            ):
+                self._provider_result_failure(
+                    error_type="durable_provider_artifact_set_invalid",
+                    message="Durable provider artifact paths are not a unique relative set.",
+                )
+            seen_paths.add(relative_path)
+            if parsed_path.name in {
+                "provider_request.json",
+                "provider_observation.json",
+            }:
+                if parsed_path.name in records_by_name:
+                    self._provider_result_failure(
+                        error_type="durable_provider_artifact_set_invalid",
+                        message="Durable provider transcript contains duplicate control documents.",
+                    )
+                records_by_name[parsed_path.name] = record
+        request_record = records_by_name.get("provider_request.json")
+        observation_record = records_by_name.get("provider_observation.json")
+        if request_record is None or observation_record is None:
+            self._provider_result_failure(
+                error_type="durable_provider_artifact_set_incomplete",
+                message="Durable provider transcript is missing a required control document.",
+            )
+        request_document = self._read_verified_provider_document(
+            request_record,
+            document_name="provider_request.json",
+        )
+        observation_document = self._read_verified_provider_document(
+            observation_record,
+            document_name="provider_observation.json",
+        )
+        if frozenset(request_document) != _PROVIDER_REQUEST_KEYS:
+            self._provider_result_failure(
+                error_type="durable_provider_request_schema_drift",
+                message="Persisted provider request schema does not match the frozen contract.",
+            )
+        if frozenset(observation_document) != _PROVIDER_OBSERVATION_KEYS:
+            self._provider_result_failure(
+                error_type="durable_provider_observation_schema_drift",
+                message="Persisted provider observation schema does not match the frozen contract.",
+            )
+        route_policy = S12_ROUTE_POLICIES.get(execution.route_policy_id)
+        if route_policy is None:
+            self._provider_result_failure(
+                error_type="durable_provider_route_identity_invalid",
+                message="Durable provider route identity is not registered.",
+            )
+        expected_provider = observation_document.get("provider")
+        if (
+            not isinstance(expected_provider, str)
+            or not expected_provider
+            or expected_provider.strip() != expected_provider
+        ):
+            self._provider_result_failure(
+                error_type="durable_provider_route_identity_invalid",
+                message="Durable provider observation has no canonical provider identity.",
+            )
+        expected_sdk_method = (
+            f"{route_policy.get('sdk_module')}.{route_policy.get('function_name')}"
+        )
+        expected_provider_config_digest = str(
+            route_policy.get("provider_config_digest") or ""
+        )
+        expected_runtime_packaging_id = str(
+            route_policy.get("runtime_packaging_id") or ""
+        )
+        identity_checks = (
+            request_document.get("provider_request_id") == execution.backend_handle_ref,
+            observation_document.get("provider_request_id")
+            == execution.backend_handle_ref,
+            request_document.get("operation_id") == execution.operation_id,
+            request_document.get("operation_digest") == execution.operation_digest,
+            request_document.get("route_policy_id") == execution.route_policy_id,
+            observation_document.get("route_policy_id") == execution.route_policy_id,
+            request_document.get("provider_config_digest")
+            == expected_provider_config_digest,
+            observation_document.get("provider_config_digest")
+            == expected_provider_config_digest,
+            request_document.get("runtime_packaging_id")
+            == expected_runtime_packaging_id,
+            request_document.get("selected_backend") == "provider_http",
+            request_document.get("sdk_method") == expected_sdk_method,
+            getattr(operation, "operation_id", None) == execution.operation_id,
+            getattr(operation, "operation_digest", None) == execution.operation_digest,
+            getattr(operation, "route_policy_id", None) == execution.route_policy_id,
+        )
+        if not all(identity_checks):
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_identity_drift",
+                message="Persisted provider transcript identity drifted from its durable execution.",
+            )
+        output_dir = request_document.get("output_dir")
+        if (
+            not isinstance(output_dir, str)
+            or not output_dir.startswith("/workspace/output/")
+            or observation_document.get("output_dir") != output_dir
+        ):
+            self._provider_result_failure(
+                error_type="durable_provider_output_identity_invalid",
+                message="Persisted provider transcript has an invalid output identity.",
+            )
+        output_dir_relative = output_dir.removeprefix("/workspace/output/")
+        output_path = PurePosixPath(output_dir_relative)
+        if (
+            not output_dir_relative
+            or output_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in output_path.parts)
+        ):
+            self._provider_result_failure(
+                error_type="durable_provider_output_identity_invalid",
+                message="Persisted provider output directory is not canonical.",
+            )
+        for record in ordered_records:
+            metadata = dict(record.metadata or {})
+            relative_path = PurePosixPath(str(record.relative_path))
+            content_digest = str(metadata.get("content_digest") or "")
+            sealed_digest = str(metadata.get("sealed_digest") or "")
+            if not relative_path.is_relative_to(output_path):
+                self._provider_result_failure(
+                    error_type="durable_provider_artifact_identity_drift",
+                    message="Persisted provider artifact escaped its frozen output directory.",
+                )
+            metadata_checks = (
+                metadata.get("producer") == "host_supervised_bio_provider",
+                metadata.get("controlled_operation_id") == execution.operation_id,
+                metadata.get("provider_request_id") == execution.backend_handle_ref,
+                metadata.get("route_policy_id") == execution.route_policy_id,
+                metadata.get("selected_backend") == "provider_http",
+                metadata.get("runtime_packaging_id") == expected_runtime_packaging_id,
+                metadata.get("provider_config_digest")
+                == expected_provider_config_digest,
+                metadata.get("provider") == expected_provider,
+                metadata.get("sdk_method") == expected_sdk_method,
+                metadata.get("output_dir") == output_dir,
+                self._is_sha256_digest(content_digest),
+                sealed_digest == content_digest,
+            )
+            if not all(metadata_checks):
+                self._provider_result_failure(
+                    error_type="durable_provider_artifact_identity_drift",
+                    message="Persisted provider artifact metadata drifted from its durable execution.",
+                )
+        if (
+            observation_document.get("status") != "completed"
+            or observation_document.get("canonical_error") is not None
+            or not isinstance(observation_document.get("summary"), dict)
+            or not isinstance(observation_document.get("observation"), dict)
+            or not isinstance(observation_document.get("warnings"), list)
+        ):
+            self._provider_result_failure(
+                error_type="durable_provider_observation_invalid",
+                message="Persisted provider observation is not a complete success result.",
+            )
+        transcript_manifest = {
+            "provider_request_id": execution.backend_handle_ref,
+            "route_policy_id": execution.route_policy_id,
+            "provider_config_digest": expected_provider_config_digest,
+            "output_dir": output_dir,
+            "files": [
+                {
+                    "artifact_id": record.artifact_id,
+                    "relative_path": record.relative_path,
+                    "content_digest": dict(record.metadata or {}).get("content_digest"),
+                    "kind": record.kind.value,
+                    "format": dict(record.metadata or {}).get("format"),
+                }
+                for record in ordered_records
+            ],
+        }
+        bounded_summary = {
+            **dict(observation_document["summary"]),
+            "transcript_manifest": transcript_manifest,
+        }
+        if expected_sdk_method == "rcsb_pdb.download_structure":
+            primary_artifacts = self._recovered_primary_artifact_manifests(
+                ordered_records
+            )
+            if primary_artifacts:
+                bounded_summary["artifacts"] = primary_artifacts
+        summary_size = len(self._canonical_json_bytes(bounded_summary))
+        if summary_size > _PROVIDER_BOUNDED_SUMMARY_MAX_BYTES:
+            self._provider_result_failure(
+                error_type="durable_provider_bounded_summary_too_large",
+                message="Persisted provider summary exceeds the bounded response contract.",
+            )
+        return {
+            "status": "succeeded",
+            "provider_request_id": execution.backend_handle_ref,
+            "registered_artifact_ids": [
+                record.artifact_id for record in ordered_records
+            ],
+            "output_artifact_ids": [record.artifact_id for record in ordered_records],
+            "validation_results": {
+                record.artifact_id: dict(
+                    dict(record.metadata or {}).get("validation") or {}
+                )
+                for record in ordered_records
+            },
+            "bounded_summary": bounded_summary,
+            "warnings": list(observation_document["warnings"]),
+            "safe_diagnostics_ref": (
+                f"artifact://{execution.backend_handle_ref}/provider_observation.json"
+            ),
+        }
+
+    def _read_verified_provider_document(
+        self,
+        record: Any,
+        *,
+        document_name: str,
+    ) -> dict[str, Any]:
+        metadata = dict(record.metadata or {})
+        content_digest = str(metadata.get("content_digest") or "")
+        sealed_digest = str(metadata.get("sealed_digest") or "")
+        if (
+            not self._is_sha256_digest(content_digest)
+            or sealed_digest != content_digest
+        ):
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_digest_invalid",
+                message="Persisted provider transcript has no exact sealed digest.",
+            )
+        storage_path = Path(str(getattr(record, "storage_uri", "") or ""))
+        try:
+            descriptor = os.open(
+                storage_path,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+        except OSError:
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_unavailable",
+                message="Persisted provider transcript bytes are unavailable.",
+            )
+        try:
+            with os.fdopen(descriptor, "rb", closefd=True) as stream:
+                file_stat = os.fstat(stream.fileno())
+                size_bytes = file_stat.st_size
+                if (
+                    not stat.S_ISREG(file_stat.st_mode)
+                    or size_bytes <= 0
+                    or size_bytes > _PROVIDER_TRANSCRIPT_DOCUMENT_MAX_BYTES
+                ):
+                    self._provider_result_failure(
+                        error_type="durable_provider_transcript_size_invalid",
+                        message="Persisted provider transcript is not a bounded regular file.",
+                    )
+                payload = stream.read(_PROVIDER_TRANSCRIPT_DOCUMENT_MAX_BYTES + 1)
+        except OSError:
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_unavailable",
+                message="Persisted provider transcript bytes could not be read.",
+            )
+        if len(payload) != size_bytes:
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_size_invalid",
+                message="Persisted provider transcript changed while being read.",
+            )
+        actual_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        if actual_digest != content_digest:
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_digest_mismatch",
+                message="Persisted provider transcript bytes do not match the catalog digest.",
+            )
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            seen: set[str] = set()
+            for key, value in pairs:
+                if key in seen:
+                    raise ValueError("duplicate JSON object key")
+                seen.add(key)
+                result[key] = value
+            return result
+
+        def reject_constant(value: str) -> Any:
+            raise ValueError(f"non-finite JSON constant: {value}")
+
+        try:
+            parsed = json.loads(
+                payload.decode("utf-8"),
+                object_pairs_hook=unique_object,
+                parse_constant=reject_constant,
+            )
+        except (UnicodeDecodeError, ValueError):
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_json_invalid",
+                message=f"Persisted {document_name} is not strict JSON.",
+            )
+        if not isinstance(parsed, dict):
+            self._provider_result_failure(
+                error_type="durable_provider_transcript_json_invalid",
+                message=f"Persisted {document_name} is not a JSON object.",
+            )
+        return parsed
+
+    @staticmethod
+    def _recovered_primary_artifact_manifests(
+        records: tuple[Any, ...],
+    ) -> list[dict[str, Any]]:
+        manifests: list[dict[str, Any]] = []
+        for record in records:
+            metadata = dict(record.metadata or {})
+            if metadata.get("primary_output") is not True:
+                continue
+            provenance = (
+                metadata.get("provider_provenance") or metadata.get("provenance") or {}
+            )
+            manifests.append(
+                {
+                    "artifact_id": record.artifact_id,
+                    "kind": record.kind.value,
+                    "relative_path": record.relative_path,
+                    "format": metadata.get("format"),
+                    "provider": metadata.get("provider"),
+                    "external_id": metadata.get("external_id"),
+                    "source_locator": metadata.get("source_locator"),
+                    "content_digest": metadata.get("content_digest"),
+                    "sealed_digest": metadata.get("sealed_digest"),
+                    "provenance": provenance,
+                    "metadata": {
+                        "provider": metadata.get("provider"),
+                        "external_id": metadata.get("external_id"),
+                        "format": metadata.get("format"),
+                        "source_locator": metadata.get("source_locator"),
+                        "content_digest": metadata.get("content_digest"),
+                        "sealed_digest": metadata.get("sealed_digest"),
+                        "provenance": provenance,
+                    },
+                }
+            )
+        return manifests
+
+    @staticmethod
+    def _canonical_json_bytes(value: Any) -> bytes:
+        try:
+            return json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise PipelineSdkFailure(
+                error_type="durable_provider_result_json_invalid",
+                message="Durable provider result is not canonical JSON.",
+                hint="Preserve the transcript and reject result publication.",
+                stage="provider_result_validation",
+                retryable=False,
+            ) from exc
+
+    @staticmethod
+    def _is_sha256_digest(value: str) -> bool:
+        return (
+            len(value) == 71
+            and value.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in value[7:])
+        )
+
+    @staticmethod
+    def _provider_result_failure(*, error_type: str, message: str) -> NoReturn:
+        raise PipelineSdkFailure(
+            error_type=error_type,
+            message=message,
+            hint="Preserve the sealed transcript and reject result publication.",
+            stage="provider_result_validation",
+            retryable=False,
+        )
 
     def _materialized_from_callback(
         self,
@@ -274,14 +709,44 @@ class HostProviderControlledOperationRouteAdapter:
                 stage="provider_result_validation",
                 retryable=False,
             )
-        artifact_ids = tuple(
-            str(value)
-            for value in list(
-                adapter_result.get("output_artifact_ids")
-                or adapter_result.get("registered_artifact_ids")
-                or []
+        operation = repositories.controlled_operations.get(execution.operation_id)
+        if operation is None:
+            raise PipelineSdkFailure(
+                error_type="durable_operation_missing",
+                message="Durable provider operation disappeared before materialization.",
+                hint="Preserve the execution for exact reconciliation.",
+                stage="provider_result_validation",
+                retryable=False,
             )
+        registered_artifact_ids = tuple(
+            str(value)
+            for value in list(adapter_result.get("registered_artifact_ids") or [])
         )
+        output_artifact_ids = tuple(
+            str(value)
+            for value in list(adapter_result.get("output_artifact_ids") or [])
+        )
+        if (
+            not registered_artifact_ids
+            or registered_artifact_ids != output_artifact_ids
+            or len(set(registered_artifact_ids)) != len(registered_artifact_ids)
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_artifact_set_incomplete",
+                message="Durable provider output artifact identities are incomplete or drifted.",
+                hint="Do not publish a partial result; preserve it for reconciliation.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        if adapter_result.get("provider_request_id") != execution.backend_handle_ref:
+            raise PipelineSdkFailure(
+                error_type="durable_provider_transcript_identity_drift",
+                message="Durable provider callback request identity drifted.",
+                hint="Preserve the execution for exact reconciliation.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        artifact_ids = output_artifact_ids
         records = tuple(
             record
             for artifact_id in artifact_ids
@@ -295,15 +760,25 @@ class HostProviderControlledOperationRouteAdapter:
                 stage="provider_result_validation",
                 retryable=False,
             )
-        bounded_summary = raw_result.get("result_summary") or adapter_result.get(
-            "bounded_summary"
-        )
+        result_summary = raw_result.get("result_summary")
+        adapter_bounded_summary = adapter_result.get("bounded_summary")
+        if (
+            not isinstance(result_summary, dict)
+            or not isinstance(adapter_bounded_summary, dict)
+            or result_summary != adapter_bounded_summary
+        ):
+            raise PipelineSdkFailure(
+                error_type="provider_result_summary_drift",
+                message="Durable provider callback returned inconsistent bounded summaries.",
+                hint="Do not publish a result with ambiguous wire identity.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
         return self._materialized_from_records(
             execution=execution,
+            operation=operation,
             records=records,
-            bounded_summary=(
-                dict(bounded_summary) if isinstance(bounded_summary, dict) else {}
-            ),
+            bounded_summary=dict(result_summary),
             adapter_result=adapter_result,
         )
 
@@ -311,6 +786,7 @@ class HostProviderControlledOperationRouteAdapter:
         self,
         *,
         execution: ControlledOperationExecution,
+        operation: Any,
         records: tuple[Any, ...],
         bounded_summary: dict[str, Any],
         adapter_result: dict[str, Any] | None = None,
@@ -324,7 +800,7 @@ class HostProviderControlledOperationRouteAdapter:
                 or metadata.get("tree_digest")
                 or ""
             )
-            if not digest.startswith("sha256:") or len(digest) != 71:
+            if not self._is_sha256_digest(digest):
                 raise PipelineSdkFailure(
                     error_type="provider_artifact_digest_missing",
                     message="Durable provider artifact has no exact catalog digest.",
@@ -341,18 +817,81 @@ class HostProviderControlledOperationRouteAdapter:
                 )
             )
         immutable_refs = tuple(artifact_refs)
-        artifact_set_digest = controlled_operation_artifact_set_digest(
-            immutable_refs
+        artifact_set_digest = controlled_operation_artifact_set_digest(immutable_refs)
+        if (
+            getattr(operation, "operation_id", None) != execution.operation_id
+            or getattr(operation, "operation_digest", None)
+            != execution.operation_digest
+            or not getattr(operation, "sandbox_run_id", None)
+            or getattr(operation, "adapter_envelope_schema_version", None)
+            != _S12_ADAPTER_ENVELOPE_SCHEMA
+        ):
+            raise PipelineSdkFailure(
+                error_type="durable_provider_operation_identity_drift",
+                message="Durable provider operation identity drifted before result materialization.",
+                hint="Preserve the execution and reject result publication.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        canonical_adapter_result = {} if adapter_result is None else adapter_result
+        adapter_registered_ids = tuple(
+            str(value)
+            for value in list(
+                canonical_adapter_result.get("registered_artifact_ids") or []
+            )
         )
+        adapter_output_ids = tuple(
+            str(value)
+            for value in list(canonical_adapter_result.get("output_artifact_ids") or [])
+        )
+        immutable_artifact_ids = tuple(ref.artifact_id for ref in immutable_refs)
+        validation_results = canonical_adapter_result.get("validation_results")
+        warnings = canonical_adapter_result.get("warnings")
+        safe_diagnostics_ref = canonical_adapter_result.get("safe_diagnostics_ref")
+        if (
+            str(canonical_adapter_result.get("status") or "").lower()
+            not in _RUNNER_SUCCESS_STATUSES
+            or canonical_adapter_result.get("provider_request_id")
+            != execution.backend_handle_ref
+            or sorted(adapter_registered_ids) != sorted(immutable_artifact_ids)
+            or sorted(adapter_output_ids) != sorted(immutable_artifact_ids)
+            or not isinstance(validation_results, dict)
+            or not isinstance(warnings, list)
+            or not isinstance(safe_diagnostics_ref, str)
+        ):
+            raise PipelineSdkFailure(
+                error_type="durable_provider_adapter_result_invalid",
+                message="Durable provider adapter result is incomplete or identity-drifted.",
+                hint="Preserve the execution and reject result publication.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        summary_size = len(self._canonical_json_bytes(bounded_summary))
+        if summary_size > _PROVIDER_BOUNDED_SUMMARY_MAX_BYTES:
+            raise PipelineSdkFailure(
+                error_type="durable_provider_bounded_summary_too_large",
+                message="Durable provider summary exceeds the bounded response contract.",
+                hint="Keep complete data in sealed artifacts and bound the inline summary.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
         raw_envelope = {
+            "adapter_envelope_schema_version": _S12_ADAPTER_ENVELOPE_SCHEMA,
+            "operation_id": execution.operation_id,
+            "operation_digest": execution.operation_digest,
+            "sandbox_run_id": getattr(operation, "sandbox_run_id", None),
             "status": "succeeded",
             "result_origin": "host_s12_durable_provider",
+            "backend_run_id": None,
+            "provider_request_id": execution.backend_handle_ref,
+            "fetch_refs": [],
             "registered_artifact_ids": [ref.artifact_id for ref in immutable_refs],
             "output_artifact_ids": [ref.artifact_id for ref in immutable_refs],
+            "validation_results": dict(validation_results),
             "bounded_summary": bounded_summary,
-            "warnings": []
-            if adapter_result is None
-            else list(adapter_result.get("warnings") or []),
+            "warnings": list(warnings),
+            "error": None,
+            "safe_diagnostics_ref": safe_diagnostics_ref,
         }
         safe_envelope = sanitize_public_diagnostic_payload(raw_envelope)
         if not isinstance(safe_envelope, dict):
@@ -371,9 +910,7 @@ class HostProviderControlledOperationRouteAdapter:
             backend_handle_ref=execution.backend_handle_ref,
             safe_receipt_digest=receipt_digest,
             safe_summary="Provider result and artifact set verified.",
-            terminal_outcome=(
-                ControlledOperationExecutionTerminalOutcome.SUCCEEDED
-            ),
+            terminal_outcome=(ControlledOperationExecutionTerminalOutcome.SUCCEEDED),
             materialized_result=DurableRouteMaterializedResult(
                 bounded_result_envelope=safe_envelope,
                 artifact_set_digest=artifact_set_digest,
@@ -390,9 +927,7 @@ class HostProviderControlledOperationRouteAdapter:
     ) -> tuple[Any, ...]:
         return tuple(
             record
-            for record in repositories.artifacts.list_by_session(
-                execution.session_id
-            )
+            for record in repositories.artifacts.list_by_session(execution.session_id)
             if dict(record.metadata or {}).get("controlled_operation_id")
             == execution.operation_id
             and dict(record.metadata or {}).get("provider_request_id")
@@ -497,10 +1032,8 @@ class HostHpcControlledOperationRouteAdapter:
         if not isinstance(reservation, dict):
             raise ValueError("HPC runner returned an invalid reservation")
         run_id = str(reservation.get("run_id") or "")
-        if (
-            not run_id
-            or str(reservation.get("identity_digest") or "")
-            != self._digest(identity)
+        if not run_id or str(reservation.get("identity_digest") or "") != self._digest(
+            identity
         ):
             raise ValueError("HPC runner reservation identity drift")
         return run_id
@@ -516,9 +1049,7 @@ class HostHpcControlledOperationRouteAdapter:
                 return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
-                engine = self.engine_registry_factory(repositories).require(
-                    "execution"
-                )
+                engine = self.engine_registry_factory(repositories).require("execution")
                 runner = self._runner_from_engine(engine)
                 observation = self._inspect_runner(runner, execution)
                 if str(getattr(observation, "status", "")) != "reserved":
@@ -541,9 +1072,7 @@ class HostHpcControlledOperationRouteAdapter:
                 envelope = dict(request.request_envelope)
                 envelope["_durable_backend_handle_ref"] = execution.backend_handle_ref
                 with repositories.controlled_operation_write_fence(execution):
-                    ExecutionEngineSandboxHostGateway(
-                        engine
-                    ).execute_adapter_operation(
+                    ExecutionEngineSandboxHostGateway(engine).execute_adapter_operation(
                         operation=operation,
                         envelope=envelope,
                         context=_durable_host_context(repositories, execution),
@@ -603,9 +1132,7 @@ class HostHpcControlledOperationRouteAdapter:
                 return local
             with self.repository_scope_factory() as repositories:
                 operation = self._require_operation(repositories, execution)
-                engine = self.engine_registry_factory(repositories).require(
-                    "execution"
-                )
+                engine = self.engine_registry_factory(repositories).require("execution")
                 runner = self._runner_from_engine(engine)
                 observation = self._inspect_runner(runner, execution)
                 return self._observation_from_runner(
@@ -846,9 +1373,7 @@ class HostHpcControlledOperationRouteAdapter:
             with self.repository_scope_factory() as scoped_repositories:
                 scoped_engine = self.engine_registry_factory(
                     scoped_repositories
-                ).require(
-                    "execution"
-                )
+                ).require("execution")
                 return self._local_observation(
                     execution,
                     repositories=scoped_repositories,
@@ -887,8 +1412,7 @@ class HostHpcControlledOperationRouteAdapter:
         if run.status is not RunStatus.SUCCEEDED:
             return None
         document_id = (
-            "hpc_pending_"
-            + hashlib.sha256(run.run_id.encode("utf-8")).hexdigest()[:24]
+            "hpc_pending_" + hashlib.sha256(run.run_id.encode("utf-8")).hexdigest()[:24]
         )
         document = repositories.engine_documents.get(document_id)
         if (
@@ -901,8 +1425,7 @@ class HostHpcControlledOperationRouteAdapter:
         pending = dict(document.payload)
         if (
             str(pending.get("run_id") or "") != run.run_id
-            or str(pending.get("runner_run_id") or "")
-            != execution.backend_handle_ref
+            or str(pending.get("runner_run_id") or "") != execution.backend_handle_ref
             or str(pending.get("hpc_workspace_id") or "")
             != str(operation.hpc_workspace_id or "")
             or pending.get("selected_backend") != "hpc"
@@ -1015,8 +1538,7 @@ class HostHpcControlledOperationRouteAdapter:
             or str(fetch_result.get("run_id") or "") != run.run_id
             or str(fetch_result.get("hpc_workspace_id") or "")
             != str(operation.hpc_workspace_id or "")
-            or str(fetch_result.get("operation_id") or "")
-            != execution.operation_id
+            or str(fetch_result.get("operation_id") or "") != execution.operation_id
             or str(fetch_result.get("operation_digest") or "")
             != execution.operation_digest
         ):
@@ -1043,8 +1565,7 @@ class HostHpcControlledOperationRouteAdapter:
             metadata = dict(record.metadata or {})
             if (
                 record.run_id != run.run_id
-                or metadata.get("controlled_operation_id")
-                != execution.operation_id
+                or metadata.get("controlled_operation_id") != execution.operation_id
                 or metadata.get("controlled_operation_digest")
                 != execution.operation_digest
                 or metadata.get("pipeline_invocation_id")
@@ -1061,9 +1582,7 @@ class HostHpcControlledOperationRouteAdapter:
             )
             if not artifact_digest.startswith("sha256:") or len(artifact_digest) != 71:
                 raise ValueError("Host HPC fetch artifact has no exact catalog digest")
-            observed_output_paths.add(
-                str(metadata.get("declared_output_path") or "")
-            )
+            observed_output_paths.add(str(metadata.get("declared_output_path") or ""))
             artifact_refs.append(
                 ControlledOperationResultArtifactRef(
                     artifact_id=record.artifact_id,
@@ -1087,9 +1606,7 @@ class HostHpcControlledOperationRouteAdapter:
             "hpc_workspace_id": operation.hpc_workspace_id,
             "declared_outputs": declared_outputs,
             "stage_refs": stage_refs,
-            "registered_artifact_ids": [
-                ref.artifact_id for ref in immutable_refs
-            ],
+            "registered_artifact_ids": [ref.artifact_id for ref in immutable_refs],
             "output_artifact_ids": [ref.artifact_id for ref in immutable_refs],
             "fetch_refs": list(fetch_result.get("fetch_refs") or []),
             "route_policy_id": operation.route_policy_id,
@@ -1102,9 +1619,7 @@ class HostHpcControlledOperationRouteAdapter:
         safe_envelope = sanitize_public_diagnostic_payload(envelope)
         if not isinstance(safe_envelope, dict):
             raise ValueError("Host HPC result projection is invalid")
-        artifact_set_digest = controlled_operation_artifact_set_digest(
-            immutable_refs
-        )
+        artifact_set_digest = controlled_operation_artifact_set_digest(immutable_refs)
         return DurableRouteObservation(
             kind=DurableRouteObservationKind.RESULT_MATERIALIZED,
             effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,

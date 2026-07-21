@@ -1004,9 +1004,50 @@ snapshot 才读取 workspace。workspace/artifact activity/capability branches �
   测试证明 process authority 不继承 turn/delivery lease。
 
 r41-r44 都说明真实调用在跨 owner 组合处发现了测试矩阵未覆盖的 seam；它们不推翻各自已通过
-的局部机制，也不能被解释为“只修测试就能得到 GO”。在 authority-handoff 与独立
-process-isolation change 完成全部 gate、operator 再次显式批准前，不启动 r45 或任何新编号
-campaign。
+的局部机制，也不能被解释为“只修测试就能得到 GO”。authority-handoff 与独立
+process-isolation change 随后完成全部 gate，operator 才在新 pin/root 上启动 r45；旧 attempt
+仍全部不可复用。
+
+## r45-r46：artifact-set 与 provider reconcile 纠正，全部永久 NO-GO
+
+r45 使用 commit `792d1c1` 与 fresh roots 启动 attempt
+`positive-d0aecafb68dc4b5db4ffcdb24d4de191`。真实 probe/provider/HPC 已推进到 CD-HIT
+multi-output fetch；run handle 与 fetch 都携带相同两个 artifact 成员，但顺序分别来自 declared
+output 与 canonical artifact-set ordering。旧比较把顺序误当身份，返回
+`durable_hpc_fetch_projection_drift`。这不是 runner 输出成员漂移，也不能把 r45 追认为成功。
+其 non-eligible bundle 离线验证通过，digest
+`sha256:521f366b695cca7bf722d0298eeb17c004ba1725726a7d87404123b3c47dc3a8`；decision digest
+`sha256:e2637cead771a5fab9a5f39c48d0c6f5c52d9604da90e85151d0eeae8d34d61f`，MICU 累计到
+`70,047,485 / 500,000,000`。后续纠正只把 artifact-id list 作为唯一成员集合规范化比较，仍对
+run、declared path、digest 或成员变化 fail closed。
+
+r46 使用 commit `0c1911784b9941f415a43638dc3e5555825df546`、config digest
+`sha256:caaccb44ae1d84d94c0b7bda2e5d7ad2461bf68ed0039d27f799296d56267376`
+与 fresh roots 启动 attempt `positive-387c72ff34da43dfaf60683820f26dfb`。known-positive probe
+exact six、formal PubMed、NCBI、MAFFT、hmmbuild 与 Chrome approval
+`appr_ba43fe15b520` / operation `op_28535057f25c` 均真实完成；EBI HMMER operation
+`op_223adc212478` 又真实完成 `82,719` hits、`83` pages，并封存 request/raw/parsed/observation
+四件 artifact。该长调用在 effect/artifact 完成后进入 durable reconciliation；旧
+`reconcile-from-records` 只生成 `status=recovered + artifact_count` 通用摘要，丢失
+`result_summary.transcript_manifest`，attached pipeline 因而以
+`provider_file_projection_invalid` fail closed。它不是 provider 或 HMM 科学失败，也不授权重发
+该 HMMER request。
+
+r46 non-eligible bundle digest 为
+`sha256:1553ddddff9a791b3069e529f83f28764d339738ba123f439328f0e5aa7b7638`，network-free
+verification 为 `issues=[]`；decision digest
+`sha256:3f39ca42e1273d3dcb92bff079165ae1d8f1a587ef34f1bce8734c85d1268d06`。
+MICU 累计到 `70,742,820 / 500,000,000`，remaining `429,257,180`，零 breach/overage。
+r46 及其 effect、roots、artifacts、Chrome receipt、bundle 与 decision 永久不可复用。
+
+局部 correction 让 provider reconciliation 从同一 operation/request 的 sealed
+`provider_request.json` 与 `provider_observation.json` 重建原 S12 result：实际 bytes digest、
+strict closed JSON schema、route/provider/config/output-dir 与 artifact metadata 全部精确核验，
+恢复原 summary、validation、warnings 与 transcript manifest；control document 限 `8 MiB`，
+inline summary 限 `1.5 MiB`。任一 tamper/schema/identity/size drift 以 terminal-known failure
+停止，且不 replay provider。对 r46 原 DB/artifact 的只读回放已恢复同一 HMMER request 的
+`82,719` candidates 与四件 transcript refs，但该回放只是修复验证，绝不使 r46 eligible。
+下一次 live 必须使用修复后的 clean commit/config pin 与全新 r47 roots。
 
 ## 当前实施状态的表述规则
 

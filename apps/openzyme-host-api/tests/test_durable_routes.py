@@ -6,6 +6,7 @@ from dataclasses import field
 from dataclasses import replace
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from openzyme_core import DurableRouteObservationKind
@@ -18,6 +19,7 @@ from openzyme_domain import ControlledOperationOwnerMode
 from openzyme_domain import ExternalEffectCertainty
 from openzyme_domain import RetryEligibility
 from openzyme_domain import RunStatus
+from openzyme_engines.execution import PipelineSdkFailure
 from openzyme_host_api.durable_routes import (
     HostHpcControlledOperationRouteAdapter,
 )
@@ -65,8 +67,13 @@ class _OperationRepository:
 @dataclass
 class _FakeExecutionEngine:
     artifacts: _ArtifactRepository
+    artifact_root: Path
     repositories: object | None = None
     sandbox_host_call_context_factory: object | None = None
+    lose_callback: bool = False
+    tamper_observation: bool = False
+    symlink_observation: bool = False
+    observation_extra: dict[str, object] = field(default_factory=dict)
     _state: dict[str, object] = field(
         default_factory=lambda: {"call_count": 0, "seen_handle": None}
     )
@@ -88,28 +95,173 @@ class _FakeExecutionEngine:
         assert self.sandbox_host_call_context_factory is None
         self._state["call_count"] = self.call_count + 1
         self._state["seen_handle"] = str(envelope["_durable_backend_handle_ref"])
-        artifact_id = "artifact_provider_result"
-        self.artifacts.records[artifact_id] = SimpleNamespace(
+        output_dir = "/workspace/output/provider/ncbi"
+        request_document = {
+            "approval_requirement": {"required": True},
+            "input_artifact_ids": [],
+            "operation_digest": operation.operation_digest,
+            "operation_id": operation.operation_id,
+            "output_dir": output_dir,
+            "params": {"accessions": ["P12345"]},
+            "preprocess_artifact_ids": [],
+            "provider_config_digest": "provider_config:ncbi:v1",
+            "provider_request_id": self.seen_handle,
+            "requested_at": "2026-07-21T00:00:01+00:00",
+            "route_policy_id": "bio.ncbi_fetch_proteins.provider:v1",
+            "runtime_packaging_id": "provider_http:v1",
+            "sdk_method": "bio.ncbi_fetch_proteins",
+            "selected_backend": "provider_http",
+            "source_code_artifact_id": None,
+            "source_code_digest": None,
+        }
+        summary = {"provider": "ncbi", "record_count": 1}
+        observation_document = {
+            "api_version": "fixture",
+            "canonical_error": None,
+            "observation": {"requests": []},
+            "output_dir": output_dir,
+            "provider": "ncbi",
+            "provider_config_digest": "provider_config:ncbi:v1",
+            "provider_request_id": self.seen_handle,
+            "route_policy_id": "bio.ncbi_fetch_proteins.provider:v1",
+            "status": "completed",
+            "summary": summary,
+            "warnings": [],
+            **self.observation_extra,
+        }
+        records = (
+            self._persist_artifact(
+                operation=operation,
+                artifact_id="artifact_provider_request",
+                relative_path="provider/ncbi/provider_request.json",
+                content=(json.dumps(request_document, sort_keys=True) + "\n").encode(),
+                kind=ArtifactKind.RESULT,
+                format_name="json",
+                created_at="2026-07-21T00:00:01+00:00",
+                transcript_file="provider_request.json",
+            ),
+            self._persist_artifact(
+                operation=operation,
+                artifact_id="artifact_provider_fasta",
+                relative_path="provider/ncbi/provider_parsed/proteins.fasta",
+                content=b">P12345\nMPEPTIDE\n",
+                kind=ArtifactKind.SEQUENCE,
+                format_name="fasta",
+                created_at="2026-07-21T00:00:02+00:00",
+            ),
+            self._persist_artifact(
+                operation=operation,
+                artifact_id="artifact_provider_observation",
+                relative_path="provider/ncbi/provider_observation.json",
+                content=(
+                    json.dumps(observation_document, sort_keys=True) + "\n"
+                ).encode(),
+                kind=ArtifactKind.RESULT,
+                format_name="json",
+                created_at="2026-07-21T00:00:03+00:00",
+                transcript_file="provider_observation.json",
+            ),
+        )
+        transcript_manifest = {
+            "provider_request_id": self.seen_handle,
+            "route_policy_id": "bio.ncbi_fetch_proteins.provider:v1",
+            "provider_config_digest": "provider_config:ncbi:v1",
+            "output_dir": output_dir,
+            "files": [
+                {
+                    "artifact_id": record.artifact_id,
+                    "relative_path": record.relative_path,
+                    "content_digest": record.metadata["content_digest"],
+                    "kind": record.kind.value,
+                    "format": record.metadata["format"],
+                }
+                for record in records
+            ],
+        }
+        bounded_summary = {
+            **summary,
+            "transcript_manifest": transcript_manifest,
+        }
+        adapter_result = {
+            "status": "succeeded",
+            "provider_request_id": self.seen_handle,
+            "registered_artifact_ids": [record.artifact_id for record in records],
+            "output_artifact_ids": [record.artifact_id for record in records],
+            "validation_results": {
+                record.artifact_id: record.metadata["validation"] for record in records
+            },
+            "bounded_summary": bounded_summary,
+            "warnings": [],
+            "safe_diagnostics_ref": (
+                f"artifact://{self.seen_handle}/provider_observation.json"
+            ),
+        }
+        if self.tamper_observation:
+            Path(records[-1].storage_uri).write_text("{}\n", encoding="utf-8")
+        if self.symlink_observation:
+            observation_path = Path(records[-1].storage_uri)
+            target_path = observation_path.with_name(observation_path.name + "-target")
+            target_path.write_bytes(observation_path.read_bytes())
+            observation_path.unlink()
+            observation_path.symlink_to(target_path)
+        if self.lose_callback:
+            raise PipelineSdkFailure(
+                error_type="simulated_provider_callback_loss",
+                message="simulated callback loss after provider artifacts persisted",
+                hint="reconcile the exact provider request",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        return {
+            "adapter_result": adapter_result,
+            "result_summary": bounded_summary,
+        }
+
+    def _persist_artifact(
+        self,
+        *,
+        operation: object,
+        artifact_id: str,
+        relative_path: str,
+        content: bytes,
+        kind: ArtifactKind,
+        format_name: str,
+        created_at: str,
+        transcript_file: str | None = None,
+    ) -> object:
+        storage_path = self.artifact_root / artifact_id
+        storage_path.parent.mkdir(parents=True, exist_ok=True)
+        storage_path.write_bytes(content)
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        metadata = {
+            "producer": "host_supervised_bio_provider",
+            "controlled_operation_id": operation.operation_id,
+            "provider_request_id": self.seen_handle,
+            "route_policy_id": "bio.ncbi_fetch_proteins.provider:v1",
+            "selected_backend": "provider_http",
+            "runtime_packaging_id": "provider_http:v1",
+            "provider_config_digest": "provider_config:ncbi:v1",
+            "provider": "ncbi",
+            "sdk_method": "bio.ncbi_fetch_proteins",
+            "output_dir": "/workspace/output/provider/ncbi",
+            "content_digest": digest,
+            "sealed_digest": digest,
+            "format": format_name,
+            "validation": {"format": format_name, "status": "passed"},
+        }
+        if transcript_file is not None:
+            metadata["transcript_file"] = transcript_file
+        record = SimpleNamespace(
             artifact_id=artifact_id,
             session_id=operation.session_id,
-            kind=ArtifactKind.RESULT,
-            relative_path="provider/provider_observation.json",
-            metadata={
-                "controlled_operation_id": operation.operation_id,
-                "provider_request_id": self.seen_handle,
-                "content_digest": "sha256:" + "a" * 64,
-            },
+            kind=kind,
+            relative_path=relative_path,
+            storage_uri=str(storage_path),
+            created_at=created_at,
+            metadata=metadata,
         )
-        return {
-            "adapter_result": {
-                "status": "succeeded",
-                "registered_artifact_ids": [artifact_id],
-                "output_artifact_ids": [artifact_id],
-                "bounded_summary": {"record_count": 1},
-                "warnings": [],
-            },
-            "result_summary": {"record_count": 1},
-        }
+        self.artifacts.records[artifact_id] = record
+        return record
 
 
 class _FakeEngineRegistry:
@@ -151,7 +303,9 @@ def _execution() -> ControlledOperationExecution:
     )
 
 
-def _request(execution: ControlledOperationExecution) -> ControlledOperationDispatchRequest:
+def _request(
+    execution: ControlledOperationExecution,
+) -> ControlledOperationDispatchRequest:
     envelope = {
         "schema_version": "s12.adapter_envelope.v1",
         "adapter_params": {"accessions": ["P12345"]},
@@ -171,11 +325,22 @@ def _request(execution: ControlledOperationExecution) -> ControlledOperationDisp
     )
 
 
-def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch() -> None:
+def _provider_route_fixture(
+    tmp_path: Path,
+    *,
+    lose_callback: bool = False,
+    tamper_observation: bool = False,
+    symlink_observation: bool = False,
+    observation_extra: dict[str, object] | None = None,
+):  # type: ignore[no-untyped-def]
     execution = _execution()
     operation = SimpleNamespace(
         operation_id=execution.operation_id,
+        operation_digest=execution.operation_digest,
         session_id=execution.session_id,
+        sandbox_run_id="sandbox_run_provider",
+        route_policy_id=execution.route_policy_id,
+        adapter_envelope_schema_version="s12.adapter_envelope.v1",
     )
     artifacts = _ArtifactRepository()
     repositories = _FakeRepositories(
@@ -184,8 +349,15 @@ def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch() -
     )
     engine = _FakeExecutionEngine(
         artifacts,
+        tmp_path / "provider-artifacts",
         repositories=repositories,
         sandbox_host_call_context_factory=object(),
+        lose_callback=lose_callback,
+        tamper_observation=tamper_observation,
+        symlink_observation=symlink_observation,
+        observation_extra=(
+            {} if observation_extra is None else dict(observation_extra)
+        ),
     )
 
     @contextmanager
@@ -201,6 +373,14 @@ def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch() -
     request = _request(execution)
     frozen_handle = adapter.prepare_dispatch(execution, request)
     execution = replace(execution, backend_handle_ref=frozen_handle)
+    return adapter, execution, request, engine
+
+
+def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(tmp_path)
+    frozen_handle = execution.backend_handle_ref
 
     dispatched = adapter.dispatch(execution, request)
 
@@ -209,13 +389,143 @@ def test_provider_route_uses_frozen_handle_and_reconciles_without_redispatch() -
     assert engine.seen_handle == frozen_handle
     assert engine.call_count == 1
     assert dispatched.materialized_result is not None
-    assert dispatched.materialized_result.bounded_result_envelope[
-        "output_artifact_ids"
-    ] == ["artifact_provider_result"]
+    envelope = dispatched.materialized_result.bounded_result_envelope
+    assert envelope["provider_request_id"] == frozen_handle
+    assert envelope["operation_id"] == execution.operation_id
+    assert set(envelope["output_artifact_ids"]) == {
+        "artifact_provider_request",
+        "artifact_provider_fasta",
+        "artifact_provider_observation",
+    }
+    assert envelope["bounded_summary"]["record_count"] == 1
+    assert (
+        envelope["bounded_summary"]["transcript_manifest"]["provider_request_id"]
+        == frozen_handle
+    )
 
     reconciled = adapter.reconcile(execution, request)
     assert reconciled.kind is DurableRouteObservationKind.RESULT_MATERIALIZED
     assert reconciled.backend_handle_ref == frozen_handle
+    assert engine.call_count == 1
+
+
+def test_provider_route_recovers_sealed_summary_after_lost_callback_without_replay(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.RESULT_MATERIALIZED
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert engine.call_count == 1
+    assert result.materialized_result is not None
+    envelope = result.materialized_result.bounded_result_envelope
+    summary = envelope["bounded_summary"]
+    assert summary["provider"] == "ncbi"
+    assert summary["record_count"] == 1
+    assert summary["transcript_manifest"]["output_dir"] == (
+        "/workspace/output/provider/ncbi"
+    )
+    assert envelope["validation_results"]["artifact_provider_fasta"] == {
+        "format": "fasta",
+        "status": "passed",
+    }
+    ControlledOperationExecutionWorker._validated_result(  # noqa: SLF001
+        result.materialized_result
+    )
+
+
+def test_provider_route_fails_closed_when_recovered_transcript_digest_drifts(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        tamper_observation=True,
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_transcript_digest_mismatch"
+    assert result.materialized_result is None
+    assert engine.call_count == 1
+
+
+def test_provider_route_fails_closed_when_recovered_transcript_is_symlinked(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        symlink_observation=True,
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_transcript_unavailable"
+    assert result.materialized_result is None
+    assert engine.call_count == 1
+
+
+def test_provider_route_fails_closed_when_recovered_observation_schema_drifts(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        observation_extra={"unexpected_recovery_field": True},
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_observation_schema_drift"
+    assert result.materialized_result is None
+    assert engine.call_count == 1
+
+
+def test_provider_route_fails_closed_when_recovered_transcript_identity_drifts(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        observation_extra={"provider_request_id": "provider_req_drifted"},
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_transcript_identity_drift"
+    assert result.materialized_result is None
+    assert engine.call_count == 1
+
+
+def test_provider_route_fails_closed_when_recovered_summary_exceeds_bound(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        observation_extra={"summary": {"payload": "x" * (1536 * 1024)}},
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_bounded_summary_too_large"
+    assert result.materialized_result is None
     assert engine.call_count == 1
 
 
@@ -590,9 +900,9 @@ def test_hpc_route_reserves_dispatches_and_materializes_without_handle_leak() ->
     assert envelope["kind"] == "hpc_run_handle"
     assert envelope["run_id"].startswith("run_inv_sandbox_adapter_")
     assert envelope["output_artifact_ids"] == ["artifact_hpc_result"]
-    assert [
-        ref.artifact_id for ref in result.materialized_result.artifact_refs
-    ] == ["artifact_hpc_result"]
+    assert [ref.artifact_id for ref in result.materialized_result.artifact_refs] == [
+        "artifact_hpc_result"
+    ]
     encoded = json.dumps(envelope, sort_keys=True)
     assert runner.run_id not in encoded
     assert "runner_run_id" not in encoded
@@ -608,9 +918,7 @@ def test_hpc_route_reserves_dispatches_and_materializes_without_handle_leak() ->
 
 
 def test_hpc_route_recovers_lost_terminal_callback_without_redispatch() -> None:
-    adapter, execution, request, runner = _hpc_route_fixture(
-        lose_first_callback=True
-    )
+    adapter, execution, request, runner = _hpc_route_fixture(lose_first_callback=True)
 
     result = adapter.dispatch(execution, request)
 
@@ -647,9 +955,7 @@ def test_hpc_route_keeps_terminal_certainty_when_output_fetch_is_interrupted() -
 
 
 def test_hpc_route_does_not_publish_an_identity_drifted_artifact_set() -> None:
-    adapter, execution, request, runner = _hpc_route_fixture(
-        drift_fetch_identity=True
-    )
+    adapter, execution, request, runner = _hpc_route_fixture(drift_fetch_identity=True)
 
     result = adapter.dispatch(execution, request)
 
@@ -661,9 +967,7 @@ def test_hpc_route_does_not_publish_an_identity_drifted_artifact_set() -> None:
 
 
 def test_hpc_route_preserves_direct_ssh_dispatch_ambiguity() -> None:
-    adapter, execution, request, runner = _hpc_route_fixture(
-        dispatch_in_doubt=True
-    )
+    adapter, execution, request, runner = _hpc_route_fixture(dispatch_in_doubt=True)
 
     result = adapter.dispatch(execution, request)
     reconciled = adapter.reconcile(execution, request)
@@ -676,9 +980,7 @@ def test_hpc_route_preserves_direct_ssh_dispatch_ambiguity() -> None:
 
 
 def test_hpc_route_bounds_host_pre_effect_recovery_on_same_handle() -> None:
-    adapter, execution, request, runner = _hpc_route_fixture(
-        fail_before_submit=True
-    )
+    adapter, execution, request, runner = _hpc_route_fixture(fail_before_submit=True)
 
     first = adapter.dispatch(execution, request)
     second_execution = replace(execution, dispatch_generation=2)

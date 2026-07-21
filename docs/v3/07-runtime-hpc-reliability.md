@@ -94,6 +94,15 @@ Result handle 与 artifact set 是 Host-owned immutable records。partial、dige
 identity-drifted outputs 不得 promotion。Execution terminal、result ready、continuation
 delivery、agent wakeup 与 task business terminal 是五个不同事实。
 
+Provider 的成功 callback 不是唯一 result materialization 入口。若 external effect 已完成、
+同一 request 的完整 artifacts 与最后一个 `provider_observation.json` 已登记，但 callback 在
+canonical commit 前丢失，reconcile 只能读取该 operation/request 的 sealed
+`provider_request.json` 与 `provider_observation.json`：逐件核 content/sealed digest、strict
+JSON closed schema、route/provider/config/output-dir/artifact identity，再恢复原 provider
+summary、validation、warnings 与 `transcript_manifest`。control document 限 `8 MiB`，inline
+`bounded_summary` 限 `1.5 MiB`；missing、tamper、schema/identity drift 或超限均转为
+`terminal_known` failure，不允许通用 recovered 摘要、provider replay 或 alternate route。
+
 ## 5. Non-blocking continuation 与 runtime command
 
 Durable SDK call 遇到 approval/external wait 时，Host 会 park exact sandbox process，记录
