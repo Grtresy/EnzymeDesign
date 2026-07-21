@@ -940,6 +940,68 @@ def test_durable_worker_reconciles_lost_dispatch_callback_without_replay() -> No
     assert adapter.reconcile_count == 1
 
 
+def test_durable_worker_terminalizes_invalid_terminal_observation_without_loop() -> (
+    None
+):
+    connection, repositories, operation = _durable_repositories()
+    execution = replace(
+        _execution(
+            operation,
+            lifecycle_state=(ControlledOperationExecutionLifecycle.RECONCILE_REQUIRED),
+            dispatch_generation=1,
+        ),
+        effect_certainty=ExternalEffectCertainty.DISPATCH_IN_DOUBT,
+        retry_eligibility=RetryEligibility.RECONCILE_REQUIRED,
+        backend_handle_ref="fixture-run://terminal-observation",
+    )
+    repositories.controlled_operation_executions.add(execution)
+    repositories.controlled_operation_dispatch_requests.save_once(
+        _dispatch_request(execution)
+    )
+    oversized = DurableRouteObservation(
+        kind=DurableRouteObservationKind.RESULT_MATERIALIZED,
+        effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+        retry_eligibility=RetryEligibility.TERMINAL,
+        backend_handle_ref=execution.backend_handle_ref,
+        terminal_outcome=ControlledOperationExecutionTerminalOutcome.SUCCEEDED,
+        materialized_result=DurableRouteMaterializedResult(
+            bounded_result_envelope={"payload": "x" * (256 * 1024)},
+            artifact_set_digest=controlled_operation_artifact_set_digest(()),
+            origin="fixture_adapter",
+        ),
+    )
+    adapter = _FixtureDurableRouteAdapter(
+        connection,
+        reconcile_observation=oversized,
+    )
+
+    @contextmanager
+    def repository_scope():  # type: ignore[no-untyped-def]
+        yield repositories
+
+    worker = ControlledOperationExecutionWorker(
+        repository_scope_factory=repository_scope,
+        adapters={adapter.route_policy_id: adapter},
+        worker_id="worker:invalid-terminal-observation",
+    )
+
+    outcome = worker.run_execution_once(execution.execution_id)
+
+    assert outcome.action == "reconcile"
+    assert outcome.lifecycle_state == "terminal"
+    assert adapter.reconcile_count == 1
+    terminal = repositories.controlled_operation_executions.get(execution.execution_id)
+    assert terminal is not None
+    assert terminal.terminal_outcome is (
+        ControlledOperationExecutionTerminalOutcome.RECOVERY_FAILED
+    )
+    assert terminal.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert terminal.retry_eligibility is RetryEligibility.TERMINAL
+    assert terminal.error_code == "durable_terminal_observation_invalid"
+    assert worker.run_execution_once(execution.execution_id).action == "not_claimable"
+    assert adapter.reconcile_count == 1
+
+
 def test_durable_worker_keeps_database_contention_out_of_backend_taxonomy(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -1164,10 +1226,7 @@ def test_durable_worker_fences_stale_owner_before_external_dispatch() -> None:
     @contextmanager
     def writer_scope(**kwargs):  # type: ignore[no-untyped-def]
         nonlocal replaced
-        if (
-            kwargs["owner_kind"] is MutationWriterKind.ENGINE_CALLBACK
-            and not replaced
-        ):
+        if kwargs["owner_kind"] is MutationWriterKind.ENGINE_CALLBACK and not replaced:
             current = repositories.controlled_operation_executions.get(
                 execution.execution_id
             )
@@ -2569,7 +2628,9 @@ def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone()
     assert failed is not None
     assert failed.delivery_state is ContinuationDeliveryState.RECOVERY_FAILED
     assert failed.error_code == "attached_process_missing_after_restart"
-    assert repositories.controlled_operation_results.get(result.result_handle_id) == result
+    assert (
+        repositories.controlled_operation_results.get(result.result_handle_id) == result
+    )
     signals = repositories.runtime_signals.list_pending_by_session(operation.session_id)
     assert len(signals) == 1
     assert signals[0].reason is AgentRuntimeSignalReason.ENGINE_COMPLETED
@@ -2578,10 +2639,7 @@ def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone()
         {
             "session_id": operation.session_id,
             "owner_kind": MutationWriterKind.CONTINUATION_DELIVERY,
-            "owner_ref": (
-                "continuation-startup-recovery:"
-                f"{ready.continuation_id}"
-            ),
+            "owner_ref": (f"continuation-startup-recovery:{ready.continuation_id}"),
             "process_epoch": ready.process_epoch,
         }
     ]
@@ -2593,9 +2651,10 @@ def test_startup_recovery_preserves_result_and_wakes_once_when_process_is_gone()
         )
         == ()
     )
-    assert len(
-        repositories.runtime_signals.list_pending_by_session(operation.session_id)
-    ) == 1
+    assert (
+        len(repositories.runtime_signals.list_pending_by_session(operation.session_id))
+        == 1
+    )
 
 
 def test_startup_recovery_keeps_exact_live_attached_process_claimable() -> None:
@@ -2631,7 +2690,9 @@ def test_startup_recovery_keeps_exact_live_attached_process_claimable() -> None:
     assert outcomes == ()
     persisted = repositories.continuation_states.get(ready.continuation_id)
     assert persisted == ready
-    assert repositories.runtime_signals.list_pending_by_session(operation.session_id) == []
+    assert (
+        repositories.runtime_signals.list_pending_by_session(operation.session_id) == []
+    )
 
 
 def test_live_process_registry_rejects_epoch_and_runtime_identity_drift() -> None:

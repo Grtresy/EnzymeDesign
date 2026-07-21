@@ -16,6 +16,7 @@ from typing import NoReturn
 from openzyme_core import ControlledOperationRouteAdapter
 from openzyme_core import ControlledOperationResultArtifactRef
 from openzyme_core import CoreRepositories
+from openzyme_core import DURABLE_RESULT_ENVELOPE_MAX_BYTES
 from openzyme_core import DurableRouteMaterializedResult
 from openzyme_core import DurableRouteObservation
 from openzyme_core import DurableRouteObservationKind
@@ -64,7 +65,7 @@ _PROVEN_PRE_EFFECT_PROVIDER_STAGES = frozenset(
 )
 _S12_ADAPTER_ENVELOPE_SCHEMA = "s12.adapter_envelope.v1"
 _PROVIDER_TRANSCRIPT_DOCUMENT_MAX_BYTES = 8 * 1024 * 1024
-_PROVIDER_BOUNDED_SUMMARY_MAX_BYTES = 1536 * 1024
+_PROVIDER_BOUNDED_SUMMARY_MAX_BYTES = DURABLE_RESULT_ENVELOPE_MAX_BYTES
 _PROVIDER_REQUEST_KEYS = frozenset(
     {
         "approval_requirement",
@@ -899,6 +900,16 @@ class HostProviderControlledOperationRouteAdapter:
                 error_type="provider_result_projection_invalid",
                 message="Durable provider result could not be safely projected.",
                 hint="Preserve private evidence and reject public result publication.",
+                stage="provider_result_validation",
+                retryable=False,
+            )
+        if len(self._canonical_json_bytes(safe_envelope)) > (
+            DURABLE_RESULT_ENVELOPE_MAX_BYTES
+        ):
+            raise PipelineSdkFailure(
+                error_type="durable_provider_result_envelope_too_large",
+                message="Durable provider result exceeds the immutable handle bound.",
+                hint="Keep complete data in sealed artifacts and bound the inline summary.",
                 stage="provider_result_validation",
                 retryable=False,
             )

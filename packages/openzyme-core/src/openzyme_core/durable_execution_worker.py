@@ -550,6 +550,7 @@ class ControlledOperationExecutionWorker:
             observation = self._closed_invalid_observation(
                 captured=captured,
                 phase=phase,
+                invalid=observation,
             )
             self._validate_observation(
                 observation,
@@ -723,9 +724,7 @@ class ControlledOperationExecutionWorker:
                     if execution.selected_backend == "hpc"
                     else MutationWriterKind.ENGINE_CALLBACK
                 ),
-                owner_ref=(
-                    f"durable-route-callback:{execution.execution_id}:{action}"
-                ),
+                owner_ref=(f"durable-route-callback:{execution.execution_id}:{action}"),
             )
         )
         with writer_scope:
@@ -1060,7 +1059,22 @@ class ControlledOperationExecutionWorker:
         *,
         captured: ControlledOperationExecution,
         phase: ControlledOperationExecutionPhase,
+        invalid: DurableRouteObservation,
     ) -> DurableRouteObservation:
+        if invalid.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN:
+            return DurableRouteObservation(
+                kind=DurableRouteObservationKind.TERMINAL_FAILURE,
+                effect_certainty=ExternalEffectCertainty.TERMINAL_KNOWN,
+                retry_eligibility=RetryEligibility.TERMINAL,
+                backend_handle_ref=(
+                    invalid.backend_handle_ref or captured.backend_handle_ref
+                ),
+                error_code="durable_terminal_observation_invalid",
+                safe_summary=("Terminal route observation failed closed validation."),
+                terminal_outcome=(
+                    ControlledOperationExecutionTerminalOutcome.RECOVERY_FAILED
+                ),
+            )
         if phase is ControlledOperationExecutionPhase.DISPATCH:
             return DurableRouteObservation(
                 kind=DurableRouteObservationKind.RECONCILE_REQUIRED,

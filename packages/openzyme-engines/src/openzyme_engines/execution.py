@@ -2258,7 +2258,6 @@ class ProviderHttpBioDatabaseAdapter:
             "hit_count": len(hits),
             "warning_count": len(warnings),
             "provider_job_id": job_id,
-            "candidate_accessions": [str(hit["accession"]) for hit in hits],
             "parsed_hit_schema_id": "ebi_hmmer_refprot_hit@1"
             if normalized_database == "refprot"
             else "ebi_hmmer_hit@1",

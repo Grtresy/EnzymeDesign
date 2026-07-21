@@ -351,7 +351,7 @@ def test_ebi_refprot_accepts_official_shape_and_binds_top_level_accession(
     assert observation["operation"] == "bio.hmmer_search"
     assert observation["request_identity"]["query_hmm_artifact_id"] == "art_aox_hmm"
     assert observation["raw_page_digests"] == {"1": _digest(response_body)}
-    assert result.summary["candidate_accessions"] == ["P12345"]
+    assert "candidate_accessions" not in result.summary
     raw_payload = _assert_offline_recomputable_raw_responses(
         result,
         expected_bodies=(
@@ -385,7 +385,7 @@ def test_ebi_refprot_accepts_current_ten_character_metadata_accession(
         retrieved_at="2026-07-17T00:00:00+00:00",
     )
 
-    assert result.summary["candidate_accessions"] == ["A0A378ARX6"]
+    assert "candidate_accessions" not in result.summary
     parsed = _artifact(result, "provider_parsed/parsed_hits.csv")
     row = next(__import__("csv").DictReader(parsed.content.splitlines()))
     assert row["accession"] == "A0A378ARX6"
@@ -498,7 +498,10 @@ def test_ebi_hmmer_terminal_poll_is_status_only_and_explicit_pages_are_complete(
     assert len(result_urls) == 4
     assert all("page_size=1000" in url for url in result_urls)
     assert "page=1" in result_urls[0]
-    assert [urllib_parse.parse_qs(urllib_parse.urlparse(url).query)["page"][0] for url in result_urls[1:]] == [
+    assert [
+        urllib_parse.parse_qs(urllib_parse.urlparse(url).query)["page"][0]
+        for url in result_urls[1:]
+    ] == [
         "1",
         "2",
         "3",
@@ -506,8 +509,11 @@ def test_ebi_hmmer_terminal_poll_is_status_only_and_explicit_pages_are_complete(
     assert result.summary["reported_hit_count"] == 2050
     assert result.summary["retrieved_raw_hit_count"] == 2050
     assert result.summary["hit_count"] == 2050
-    assert len(set(result.summary["candidate_accessions"])) == 2050
-    assert result.summary["candidate_accessions"][50] == "P00050"
+    assert "candidate_accessions" not in result.summary
+    parsed = _artifact(result, "provider_parsed/parsed_hits.csv")
+    rows = list(__import__("csv").DictReader(parsed.content.splitlines()))
+    assert len(rows) == 2050
+    assert rows[50]["accession"] == "P00050"
 
 
 def test_ebi_hmmer_rejects_missing_middle_page_by_terminal_count(
@@ -517,22 +523,14 @@ def test_ebi_hmmer_rejects_missing_middle_page_by_terminal_count(
         [
             FakeHttpResponse(body='{"id":"job-gapped"}'),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=3, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=3, nreported=4)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=3, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=3, nreported=4)
             ),
+            FakeHttpResponse(body=_hmmer_result_body([], page_count=3, nreported=4)),
             FakeHttpResponse(
-                body=_hmmer_result_body([], page_count=3, nreported=4)
-            ),
-            FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(3, 1), page_count=3, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(3, 1), page_count=3, nreported=4)
             ),
         ]
     )
@@ -564,19 +562,13 @@ def test_ebi_hmmer_rejects_short_nonterminal_page_before_max_hits_truncation(
         [
             FakeHttpResponse(body='{"id":"job-short-before-limit"}'),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=5, nreported=10
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=5, nreported=10)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=5, nreported=10
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=5, nreported=10)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(2, 1), page_count=5, nreported=10
-                )
+                body=_hmmer_result_body(_hmmer_hits(2, 1), page_count=5, nreported=10)
             ),
         ]
     )
@@ -606,19 +598,13 @@ def test_ebi_hmmer_rejects_page_count_drift(tmp_path: Path) -> None:
         [
             FakeHttpResponse(body='{"id":"job-page-drift"}'),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=2, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=2, nreported=4)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=2, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=2, nreported=4)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(2, 2), page_count=3, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(2, 2), page_count=3, nreported=4)
             ),
         ]
     )
@@ -646,14 +632,10 @@ def test_ebi_hmmer_rejects_result_page_nreported_drift(tmp_path: Path) -> None:
         [
             FakeHttpResponse(body='{"id":"job-nreported-drift"}'),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=2, nreported=4
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=2, nreported=4)
             ),
             FakeHttpResponse(
-                body=_hmmer_result_body(
-                    _hmmer_hits(0, 2), page_count=2, nreported=3
-                )
+                body=_hmmer_result_body(_hmmer_hits(0, 2), page_count=2, nreported=3)
             ),
         ]
     )
@@ -700,9 +682,7 @@ def test_ebi_hmmer_accepts_exact_zero_reported_hits(tmp_path: Path) -> None:
     assert result.summary["hit_count"] == 0
     assert result.summary["reported_hit_count"] == 0
     assert result.summary["pagination"]["declared_page_count"] == 0
-    assert [warning["warning_code"] for warning in result.warnings] == [
-        "empty_results"
-    ]
+    assert [warning["warning_code"] for warning in result.warnings] == ["empty_results"]
 
 
 def test_ebi_hmmer_bounded_prefix_marks_truncation_from_terminal_count(
@@ -884,7 +864,10 @@ def test_uniprot_batches_one_operation_across_bounded_search_queries() -> None:
 
     metadata = json.loads(_artifact(result, "provider_parsed/metadata.json").content)
     assert [len(batch) for batch in observed_batches] == [100, 100, 5]
-    assert tuple(accession for batch in observed_batches for accession in batch) == accessions
+    assert (
+        tuple(accession for batch in observed_batches for accession in batch)
+        == accessions
+    )
     assert metadata["requested_accessions"] == list(accessions)
     assert [record["requested_accession"] for record in metadata["records"]] == list(
         accessions
@@ -902,7 +885,10 @@ def test_uniprot_batches_one_operation_across_bounded_search_queries() -> None:
     assert [request["query_batch_index"] for request in requests] == [1, 2, 3]
     assert [request["query_accession_start"] for request in requests] == [0, 100, 200]
     assert [request["query_accession_count"] for request in requests] == [100, 100, 5]
-    assert all(str(request["query_accessions_digest"]).startswith("sha256:") for request in requests)
+    assert all(
+        str(request["query_accessions_digest"]).startswith("sha256:")
+        for request in requests
+    )
     _assert_offline_recomputable_raw_responses(
         result,
         expected_bodies=tuple(response_bodies),
@@ -1024,7 +1010,7 @@ def test_uniprot_page_cap_is_per_query_not_global() -> None:
         headers = {"x-uniprot-release": "2026_03"}
         if next_ref is not None:
             headers["link"] = (
-                f"<https://rest.uniprot.org/uniprotkb/search?cursor={next_ref}>; rel=\"next\""
+                f'<https://rest.uniprot.org/uniprotkb/search?cursor={next_ref}>; rel="next"'
             )
         return FakeHttpResponse(
             body=json.dumps({"results": [record]}),
@@ -1158,8 +1144,7 @@ def test_uniprot_rejects_pagination_outside_pinned_https_endpoint() -> None:
             headers={
                 "x-uniprot-release": "2026_03",
                 "link": (
-                    "<http://127.0.0.1/uniprotkb/search?cursor=unsafe>; "
-                    'rel="next"'
+                    '<http://127.0.0.1/uniprotkb/search?cursor=unsafe>; rel="next"'
                 ),
             },
         )
@@ -1270,18 +1255,14 @@ def test_uniprot_rejects_partial_optional_release_date_provenance() -> None:
     responses = iter(
         [
             FakeHttpResponse(
-                body=json.dumps(
-                    {"results": [_uniprot_record("P12345", "MPEPTIDE")]}
-                ),
+                body=json.dumps({"results": [_uniprot_record("P12345", "MPEPTIDE")]}),
                 headers={
                     "x-uniprot-release": "2026_03",
                     "x-uniprot-release-date": "15-July-2026",
                 },
             ),
             FakeHttpResponse(
-                body=json.dumps(
-                    {"results": [_uniprot_record("Q8XYZ1", "MPEPTIDE")]}
-                ),
+                body=json.dumps({"results": [_uniprot_record("Q8XYZ1", "MPEPTIDE")]}),
                 headers={"x-uniprot-release": "2026_03"},
             ),
         ]
@@ -1378,9 +1359,12 @@ def test_uniprot_partitions_active_deleted_and_merged_inactive_records() -> None
             }
         ],
     }
-    assert metadata["inactive_records"][2]["inactive_reason"][
-        "replacement_target_annotations"
-    ][0]["target_accession"] == "A0A034VJ86"
+    assert (
+        metadata["inactive_records"][2]["inactive_reason"][
+            "replacement_target_annotations"
+        ][0]["target_accession"]
+        == "A0A034VJ86"
+    )
     parsed_fasta = _artifact(result, "provider_parsed/sequences.fasta")
     assert parsed_fasta.content.startswith(">P12345")
     assert "Q8XYZ1" not in parsed_fasta.content
@@ -1484,9 +1468,7 @@ def test_uniprot_accepts_exact_unreviewed_active_entry_type() -> None:
 
     metadata = json.loads(_artifact(result, "provider_parsed/metadata.json").content)
     assert metadata["records"][0]["reviewed"] is False
-    assert metadata["records"][0]["entry_type"] == (
-        "UniProtKB unreviewed (TrEMBL)"
-    )
+    assert metadata["records"][0]["entry_type"] == ("UniProtKB unreviewed (TrEMBL)")
 
 
 @pytest.mark.parametrize(
@@ -1582,9 +1564,7 @@ def test_uniprot_duplicate_json_key_diagnostics_are_bounded() -> None:
 
 
 def test_uniprot_all_deleted_records_emit_typed_zero_record_fasta() -> None:
-    body = json.dumps(
-        {"results": [_uniprot_inactive_deleted_record("A0A034VJ94")]}
-    )
+    body = json.dumps({"results": [_uniprot_inactive_deleted_record("A0A034VJ94")]})
     result = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(),
         urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
@@ -1625,9 +1605,7 @@ def test_uniprot_all_deleted_records_emit_typed_zero_record_fasta() -> None:
 
 
 def test_uniprot_inactive_identity_rejects_source_sequence_assertion() -> None:
-    body = json.dumps(
-        {"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]}
-    )
+    body = json.dumps({"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]})
     adapter = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(),
         urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
@@ -1661,9 +1639,7 @@ def test_uniprot_inactive_identity_rejects_source_sequence_assertion() -> None:
 
 
 def test_uniprot_merged_target_cannot_satisfy_its_own_requested_identity() -> None:
-    body = json.dumps(
-        {"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]}
-    )
+    body = json.dumps({"results": [_uniprot_inactive_merged_record("A0A2U8U0K3")]})
     adapter = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(),
         urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
@@ -1701,9 +1677,7 @@ def test_uniprot_merged_target_cannot_satisfy_its_own_requested_identity() -> No
         lambda record: record["inactiveReason"].update(
             {"deletedReason": "Not canonical\nreason"}
         ),
-        lambda record: record.update(
-            {"uniProtkbId": "A0A034VJ94\nBAD"}
-        ),
+        lambda record: record.update({"uniProtkbId": "A0A034VJ94\nBAD"}),
         lambda record: record["inactiveReason"].pop("deletedReason"),
         lambda record: record["extraAttributes"].update({"uniParcId": "bad"}),
         lambda record: record.update({"sequence": {"value": "AAAA", "length": 4}}),
@@ -1794,9 +1768,7 @@ def test_uniprot_inactive_record_is_bound_to_its_producing_query_batch() -> None
     adapter = ProviderHttpBioDatabaseAdapter(
         BioProviderHttpConfig(batch_size_cap=1),
         urlopen=lambda _request, timeout: FakeHttpResponse(  # noqa: ARG005
-            body=json.dumps(
-                {"results": [_uniprot_inactive_deleted_record("Q8XYZ1")]}
-            ),
+            body=json.dumps({"results": [_uniprot_inactive_deleted_record("Q8XYZ1")]}),
             headers={"x-uniprot-release": "2026_03"},
         ),
         sleep=lambda _seconds: None,
@@ -1826,9 +1798,7 @@ def test_uniprot_http_failure_preserves_safe_query_batch_coordinates() -> None:
         calls += 1
         if calls == 1:
             return FakeHttpResponse(
-                body=json.dumps(
-                    {"results": [_uniprot_record("P00000", "MPEPTIDE")]}
-                ),
+                body=json.dumps({"results": [_uniprot_record("P00000", "MPEPTIDE")]}),
                 headers={"x-uniprot-release": "2026_03"},
             )
         raise OSError("safe network failure")

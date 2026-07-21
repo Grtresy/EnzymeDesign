@@ -99,9 +99,13 @@ Provider 的成功 callback 不是唯一 result materialization 入口。若 ext
 canonical commit 前丢失，reconcile 只能读取该 operation/request 的 sealed
 `provider_request.json` 与 `provider_observation.json`：逐件核 content/sealed digest、strict
 JSON closed schema、route/provider/config/output-dir/artifact identity，再恢复原 provider
-summary、validation、warnings 与 `transcript_manifest`。control document 限 `8 MiB`，inline
-`bounded_summary` 限 `1.5 MiB`；missing、tamper、schema/identity drift 或超限均转为
-`terminal_known` failure，不允许通用 recovered 摘要、provider replay 或 alternate route。
+summary、validation、warnings 与 `transcript_manifest`。control document 限 `8 MiB`；完整
+canonical immutable result envelope 与 core 共用 `256 KiB` 上限，inline `bounded_summary` 只是
+其中一部分，bulk identities 必须保留在 digest-bound artifact。EBI HMMER 的完整候选身份只由
+`provider_parsed/parsed_hits.csv` 承载，不复制进 summary。missing、tamper、schema/identity drift
+或任一 envelope 超限均转为 `terminal_known` failure；若 terminal-known observation 本身未通过
+closed validation，execution 直接以 `recovery_failed` 终结，不允许通用 recovered 摘要、provider
+replay、alternate route 或重复 claim/reconcile 热循环。
 
 ## 5. Non-blocking continuation 与 runtime command
 

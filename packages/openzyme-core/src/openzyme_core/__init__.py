@@ -31,6 +31,7 @@ from .continuation_delivery import recover_unattached_continuations
 from .durable_execution_worker import ControlledOperationExecutionWorker
 from .durable_execution_worker import ControlledOperationExecutionWorkerOutcome
 from .durable_execution_worker import ControlledOperationRouteAdapter
+from .durable_execution_worker import DURABLE_RESULT_ENVELOPE_MAX_BYTES
 from .durable_execution_worker import DurableRouteMaterializedResult
 from .durable_execution_worker import DurableRouteObservation
 from .durable_execution_worker import DurableRouteObservationKind
@@ -297,6 +298,7 @@ __all__ = [
     "ContinuationDeliveryWorkerOutcome",
     "ContinuationWakeService",
     "ControlledOperationRouteAdapter",
+    "DURABLE_RESULT_ENVELOPE_MAX_BYTES",
     "DurableControlledOperationAdmission",
     "DurableControlledOperationAdmissionService",
     "DurableRouteMaterializedResult",

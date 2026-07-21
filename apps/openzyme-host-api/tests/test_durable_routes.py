@@ -517,7 +517,7 @@ def test_provider_route_fails_closed_when_recovered_summary_exceeds_bound(
     adapter, execution, request, engine = _provider_route_fixture(
         tmp_path,
         lose_callback=True,
-        observation_extra={"summary": {"payload": "x" * (1536 * 1024)}},
+        observation_extra={"summary": {"payload": "x" * (256 * 1024)}},
     )
 
     result = adapter.dispatch(execution, request)
@@ -525,6 +525,24 @@ def test_provider_route_fails_closed_when_recovered_summary_exceeds_bound(
     assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
     assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
     assert result.error_code == "durable_provider_bounded_summary_too_large"
+    assert result.materialized_result is None
+    assert engine.call_count == 1
+
+
+def test_provider_route_fails_closed_when_complete_envelope_exceeds_core_bound(
+    tmp_path: Path,
+) -> None:
+    adapter, execution, request, engine = _provider_route_fixture(
+        tmp_path,
+        lose_callback=True,
+        observation_extra={"summary": {"payload": ["sha256:" + "a" * 64] * 3520}},
+    )
+
+    result = adapter.dispatch(execution, request)
+
+    assert result.kind is DurableRouteObservationKind.TERMINAL_FAILURE
+    assert result.effect_certainty is ExternalEffectCertainty.TERMINAL_KNOWN
+    assert result.error_code == "durable_provider_result_envelope_too_large"
     assert result.materialized_result is None
     assert engine.call_count == 1
 

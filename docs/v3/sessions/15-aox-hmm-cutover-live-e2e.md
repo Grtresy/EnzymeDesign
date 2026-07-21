@@ -1044,10 +1044,39 @@ r46 及其 effect、roots、artifacts、Chrome receipt、bundle 与 decision 永
 `provider_request.json` 与 `provider_observation.json` 重建原 S12 result：实际 bytes digest、
 strict closed JSON schema、route/provider/config/output-dir 与 artifact metadata 全部精确核验，
 恢复原 summary、validation、warnings 与 transcript manifest；control document 限 `8 MiB`，
-inline summary 限 `1.5 MiB`。任一 tamper/schema/identity/size drift 以 terminal-known failure
-停止，且不 replay provider。对 r46 原 DB/artifact 的只读回放已恢复同一 HMMER request 的
-`82,719` candidates 与四件 transcript refs，但该回放只是修复验证，绝不使 r46 eligible。
-下一次 live 必须使用修复后的 clean commit/config pin 与全新 r47 roots。
+完整 canonical immutable result envelope 与 core 统一限 `256 KiB`。任一
+tamper/schema/identity/size drift 以 terminal-known failure 停止，且不 replay provider。对 r46
+原 DB/artifact 的只读回放已恢复同一 HMMER request 的 `82,719` candidates 与四件 transcript
+refs，但该回放只是修复验证，绝不使 r46 eligible。
+
+r47 使用 correction commit `3e2c7bad448b7f0c297f40417e72ebc313d63dc1`、同一 config digest
+`sha256:caaccb44ae1d84d94c0b7bda2e5d7ad2461bf68ed0039d27f799296d56267376`
+和 fresh roots 启动 attempt `positive-3da05d7870264c2e86c4c56324cb7c94`。Chrome UI 对 formal
+approval `appr_5df01a7b5490` / operation `op_03aa13ad5dd0` 执行一次真实 approve，Host receipt
+digest 为 `sha256:c659855c2c80689a559aec2fc4b1e3f97e4933d81d3ca725af6ecac3d3c4a79d`；
+NCBI、MAFFT、hmmbuild 随后真实完成。EBI HMMER operation `op_1b2d55f1d8bc` / request
+`provider_req_766862b4d3993d72e390b962` 真实完成 `68,592` unique candidates、`69` pages，封存
+`provider_request.json=1,104` bytes、`raw_hits.json=125,225,501` bytes、
+`parsed_hits.csv=22,833,564` bytes 与 `provider_observation.json=1,388,557` bytes。
+
+r47 同时证明先前 `1.5 MiB` inline-summary 约束不成立：HMMER summary 把完整
+`candidate_accessions` 从 parsed artifact 重复内联后达到 `862,426` bytes，Host route 返回
+terminal-known materialized observation，但 core 的既有 `256 KiB` complete-envelope validator
+正确拒绝；旧 worker 又把这类 invalid terminal observation 改写回 `reconcile_required`。在未重放
+effect、`dispatch_generation=1` 且没有 result handle 的前提下，同一 execution 最终写出
+`9,780` events，其中 `4,888` claim、`4,887` reconcile，形成纯 control-plane 热循环。operator
+在确认根因后终止 fresh process group；该 attempt 无 bundle、无 terminal Chrome observation、无
+GO 资格，roots/effects/artifacts/approval 永久不可复用。MICU 累计从 `70,742,820` 增至
+`71,562,612 / 500,000,000`，remaining `428,437,388`，零 breach/overage。
+operator interrupt 绕过当前 supervisor `except Exception` retirement ladder 的生命周期缺口已单独
+记录在 [operator-interrupt-safe live-attempt retirement](../architecture-proposals/operator-interrupt-safe-live-attempt-retirement.md)；它涉及 signal/exit/fatal-evidence 语义，本 Goal 不实现。
+
+当前局部 correction 不新增 owner 或 fallback：EBI HMMER summary 删除完整
+`candidate_accessions`，exact identities 只由 digest-bound `provider_parsed/parsed_hits.csv`
+承载，summary 保留 count/schema/digest/transcript refs；Host 在 materialize 前按 core `256 KiB`
+完整 envelope 上限校验；worker 对不能通过 closed validation 的 terminal-known observation 直接
+以 `recovery_failed` 终结，不再重复 claim/reconcile。下一次 live 必须使用该 correction 的 clean
+commit/config pin 与全新 r48 roots。
 
 ## 当前实施状态的表述规则
 
