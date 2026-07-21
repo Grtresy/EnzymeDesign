@@ -196,6 +196,8 @@ class _FakePinServer:
         self.output_root = output_root
         self.add_private_identity_field = add_private_identity_field
         self.calls: list[dict[str, object]] = []
+        self.resolved_artifact_refs: list[str] = []
+        self._artifact_paths: dict[str, str] = {}
         self.expectations = _pin_runner_expectations()
 
     def call_tool(
@@ -218,11 +220,14 @@ class _FakePinServer:
         )
         self.calls.append(runspec)
         artifacts: dict[str, str] = {}
+        run_id = f"run-{len(self.calls)}"
         for output in contract.expected_outputs:
             materialized = self.output_root / tool_id / output.path
             materialized.parent.mkdir(parents=True, exist_ok=True)
             materialized.write_text(f"fixture output for {tool_id}\n", encoding="utf-8")
-            artifacts[output.path] = str(materialized)
+            artifact_ref = f"runner-artifact://{run_id}/{output.path}"
+            artifacts[output.path] = artifact_ref
+            self._artifact_paths[artifact_ref] = str(materialized)
         runner_contract = dict(self.expectations["contracts"])[tool_id]
         image_label = "hmmer" if "hmm" in tool_id else tool_id
         identity: dict[str, str] = {
@@ -238,7 +243,7 @@ class _FakePinServer:
         if self.add_private_identity_field:
             identity["sif_locator"] = "private-location"
         return {
-            "run_id": f"run-{len(self.calls)}",
+            "run_id": run_id,
             "status": "completed",
             "selected_mode": "ssh",
             "exit_code": 0,
@@ -247,6 +252,13 @@ class _FakePinServer:
             "logs": {},
             "toolchain_runtime_identity": identity,
         }
+
+    def resolve_artifact_ref(self, artifact_ref: str) -> str:
+        self.resolved_artifact_refs.append(artifact_ref)
+        try:
+            return self._artifact_paths[artifact_ref]
+        except KeyError as exc:
+            raise ValueError("unknown runner artifact reference") from exc
 
 
 def test_effective_config_is_deterministic_and_uses_live_budget(tmp_path: Path) -> None:
@@ -842,6 +854,11 @@ def test_toolchain_pin_uses_production_ssh_commands_and_chains_hmmbuild(
         "bio_tools/hmmbuild/model.hmm"
     )
     assert hmmalign_inputs[1]["remote_path"] == "input.fasta"
+    assert server.resolved_artifact_refs
+    assert all(
+        artifact_ref.startswith("runner-artifact://")
+        for artifact_ref in server.resolved_artifact_refs
+    )
     assert digests == {
         "cdhit_4.8.1.hpc_apptainer_sif:v1": _digest("bio_tools.cdhit"),
         "hmmer_3.4.hmmalign.hpc_apptainer_sif:v1": _digest("hmmer"),
@@ -865,6 +882,33 @@ def test_toolchain_pin_rejects_nonclosed_runtime_identity(tmp_path: Path) -> Non
 
     assert error.value.code == "aox_launch_toolchain_pin_identity_missing"
     assert error.value.details == {"tool_id": "bio_tools.mafft"}
+
+
+def test_toolchain_pin_rejects_unresolvable_runner_artifact_ref(
+    tmp_path: Path,
+) -> None:
+    class UnresolvablePinServer(_FakePinServer):
+        def resolve_artifact_ref(self, artifact_ref: str) -> str:
+            del artifact_ref
+            raise ValueError("private runner path must remain redacted")
+
+    server = UnresolvablePinServer(tmp_path / "runner-outputs")
+
+    with pytest.raises(launch.AoxCutoverLaunchError) as error:
+        launch.attest_aox_toolchain_image_digests(
+            server=server,
+            repo_root=launch.REPO_ROOT,
+            runner_contract_expectations=server.expectations,
+        )
+
+    assert error.value.code == "aox_launch_toolchain_pin_output_invalid"
+    assert error.value.details == {
+        "tool_id": "bio_tools.mafft",
+        "output_id": "bio_tools/mafft/alignment.fasta",
+        "failure_type": "ValueError",
+    }
+    projected = json.dumps(error.value.details, sort_keys=True)
+    assert "private runner path" not in projected
 
 
 def test_toolchain_pin_redacts_runner_exception_details() -> None:

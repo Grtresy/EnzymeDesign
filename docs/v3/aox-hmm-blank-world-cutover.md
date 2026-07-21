@@ -1368,8 +1368,12 @@ CD-HIT, hmmbuild and hmmalign payloads through the configured trusted
 `MCPHpcServer` in forced SSH mode. The runner binds its own private SIF locator
 and contract, hashes that SIF in the same login shell before and after the real
 payload, and emits the closed public runtime identity only on success. The
-hmmalign pin consumes the materialized output of the preceding hmmbuild pin;
-neither configured locators nor Slurm/discovery metadata can populate
+hmmalign pin consumes the materialized output of the preceding hmmbuild pin.
+Pinning accepts the runner's verified output only as an opaque
+`runner-artifact://` reference and resolves it through the injected trusted
+Host boundary; a caller-supplied Host path or an unresolvable reference fails
+closed before it can become the next tool input. Neither configured locators
+nor Slurm/discovery metadata can populate
 `toolchain_image_digests`. `pin` then calls the same
 `prepare_aox_cutover_launch` gate used by `run-live` to detect any intervening
 checkout/config/runtime drift.

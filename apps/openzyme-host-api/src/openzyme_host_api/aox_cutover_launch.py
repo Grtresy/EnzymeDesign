@@ -182,6 +182,8 @@ class _McpHpcServer(Protocol):
         arguments: dict[str, Any] | None,
     ) -> dict[str, Any]: ...
 
+    def resolve_artifact_ref(self, artifact_ref: str) -> str: ...
+
 
 def _canonical_digest(payload: object) -> str:
     content = json.dumps(
@@ -1202,7 +1204,19 @@ def attest_aox_toolchain_image_digests(
             )
         materialized_outputs: dict[str, Path] = {}
         for output_path in sorted(expected_output_paths):
-            local_value = raw_artifacts[output_path]
+            artifact_ref = str(raw_artifacts[output_path])
+            try:
+                local_value = server.resolve_artifact_ref(artifact_ref)
+            except Exception as exc:  # noqa: BLE001 - redact runner internals
+                raise AoxCutoverLaunchError(
+                    "aox_launch_toolchain_pin_output_invalid",
+                    "AOX toolchain pin output reference could not be resolved",
+                    details={
+                        "tool_id": tool_id,
+                        "output_id": output_path,
+                        "failure_type": type(exc).__name__,
+                    },
+                ) from exc
             local_path = Path(str(local_value)).expanduser()
             if local_path.is_symlink() or not local_path.is_file():
                 raise AoxCutoverLaunchError(
